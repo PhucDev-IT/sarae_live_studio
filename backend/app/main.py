@@ -12,6 +12,7 @@ from app.live_sessions import router as live_sessions_router
 from app.tiktok_chat import router as tiktok_chat_router
 from app.ai_service import router as ai_router
 from app.ai_live_batches import router as ai_live_router
+from app.ai_voice import router as ai_voice_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -33,6 +34,7 @@ app.include_router(live_sessions_router)
 app.include_router(tiktok_chat_router)
 app.include_router(ai_router)
 app.include_router(ai_live_router)
+app.include_router(ai_voice_router)
 
 
 @app.get("/api/health", tags=["System"])
