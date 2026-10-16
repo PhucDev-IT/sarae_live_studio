@@ -30,7 +30,6 @@
     }
   },
   "include": [
-    "src",
-    "../vendor/react-ui-core/packages/ui/src"
+    "src"
   ]
 }
