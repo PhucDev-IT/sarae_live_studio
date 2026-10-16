@@ -81,6 +81,16 @@ def serialize(db, item):
 def event(db, sid, kind, pid=None, detail=""):
     db.add(SessionEvent(session_id=sid, event_type=kind, product_id=pid, detail=detail))
 
+def record_product_switch(session_id: int, product_id: int):
+    """Called only after OBS has successfully switched, including deferred transitions."""
+    with SessionLocal() as db:
+        item = db.get(LiveSession, session_id)
+        if item is not None and item.status == "RUNNING":
+            item.current_product_id = product_id
+            event(db, session_id, "PRODUCT_SWITCHED", product_id)
+            db.commit()
+
+
 def require_running_owner(item):
     if item.status != "RUNNING" or not state.active or state.session_mode != "product" or state.session_id != item.id:
         raise HTTPException(409, "Phiên này không phải phiên đang phát trong Backend hiện tại")
@@ -182,9 +192,7 @@ def switch_session_product(session_id: int, body: SwitchInput):
                 state.pending_product_id = None
                 return {"ok": True, "unchanged": True}
             result = state.switch_product(body.product_id)
-            item.current_product_id = body.product_id
-            event(db, session_id, "PRODUCT_SWITCHED", body.product_id, "manual")
-            db.commit()
+            db.refresh(item)
             return {"ok": True, "playback": result, "session": serialize(db, item)}
 
 @router.post("/{session_id}/finish")
