@@ -1,6 +1,5 @@
 """Provider-swappable, operator-triggered AI comment analysis. No automatic TikTok action."""
 import json
-import os
 import time
 from threading import RLock
 from pathlib import Path
@@ -10,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.database import DATA_DIR
+from app.config import settings
 from app.comment_processing import monitor
 
 router = APIRouter(prefix="/api/ai", tags=["AI / Comment Analysis"])
@@ -39,7 +39,7 @@ def load_config() -> AIConfig:
 
 def public_config():
     c = load_config()
-    return {**c.model_dump(), "has_api_key": bool(os.getenv("GEMINI_API_KEY" if c.provider=="gemini" else "OPENAI_API_KEY"))}
+    return {**c.model_dump(), "has_api_key": bool(settings.gemini_api_key if c.provider=="gemini" else settings.openai_api_key)}
 
 @router.get("/config")
 def read_config():
@@ -110,7 +110,7 @@ def analyze(body: AnalyzeBody):
     config = load_config()
     if not config.enabled:
         raise HTTPException(409, "AI chưa được bật trong cấu hình")
-    key = os.getenv("GEMINI_API_KEY" if config.provider=="gemini" else "OPENAI_API_KEY")
+    key = settings.gemini_api_key if config.provider=="gemini" else settings.openai_api_key
     if not key:
         raise HTTPException(503, "Thiếu API key trong biến môi trường Backend")
     with COUNT_LOCK:
