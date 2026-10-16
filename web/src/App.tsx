@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Input, ThemeProvider } from './ui/core'
 import CatalogPage from './CatalogPage'
 import MediaPage from './MediaPage'
+import LiveWorkspace from './LiveWorkspace'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -125,7 +126,7 @@ function App() {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : (page === 'playlists' || page === 'live') ? <LiveWorkspace key={page} mode={page}/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
