@@ -28,6 +28,7 @@ class Media(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     filename: Mapped[str] = mapped_column(String(255))
     stored_name: Mapped[str] = mapped_column(String(255), unique=True)
+    local_path: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
     size_bytes: Mapped[int] = mapped_column(Integer)
     duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -50,6 +51,7 @@ class MediaOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     filename: str
+    local_path: str | None = None
     size_bytes: int
     duration_seconds: float | None
     width: int | None
@@ -167,7 +169,7 @@ def get_media(media_id: int, db: DB):
 @router.get("/{media_id}/file")
 def stream_media(media_id: int, db: DB):
     media = media_or_404(db, media_id)
-    path = MEDIA_DIR / media.stored_name
+    path = Path(media.local_path) if media.local_path else MEDIA_DIR / media.stored_name
     if not path.is_file():
         raise HTTPException(404, "File video không còn trên ổ đĩa")
     return FileResponse(path, media_type="video/mp4", filename=media.filename, content_disposition_type="inline")
@@ -187,7 +189,8 @@ def update_media(media_id: int, body: MediaUpdate, db: DB):
 @router.delete("/{media_id}", status_code=204)
 def delete_media(media_id: int, db: DB):
     item = media_or_404(db, media_id)
-    path = MEDIA_DIR / item.stored_name
+    path = MEDIA_DIR / item.stored_name if not item.local_path else None
     db.delete(item)
     db.commit()
-    path.unlink(missing_ok=True)
+    if path is not None:
+        path.unlink(missing_ok=True)
