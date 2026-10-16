@@ -1,28 +1,86 @@
 import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../core/database/app_database.dart';
 import 'media_entry.dart';
 
-/// Metadata-only persistence. Original video files remain in their chosen folder.
-/// A subsequent phase will migrate this store to SQLite/Drift.
-class MediaRepository {
-  static const _key = 'sarae.media.v1';
+abstract class MediaRepository {
+  Future<List<MediaEntry>> load();
+  Future<void> save(List<MediaEntry> entries);
+}
 
-  Future<List<MediaEntry>> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_key);
+/// Preserves the source value after failure, so migration can be retried.
+class LegacyMediaStore {
+  static const key = 'sarae.media.v1';
+  final SharedPreferences prefs;
+  LegacyMediaStore(this.prefs);
+
+  List<MediaEntry> read() {
+    final raw = prefs.getString(key);
     if (raw == null) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list.map((e) => MediaEntry.fromJson(Map<String, dynamic>.from(e as Map))).toList();
-    } catch (_) {
-      // Preserve the original stored value if it cannot be decoded.
-      rethrow;
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) {
+      throw const FormatException('Legacy catalog must be a list');
     }
+    final ids = <String>{};
+    return decoded.map((value) {
+      if (value is! Map) throw const FormatException('Invalid media record');
+      final map = Map<String, dynamic>.from(value);
+      if (map['id'] is! String ||
+          (map['id'] as String).trim().isEmpty ||
+          map['name'] is! String ||
+          (map['name'] as String).trim().isEmpty ||
+          map['importedAt'] is! String ||
+          DateTime.tryParse(map['importedAt'] as String) == null ||
+          map['tags'] != null &&
+              (map['tags'] is! List ||
+                  (map['tags'] as List).any((t) => t is! String)) ||
+          map['sizeBytes'] != null &&
+              (map['sizeBytes'] is! num || (map['sizeBytes'] as num) < 0)) {
+        throw const FormatException('Invalid legacy media fields');
+      }
+      final entry = MediaEntry.fromJson(map);
+      if (!ids.add(entry.id)) {
+        throw const FormatException('Duplicate legacy media ID');
+      }
+      return entry;
+    }).toList();
+  }
+}
+
+class DesktopMediaRepository implements MediaRepository {
+  final AppDatabase database;
+  final LegacyMediaStore legacy;
+  DesktopMediaRepository(this.database, this.legacy);
+
+  @override
+  Future<List<MediaEntry>> load() async {
+    if (!await database.legacyMigrated()) {
+      final entries = legacy.read();
+      await database.importLegacy(entries);
+    }
+    return database.readMedia();
   }
 
+  @override
+  Future<void> save(List<MediaEntry> entries) => database.replaceMedia(entries);
+}
+
+/// Browser-only preview catalog. No desktop synchronization is implied.
+class WebMediaRepository implements MediaRepository {
+  final LegacyMediaStore store;
+  WebMediaRepository(this.store);
+
+  @override
+  Future<List<MediaEntry>> load() async => store.read();
+
+  @override
   Future<void> save(List<MediaEntry> entries) async {
-    final prefs = await SharedPreferences.getInstance();
-    final result = await prefs.setString(_key, jsonEncode(entries.map((e) => e.toJson()).toList()));
-    if (!result) throw StateError('Could not save media library');
+    final result = await store.prefs.setString(
+      LegacyMediaStore.key,
+      jsonEncode(entries.map((e) => e.toJson()).toList()),
+    );
+    if (!result) throw StateError('Could not save browser preview catalog');
   }
 }

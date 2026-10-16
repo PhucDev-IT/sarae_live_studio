@@ -1,21 +1,13 @@
 # Sarae Live Studio
 
-Flutter Windows workspace for an internal video-based broadcast production tool, with a web-compatible catalog UI.
+Flutter Windows workspace for coordinating video based sales livestreams. Web currently provides a separate browser preview catalog; its data does not sync with Windows.
 
-## Phase 1 — Media Library
+## Implemented in Task 01
 
-Implemented:
-- Responsive Desktop-style UI with sidebar, summary stats, filter and search.
-- Import multiple MP4/MOV/M4V/WebM files via native picker.
-- Metadata catalog: source filename/path, file size, product code, presenter, description, tags, active state.
-- Edit/delete metadata, persist locally through `shared_preferences`.
-- File originals are never deleted when removing a catalog entry.
-
-Limitations:
-- Does **not** yet extract durations, codecs, thumbnails or play video.
-- Does **not** yet implement OBS, FFmpeg, AI, TikTok integration or product pinning.
-- On web, the browser cannot provide a durable absolute local path; entries are metadata-only.
-- SQLite/Drift migration is planned when catalog relations are implemented.
+- Responsive desktop shell with nine routes, collapsible sidebar, 404 fallback and light/dark mode.
+- Media Library: multi-video import, search, filters, metadata editing, activation, and metadata-only deletion. Original files are never deleted.
+- Windows SQLite catalog via Drift in the application support directory.
+- One-time, transactional migration from the previous `shared_preferences` catalog.
 
 ## Run
 
@@ -25,18 +17,16 @@ flutter pub get
 flutter run -d windows
 ```
 
-For browser UI testing:
+For browser preview: `flutter run -d chrome`. Browser entries contain metadata only because a browser does not expose a durable native path.
 
-```bash
-flutter run -d chrome
-```
-
-Checks:
+## Verify
 
 ```bash
 dart format lib test
 flutter analyze
 flutter test
+flutter build windows
+flutter build web
 ```
 
-See [architecture](docs/ARCHITECTURE.md) for the module boundaries and roadmap.
+See [architecture](docs/ARCHITECTURE.md), [database](docs/DATABASE.md), and [roadmap](docs/ROADMAP.md).

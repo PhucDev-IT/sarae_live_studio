@@ -1,26 +1,16 @@
-# Sarae Live Studio — Architecture
+# Architecture
 
-## Target platforms
-- **Windows:** primary desktop operator app.
-- **Web:** compatible metadata/dashboard UI. A browser cannot hold durable unrestricted access to arbitrary local files.
-- **Python engine (future phase):** isolated FastAPI process for FFmpeg, OBS, playlist and AI orchestration. UI must communicate via an API instead of importing platform-only libraries.
+Sarae Live Studio uses a small feature-first, layered structure:
 
-## Phase 1
-- Flutter Material 3 desktop shell and media catalog.
-- Import MP4, MOV, M4V and WebM metadata with file_picker.
-- Edit product code, presenter, description, tags and activation state.
-- Persist a small local metadata catalog with shared_preferences for both Windows and Web.
-- Video binaries are **not** copied or uploaded.
-- Web picker returns filename/size but generally no durable absolute path; web entries are therefore metadata-only.
+- `lib/app`: router, theme, and navigation shell.
+- `lib/core/database`: Drift schema and platform-specific connection.
+- `lib/features/media_library`: model, repository, controller, and screen.
+- Other routes are explicit placeholders until their modules are implemented.
 
-## Not yet implemented
-- SQLite/Drift migration and schema (target for larger catalogs).
-- Thumbnail generation, ffprobe analysis, video playback and clipping.
-- Product catalog relational mapping, playlist scheduler, pin adapter, OBS integration and AI.
-- File relocation tracking and missing-file recovery.
+The UI invokes `MediaController`; the controller persists through `MediaRepository`. Riverpod provides the database, repository, controller, router, and theme state. `go_router` maps each sidebar item to its own route. Local UI selection and collapsed sidebar use widget state.
 
-## Design principles
-- Separate presentation, controller, metadata model and repository.
-- Treat video files as external references, not persisted byte blobs.
-- Do not block rendering while importing metadata.
-- Never infer that a remote product pin succeeded without an acknowledgment.
+Windows uses Drift with SQLite. The conditional connection import keeps `dart:io` out of Web compilation. Web uses a browser-only preferences repository for metadata preview and has no synchronization with Windows.
+
+To add a module: create a directory under `lib/features`, separate UI from persistence, expose dependencies through Riverpod, and register its route and sidebar entry in `lib/app/app.dart`. Add a Drift migration step before changing a persisted schema. Keep Windows integrations in platform-specific files.
+
+The Python engine, FFmpeg, OBS, playlists, products, presenters, AI, thumbnail generation, video preview, and editor are outside Task 01.

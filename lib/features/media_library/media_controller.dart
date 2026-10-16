@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+
 import 'media_entry.dart';
 import 'media_repository.dart';
 
@@ -40,17 +41,23 @@ class MediaController extends ChangeNotifier {
       if (result == null) return 0;
       var added = 0;
       final updated = [..._items];
-      final existing = _items.map((e) => '${e.path}|${e.name}|${e.sizeBytes}').toSet();
+      final existing = _items
+          .map((e) => '${e.path}|${e.name}|${e.sizeBytes}')
+          .toSet();
       for (final file in result.files) {
         // On web, the browser does not expose the real local filesystem path.
         final path = file.path ?? '';
         final key = '$path|${file.name}|${file.size}';
         if (!existing.add(key)) continue;
-        updated.add(MediaEntry(
-          id: 'VID-${DateTime.now().microsecondsSinceEpoch}-${added + 1}',
-          name: file.name, path: path, sizeBytes: file.size,
-          importedAt: DateTime.now(),
-        ));
+        updated.add(
+          MediaEntry(
+            id: 'VID-${DateTime.now().microsecondsSinceEpoch}-${added + 1}',
+            name: file.name,
+            path: path,
+            sizeBytes: file.size,
+            importedAt: DateTime.now(),
+          ),
+        );
         added++;
       }
       if (added > 0) {
