@@ -10,6 +10,7 @@ export {
   Input,
   LoadingState,
   Modal,
+  MultiSelect,
   Pagination,
   Popover,
   SearchInput,

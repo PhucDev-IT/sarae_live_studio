@@ -1,42 +1,28 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  Alert, Badge, Button, Card, ConfirmModal, EmptyState, FileUpload, FilterBar, Input, LoadingState, Modal, Pagination, Popover,
+  Alert, Badge, Button, Card, ConfirmModal, EmptyState, FileUpload, FilterBar, Input, LoadingState, Modal, MultiSelect, Pagination, Popover,
   SearchInput, SegmentedControl, Select, Sheet, SkeletonCard, StatCard, Switch, Table, TagsInput, useToast, type TableColumn,
 } from './ui/core'
 import {
   AlertTriangle, Copy, Eye, Film, FolderOpen, HardDrive, LayoutGrid, Link2, List, MoreHorizontal, Package, Pencil, Play,
   RefreshCw, Trash2, Upload, User,
 } from 'lucide-react'
+import { apiRequest, durationLabel, errorText, fileUrl, sizeLabel, setVideoProducts, type CatalogItem, type Media } from './mediaApi'
+import VideoThumb, { type ClientMeta } from './VideoThumb'
 import './media.css'
 
-type Media = { id:number; filename:string; size_bytes:number; duration_seconds:number|null; width:number|null; height:number|null; fps:number|null; video_codec:string; product_id:number|null; presenter_id:number|null; tags:string; created_at:string; local_path:string|null }
-type CatalogItem = { id:number; name:string }
-/** Metadata read by the browser from the video file, used when the backend has not probed it yet. */
-type ClientMeta = { duration?:number; width?:number; height?:number; missing?:boolean }
 type SourceFilter = 'all'|'local'|'upload'
 type SortKey = 'newest'|'oldest'|'name'|'size'
 type ViewMode = 'grid'|'list'
 
-const api = ((import.meta.env.VITE_API_URL as string|undefined) || 'http://127.0.0.1:8000').replace(/\/$/, '')
-const fileUrl = (id:number) => `${api}/api/media/${id}/file`
 const PAGE_SIZE = 24
 const VIEW_KEY = 'sarae-media-view'
+/** Product badges shown on a card before collapsing the rest into "+N". */
+const CARD_PRODUCTS = 2
 
-const sizeLabel = (bytes:number) => bytes >= 1024 ** 3 ? (bytes / 1024 ** 3).toFixed(2) + ' GB' : (bytes / 1024 ** 2).toFixed(1) + ' MB'
-const durationLabel = (seconds?:number|null) => seconds == null || !Number.isFinite(seconds) ? null : `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 const parseTags = (value:string) => value.split(',').map(tag => tag.trim()).filter(Boolean)
 const dateLabel = (value:string) => new Date(value).toLocaleString('vi-VN', { dateStyle:'short', timeStyle:'short' })
-const errorText = (e:unknown, fallback:string) => e instanceof Error ? e.message : fallback
 const readView = ():ViewMode => { try { return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid' } catch { return 'grid' } }
-
-async function apiRequest<T>(url:string, options?:RequestInit):Promise<T>{
-  const response = await fetch(api + '/api' + url, options)
-  if (!response.ok) {
-    const result = await response.json().catch(()=>({}))
-    throw new Error(typeof result.detail === 'string' ? result.detail : 'HTTP ' + response.status)
-  }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>
-}
 
 export default function MediaPage(){
   const toast = useToast()
@@ -64,7 +50,7 @@ export default function MediaPage(){
   const [formError,setFormError] = useState('')
 
   const [file,setFile] = useState<File|null>(null)
-  const [productId,setProductId] = useState('')
+  const [productIds,setProductIds] = useState<string[]>([])
   const [presenterId,setPresenterId] = useState('')
   const [tags,setTags] = useState<string[]>([])
   const [folder,setFolder] = useState('')
@@ -90,9 +76,10 @@ export default function MediaPage(){
 
   const stats = useMemo(()=>{
     const local = items.filter(item=>item.local_path).length
-    const linked = items.filter(item=>item.product_id != null).length
+    const linked = items.filter(item=>item.product_ids.length > 0).length
+    const links = items.reduce((sum,item)=>sum + item.product_ids.length, 0)
     const bytes = items.reduce((sum,item)=>sum + item.size_bytes, 0)
-    return { local, upload:items.length - local, linked, unlinked:items.length - linked, bytes }
+    return { local, upload:items.length - local, linked, unlinked:items.length - linked, links, bytes }
   },[items])
 
   const filtered = useMemo(()=>{
@@ -100,10 +87,10 @@ export default function MediaPage(){
     const result = items.filter(item=>{
       if (source === 'local' && !item.local_path) return false
       if (source === 'upload' && item.local_path) return false
-      if (productFilter === 'none' && item.product_id != null) return false
-      if (productFilter !== 'all' && productFilter !== 'none' && String(item.product_id) !== productFilter) return false
+      if (productFilter === 'none' && item.product_ids.length > 0) return false
+      if (productFilter !== 'all' && productFilter !== 'none' && !item.product_ids.includes(Number(productFilter))) return false
       if (!needle) return true
-      const haystack = [item.filename, item.tags, productName.get(item.product_id ?? -1), presenterName.get(item.presenter_id ?? -1)].join(' ')
+      const haystack = [item.filename, item.tags, ...item.product_ids.map(id=>productName.get(id)), presenterName.get(item.presenter_id ?? -1)].join(' ')
       return haystack.toLocaleLowerCase('vi').includes(needle)
     })
     const byDate = (a:Media,b:Media) => a.created_at.localeCompare(b.created_at) || a.id - b.id
@@ -129,7 +116,7 @@ export default function MediaPage(){
 
   const resetForm = (item?:Media) => {
     setFile(null);setFormError('')
-    setProductId(item?.product_id == null ? '' : String(item.product_id))
+    setProductIds((item?.product_ids ?? []).map(String))
     setPresenterId(item?.presenter_id == null ? '' : String(item.presenter_id))
     setTags(parseTags(item?.tags ?? ''))
   }
@@ -146,12 +133,14 @@ export default function MediaPage(){
     try{
       const body = new FormData()
       body.append('file',file)
-      if(productId) body.append('product_id',productId)
       if(presenterId) body.append('presenter_id',presenterId)
       body.append('tags',tags.join(', '))
-      await apiRequest<Media>('/media/upload',{method:'POST',body})
+      const created = await apiRequest<Media>('/media/upload',{method:'POST',body})
       setUploadOpen(false)
-      toast.push({tone:'success',title:'Đã upload video',description:file.name})
+      try{
+        if (productIds.length) await setVideoProducts(created.id, productIds.map(Number))
+        toast.push({tone:'success',title:'Đã upload video',description:file.name})
+      }catch(e){toast.push({tone:'warning',title:'Đã upload nhưng chưa gắn đủ sản phẩm',description:errorText(e, 'Thử gắn lại trong phần chỉnh sửa video.')})}
       await load()
     }catch(e){setFormError(errorText(e, 'Có lỗi khi upload video'))}
     finally{setBusy(false)}
@@ -162,12 +151,13 @@ export default function MediaPage(){
     setBusy(true);setFormError('')
     try{
       await apiRequest<Media>('/media/'+editing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        product_id:productId?Number(productId):null, presenter_id:presenterId?Number(presenterId):null, tags:tags.join(', '),
+        presenter_id:presenterId?Number(presenterId):null, tags:tags.join(', '),
       })})
+      await setVideoProducts(editing.id, productIds.map(Number))
       setEditing(null)
       toast.push({tone:'success',title:'Đã lưu thay đổi',description:editing.filename})
       await load()
-    }catch(e){setFormError(errorText(e, 'Có lỗi khi lưu video'))}
+    }catch(e){setFormError(errorText(e, 'Có lỗi khi lưu video'));await load()}
     finally{setBusy(false)}
   }
   const scan = async (event:FormEvent<HTMLFormElement>) => {
@@ -206,10 +196,13 @@ export default function MediaPage(){
     ...(item.local_path ? [{ label:'Copy đường dẫn', icon:<Copy size={15}/>, onSelect:()=>void copyPath(item) }] : []),
     { label:item.local_path?'Bỏ khỏi thư viện':'Xóa video', icon:<Trash2 size={15}/>, danger:true, separatorBefore:true, onSelect:()=>setDeleting(item) },
   ]
-  const linkBadges = (item:Media) => <>
-    {item.product_id != null
-      ? <Badge tone="primary"><Package size={12}/>{productName.get(item.product_id) ?? 'Sản phẩm #' + item.product_id}</Badge>
-      : <Badge tone="warning">Chưa gắn sản phẩm</Badge>}
+  const productLabel = (id:number) => productName.get(id) ?? 'Sản phẩm #' + id
+  /** Product badges for a video; `limit` collapses the remainder into a "+N" badge listing them on hover. */
+  const linkBadges = (item:Media, limit = Infinity) => <>
+    {item.product_ids.length === 0
+      ? <Badge tone="warning">Chưa gắn sản phẩm</Badge>
+      : item.product_ids.slice(0, limit).map(id=><Badge key={id} tone="primary"><Package size={12}/>{productLabel(id)}</Badge>)}
+    {item.product_ids.length > limit && <span title={item.product_ids.slice(limit).map(productLabel).join(', ')}><Badge tone="primary">+{item.product_ids.length - limit} sản phẩm</Badge></span>}
     {item.presenter_id != null && <Badge><User size={12}/>{presenterName.get(item.presenter_id) ?? 'Người giới thiệu #' + item.presenter_id}</Badge>}
   </>
 
@@ -220,15 +213,16 @@ export default function MediaPage(){
     </div> },
     { key:'duration_seconds', header:'Thời lượng', width:110, render:item=>durationLabel(durationOf(item)) ?? '—' },
     { key:'size_bytes', header:'Dung lượng', width:110, render:item=>sizeLabel(item.size_bytes) },
-    { key:'product_id', header:'Liên kết', render:item=><div className="media-badges">{linkBadges(item)}{meta[item.id]?.missing && <MissingBadge/>}</div> },
+    { key:'product_ids', header:'Sản phẩm · người giới thiệu', render:item=><div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{meta[item.id]?.missing && <MissingBadge/>}</div> },
     { key:'tags', header:'Tags', render:item=><TagList tags={parseTags(item.tags)}/> },
     { key:'actions', header:'', width:56, align:'right', render:item=><ActionMenu actions={actionsFor(item)}/> },
   ]
 
-  const productOptions = [{value:'',label:'Chưa liên kết'},...products.map(p=>({value:String(p.id),label:p.name}))]
+  const productOptions = products.map(p=>({value:String(p.id),label:p.name}))
   const presenterOptions = [{value:'',label:'Chưa liên kết'},...presenters.map(p=>({value:String(p.id),label:p.name}))]
   const linkFields = <>
-    <Select label="Sản phẩm" value={productId} options={productOptions} onChange={setProductId}/>
+    <MultiSelect label="Sản phẩm sử dụng video" placeholder="Chưa gắn sản phẩm" maxVisible={4} value={productIds} options={productOptions} onChange={setProductIds}
+      hint="Một video có thể dùng cho nhiều sản phẩm. Sản phẩm mới gắn sẽ phát video này ở cuối danh sách; đổi thứ tự tại trang Video theo sản phẩm."/>
     <Select label="Người giới thiệu" value={presenterId} options={presenterOptions} onChange={setPresenterId}/>
     <TagsInput label="Tags" hint="Nhấn Enter hoặc dấu phẩy để thêm tag" value={tags} onChange={setTags} placeholder="áo trễ vai, review, quay studio…"/>
   </>
@@ -237,7 +231,7 @@ export default function MediaPage(){
     <section className="media-stats" aria-label="Thống kê thư viện">
       <StatCard label="Tổng video" icon={<Film size={18}/>} value={items.length} delta={`${stats.local} local · ${stats.upload} upload`} trend="neutral"/>
       <StatCard label="Dung lượng" icon={<HardDrive size={18}/>} value={sizeLabel(stats.bytes)} delta={items.length ? `TB ${sizeLabel(stats.bytes / items.length)}/video` : 'Chưa có dữ liệu'} trend="neutral"/>
-      <StatCard label="Đã gắn sản phẩm" icon={<Link2 size={18}/>} value={`${stats.linked}/${items.length}`} delta={items.length ? `${Math.round(stats.linked / items.length * 100)}% thư viện` : '—'} trend={stats.linked === items.length ? 'up' : 'neutral'}/>
+      <StatCard label="Đã gắn sản phẩm" icon={<Link2 size={18}/>} value={`${stats.linked}/${items.length}`} delta={items.length ? `${Math.round(stats.linked / items.length * 100)}% thư viện · ${stats.links} liên kết` : '—'} trend={stats.linked === items.length ? 'up' : 'neutral'}/>
       <StatCard label="Chưa gắn sản phẩm" icon={<AlertTriangle size={18}/>} value={stats.unlinked} delta={stats.unlinked ? 'Cần gắn trước khi lên LIVE' : 'Đã gắn đầy đủ'} trend={stats.unlinked ? 'down' : 'up'}/>
     </section>
 
@@ -289,7 +283,7 @@ export default function MediaPage(){
               <div className="media-card-body">
                 <div className="media-card-title"><strong title={item.filename}>{item.filename}</strong><ActionMenu actions={actionsFor(item)}/></div>
                 <small className="media-card-meta">{sizeLabel(item.size_bytes)}{resolution && <> · {resolution.width}×{resolution.height} · {resolution.height > resolution.width ? 'Dọc' : 'Ngang'}</>}</small>
-                <div className="media-badges">{linkBadges(item)}{meta[item.id]?.missing && <MissingBadge/>}</div>
+                <div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{meta[item.id]?.missing && <MissingBadge/>}</div>
                 <TagList tags={parseTags(item.tags)} limit={3}/>
               </div>
             </article>
@@ -341,6 +335,7 @@ export default function MediaPage(){
           <Fact label="Thời lượng">{durationLabel(durationOf(editing)) ?? '—'}</Fact>
           <Fact label="Độ phân giải">{(()=>{const r = resolutionOf(editing);return r ? `${r.width}×${r.height}` : '—'})()}</Fact>
           <Fact label="Ngày thêm">{dateLabel(editing.created_at)}</Fact>
+          <Fact label="Đang dùng cho">{editing.product_ids.length ? <div className="media-badges">{linkBadges({...editing, presenter_id:null})}</div> : 'Chưa gắn sản phẩm'}</Fact>
         </dl>
         <form id="media-edit-form" className="media-form" onSubmit={event=>void saveEdit(event)}>
           {linkFields}
@@ -379,27 +374,6 @@ function ActionMenu({actions}:{actions:MenuAction[]}){
       <div className="ui-menu-list__row"><button type="button" className={action.danger ? 'is-danger' : ''} onClick={()=>{setOpen(false);action.onSelect()}}>{action.icon}<span>{action.label}</span></button></div>
     </div>)}</div>
   </Popover>
-}
-
-/** Shows the video's first frame, loading it only while the thumbnail is near the viewport. */
-function VideoThumb({id,onMeta}:{id:number;onMeta:(meta:ClientMeta)=>void}){
-  const ref = useRef<HTMLDivElement>(null)
-  const [near,setNear] = useState(false)
-  const [failed,setFailed] = useState(false)
-  useEffect(()=>{
-    const el = ref.current
-    if (!el) return
-    const observer = new IntersectionObserver(([entry])=>setNear(entry.isIntersecting), {rootMargin:'200px'})
-    observer.observe(el)
-    return ()=>observer.disconnect()
-  },[])
-  return <div ref={ref} className="media-thumb-frame">
-    {near && !failed
-      ? <video src={fileUrl(id) + '#t=0.5'} preload="metadata" muted playsInline tabIndex={-1}
-        onLoadedMetadata={e=>{const v = e.currentTarget;onMeta({duration:v.duration,width:v.videoWidth,height:v.videoHeight,missing:false})}}
-        onError={()=>{setFailed(true);onMeta({missing:true})}}/>
-      : <Film size={26}/>}
-  </div>
 }
 
 function TagList({tags,limit}:{tags:string[];limit?:number}){
