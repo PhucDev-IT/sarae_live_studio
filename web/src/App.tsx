@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Button, Input, ThemeProvider } from '@sarae/ui'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -99,7 +100,7 @@ function App() {
     </>
   )
   return (
-    <div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
+    <ThemeProvider value={{ mode: dark ? 'dark' : 'light', primary: '#6553d7', density: 'comfortable', radius: 'soft', fontSize: 'normal' }}><div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
       <aside className="sidebar">{renderNav()}</aside>
       {drawerOpen && <div className="mobile-overlay" onClick={() => setDrawerOpen(false)}><aside className="mobile-sidebar" onClick={e => e.stopPropagation()}><div className="drawer-heading"><strong>Sarae Live Studio</strong><button className="icon-button" onClick={() => setDrawerOpen(false)} aria-label="Đóng menu"><X size={20}/></button></div>{renderNav()}</aside></div>}
       <div className="workspace">
@@ -120,14 +121,14 @@ function App() {
           <div className="page-content">
             <div className="page-heading">
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
-              {page === 'dashboard' && <button className="primary-button" onClick={() => navigate('media')}><Plus size={17}/> Quản lý video</button>}
+              {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
             {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
       </div>
-    </div>
+    </div></ThemeProvider>
   )
 }
 
@@ -171,13 +172,13 @@ function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => 
   }
   const config = content[page as Exclude<Page, 'dashboard' | 'settings'>]
   const Icon = config.icon
-  return <section className="module-panel panel"><div className="module-art"><span className="module-icon"><Icon size={31}/></span><div className="module-orbit orbit-a"/><div className="module-orbit orbit-b"/></div><div className="module-content"><div className="module-kicker">MODULE ROADMAP</div><h2>{config.title}</h2><p>{config.summary}</p><div className="module-tags">{config.tasks.map(task => <span key={task}>{task}</span>)}</div><button className="secondary-button" onClick={() => navigate('dashboard')}><ChevronLeft size={17}/> Quay lại tổng quan</button></div></section>
+  return <section className="module-panel panel"><div className="module-art"><span className="module-icon"><Icon size={31}/></span><div className="module-orbit orbit-a"/><div className="module-orbit orbit-b"/></div><div className="module-content"><div className="module-kicker">MODULE ROADMAP</div><h2>{config.title}</h2><p>{config.summary}</p><div className="module-tags">{config.tasks.map(task => <span key={task}>{task}</span>)}</div><Button variant="outline" className="secondary-button" leftIcon={<ChevronLeft size={17}/>} onClick={() => navigate('dashboard')}>Quay lại tổng quan</Button></div></section>
 }
 
 function Settings({ health, checkedAt }: { health: Health; checkedAt: Date | null }) {
   const [term, setTerm] = useState('')
   return <div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><h3>Kết nối Backend</h3><p>Trạng thái thực tế từ FastAPI</p></div><Wifi size={20}/></div><div className="setting-row"><span>API endpoint</span><code>{apiBase}</code></div><div className="setting-row"><span>Health check</span><span className={`service-badge ${health}`}>{health === 'online' ? 'Online' : health === 'checking' ? 'Checking' : 'Offline'}</span></div><div className="setting-row"><span>Kiểm tra gần nhất</span><strong>{checkedAt ? checkedAt.toLocaleTimeString('vi-VN') : '—'}</strong></div><div className="setting-note">{health === 'offline' ? <WifiOff size={18}/> : <Wifi size={18}/>} <span>{health === 'offline' ? 'Khởi động FastAPI trên máy local để kết nối Web Admin.' : 'Trạng thái được kiểm tra tự động mỗi 15 giây.'}</span></div></section>
-    <section className="panel settings-panel"><div className="panel-heading"><div><h3>Thông tin workspace</h3><p>Nền tảng quản lý nội bộ</p></div><Settings2 size={20}/></div><div className="setting-row"><span>Ứng dụng</span><strong>Sarae Live Studio</strong></div><div className="setting-row"><span>Phiên bản UI</span><strong>0.1.0</strong></div><div className="setting-row"><span>Môi trường</span><strong>Local Development</strong></div><label className="search-label"><Search size={16}/><input value={term} onChange={e => setTerm(e.target.value)} placeholder="Ghi chú cá nhân (chưa lưu)" aria-label="Ghi chú"/></label><p className="settings-footnote">Cấu hình API thay đổi bằng biến môi trường VITE_API_URL. Ghi chú phía trên không được lưu.</p></section></div>
+    <section className="panel settings-panel"><div className="panel-heading"><div><h3>Thông tin workspace</h3><p>Nền tảng quản lý nội bộ</p></div><Settings2 size={20}/></div><div className="setting-row"><span>Ứng dụng</span><strong>Sarae Live Studio</strong></div><div className="setting-row"><span>Phiên bản UI</span><strong>0.1.0</strong></div><div className="setting-row"><span>Môi trường</span><strong>Local Development</strong></div><div className="core-field"><Input label="Ghi chú" prefix={<Search size={16}/>} value={term} onChange={e => setTerm(e.target.value)} placeholder="Ghi chú cá nhân (chưa lưu)"/></div><p className="settings-footnote">Cấu hình API thay đổi bằng biến môi trường VITE_API_URL. Ghi chú phía trên không được lưu.</p></section></div>
 }
 
 export default App
