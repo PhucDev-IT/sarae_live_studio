@@ -22,11 +22,11 @@ class AIConfig(BaseModel):
     provider: str = Field(pattern="^(gemini|openai)$")
     model: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
     enabled: bool = False
-    max_output_tokens: int = Field(default=220, ge=60, le=1000)
+    max_output_tokens: int = Field(default=220, ge=60, le=3000)
     max_requests_per_session: int = Field(default=100, ge=1, le=10000)
 
 class AnalyzeBody(BaseModel):
-    comment: str = Field(min_length=1, max_length=1000)
+    comment: str = Field(min_length=1, max_length=12000)
     username: str = Field(default="manual-test", max_length=100)
     product_name: str | None = Field(default=None, max_length=200)
     product_details: str | None = Field(default=None, max_length=1200)
