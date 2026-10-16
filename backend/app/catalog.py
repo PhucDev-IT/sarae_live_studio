@@ -43,14 +43,14 @@ class Presenter(Base):
 
 
 class ProductInput(BaseModel):
-    sku: str = Field(min_length=1, max_length=64)
+    sku: str = Field(default="", max_length=64)
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=10000)
     price: float | None = Field(default=None, ge=0)
     image_url: str = Field(default="", max_length=2000)
     status: str = "ACTIVE"
 
-    @field_validator("sku", "name")
+    @field_validator("name")
     @classmethod
     def strip_required(cls, value: str) -> str:
         if not value.strip():
@@ -133,10 +133,12 @@ def get_product(entity_id: int, db: DB):
 @router.put("/products/{entity_id}", response_model=ProductOut)
 def update_product(entity_id: int, body: ProductInput, db: DB):
     item = get_entity(db, Product, entity_id)
-    if db.scalar(select(Product.id).where(Product.sku == body.sku, Product.id != entity_id)):
+    if body.sku and db.scalar(select(Product.id).where(Product.sku == body.sku, Product.id != entity_id)):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    for key, value in body.model_dump().items():
+    for key, value in body.model_dump(exclude={"sku"}).items():
         setattr(item, key, value)
+    if body.sku:
+        item.sku = body.sku
     db.commit()
     db.refresh(item)
     return item
