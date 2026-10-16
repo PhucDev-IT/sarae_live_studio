@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.catalog import Product, Presenter
@@ -44,6 +44,10 @@ class Media(Base):
 class MediaUpdate(BaseModel):
     presenter_id: int | None = None
     tags: str = Field(default="", max_length=1000)
+
+
+class MediaProducts(BaseModel):
+    product_ids: list[int] = Field(default_factory=list, max_length=500)
 
 
 class MediaOut(BaseModel):
@@ -195,10 +199,39 @@ def update_media(media_id: int, body: MediaUpdate, db: DB):
     return output_media(db, item)
 
 
+@router.put("/{media_id}/products", response_model=MediaOut)
+def set_media_products(media_id: int, body: MediaProducts, db: DB):
+    """Replace the products whose LIVE playlist contains this video, in one transaction.
+
+    Newly linked products get the video appended to the end of their playlist; the order of
+    existing entries is kept. Reordering within a product stays on PUT /api/product-videos/{id}.
+    """
+    from app.product_videos import ProductLiveVideo
+    item = media_or_404(db, media_id)
+    wanted = list(dict.fromkeys(body.product_ids))
+    if wanted:
+        found = set(db.scalars(select(Product.id).where(Product.id.in_(wanted))).all())
+        if found != set(wanted):
+            raise HTTPException(422, "Danh sách chứa sản phẩm không tồn tại")
+    current = set(db.scalars(select(ProductLiveVideo.product_id).where(ProductLiveVideo.media_id == media_id)).all())
+    db.execute(delete(ProductLiveVideo).where(
+        ProductLiveVideo.media_id == media_id, ProductLiveVideo.product_id.not_in(wanted)))
+    for product_id in wanted:
+        if product_id in current:
+            continue
+        last = db.scalar(select(func.max(ProductLiveVideo.sort_order)).where(ProductLiveVideo.product_id == product_id))
+        db.add(ProductLiveVideo(product_id=product_id, media_id=media_id, sort_order=0 if last is None else last + 1))
+    db.commit()
+    return output_media(db, item)
+
+
 @router.delete("/{media_id}", status_code=204)
 def delete_media(media_id: int, db: DB):
+    from app.product_videos import ProductLiveVideo
     item = media_or_404(db, media_id)
     path = MEDIA_DIR / item.stored_name if not item.local_path else None
+    # SQLite does not enforce ON DELETE CASCADE without PRAGMA foreign_keys, so unlink playlists explicitly.
+    db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.media_id == item.id))
     db.delete(item)
     db.commit()
     if path is not None:

@@ -60,6 +60,32 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/media/upload", files={"file": ("test.txt", b"abc")}).status_code, 415)
         self.assertEqual(self.client.post("/api/media/upload", files={"file": ("test.mp4", b"abc")}, data={"product_id": 12345}).status_code, 422)
 
+    def test_media_products_many_to_many(self):
+        from app.product_videos import ProductLiveVideo
+        with TestingSession() as db:
+            db.add_all([Product(sku="A", name="Áo"), Product(sku="B", name="Váy")])
+            db.commit()
+        first = self.client.post("/api/media/upload", files={"file": ("a.mp4", io.BytesIO(b"fake a"), "video/mp4")}).json()["id"]
+        second = self.client.post("/api/media/upload", files={"file": ("b.mp4", io.BytesIO(b"fake b"), "video/mp4")}).json()["id"]
+        with TestingSession() as db:
+            db.add(ProductLiveVideo(product_id=1, media_id=second, sort_order=0))
+            db.commit()
+
+        linked = self.client.put(f"/api/media/{first}/products", json={"product_ids": [1, 2]})
+        self.assertEqual(linked.status_code, 200, linked.text)
+        self.assertEqual(linked.json()["product_ids"], [1, 2])
+        with TestingSession() as db:
+            order = [row.media_id for row in db.query(ProductLiveVideo).filter_by(product_id=1).order_by(ProductLiveVideo.sort_order)]
+        self.assertEqual(order, [second, first], "new link is appended after existing playlist entries")
+
+        unlinked = self.client.put(f"/api/media/{first}/products", json={"product_ids": [2]})
+        self.assertEqual(unlinked.json()["product_ids"], [2])
+        self.assertEqual(self.client.put(f"/api/media/{first}/products", json={"product_ids": [999]}).status_code, 422)
+
+        self.assertEqual(self.client.delete(f"/api/media/{first}").status_code, 204)
+        with TestingSession() as db:
+            self.assertEqual(db.query(ProductLiveVideo).filter_by(media_id=first).count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

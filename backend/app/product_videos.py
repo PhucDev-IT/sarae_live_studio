@@ -25,8 +25,11 @@ def read_setup(product_id: int):
     with SessionLocal() as db:
         if db.get(Product, product_id) is None:
             raise HTTPException(404, "Không tìm thấy sản phẩm")
-        ids = db.scalars(select(ProductLiveVideo.media_id).where(
-            ProductLiveVideo.product_id == product_id).order_by(ProductLiveVideo.sort_order)).all()
+        # Join skips rows left behind by videos deleted before playlists were unlinked on delete.
+        ids = db.scalars(select(ProductLiveVideo.media_id)
+                         .join(Media, Media.id == ProductLiveVideo.media_id)
+                         .where(ProductLiveVideo.product_id == product_id)
+                         .order_by(ProductLiveVideo.sort_order)).all()
         return {"product_id": product_id, "media_ids": list(ids)}
 
 @router.put("/{product_id}")
