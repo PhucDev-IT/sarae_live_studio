@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, ThemeProvider } from '@sarae/ui'
+import { Button, Input, ThemeProvider } from './ui/core'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
