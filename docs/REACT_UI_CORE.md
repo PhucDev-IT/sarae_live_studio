@@ -1,30 +1,41 @@
-# React UI Core adoption
+# Sarae React UI Core — integrated
 
 Source: https://github.com/PhucDev-IT/react-ui-core/tree/dev
 
-## Phase 1 (applied)
-The current Web Admin is visually approved. Keep its existing purple branding, icons, artwork and layout. Normalize text size, control height and spacing using design tokens from `packages/ui/src/theme/_tokens.scss` (13px, 14.5px, 15.5px, 20px; 44px controls).
+The library is now a **pinned Git submodule** at `vendor/react-ui-core`.
+It is not installed as an npm package and its source is not copied into Sarae Live Studio.
 
-The stylesheet currently mirrors the typography/spacing rules; **the UI Core package is not yet installed or linked**.
+## Clone / update (Windows CMD)
 
-## Phase 2 (form development)
-Integrate the source library as documented in the library's `CONSUMING.md`, ideally as a version-pinned Git submodule with source aliases and Sass support. Avoid copying component source into this app. Resolve `@sarae/ui` and `@sarae/ui/styles`, then import styles once at the app entry.
+```cmd
+git checkout dev
+git pull origin dev
+git submodule update --init --recursive
+cd web
+npm.cmd install
+npm.cmd run build
+npm.cmd run dev
+```
 
-Prefer real library components for:
-- Button, Input, Select, Textarea, Field
-- FileUpload, Dropzone, TagsInput
-- Modal, ConfirmModal, Toast, EmptyState
-- FilterBar, DataTable, Pagination, PageHeader
+For new clones, prefer `git clone --recurse-submodules -b dev <repository-url>`.
 
-Use business-level composition only in Sarae Live Studio. Keep product and video logic out of the shared core.
+The Web build resolves `@sarae/ui` through Vite aliases and TypeScript paths.
+The shared SCSS is imported in `web/src/main.tsx`; Sass and source-package dependencies are declared in `web/package.json`.
 
-## Required checks before enabling library components
-- Ensure Sass is installed and declared in `web/package.json`.
-- Ensure the source-level package's dependencies and type declarations resolve in the consuming app.
-- Check for collisions between the library's global `:root` styles and Sarae theme before importing its SCSS.
-- Support both modes of dark theme (current app uses `data-theme`, UI Core uses `data-ui-mode`).
-- Confirm responsiveness and accessibility at phone, tablet and desktop sizes.
-- Run `npm run build` and `npm run lint`.
-- Pin a reviewed commit instead of floating a production dependency on `dev`.
+## Integration in the current UI
 
-Do not install all advanced rich-text/chat/media dependencies solely for a dashboard with placeholder pages. Integrate controls alongside actual business forms.
+- `ThemeProvider` synchronizes UI Core light/dark mode with Sarae's existing theme toggle.
+- Primary 'Quản lý video' and module back button use UI Core `Button`.
+- Settings note field uses UI Core `Input` including label/prefix.
+- Typography/control tokens follow UI Core but retain Sarae's own purple palette and custom dashboard illustrations.
+
+## Guidance for subsequent modules
+
+Prefer `@sarae/ui` components for Field, Input, Select, Button, Modal, FileUpload, DataTable and Toast.
+Compose product/media business behavior in this application's own source rather than extending the shared component library.
+
+The submodule is pinned to a specific `react-ui-core/dev` commit. Update deliberately with `git submodule update --remote vendor/react-ui-core`, review changes, then commit the new gitlink.
+
+## Validation
+
+Run `npm.cmd run build` and `npm.cmd run lint` from `web` and inspect at mobile/tablet/desktop sizes after fetching the submodule. No claim of successful local runtime build is made from remote source edits alone.
