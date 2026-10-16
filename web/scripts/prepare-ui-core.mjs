@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { resolve, join, delimiter } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const root = process.cwd()
 const coreDir = resolve(root, '../vendor/react-ui-core')
@@ -103,7 +104,23 @@ if (activeVersion !== pnpmVersion) {
 
 console.log('Preparing @sarae/ui from submodule ' + coreSha.slice(0, 8) + '...')
 run(packageRunner, [...runnerPrefix, '--dir', coreDir, 'install', '--frozen-lockfile'])
-run(packageRunner, [...runnerPrefix, '--dir', coreDir, '--filter', '@sarae/ui', 'build'])
+// Nested scripts inside @sarae/ui invoke "pnpm" by name. On Windows,
+// Corepack may be available without installing pnpm.cmd on PATH.
+// Supply a temporary shim only to the child process tree.
+let shimDir
+try {
+  if (isWindows && packageRunner === corepackCommand) {
+    shimDir = mkdtempSync(join(tmpdir(), 'sarae-pnpm-'))
+    writeFileSync(join(shimDir, 'pnpm.cmd'), '@echo off\r\ncall corepack.cmd pnpm %*\r\n')
+  }
+  const env = shimDir ? { ...process.env, PATH: shimDir + delimiter + process.env.PATH } : process.env
+  execute(packageRunner, [...runnerPrefix, '--dir', coreDir, '--filter', '@sarae/ui', 'build'], {
+    stdio: 'inherit',
+    env,
+  })
+} finally {
+  if (shimDir) rmSync(shimDir, { recursive: true, force: true })
+}
 
 mkdirSync(distDir, { recursive: true })
 writeFileSync(stampPath, coreSha + '\n')
