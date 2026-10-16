@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Sarae Live Studio API"
     app_version: str = "0.1.0"
+    gemini_api_key: str = ""
+    openai_api_key: str = ""
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""
