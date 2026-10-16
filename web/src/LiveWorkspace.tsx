@@ -5,7 +5,7 @@ import './live.css'
 
 type Video = {id:number;filename:string;duration_seconds:number|null}
 type Playlist = {id:number;name:string;media_ids:number[]}
-type Status = {connected:boolean;error?:string;obs_version?:string;media_state?:string;running:boolean;playlist_id:number|null;index:number;count:number;input_name:string;last_status:string;loop?:boolean;retry_count?:number}
+type Status = {connected:boolean;error?:string;obs_version?:string;media_state?:string;running:boolean;playlist_id:number|null;index:number;count:number;input_name:string;last_status:string;loop?:boolean;retry_count?:number;error_count?:number;transition_count?:number;recovery_count?:number;session_seconds?:number}
 const apiRoot=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\/$/,'')
 async function call<T>(path:string,init?:RequestInit):Promise<T>{
   const r=await fetch(apiRoot+'/api'+path,init)
@@ -54,7 +54,7 @@ export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
         <Select label="Playlist" value={selected} options={[{value:'',label:'Chọn playlist…'},...playlists.map(p=>({value:String(p.id),label:p.name}))]} onChange={setSelected}/>
         <label className="live-dual-toggle"><input type="checkbox" checked={loop} onChange={e=>setLoop(e.target.checked)}/><span><strong>Lặp playlist liên tục</strong><small>Hết video cuối sẽ phát lại video đầu tiên.</small></span></label>
         <div className="live-controls"><Button disabled={busy||!selected||!!status?.running} leftIcon={<Play size={16}/>} onClick={()=>void act(()=>call('/live/start',json({playlist_id:Number(selected),start_index:0,loop})),'Đã gửi lệnh phát lên OBS')}>Phát thử</Button><Button disabled={busy||!status?.running} variant="outline" leftIcon={<SkipForward size={16}/>} onClick={()=>void act(()=>call('/live/next',{method:'POST'}),'Đã chuyển video')}>Next</Button><Button disabled={busy||!status?.running} variant="danger" leftIcon={<Square size={16}/>} onClick={()=>void act(()=>call('/live/stop',{method:'POST'}),'Đã dừng phát')}>Stop</Button></div>
-        <div className="live-now"><b>{status?.running?'Đang phát trên OBS':'Chưa phát'}</b><span>Playlist #{status?.playlist_id??'—'} · Video {(status?.index??0)+1}/{status?.count??0}</span><span>{status?.last_status||'Chưa có hoạt động'}</span><span>Trạng thái OBS: {status?.media_state||'—'}</span><span>Loop: {status?.loop?'Bật':'Tắt'} · Retry: {status?.retry_count??0}/5</span></div>
+        <div className="live-now"><b>{status?.running?'Đang phát trên OBS':'Chưa phát'}</b><span>Playlist #{status?.playlist_id??'—'} · Video {(status?.index??0)+1}/{status?.count??0}</span><span>{status?.last_status||'Chưa có hoạt động'}</span><span>Trạng thái OBS: {status?.media_state||'—'}</span><span>Loop: {status?.loop?'Bật':'Tắt'} · Retry: {status?.retry_count??0}/5</span><span>Thời gian phiên: {Math.floor((status?.session_seconds??0)/3600)}h {Math.floor(((status?.session_seconds??0)%3600)/60)}m · Chuyển video: {status?.transition_count??0}</span><span>Lỗi: {status?.error_count??0} · Phục hồi: {status?.recovery_count??0}</span></div>
         <p className="live-disclaimer">Bản test chỉ cập nhật Media Source trong OBS; không tự bật Start Streaming. Khi phát thử ổn mới kết nối nền tảng LIVE.</p>
       </div>
     </div>}
