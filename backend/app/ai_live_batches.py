@@ -51,7 +51,9 @@ def context():
 def flush(key):
     global sequence
     with lock:
-        timers.pop(key, None)
+        timer = timers.pop(key, None)
+        if timer:
+            timer.cancel()
         items = pending.pop(key, [])
         if not items:
             return
@@ -139,10 +141,6 @@ def enqueue(message):
             timer.start()
         full = len(queue) >= options.max_comments
     if full:
-        with lock:
-            timer = timers.pop(key, None)
-            if timer:
-                timer.cancel()
         flush(key)
 
 @router.get("/config")
