@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, PasswordInput, SearchInput, Select, Switch, useToast,
 } from './ui/core'
@@ -38,7 +38,8 @@ const MEDIA_STATE:Record<string,{label:string;tone:'success'|'warning'|'danger'|
   OBS_MEDIA_STATE_ERROR:{label:'Lỗi', tone:'danger'},
   OBS_MEDIA_STATE_NONE:{label:'Trống', tone:'default'},
 }
-const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target.tagName))
+/** True when a key press belongs to a field or the seek slider rather than the global shortcuts. */
+const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target.tagName) || target.getAttribute('role') === 'slider')
 
 /** Operator console for a running OBS session: product queue, transport controls and connection health. */
 export default function LiveControl(){
@@ -53,7 +54,6 @@ export default function LiveControl(){
   const [busy,setBusy] = useState(false)
   const [productQuery,setProductQuery] = useState('')
   const [target,setTarget] = useState<number|null>(null)
-  const [seekSeconds,setSeekSeconds] = useState('')
   const [confirmStop,setConfirmStop] = useState(false)
 
   const [obsOpen,setObsOpen] = useState(false)
@@ -79,11 +79,11 @@ export default function LiveControl(){
     return ()=>{window.clearInterval(poll);window.clearInterval(tick)}
   },[loadAll,pollStatus,toast])
 
-  const act = async (path:string, init:RequestInit, success:string) => {
+  const act = async (path:string, init:RequestInit, success:string|null) => {
     setBusy(true)
     try{
       await apiRequest(path, init)
-      toast.push({tone:'success',title:success})
+      if (success) toast.push({tone:'success',title:success})
       await pollStatus()
     }catch(e){toast.push({tone:'danger',title:'Không thực hiện được',description:errorText(e, '')})}
     finally{setBusy(false)}
@@ -104,7 +104,6 @@ export default function LiveControl(){
   const duration = status?.media_duration ?? (current?.duration_seconds != null ? current.duration_seconds * 1000 : undefined) ?? (currentId != null && meta[currentId]?.duration ? meta[currentId].duration! * 1000 : undefined)
   const playing = status?.media_state === 'OBS_MEDIA_STATE_PLAYING'
   const cursor = status?.media_cursor == null ? null : Math.min(status.media_cursor + (playing ? now - receivedAt : 0), duration ?? Infinity)
-  const progress = cursor != null && duration ? Math.max(0, Math.min(100, cursor / duration * 100)) : 0
 
   const visibleProducts = products.filter(p=>(p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(productQuery.trim().toLocaleLowerCase('vi')))
   const targetProduct = target != null ? productById.get(target) : undefined
@@ -114,11 +113,11 @@ export default function LiveControl(){
   const togglePause = () => act(status?.paused ? '/live/resume' : '/live/pause', post(), status?.paused ? 'Đã tiếp tục phát' : 'Đã tạm dừng')
   const next = () => act('/live/next', post(), 'Đã chuyển video tiếp theo')
   const previous = () => act('/live/previous', post(), 'Đã quay lại video trước')
-  const seek = (event:FormEvent) => {
-    event.preventDefault()
-    const seconds = Number(seekSeconds)
-    if (!Number.isFinite(seconds) || seconds < 0) return
-    void act('/live/seek', post({milliseconds:Math.round(seconds * 1000)}), `Đã tua tới ${durationLabel(seconds)}`)
+  const seek = (ms:number) => {
+    // Show the new position right away; the next poll confirms it from OBS.
+    setStatus(prev=>prev ? {...prev, media_cursor:ms} : prev)
+    setReceivedAt(Date.now())
+    void act('/live/seek', post({milliseconds:Math.round(ms)}), null)
   }
 
   // Operator shortcuts; ignored while typing in a field or when a dialog is open.
@@ -214,27 +213,20 @@ export default function LiveControl(){
                 {status?.loop && running && <Badge tone="info">Lặp</Badge>}
               </div>
               <h2 title={current?.filename}>{current?.filename ?? (running ? `Video #${currentId ?? '—'}` : 'Chưa phát video nào')}</h2>
-              <div className="lc-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}>
-                <span style={{width:`${progress}%`}}/>
-              </div>
-              <div className="lc-times"><span>{clock(cursor)}</span><span>{clock(duration)}</span></div>
+              <SeekBar cursor={cursor} duration={duration} disabled={busy || !running} onSeek={seek}/>
             </div>
           </div>
           <div className="lc-transport">
             <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>
             <Button className="lc-play" leftIcon={status?.paused ? <Play size={18}/> : <Pause size={18}/>} disabled={busy || !running} onClick={()=>void togglePause()} title="Tạm dừng / tiếp tục (Space)">{status?.paused ? 'Tiếp tục' : 'Tạm dừng'}</Button>
             <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>
-            <form className="lc-seek" onSubmit={seek}>
-              <Input aria-label="Tua tới giây" type="number" min="0" step="1" placeholder="Giây" value={seekSeconds} onChange={e=>setSeekSeconds(e.target.value)} disabled={!running}/>
-              <Button type="submit" variant="ghost" disabled={busy || !running || seekSeconds === ''}>Tua</Button>
-            </form>
-            <Button variant="danger" leftIcon={<Square size={16}/>} disabled={busy || !running} onClick={()=>setConfirmStop(true)}>Dừng</Button>
+            <Button className="lc-stop" variant="danger" leftIcon={<Square size={16}/>} disabled={busy || !running} onClick={()=>setConfirmStop(true)}>Dừng</Button>
           </div>
           {pendingProduct && <div className="lc-pending">
             <span>Sau video này sẽ chuyển sang <b>{pendingProduct.name}</b></span>
             <Button size="sm" variant="ghost" leftIcon={<Undo2 size={14}/>} disabled={busy} onClick={()=>void act('/live/product-session/cancel-switch', post(), 'Đã hủy chuyển sản phẩm')}>Hủy</Button>
           </div>}
-          <div className="lc-shortcuts"><Kbd>Space</Kbd> tạm dừng / tiếp <Kbd>←</Kbd> video trước <Kbd>→</Kbd> video tiếp</div>
+          <div className="lc-shortcuts"><Kbd>Space</Kbd> tạm dừng / tiếp <Kbd>←</Kbd> video trước <Kbd>→</Kbd> video tiếp · kéo thanh thời gian để tua</div>
         </Card>
 
         {/* Queue of the running session */}
@@ -332,4 +324,62 @@ export default function LiveControl(){
 
 function Metric({icon,label,value,warn}:{icon:ReactNode;label:string;value:ReactNode;warn?:boolean}){
   return <div className={'lc-metric' + (warn ? ' is-warn' : '')}><span>{icon}{label}</span><strong>{value}</strong></div>
+}
+
+const SEEK_STEP_MS = 5000
+
+/** Timeline you can click or drag to seek; the seek is sent once on release. Arrow keys step 5 s when focused. */
+function SeekBar({cursor,duration,disabled,onSeek}:{cursor:number|null;duration?:number;disabled:boolean;onSeek:(ms:number)=>void}){
+  const track = useRef<HTMLDivElement>(null)
+  const [drag,setDrag] = useState<number|null>(null)
+  const [hover,setHover] = useState<number|null>(null)
+  const usable = !disabled && !!duration
+  const total = duration ?? 0
+  const shown = drag ?? cursor
+  const percent = (ms:number|null) => ms != null && total ? Math.max(0, Math.min(100, ms / total * 100)) : 0
+  const msAt = (clientX:number) => {
+    const rect = track.current!.getBoundingClientRect()
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * total
+  }
+  const onPointerDown = (e:ReactPointerEvent<HTMLDivElement>) => {
+    if (!usable || e.button !== 0) return
+    e.preventDefault() // no text selection while dragging past the bar
+    e.currentTarget.setPointerCapture(e.pointerId)
+    e.currentTarget.focus()
+    setDrag(msAt(e.clientX))
+  }
+  const onPointerMove = (e:ReactPointerEvent<HTMLDivElement>) => {
+    if (!usable) return
+    const ms = msAt(e.clientX)
+    setHover(ms)
+    if (drag != null) setDrag(ms)
+  }
+  const onPointerUp = () => {
+    if (drag == null) return
+    onSeek(drag)
+    setDrag(null)
+  }
+  const onKeyDown = (e:ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!usable || cursor == null) return
+    const target = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? cursor + SEEK_STEP_MS
+      : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? cursor - SEEK_STEP_MS
+      : e.key === 'Home' ? 0 : e.key === 'End' ? total - 1000 : null
+    if (target == null) return
+    e.preventDefault()
+    e.stopPropagation()
+    onSeek(Math.max(0, Math.min(total, target)))
+  }
+  const tip = drag ?? hover
+  return <div className="lc-seekbar-wrap">
+    <div ref={track} className={'lc-seekbar' + (usable ? '' : ' is-disabled') + (drag != null ? ' is-dragging' : '')}
+      role="slider" tabIndex={usable ? 0 : -1} aria-label="Tua video" aria-disabled={!usable}
+      aria-valuemin={0} aria-valuemax={Math.round(total / 1000)} aria-valuenow={Math.round((shown ?? 0) / 1000)} aria-valuetext={clock(shown)}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={()=>setDrag(null)}
+      onPointerLeave={()=>setHover(null)} onKeyDown={onKeyDown}>
+      <span className="lc-seekbar-track"><span className="lc-seekbar-fill" style={{width:`${percent(shown)}%`}}/></span>
+      {usable && <span className="lc-seekbar-thumb" style={{left:`${percent(shown)}%`}}/>}
+      {usable && tip != null && <span className="lc-seekbar-tip" style={{left:`${percent(tip)}%`}}>{clock(tip)}</span>}
+    </div>
+    <div className="lc-times"><span>{clock(shown)}</span><span>{clock(duration)}</span></div>
+  </div>
 }
