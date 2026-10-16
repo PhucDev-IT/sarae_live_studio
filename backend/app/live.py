@@ -251,10 +251,41 @@ def monitor():
                 client = state.client()
                 try:
                     source = state.slots[state.active_slot] if state.dual_mode and state.slots else state.config.input_name
-                    media_status = client.get_media_input_status(source).media_state
+                    report = client.get_media_input_status(source)
+                    media_status = report.media_state
                 finally:
                     client.base_client.ws.close()
+                cursor = getattr(report, "media_cursor", None)
+                now = time.monotonic()
+                if media_status == "OBS_MEDIA_STATE_PLAYING" and isinstance(cursor, (int, float)):
+                    if state.last_cursor is None or cursor > state.last_cursor + 100 or cursor < state.last_cursor - 500:
+                        state.last_cursor = cursor
+                        state.last_progress_at = now
+                    elif now - state.last_progress_at >= 20:
+                        if state.stall_restarts >= 2:
+                            state.active = False
+                            state.last_status = "Watchdog: video đứng sau 2 lần thử khôi phục"
+                            continue
+                        restore = state.client()
+                        try:
+                            restore.trigger_media_input_action(source, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+                        finally:
+                            restore.base_client.ws.close()
+                        state.stall_restarts += 1
+                        state.recovery_count += 1
+                        state.last_cursor = None
+                        state.last_progress_at = now
+                        state.last_status = "Watchdog: đã restart video bị đứng"
+                elif media_status in ("OBS_MEDIA_STATE_PAUSED", "OBS_MEDIA_STATE_STOPPED"):
+                    state.last_cursor = None
+                    state.last_progress_at = now
+                if state.retry_count:
+                    state.recovery_count += 1
+                    state.last_cursor = None
+                    state.last_progress_at = now
+                    state.last_status = "OBS đã kết nối lại; tiếp tục theo dõi"
                 state.retry_count = 0
+                state.next_retry_at = 0
                 if media_status == "OBS_MEDIA_STATE_ENDED":
                     target = state.index + 1
                     if target >= len(state.ids):
