@@ -1,17 +1,42 @@
-# sarae_live_studio
+# Sarae Live Studio
 
-A new Flutter project.
+Flutter Windows workspace for an internal video-based broadcast production tool, with a web-compatible catalog UI.
 
-## Getting Started
+## Phase 1 — Media Library
 
-This project is a starting point for a Flutter application.
+Implemented:
+- Responsive Desktop-style UI with sidebar, summary stats, filter and search.
+- Import multiple MP4/MOV/M4V/WebM files via native picker.
+- Metadata catalog: source filename/path, file size, product code, presenter, description, tags, active state.
+- Edit/delete metadata, persist locally through `shared_preferences`.
+- File originals are never deleted when removing a catalog entry.
 
-A few resources to get you started if this is your first Flutter project:
+Limitations:
+- Does **not** yet extract durations, codecs, thumbnails or play video.
+- Does **not** yet implement OBS, FFmpeg, AI, TikTok integration or product pinning.
+- On web, the browser cannot provide a durable absolute local path; entries are metadata-only.
+- SQLite/Drift migration is planned when catalog relations are implemented.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Run
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+git checkout dev
+flutter pub get
+flutter run -d windows
+```
+
+For browser UI testing:
+
+```bash
+flutter run -d chrome
+```
+
+Checks:
+
+```bash
+dart format lib test
+flutter analyze
+flutter test
+```
+
+See [architecture](docs/ARCHITECTURE.md) for the module boundaries and roadmap.
