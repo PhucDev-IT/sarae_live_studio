@@ -34,6 +34,12 @@
       ],
       "react-dom": [
         "./node_modules/@types/react-dom/index.d.ts"
+      ],
+      "@sarae/ui": [
+        "../vendor/react-ui-core/packages/ui/src/index.ts"
+      ],
+      "@sarae/ui/styles": [
+        "../vendor/react-ui-core/packages/ui/src/theme/index.scss"
       ]
     }
   },
