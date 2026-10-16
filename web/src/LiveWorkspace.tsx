@@ -5,7 +5,8 @@ import './live.css'
 
 type Video = {id:number;filename:string;duration_seconds:number|null}
 type Playlist = {id:number;name:string;media_ids:number[]}
-type Status = {connected:boolean;error?:string;obs_version?:string;media_state?:string;running:boolean;playlist_id:number|null;index:number;count:number;input_name:string;last_status:string;loop?:boolean;paused?:boolean;retry_count?:number;error_count?:number;transition_count?:number;recovery_count?:number;session_seconds?:number}
+type ProductQueue = {id:number;name:string;sku:string;video_count:number}
+type Status = {session_mode?:string;product_id?:number|null;pending_product_id?:number|null;connected:boolean;error?:string;obs_version?:string;media_state?:string;running:boolean;playlist_id:number|null;index:number;count:number;input_name:string;last_status:string;loop?:boolean;paused?:boolean;retry_count?:number;error_count?:number;transition_count?:number;recovery_count?:number;session_seconds?:number}
 const apiRoot=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\/$/,'')
 async function call<T>(path:string,init?:RequestInit):Promise<T>{
   const r=await fetch(apiRoot+'/api'+path,init)
@@ -15,6 +16,8 @@ async function call<T>(path:string,init?:RequestInit):Promise<T>{
 const json=(body:unknown):RequestInit=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
 export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
   const [videos,setVideos]=useState<Video[]>([])
+  const [products,setProducts]=useState<ProductQueue[]>([])
+  const [productSelected,setProductSelected]=useState('')
   const [playlists,setPlaylists]=useState<Playlist[]>([])
   const [name,setName]=useState('')
   const [chosen,setChosen]=useState<number[]>([])
@@ -31,7 +34,7 @@ export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
   const [error,setError]=useState('')
   const [notice,setNotice]=useState('')
   const [busy,setBusy]=useState(false)
-  const refresh=async()=>{const [v,p,s]=await Promise.all([call<Video[]>('/media?limit=500'),call<Playlist[]>('/live/playlists'),call<Status>('/live/status')]);setVideos(v);setPlaylists(p);setStatus(s)}
+  const refresh=async()=>{const [v,p,s,products]=await Promise.all([call<Video[]>('/media?limit=500'),call<Playlist[]>('/live/playlists'),call<Status>('/live/status'),call<ProductQueue[]>('/live/products')]);setVideos(v);setPlaylists(p);setStatus(s);setProducts(products)}
   useEffect(()=>{void refresh().catch(e=>setError(String(e)));if(mode!=='live')return;const t=window.setInterval(()=>{void call<Status>('/live/status').then(setStatus).catch(()=>{})},3000);return()=>window.clearInterval(t)},[mode])
   const act=async(fn:()=>Promise<unknown>,message:string)=>{setBusy(true);setError('');setNotice('');try{await fn();setNotice(message);await refresh()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
   const add=(id:number)=>{setChosen(v=>[...v,id])}
@@ -54,13 +57,27 @@ export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
         <label className="live-dual-toggle"><input type="checkbox" checked={dualMode} onChange={e=>setDualMode(e.target.checked)}/><span><strong>Phát A/B (giảm nháy khi Next)</strong><small>Cần tạo 2 Media Sources: Sarae Video A và Sarae Video B trong cùng scene.</small></span></label>
         <Button disabled={busy} onClick={()=>void act(()=>call('/live/config',json({host,port:Number(port),password,input_name:source,dual_mode:dualMode})),'Đã lưu kết nối OBS trong phiên Backend')}>Kết nối / Kiểm tra</Button>
         <div className={'live-connection '+(status?.connected?'online':'offline')}><Radio size={16}/>{status?.connected?'Đã kết nối OBS '+(status.obs_version||''):status?.error||'OBS chưa kết nối'}</div>
+      </div><div className="live-section"><h4>LIVE theo sản phẩm</h4>
+        <p>Mỗi sản phẩm phát lặp các video đã liên kết trong Media Library. Có thể đổi sản phẩm mà không kết thúc phiên LIVE.</p>
+        <Select label="Chọn sản phẩm" value={productSelected} options={[{value:'',label:'Chọn sản phẩm…'},...products.map(p=>({value:String(p.id),label:p.name+' ('+p.video_count+' video)'}))]} onChange={setProductSelected}/>
+        <div className="live-controls">
+          <Button disabled={busy||!productSelected||!!status?.running} onClick={()=>void act(()=>call('/live/product-session/start',json({product_id:Number(productSelected)})),'Đã bắt đầu LIVE theo sản phẩm')}>Bắt đầu phiên</Button>
+          <Button variant="outline" disabled={busy||!productSelected||!status?.running||status?.session_mode!=='product'} onClick={()=>void act(()=>call('/live/product-session/switch',json({product_id:Number(productSelected),mode:'immediate'})),'Đã chuyển sản phẩm')}>Chuyển ngay</Button>
+          <Button variant="outline" disabled={busy||!productSelected||!status?.running||status?.session_mode!=='product'} onClick={()=>void act(()=>call('/live/product-session/switch',json({product_id:Number(productSelected),mode:'after_current'})),'Đã xếp sản phẩm sau video hiện tại')}>Chuyển sau video</Button>
+        </div>
+        <div className="live-now">
+          <b>Sản phẩm đang LIVE: {products.find(p=>p.id===status?.product_id)?.name||'—'}</b>
+          <span>{status?.session_mode==='product'?'Đang dùng Product Video Queue':'Chưa chạy phiên theo sản phẩm'}</span>
+          <span>Video {(status?.index??0)+1}/{status?.count??0}</span>
+          {status?.pending_product_id!=null&&<><span>Chờ chuyển: {products.find(p=>p.id===status.pending_product_id)?.name||'#'+status.pending_product_id}</span><Button variant="outline" size="sm" disabled={busy} onClick={()=>void act(()=>call('/live/product-session/cancel-switch',{method:'POST'}),'Đã hủy chuyển sản phẩm')}>Hủy chuyển chờ</Button></>}
+        </div>
       </div><div className="live-section"><h4>Điều khiển phát thử</h4>
-        <Select label="Playlist" value={selected} options={[{value:'',label:'Chọn playlist…'},...playlists.map(p=>({value:String(p.id),label:p.name}))]} onChange={setSelected}/>
+        <Select label="Playlist thủ công (chế độ phụ)" value={selected} options={[{value:'',label:'Chọn playlist…'},...playlists.map(p=>({value:String(p.id),label:p.name}))]} onChange={setSelected}/>
         <label className="live-dual-toggle"><input type="checkbox" checked={loop} onChange={e=>setLoop(e.target.checked)}/><span><strong>Lặp playlist liên tục</strong><small>Hết video cuối sẽ phát lại video đầu tiên.</small></span></label>
         <div className="live-controls"><Button disabled={busy||!selected||!!status?.running} leftIcon={<Play size={16}/>} onClick={()=>void act(()=>call('/live/start',json({playlist_id:Number(selected),start_index:0,loop})),'Đã gửi lệnh phát lên OBS')}>Phát thử</Button><Button disabled={busy||!status?.running} variant="outline" leftIcon={<SkipBack size={16}/>} onClick={()=>void act(()=>call('/live/previous',{method:'POST'}),'Đã quay lại video trước')}>Previous</Button><Button disabled={busy||!status?.running} variant="outline" leftIcon={<SkipForward size={16}/>} onClick={()=>void act(()=>call('/live/next',{method:'POST'}),'Đã chuyển video')}>Next</Button><Button disabled={busy||!status?.running} variant="danger" leftIcon={<Square size={16}/>} onClick={()=>void act(()=>call('/live/stop',{method:'POST'}),'Đã dừng phát')}>Stop</Button><Button disabled={busy||!status?.running} variant="outline" leftIcon={status?.paused?<Play size={16}/>:<Pause size={16}/>} onClick={()=>void act(()=>call(status?.paused?'/live/resume':'/live/pause',{method:'POST'}),status?.paused?'Đã tiếp tục phát':'Đã tạm dừng')}>{status?.paused?'Resume':'Pause'}</Button></div>
         <div className="live-pick"><Select label="Phát video trong playlist" value="" options={[{value:"",label:"Chọn video để phát ngay…"},...(playlists.find(p=>p.id===status?.playlist_id)?.media_ids||[]).map((id,i)=>({value:String(i),label:(i+1)+". "+(videos.find(v=>v.id===id)?.filename||"Video không tồn tại")}))]} onChange={value=>{if(value!==""&&status?.running)void act(()=>call('/live/select',json({index:Number(value)})),'Đã phát video được chọn')}}/></div>
         <div className="live-inline"><Input label="Tua tới (giây)" type="number" min="0" value={seekMs} onChange={e=>setSeekMs(e.target.value)}/><Button disabled={busy||!status?.running||!Number.isFinite(Number(seekMs))||Number(seekMs)<0} onClick={()=>void act(()=>call('/live/seek',json({milliseconds:Math.round(Number(seekMs)*1000)})),'Đã gửi lệnh Seek')}>Seek</Button></div>
-        <div className="live-now"><b>{status?.paused?'Đã tạm dừng':status?.running?'Đang phát trên OBS':'Chưa phát'}</b><span>Playlist #{status?.playlist_id??'—'} · Video {(status?.index??0)+1}/{status?.count??0}</span><span>{status?.last_status||'Chưa có hoạt động'}</span><span>Trạng thái OBS: {status?.media_state||'—'}</span><span>Loop: {status?.loop?'Bật':'Tắt'} · Retry: {status?.retry_count??0}/5</span><span>Thời gian phiên: {Math.floor((status?.session_seconds??0)/3600)}h {Math.floor(((status?.session_seconds??0)%3600)/60)}m · Chuyển video: {status?.transition_count??0}</span><span>Lỗi: {status?.error_count??0} · Phục hồi: {status?.recovery_count??0}</span></div>
+        <div className="live-now"><b>{status?.paused?'Đã tạm dừng':status?.running?'Đang phát trên OBS':'Chưa phát'}</b><span>{status?.session_mode==='product'?'Product Session':'Playlist #'+(status?.playlist_id??'—')} · Video {(status?.index??0)+1}/{status?.count??0}</span><span>{status?.last_status||'Chưa có hoạt động'}</span><span>Trạng thái OBS: {status?.media_state||'—'}</span><span>Loop: {status?.loop?'Bật':'Tắt'} · Retry: {status?.retry_count??0}/5</span><span>Thời gian phiên: {Math.floor((status?.session_seconds??0)/3600)}h {Math.floor(((status?.session_seconds??0)%3600)/60)}m · Chuyển video: {status?.transition_count??0}</span><span>Lỗi: {status?.error_count??0} · Phục hồi: {status?.recovery_count??0}</span></div>
         <p className="live-disclaimer">Bản test chỉ cập nhật Media Source trong OBS; không tự bật Start Streaming. Khi phát thử ổn mới kết nối nền tảng LIVE.</p>
       </div>
     </div>}
