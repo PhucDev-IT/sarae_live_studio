@@ -302,6 +302,7 @@ def monitor():
                     if target >= len(state.ids):
                         if not state.loop:
                             state.active = False
+                            state.paused = False
                             state.last_status = "Đã hết playlist"
                             continue
                         target = 0
@@ -322,6 +323,7 @@ def monitor():
                             raise
                     if not played:
                         state.active = False
+                        state.paused = False
                         state.last_status = "Không còn video hợp lệ để phát"
             except Exception as exc:
                 state.retry_count += 1
