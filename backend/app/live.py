@@ -136,7 +136,14 @@ class PlayState:
                 c = self.client()
                 try:
                     version = c.get_version().obs_version
-                    state = c.get_media_input_status(self.slots[self.active_slot] if self.dual_mode and self.slots else self.config.input_name).media_state
+                    if self.dual_mode:
+                        located = self._locate_dual(c)
+                        if located is None:
+                            return {"connected": False, "error": "Cần hai Media Sources: " + " và ".join(self._sources()) + " trong scene đang chạy", "dual_mode": True, "running": self.active, "playlist_id": self.playlist_id, "index": self.index, "count": len(self.ids), "last_status": self.last_status}
+                        source_name = self.slots[self.active_slot] if self.active and self.slots else located[1][0]
+                    else:
+                        source_name = self.config.input_name
+                    state = c.get_media_input_status(source_name).media_state
                     return {"connected": True, "obs_version": version, "media_state": state,
                             "running": self.active, "playlist_id": self.playlist_id,
                             "index": self.index, "count": len(self.ids),
@@ -185,8 +192,14 @@ class PlayState:
             try:
                 client = self.client()
                 try:
-                    client.trigger_media_input_action(self.config.input_name,
-                        "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
+                    if self.dual_mode and self.slots:
+                        for slot, name in enumerate(self.slots):
+                            client.set_input_mute(name, True)
+                            client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[slot], False)
+                            client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
+                    else:
+                        client.trigger_media_input_action(self.config.input_name,
+                            "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
                 finally:
                     client.base_client.ws.close()
             except Exception as exc:
