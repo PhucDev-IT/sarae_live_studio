@@ -1,19 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(
-    title="Sarae Live Studio API",
-    version="0.1.0",
-)
+from app.config import settings
 
+app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
-@app.get("/api/health")
-def health():
-    return {"status": "UP"}
+
+@app.get("/api/health", tags=["System"])
+def health() -> dict[str, str]:
+    return {"status": "UP", "service": "sarae-live-studio-api", "version": settings.app_version}
