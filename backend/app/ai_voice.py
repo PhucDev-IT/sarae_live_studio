@@ -8,6 +8,7 @@ from uuid import uuid4
 from threading import RLock
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.database import DATA_DIR
@@ -61,5 +62,38 @@ def speak(body: SpeakBody):
         except Exception as exc:
             monitor.record("TTS_ERROR", type(exc).__name__, str(exc)[:250])
             raise HTTPException(502, f"Không phát được TTS: {type(exc).__name__}: {str(exc)[:250]}") from exc
+    finally:
+        voice_lock.release()
+
+class PreviewBody(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    voice: str = Field(default=VOICE, pattern=r"^vi-VN-(HoaiMy|NamMinh)Neural$")
+
+@router.post("/preview")
+def preview(body: PreviewBody):
+    """Generate a Vietnamese MP3 for browser playback; OBS and LIVE are not required."""
+    if not voice_lock.acquire(blocking=False):
+        raise HTTPException(409, "Một yêu cầu tạo giọng nói khác đang chạy")
+    try:
+        try:
+            import edge_tts
+        except ImportError as exc:
+            raise HTTPException(503, "Chưa cài edge-tts: python -m pip install edge-tts") from exc
+        async def synthesize():
+            chunks = []
+            async for chunk in edge_tts.Communicate(body.text, body.voice).stream():
+                if chunk["type"] == "audio":
+                    chunks.append(chunk["data"])
+            return b"".join(chunks)
+        try:
+            audio = asyncio.run(synthesize())
+            if not audio:
+                raise ValueError("Không nhận được âm thanh từ TTS")
+            monitor.record("TTS_PREVIEW", body.voice, f"Đã tạo âm thanh thử ({len(audio)} bytes).")
+            return Response(content=audio, media_type="audio/mpeg",
+                            headers={"Cache-Control": "no-store"})
+        except Exception as exc:
+            monitor.record("TTS_ERROR", type(exc).__name__, str(exc)[:250])
+            raise HTTPException(502, f"Lỗi tạo giọng nói: {type(exc).__name__}: {str(exc)[:250]}") from exc
     finally:
         voice_lock.release()
