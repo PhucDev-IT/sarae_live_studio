@@ -104,6 +104,7 @@ class PlayState:
         self.session_mode = "playlist"
         self.product_id = None
         self.pending_product_id = None
+        self.session_id = None
 
     def product_queue(self, product_id):
         with SessionLocal() as db:
@@ -128,6 +129,9 @@ class PlayState:
         self.product_id = product_id
         self.pending_product_id = None
         self.session_mode = "product"
+        if self.session_id is not None:
+            from app.live_sessions import record_product_switch
+            record_product_switch(self.session_id, product_id)
         return result
 
     def client(self):
@@ -205,7 +209,7 @@ class PlayState:
 
     def metrics(self):
         return {"session_mode": self.session_mode, "queue_ids": list(self.ids), "product_id": self.product_id,
-                "pending_product_id": self.pending_product_id,
+                "pending_product_id": self.pending_product_id, "session_id": self.session_id,
                 "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
                 "recovery_count": self.recovery_count,
@@ -520,6 +524,7 @@ def start(body: StartPayload):
         if state.active:
             raise HTTPException(409, "Hãy dừng playlist hiện tại trước")
         state.session_mode = "playlist"
+        state.session_id = None
         state.product_id = None
         state.pending_product_id = None
         state.ids = ids
@@ -549,7 +554,11 @@ def next_video():
 
 @router.post("/stop")
 def stop_video():
-    return state.stop()
+    with state.lock:
+        if state.session_id is not None and state.active:
+            from app.live_sessions import finish_session
+            return finish_session(state.session_id)
+        return state.stop()
 
 
 @router.put("/playlists/{playlist_id}")
@@ -676,6 +685,7 @@ def start_product_session(body: ProductStartPayload):
         state.playlist_id = None
         state.pending_product_id = None
         state.session_mode = "product"
+        state.session_id = None
         state.session_started_at = time.time()
         state.transition_count = state.recovery_count = state.error_count = 0
         state.product_id = body.product_id
@@ -686,6 +696,9 @@ def start_product_session(body: ProductStartPayload):
 @router.post("/product-session/switch")
 def switch_product_session(body: ProductSwitchPayload):
     with state.lock:
+        if state.session_id is not None:
+            from app.live_sessions import switch_session_product, SwitchInput
+            return switch_session_product(state.session_id, SwitchInput(product_id=body.product_id, mode=body.mode))
         if not state.active or state.session_mode != "product":
             raise HTTPException(409, "Chưa có phiên LIVE theo sản phẩm")
         state.product_queue(body.product_id)
