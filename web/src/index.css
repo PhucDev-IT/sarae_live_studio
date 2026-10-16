@@ -7,3 +7,44 @@
 @media(max-width:850px){.sidebar{display:none}.workspace,.is-collapsed .workspace{margin-left:0}.mobile-menu{display:grid}.mobile-overlay{display:block;position:fixed;inset:0;background:#0b0b1788;z-index:50}.mobile-sidebar{width:min(290px,87vw);height:100%;background:#191927;color:#fff;display:flex;flex-direction:column}.mobile-sidebar .brand{display:none}.drawer-heading{height:67px;display:flex;justify-content:space-between;align-items:center;padding:0 18px;color:#fff}.topbar{height:63px}.hero-art{opacity:.6;right:-30px}.hero-copy{width:77%}.desktop-only{display:none}}
 @media(max-width:600px){.page-content{padding:25px 16px}.topbar{padding:0 15px}.topbar-actions{gap:8px}.topbar-separator,.notification-button,.breadcrumb-root,.breadcrumb-chevron{display:none}.connection{font-size:0;padding:9px}.connection .status-dot{width:9px;height:9px}.page-heading{align-items:flex-start;flex-direction:column;gap:15px}.hero-panel{min-height:295px}.hero-copy{width:100%;padding:27px}.hero-copy h2{font-size:27px;position:relative;z-index:2}.hero-copy p{max-width:290px;position:relative;z-index:2}.hero-art{opacity:.17;right:-100px}.stats-grid{gap:10px}.stat-card{padding:15px}.stat-value{font-size:25px}.stat-note{font-size:9px}.panel{padding:17px}.quick-grid{grid-template-columns:1fr}.quick-grid button{min-height:100px;padding-left:66px}.quick-icon{position:absolute;left:13px;top:20px}.quick-grid strong{margin:4px 0 5px}.quick-arrow{bottom:17px}.module-panel{flex-direction:column;gap:15px;padding:25px;min-height:450px}.module-art{height:130px;width:150px}.orbit-a{width:110px;height:110px}.orbit-b{width:145px;height:145px}.module-icon{width:65px;height:65px}.settings-grid{grid-template-columns:1fr}.footer span:last-child{display:none}}
 @media(min-width:851px){.mobile-sidebar{display:none}}
+
+
+/* Shared sizing baseline aligned with react-ui-core/dev design tokens.
+   Sarae's existing brand colors and illustrations are intentionally preserved. */
+:root {
+  --ui-font-family: Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --ui-font-xs: 13px;
+  --ui-font-sm: 14.5px;
+  --ui-font-md: 15.5px;
+  --ui-font-lg: 20px;
+  --ui-control-height: 44px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-radius-control: 7px;
+  --ui-radius-card: 9px;
+  --ui-content-max: 1600px;
+  font-family: var(--ui-font-family);
+  font-size: var(--ui-font-sm);
+  line-height: 1.5;
+}
+button, input, textarea, select { font-family: inherit; }
+.nav-item { font-size: 13px; }
+.breadcrumb-root, .breadcrumb-active { font-size: 13px; }
+.page-heading p, .module-content p { font-size: 13px; }
+.panel-heading h3 { font-size: 16px; line-height: 1.4; }
+.panel-heading p, .setting-row, .service-row strong { font-size: 12px; }
+.stat-label, .stat-note, .quick-grid button>span:not(.quick-icon), .service-row small, .module-tags span { font-size: 11px; line-height: 1.5; }
+.quick-grid strong, .text-link, .primary-button, .secondary-button, .hero-action { font-size: 13px; }
+.module-content h2 { line-height: 1.25; }
+.quick-grid button { min-height: 170px; }
+.setting-row { align-items: center; min-height: 44px; }
+.search-label { min-height: var(--ui-control-height); }
+.search-label input { font-size: 13px; }
+@media (max-width: 600px) {
+  .quick-grid button { min-height: 106px; }
+  .page-heading p { line-height: 1.6; }
+}
