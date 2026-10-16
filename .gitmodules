@@ -1,0 +1,4 @@
+[submodule "vendor/react-ui-core"]
+	path = vendor/react-ui-core
+	url = https://github.com/PhucDev-IT/react-ui-core.git
+	branch = dev
