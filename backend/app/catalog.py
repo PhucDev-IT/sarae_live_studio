@@ -1,5 +1,6 @@
 """Product and presenter CRUD for Sarae Live Studio."""
 from datetime import datetime, timezone
+from uuid import uuid4
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
