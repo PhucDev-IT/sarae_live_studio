@@ -3,6 +3,8 @@ import {MessageSquare, Radio, RefreshCw, Square, Wifi, WifiOff} from 'lucide-rea
 import {apiRequest, errorText} from './mediaApi'
 import './tiktok-chat.css'
 
+type Trace={id:number;timestamp:string;stage:string;decision:string;text:string;comment_id:number|null;username:string|null}
+type Processing={last_id:number;selected:number;duplicates:number;spam_suppressed:number;mode:string;logs:Trace[]}
 type ChatMessage={id:number;username:string;nickname:string;comment:string;timestamp:string}
 type ChatStatus={username:string;status:'idle'|'connecting'|'connected'|'stopping'|'disconnected'|'error';error:string;room_id:string|null;last_id:number;messages:ChatMessage[]}
 const EMPTY:ChatStatus={username:'',status:'idle',error:'',room_id:null,last_id:0,messages:[]}
@@ -12,11 +14,18 @@ export default function TikTokChat(){
   const [status,setStatus]=useState<ChatStatus>(EMPTY)
   const [messages,setMessages]=useState<ChatMessage[]>([])
   const [busy,setBusy]=useState(false)
+  const [traces,setTraces]=useState<Trace[]>([])
+  const [processing,setProcessing]=useState<Processing|null>(null)
+  const traceRef=useRef(0)
   const [error,setError]=useState('')
   const lastRef=useRef(0)
   const request=useCallback(async()=>{
     const data=await apiRequest<ChatStatus>(`/tiktok-chat/status?after=${lastRef.current}`)
     setStatus(data)
+    const p=await apiRequest<Processing>(`/tiktok-chat/processing?after=${traceRef.current}`)
+    setProcessing(p)
+    if(p.last_id<traceRef.current){traceRef.current=0;setTraces(p.logs);traceRef.current=p.last_id}
+    else if(p.logs.length){traceRef.current=p.last_id;setTraces(old=>[...old,...p.logs.filter(x=>!old.some(y=>y.id===x.id))].slice(-400))}
     if(data.last_id < lastRef.current){lastRef.current=0;setMessages(data.messages);lastRef.current=data.last_id}
     else if(data.messages.length){lastRef.current=data.last_id;setMessages(old=>[...old,...data.messages.filter(x=>!old.some(y=>y.id===x.id))].slice(-300))}
   },[])
@@ -31,7 +40,7 @@ export default function TikTokChat(){
     setBusy(true);setError('')
     try{
       const next=await apiRequest<ChatStatus>(`/tiktok-chat/${mode}`,{method:'POST',headers:mode==='connect'?{'Content-Type':'application/json'}:undefined,body:mode==='connect'?JSON.stringify({username:value.trim()}):undefined})
-      setStatus(next);setMessages([]);lastRef.current=0
+      setStatus(next);setMessages([]);lastRef.current=0;setTraces([]);traceRef.current=0
     }catch(e){setError(errorText(e,'Kết nối thất bại'))}finally{setBusy(false)}
   }
   const active=status.status==='connecting'||status.status==='connected'||status.status==='stopping'
@@ -50,6 +59,12 @@ export default function TikTokChat(){
     <section className="tc-panel">
       <div className="tc-chat-title"><h3><MessageSquare size={19}/> Bình luận realtime</h3><span>{messages.length} bình luận đã nhận trong bộ nhớ</span></div>
       <div className="tc-feed" aria-live="polite">{messages.length===0?<div className="tc-empty">Chưa có bình luận. Hãy kết nối tới một kênh đang LIVE và chờ bình luận mới.</div>:messages.map(m=><div className="tc-message" key={m.id}><span className="tc-avatar">{(m.nickname||m.username||'?').slice(0,1).toUpperCase()}</span><div className="tc-comment"><div><b>{m.nickname||m.username||'Người xem'}</b> <small>@{m.username||'unknown'} · {fmt(m.timestamp)}</small></div><p>{m.comment}</p></div></div>)}</div>
+    </section>
+    <section className="tc-panel">
+      <div className="tc-chat-title"><h3>Processing Monitor — Event Terminal</h3><span>Chế độ: {processing?.mode==='rules_only_no_ai'?'Quy tắc, chưa kết nối AI':'—'}</span></div>
+      <div className="tc-meta" style={{marginTop:12}}><span>Đã chọn: <b>{processing?.selected??0}</b></span><span>Event trùng: <b>{processing?.duplicates??0}</b></span><span>Chặn AI do spam: <b>{processing?.spam_suppressed??0}</b></span></div>
+      <div className="tc-terminal" role="log" aria-label="Processing trace">{traces.length===0?<p>Chưa có event xử lý.</p>:traces.slice().reverse().map(t=><div className="tc-trace" key={t.id}><time>{fmt(t.timestamp)}</time> <b>[{t.stage}]</b> <em>{t.decision}</em> <span>#{t.comment_id??'?'} @{t.username||'?'} — {t.text}</span></div>)}</div>
+      <p className="tc-note">Log chạy từ Backend thật. Dedup chỉ xác nhận được khi TikTok cung cấp ID sự kiện; chống spam giới hạn cùng username và nội dung trong 20 giây. AI model chưa tích hợp nên không có câu trả lời được sinh bởi AI.</p>
     </section>
   </div>
 }
