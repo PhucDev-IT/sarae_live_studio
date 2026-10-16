@@ -5,20 +5,21 @@ import MediaPage from './MediaPage'
 import LiveWorkspace from './LiveWorkspace'
 import LiveControl from './LiveControl'
 import LiveSessions from './LiveSessions'
+import TikTokChat from './TikTokChat'
 import ProductVideoSetup from './ProductVideoSetup'
 import PresenterVideoSetup from './PresenterVideoSetup'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Contact, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
-type Page = 'dashboard' | 'media' | 'products' | 'presenters' | 'presenter-videos' | 'product-videos' | 'playlists' | 'sessions' | 'live' | 'ai' | 'settings'
+type Page = 'dashboard' | 'media' | 'products' | 'presenters' | 'presenter-videos' | 'product-videos' | 'playlists' | 'sessions' | 'live' | 'tiktok-chat' | 'ai' | 'settings'
 type Health = 'checking' | 'online' | 'offline'
 
 const navigation: { title: string; items: { id: Page; title: string; icon: LucideIcon }[] }[] = [
   { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'media', title: 'Thư viện video', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }, { id: 'presenter-videos', title: 'Video theo người', icon: Contact }] },
-  { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
+  { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'tiktok-chat', title: 'TikTok Chat', icon: Bell }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
   { title: 'SYSTEM', items: [{ id: 'settings', title: 'Cài đặt', icon: Settings2 }] },
 ]
-const titles: Record<Page, string> = { dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', ai: 'AI Assistant', settings: 'Cài đặt' }
+const titles: Record<Page, string> = { dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
   media: 'Tổ chức các short video, phân loại nội dung và liên kết sản phẩm.',
@@ -29,6 +30,7 @@ const descriptions: Record<Page, string> = {
   playlists: 'Sắp xếp và điều phối thứ tự phát nội dung.',
   sessions: 'Chuẩn bị danh sách sản phẩm, bắt đầu, điều khiển và xem lịch sử phiên LIVE.',
   live: 'Theo dõi phiên phát và các thành phần chạy trên máy Windows.',
+  'tiktok-chat': 'Kết nối đến LIVE công khai bằng username và theo dõi bình luận realtime.',
   ai: 'Thiết lập cách trợ lý xử lý ngữ cảnh và phản hồi bình luận.',
   settings: 'Thông tin kết nối và cấu hình hệ thống.',
 }
@@ -133,7 +135,7 @@ function App() {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
