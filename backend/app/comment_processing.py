@@ -85,6 +85,10 @@ class Monitor:
             self._log("RESPONSE", "not_generated", "Chưa kết nối AI model; chưa tạo câu trả lời thực. Chỉ phân loại bằng quy tắc.", mid, user)
             return "selected"
 
+    def record(self, stage, decision, text, username=None):
+        with self.lock:
+            self._log(stage, decision, text, username=username)
+
     def snapshot(self, after=0):
         with self.lock:
             return {"last_id": self.seq, "selected": self.selected, "duplicates": self.duplicate,
