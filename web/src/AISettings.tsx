@@ -20,8 +20,6 @@ export default function AISettings(){
  const audioRef=useRef<HTMLAudioElement|null>(null)
  const urlRef=useRef<string|null>(null)
  const [ttsLoading,setTtsLoading]=useState(false)
- const [voices,setVoices]=useState<SpeechSynthesisVoice[]>([])
- const [voiceURI,setVoiceURI]=useState('')
  const [rate,setRate]=useState(1)
  const [speaking,setSpeaking]=useState(false)
  const [spokenText,setSpokenText]=useState('')
@@ -36,7 +34,7 @@ export default function AISettings(){
   stopVoice()
   setTtsLoading(true)
   try{
-   const base=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\\/$/,'')
+   const base=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\/$/,'')
    const response=await fetch(base+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,voice:ttsVoice})})
    if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'TTS HTTP '+response.status)}
    const blob=await response.blob()
