@@ -50,8 +50,6 @@ button, input, textarea, select { font-family: inherit; }
 }
 
 /* React UI Core integration: preserve Sarae custom branding while sharing form sizing. */
-:root { --ui-primary:#6553d7; --ui-control-height:44px; }
-:root[data-ui-mode="dark"] { --ui-primary:#a898ff; }
 .core-field { margin-top:16px; }
 .core-field .ui-field__label { font-size:var(--ui-font-sm); font-weight:650; }
 .core-field .ui-input-wrap { min-height:var(--ui-control-height); border-radius:var(--ui-radius-control); }

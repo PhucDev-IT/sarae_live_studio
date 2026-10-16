@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, ThemeProvider } from './ui/core'
+import { Button, Input, ThemeProvider, ToastProvider } from './ui/core'
 import CatalogPage from './CatalogPage'
 import MediaPage from './MediaPage'
 import LiveWorkspace from './LiveWorkspace'
@@ -105,7 +105,7 @@ function App() {
     </>
   )
   return (
-    <ThemeProvider value={{ mode: dark ? 'dark' : 'light', primary: '#6553d7', density: 'comfortable', radius: 'soft', fontSize: 'normal' }}><div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
+    <ThemeProvider value={{ mode: dark ? 'dark' : 'light', primary: dark ? '#a898ff' : '#6553d7', density: 'comfortable', radius: 'soft', fontSize: 'normal' }}><ToastProvider><div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
       <aside className="sidebar">{renderNav()}</aside>
       {drawerOpen && <div className="mobile-overlay" onClick={() => setDrawerOpen(false)}><aside className="mobile-sidebar" onClick={e => e.stopPropagation()}><div className="drawer-heading"><strong>Sarae Live Studio</strong><button className="icon-button" onClick={() => setDrawerOpen(false)} aria-label="Đóng menu"><X size={20}/></button></div>{renderNav()}</aside></div>}
       <div className="workspace">
@@ -133,7 +133,7 @@ function App() {
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
       </div>
-    </div></ThemeProvider>
+    </div></ToastProvider></ThemeProvider>
   )
 }
 

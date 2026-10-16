@@ -2,18 +2,7 @@
 /* Use UI Core's control, dialog, and empty-state styling instead of custom duplicates. */
 .catalog-search-core{width:min(400px,100%);min-width:0}.catalog-search-core .ui-field{margin:0}.catalog-search-core .ui-input-wrap{min-height:44px}.catalog-form{padding:8px 0 0}.catalog .ui-empty{padding:56px 24px}.catalog .ui-modal__body{overflow-y:auto}.catalog .ui-field__label{font-size:13px}.catalog .ui-input,.catalog .ui-textarea,.catalog .ui-select__control{font-size:14px}
 
-/* Integration layer: isolate UI Core dialog layout from app/Tailwind global CSS. */
-:root {
-  --ui-surface: var(--panel);
-  --ui-surface-2: var(--soft);
-  --ui-bg: var(--canvas);
-  --ui-text: var(--ink);
-  --ui-text-muted: var(--muted);
-  --ui-text-subtle: var(--muted);
-  --ui-border: var(--border);
-  --ui-border-strong: var(--border);
-  --ui-primary: var(--purple);
-}
+/* Integration layer: isolate UI Core dialog layout from app/Tailwind global CSS. Tokens live in ui/theme.css. */
 .catalog .ui-modal__backdrop {
   position: fixed;
   inset: 0;
