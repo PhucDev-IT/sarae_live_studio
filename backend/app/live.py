@@ -17,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base, SessionLocal, DATA_DIR
 from app.media import Media, MEDIA_DIR
 from app.catalog import Product
+from app.product_videos import ProductLiveVideo
 from app.config import settings
 
 router = APIRouter(prefix="/api/live", tags=["LIVE / OBS"])
@@ -100,7 +101,7 @@ class PlayState:
             product = db.get(Product, product_id)
             if product is None:
                 raise HTTPException(404, "Không tìm thấy sản phẩm")
-            rows = db.scalars(select(Media).where(Media.product_id == product_id).order_by(Media.id)).all()
+            rows = db.scalars(select(Media).join(ProductLiveVideo, ProductLiveVideo.media_id == Media.id).where(ProductLiveVideo.product_id == product_id).order_by(ProductLiveVideo.sort_order)).all()
             ids = [m.id for m in rows if (Path(m.local_path) if m.local_path else MEDIA_DIR / m.stored_name).is_file()]
             if not ids:
                 raise HTTPException(409, f"Sản phẩm {product.name} chưa có video hợp lệ")
@@ -604,8 +605,8 @@ def available_products():
     with SessionLocal() as db:
         products = db.scalars(select(Product).order_by(Product.id)).all()
         counts = {}
-        for media in db.scalars(select(Media).where(Media.product_id.is_not(None))).all():
-            counts[media.product_id] = counts.get(media.product_id, 0) + 1
+        for row in db.scalars(select(ProductLiveVideo)).all():
+            counts[row.product_id] = counts.get(row.product_id, 0) + 1
         return [{"id": p.id, "name": p.name, "sku": p.sku, "video_count": counts.get(p.id, 0)}
                 for p in products]
 
