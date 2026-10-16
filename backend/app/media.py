@@ -36,18 +36,22 @@ class Media(Base):
     fps: Mapped[float | None] = mapped_column(nullable=True)
     video_codec: Mapped[str] = mapped_column(String(40), default="")
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    # Deprecated: presenters are many-to-many via media_presenters (copied there by migration 0007).
     presenter_id: Mapped[int | None] = mapped_column(ForeignKey("presenters.id", ondelete="SET NULL"), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class MediaUpdate(BaseModel):
-    presenter_id: int | None = None
     tags: str = Field(default="", max_length=1000)
 
 
 class MediaProducts(BaseModel):
     product_ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+class MediaPresenters(BaseModel):
+    presenter_ids: list[int] = Field(default_factory=list, max_length=200)
 
 
 class MediaOut(BaseModel):
@@ -62,7 +66,7 @@ class MediaOut(BaseModel):
     fps: float | None
     video_codec: str
     product_ids: list[int] = Field(default_factory=list)
-    presenter_id: int | None
+    presenter_ids: list[int] = Field(default_factory=list)
     tags: str
     created_at: datetime
 
@@ -76,14 +80,25 @@ DB = Annotated[Session, Depends(get_db)]
 
 
 def output_media(db: Session, item: Media) -> MediaOut:
-    """Return product assignments from the ordered many-to-many LIVE setup."""
+    """Return product (LIVE setup) and presenter assignments, both many-to-many.
+
+    The joins skip links to catalog rows deleted while SQLite was not enforcing ON DELETE CASCADE.
+    """
+    from app.media_presenters import MediaPresenter
     from app.product_videos import ProductLiveVideo
     product_ids = list(db.scalars(
         select(ProductLiveVideo.product_id)
+        .join(Product, Product.id == ProductLiveVideo.product_id)
         .where(ProductLiveVideo.media_id == item.id)
         .order_by(ProductLiveVideo.product_id)
     ).all())
-    return MediaOut.model_validate(item).model_copy(update={"product_ids": product_ids})
+    presenter_ids = list(db.scalars(
+        select(MediaPresenter.presenter_id)
+        .join(Presenter, Presenter.id == MediaPresenter.presenter_id)
+        .where(MediaPresenter.media_id == item.id)
+        .order_by(MediaPresenter.presenter_id)
+    ).all())
+    return MediaOut.model_validate(item).model_copy(update={"product_ids": product_ids, "presenter_ids": presenter_ids})
 
 
 def media_or_404(db: Session, media_id: int) -> Media:
@@ -91,11 +106,6 @@ def media_or_404(db: Session, media_id: int) -> Media:
     if media is None:
         raise HTTPException(404, "Không tìm thấy video")
     return media
-
-
-def validate_links(db: Session, presenter_id: int | None):
-    if presenter_id is not None and db.get(Presenter, presenter_id) is None:
-        raise HTTPException(422, "Người giới thiệu không tồn tại")
 
 
 def probe(path: Path) -> dict:
@@ -135,10 +145,8 @@ def list_media(db: DB, q: str = "", limit: int = Query(100, ge=1, le=500), offse
 @router.post("/upload", response_model=MediaOut, status_code=201)
 def upload_media(
     db: DB, file: UploadFile = File(...),
-    presenter_id: int | None = Form(None),
     tags: str = Form("")
 ):
-    validate_links(db, presenter_id)
     name = Path((file.filename or "").replace("\\", "/")).name
     if not name.lower().endswith(".mp4"):
         raise HTTPException(415, "Hiện chỉ hỗ trợ file MP4")
@@ -161,7 +169,7 @@ def upload_media(
         if shutil.which("ffprobe") and not properties.get("video_codec"):
             raise HTTPException(422, "MP4 không chứa video hợp lệ")
         item = Media(filename=name[:255], stored_name=stored_name, size_bytes=size,
-                     presenter_id=presenter_id, tags=tags, **properties)
+                     tags=tags, **properties)
         db.add(item)
         db.commit()
         db.refresh(item)
@@ -191,7 +199,6 @@ def stream_media(media_id: int, db: DB):
 @router.patch("/{media_id}", response_model=MediaOut)
 def update_media(media_id: int, body: MediaUpdate, db: DB):
     item = media_or_404(db, media_id)
-    validate_links(db, body.presenter_id)
     for key, value in body.model_dump().items():
         setattr(item, key, value)
     db.commit()
@@ -225,13 +232,33 @@ def set_media_products(media_id: int, body: MediaProducts, db: DB):
     return output_media(db, item)
 
 
+@router.put("/{media_id}/presenters", response_model=MediaOut)
+def set_media_presenters(media_id: int, body: MediaPresenters, db: DB):
+    """Replace the people who appear in this video (many-to-many, unordered)."""
+    from app.media_presenters import MediaPresenter
+    item = media_or_404(db, media_id)
+    wanted = list(dict.fromkeys(body.presenter_ids))
+    if wanted:
+        found = set(db.scalars(select(Presenter.id).where(Presenter.id.in_(wanted))).all())
+        if found != set(wanted):
+            raise HTTPException(422, "Danh sách chứa người giới thiệu không tồn tại")
+    current = set(db.scalars(select(MediaPresenter.presenter_id).where(MediaPresenter.media_id == media_id)).all())
+    db.execute(delete(MediaPresenter).where(
+        MediaPresenter.media_id == media_id, MediaPresenter.presenter_id.not_in(wanted)))
+    db.add_all([MediaPresenter(media_id=media_id, presenter_id=pid) for pid in wanted if pid not in current])
+    db.commit()
+    return output_media(db, item)
+
+
 @router.delete("/{media_id}", status_code=204)
 def delete_media(media_id: int, db: DB):
+    from app.media_presenters import MediaPresenter
     from app.product_videos import ProductLiveVideo
     item = media_or_404(db, media_id)
     path = MEDIA_DIR / item.stored_name if not item.local_path else None
-    # SQLite does not enforce ON DELETE CASCADE without PRAGMA foreign_keys, so unlink playlists explicitly.
+    # SQLite does not enforce ON DELETE CASCADE without PRAGMA foreign_keys, so unlink explicitly.
     db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.media_id == item.id))
+    db.execute(delete(MediaPresenter).where(MediaPresenter.media_id == item.id))
     db.delete(item)
     db.commit()
     if path is not None:

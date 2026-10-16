@@ -58,7 +58,9 @@ class MediaTests(unittest.TestCase):
 
     def test_rejected_files_and_missing_catalog_links(self):
         self.assertEqual(self.client.post("/api/media/upload", files={"file": ("test.txt", b"abc")}).status_code, 415)
-        self.assertEqual(self.client.post("/api/media/upload", files={"file": ("test.mp4", b"abc")}, data={"product_id": 12345}).status_code, 422)
+        item_id = self.client.post("/api/media/upload", files={"file": ("test.mp4", b"abc")}).json()["id"]
+        self.assertEqual(self.client.put(f"/api/media/{item_id}/products", json={"product_ids": [12345]}).status_code, 422)
+        self.assertEqual(self.client.put(f"/api/media/{item_id}/presenters", json={"presenter_ids": [12345]}).status_code, 422)
 
     def test_media_products_many_to_many(self):
         from app.product_videos import ProductLiveVideo
@@ -85,6 +87,24 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/media/{first}").status_code, 204)
         with TestingSession() as db:
             self.assertEqual(db.query(ProductLiveVideo).filter_by(media_id=first).count(), 0)
+
+    def test_media_presenters_many_to_many(self):
+        from app.catalog import Presenter
+        with TestingSession() as db:
+            db.add_all([Presenter(name="Lan"), Presenter(name="Mai")])
+            db.commit()
+        video = self.client.post("/api/media/upload", files={"file": ("p.mp4", io.BytesIO(b"fake p"), "video/mp4")}).json()["id"]
+        both = self.client.put(f"/api/media/{video}/presenters", json={"presenter_ids": [2, 1, 2]})
+        self.assertEqual(both.status_code, 200, both.text)
+        self.assertEqual(both.json()["presenter_ids"], [1, 2])
+
+        self.assertEqual(self.client.put("/api/presenter-videos/1", json={"media_ids": []}).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/media/{video}").json()["presenter_ids"], [2])
+        self.assertEqual(self.client.get("/api/presenter-videos/2").json()["media_ids"], [video])
+        self.assertEqual(self.client.get("/api/presenter-videos/99").status_code, 404)
+
+        self.assertEqual(self.client.delete("/api/presenters/2").status_code, 204)
+        self.assertEqual(self.client.get(f"/api/media/{video}").json()["presenter_ids"], [])
 
 
 if __name__ == "__main__":

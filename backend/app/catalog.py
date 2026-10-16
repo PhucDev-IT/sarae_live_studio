@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.database import Base, SessionLocal
@@ -144,7 +144,11 @@ def update_product(entity_id: int, body: ProductInput, db: DB):
 
 @router.delete("/products/{entity_id}", status_code=204)
 def delete_product(entity_id: int, db: DB):
-    db.delete(get_entity(db, Product, entity_id))
+    from app.product_videos import ProductLiveVideo
+    item = get_entity(db, Product, entity_id)
+    # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
+    db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.product_id == item.id))
+    db.delete(item)
     db.commit()
     return Response(status_code=204)
 
@@ -183,6 +187,10 @@ def update_presenter(entity_id: int, body: PresenterInput, db: DB):
 
 @router.delete("/presenters/{entity_id}", status_code=204)
 def delete_presenter(entity_id: int, db: DB):
-    db.delete(get_entity(db, Presenter, entity_id))
+    from app.media_presenters import MediaPresenter
+    item = get_entity(db, Presenter, entity_id)
+    # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
+    db.execute(delete(MediaPresenter).where(MediaPresenter.presenter_id == item.id))
+    db.delete(item)
     db.commit()
     return Response(status_code=204)
