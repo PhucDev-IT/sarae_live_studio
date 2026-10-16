@@ -8,3 +8,6 @@ __pycache__/
 *.db-wal
 .env
 .env.local
+
+# Uploaded videos stored locally by FastAPI
+/backend/data/media/
