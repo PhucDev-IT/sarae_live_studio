@@ -71,13 +71,28 @@
 .lc-q-info strong{font-size:13.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .lc-q-info small{font-size:12px;color:var(--ui-text-muted)}
 
-.lc-products-search{padding:12px 14px;border-bottom:1px solid var(--ui-border)}
+.lc-pad{padding:12px 14px 16px}
+.lc-products-search{padding:12px 14px 4px}
+.lc-stale{padding-bottom:0}
+.lc-stale .lc-alert+.lc-alert{margin-top:10px}
+.lc-stale-actions{display:flex;gap:6px;flex-wrap:wrap}
+.lc-group{padding:10px 10px 4px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ui-text-subtle)}
+.lc-small{font-size:12px}
+.lc-icon-link{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--ui-text-muted)}
+.lc-icon-link:hover{background:var(--ui-surface-2);color:var(--ui-primary)}
 .lc-product-list{list-style:none;margin:0;padding:6px;display:grid;align-content:start;gap:2px;max-height:360px;overflow:auto}
+.lc-p-index{flex:none;width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--ui-surface-2);color:var(--ui-text-muted);font-variant-numeric:tabular-nums}
+.lc-product-list button.is-live .lc-p-index{color:#fff;background:var(--ui-danger)}
+.lc-target{margin:0;font-size:13px;color:var(--ui-text-muted);overflow-wrap:anywhere}
+.lc-target b{color:var(--ui-text)}
+.lc-tip{font-size:12px;color:var(--ui-text-muted);text-align:center}
+.lc-center{text-align:center;padding-bottom:0}
+.lc-status-text small a{color:var(--ui-primary);font-weight:600;text-decoration:none}
 .lc-product-list button{width:100%;display:flex;align-items:center;gap:10px;padding:10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ui-text);text-align:left;cursor:pointer}
 .lc-product-list button:hover:not(:disabled){background:var(--ui-surface-2)}
 .lc-product-list button:disabled{opacity:.5;cursor:not-allowed}
 .lc-product-list button.is-selected{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 8%,transparent)}
-.lc-product-list button.is-live{box-shadow:inset 3px 0 0 var(--ui-danger)}
+.lc-product-list button.is-live{box-shadow:inset 3px 0 0 var(--ui-danger);background:color-mix(in srgb,var(--ui-danger) 6%,transparent);opacity:1;cursor:default}
 .lc-p-text{flex:1;min-width:0;display:grid}
 .lc-p-text strong{font-size:var(--ui-font-sm);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .lc-p-text small{font-size:12px;color:var(--ui-text-muted)}

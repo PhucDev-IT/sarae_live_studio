@@ -3,10 +3,11 @@ import {
   Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, PasswordInput, SearchInput, Select, Switch, useToast,
 } from './ui/core'
 import {
-  CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward, Square, Undo2,
-  Wifi, WifiOff,
+  CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
+  Square, Undo2, Wifi, WifiOff,
 } from 'lucide-react'
 import { apiRequest, durationLabel, errorText, type Media } from './mediaApi'
+import { sessionHref, sessionsApi, type LiveProduct, type LiveSession } from './liveSessionsApi'
 import VideoThumb, { type ClientMeta } from './VideoThumb'
 import './media.css'
 import './live-control.css'
@@ -16,11 +17,10 @@ type ObsInput = { name:string; kind:string; in_scene:boolean }
 type ObsInputs = { scene:string; inputs:ObsInput[] }
 type LiveStatus = {
   connected:boolean; error?:string; obs_version?:string; media_state?:string; media_cursor?:number|null; media_duration?:number|null
-  running:boolean; paused?:boolean; loop?:boolean; session_mode?:string; playlist_id:number|null; product_id?:number|null; pending_product_id?:number|null
+  running:boolean; paused?:boolean; loop?:boolean; session_mode?:string; playlist_id:number|null; product_id?:number|null; pending_product_id?:number|null; session_id?:number|null
   queue_ids?:number[]; index:number; count:number; last_status:string; retry_count?:number; error_count?:number; transition_count?:number
   recovery_count?:number; session_seconds?:number; obs?:ObsSettings
 }
-type LiveProduct = { id:number; name:string; sku:string; video_count:number }
 type Playlist = { id:number; name:string; media_ids:number[] }
 
 const POLL_MS = 3000
@@ -41,7 +41,10 @@ const MEDIA_STATE:Record<string,{label:string;tone:'success'|'warning'|'danger'|
 /** True when a key press belongs to a field or the seek slider rather than the global shortcuts. */
 const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target.tagName) || target.getAttribute('role') === 'slider')
 
-/** Operator console for a running OBS session: product queue, transport controls and connection health. */
+/**
+ * Operator console for the running LIVE session: switches products within the session's lineup, transport controls and
+ * connection health. Lineups are prepared in #/sessions; with nothing running, this page starts one of the prepared sessions.
+ */
 export default function LiveControl(){
   const toast = useToast()
   const [status,setStatus] = useState<LiveStatus|null>(null)
@@ -52,8 +55,11 @@ export default function LiveControl(){
   const [videos,setVideos] = useState<Media[]>([])
   const [meta,setMeta] = useState<Record<number,ClientMeta>>({})
   const [busy,setBusy] = useState(false)
-  const [productQuery,setProductQuery] = useState('')
+  const [sessions,setSessions] = useState<LiveSession[]>([])
   const [target,setTarget] = useState<number|null>(null)
+  const [pickSession,setPickSession] = useState<number|null>(null)
+  const [startProduct,setStartProduct] = useState<number|null>(null)
+  const [productQuery,setProductQuery] = useState('')
   const [confirmStop,setConfirmStop] = useState(false)
 
   const [obsOpen,setObsOpen] = useState(false)
@@ -66,11 +72,11 @@ export default function LiveControl(){
   const applyStatus = (next:LiveStatus) => {setStatus(next);setReceivedAt(Date.now())}
   const pollStatus = useCallback(async ()=>{try{applyStatus(await apiRequest<LiveStatus>('/live/status'))}catch{/* keep last known status */}},[])
   const loadAll = useCallback(async ()=>{
-    const [s, p, l, v] = await Promise.all([
-      apiRequest<LiveStatus>('/live/status'), apiRequest<LiveProduct[]>('/live/products'),
-      apiRequest<Playlist[]>('/live/playlists'), apiRequest<Media[]>('/media?limit=500'),
+    const [s, p, l, v, ss] = await Promise.all([
+      apiRequest<LiveStatus>('/live/status'), sessionsApi.products(),
+      apiRequest<Playlist[]>('/live/playlists'), apiRequest<Media[]>('/media?limit=500'), sessionsApi.list(),
     ])
-    applyStatus(s);setProducts(p);setPlaylists(l);setVideos(v)
+    applyStatus(s);setProducts(p);setPlaylists(l);setVideos(v);setSessions(ss)
   },[])
   useEffect(()=>{
     void loadAll().catch(e=>toast.push({tone:'danger',title:'Không tải được dữ liệu LIVE',description:errorText(e, '')}))
@@ -79,15 +85,20 @@ export default function LiveControl(){
     return ()=>{window.clearInterval(poll);window.clearInterval(tick)}
   },[loadAll,pollStatus,toast])
 
-  const act = async (path:string, init:RequestInit, success:string|null) => {
+  // Session lineups change on the planner page and the session ends from here; reload when playback changes owner.
+  useEffect(()=>{void sessionsApi.list().then(setSessions).catch(()=>{})},[status?.running,status?.session_id])
+
+  const perform = async (request:()=>Promise<unknown>, success:string|null) => {
     setBusy(true)
     try{
-      await apiRequest(path, init)
+      await request()
       if (success) toast.push({tone:'success',title:success})
       await pollStatus()
-    }catch(e){toast.push({tone:'danger',title:'Không thực hiện được',description:errorText(e, '')})}
+      return true
+    }catch(e){toast.push({tone:'danger',title:'Không thực hiện được',description:errorText(e, '')});return false}
     finally{setBusy(false)}
   }
+  const act = (path:string, init:RequestInit, success:string|null) => perform(()=>apiRequest(path, init), success)
 
   const videoById = useMemo(()=>new Map(videos.map(v=>[v.id,v])),[videos])
   const productById = useMemo(()=>new Map(products.map(p=>[p.id,p])),[products])
@@ -105,11 +116,42 @@ export default function LiveControl(){
   const playing = status?.media_state === 'OBS_MEDIA_STATE_PLAYING'
   const cursor = status?.media_cursor == null ? null : Math.min(status.media_cursor + (playing ? now - receivedAt : 0), duration ?? Infinity)
 
-  const visibleProducts = products.filter(p=>(p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(productQuery.trim().toLocaleLowerCase('vi')))
-  const targetProduct = target != null ? productById.get(target) : undefined
+  // The running managed session. Its list is a prepared pool, not a fixed order: the operator pushes any product live,
+  // and a catalog product outside the list is added to the session when it goes live.
+  const activeSession = running && status?.session_id != null ? sessions.find(s=>s.id === status.session_id) : undefined
+  const lineup = activeSession?.product_ids ?? []
+  const q = productQuery.trim().toLocaleLowerCase('vi')
+  const matches = (p:LiveProduct) => !q || (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q)
+  const inSession = lineup.map(id=>productById.get(id) ?? {id, name:`Sản phẩm #${id}`, sku:'', video_count:0}).filter(matches)
+  const outside = q ? products.filter(p=>!lineup.includes(p.id) && matches(p)) : []
+  const targetProduct = target != null && target !== status?.product_id ? productById.get(target) : undefined
+  const targetOutside = !!targetProduct && !lineup.includes(targetProduct.id)
 
-  const startProduct = (id:number) => act('/live/product-session/start', post({product_id:id}), 'Đã bắt đầu phiên LIVE')
-  const switchProduct = (id:number, mode:'immediate'|'after_current') => act('/live/product-session/switch', post({product_id:id, mode}), mode === 'immediate' ? 'Đã chuyển sản phẩm' : 'Sẽ chuyển sau video hiện tại')
+  // Nothing running: pick one of the prepared (DRAFT) sessions and the product to open with.
+  const drafts = sessions.filter(s=>s.status === 'DRAFT')
+  // RUNNING rows with no playback behind them (Backend restarted mid-LIVE).
+  const stale = running ? [] : sessions.filter(s=>s.status === 'RUNNING')
+  const picked = drafts.find(s=>s.id === pickSession) ?? drafts[0]
+  const pickedReady = picked ? picked.product_ids.filter(id=>productById.get(id)?.video_count) : []
+  const startId = startProduct != null && pickedReady.includes(startProduct) ? startProduct : pickedReady[0]
+  const startSession = (session:LiveSession, productId:number) => perform(()=>sessionsApi.start(session.id, productId), `Đã bắt đầu “${session.name}”`).then(ok=>{if (ok) void loadAll()})
+  const switchProduct = (id:number, mode:'immediate'|'after_current') => perform(
+    ()=>activeSession ? sessionsApi.switchTo(activeSession.id, id, mode) : apiRequest('/live/product-session/switch', post({product_id:id, mode})),
+    mode === 'immediate' ? 'Đã chuyển sản phẩm' : 'Sẽ chuyển sau video hiện tại',
+  ).then(ok=>{
+    if (!ok) return
+    setTarget(null);setProductQuery('')
+    void sessionsApi.list().then(setSessions).catch(()=>{}) // the product may have been added to the session
+  })
+  const productRow = (p:LiveProduct, isOutside:boolean) => {
+    const isLive = p.id === status?.product_id
+    const isPending = p.id === status?.pending_product_id
+    return <li key={p.id}><button type="button" className={(target === p.id && !isLive ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} disabled={!p.video_count || isLive || busy} onClick={()=>setTarget(p.id)}>
+      <span className="lc-p-index">{isLive ? <Radio size={13}/> : <Package size={13}/>}</span>
+      <span className="lc-p-text"><strong>{p.name}</strong><small>{p.sku || '—'} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
+      {isLive ? <Badge tone="danger" dot>LIVE</Badge> : isPending ? <Badge tone="warning">Chờ</Badge> : isOutside ? <Badge>Ngoài DS</Badge> : null}
+    </button></li>
+  }
   const togglePause = () => act(status?.paused ? '/live/resume' : '/live/pause', post(), status?.paused ? 'Đã tiếp tục phát' : 'Đã tạm dừng')
   const next = () => act('/live/next', post(), 'Đã chuyển video tiếp theo')
   const previous = () => act('/live/previous', post(), 'Đã quay lại video trước')
@@ -177,7 +219,7 @@ export default function LiveControl(){
         <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={16}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
         <div className="lc-status-text">
           <strong>{liveProduct ? liveProduct.name : running ? `Playlist #${status?.playlist_id ?? '—'}` : 'Chưa có phiên phát'}</strong>
-          <small>{status?.last_status || 'Chọn sản phẩm bên phải để bắt đầu phiên LIVE.'}</small>
+          <small>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị ở khung bên phải để bắt đầu.'}</small>
         </div>
       </div>
       <div className="lc-metrics">
@@ -220,7 +262,7 @@ export default function LiveControl(){
             <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>
             <Button className="lc-play" leftIcon={status?.paused ? <Play size={18}/> : <Pause size={18}/>} disabled={busy || !running} onClick={()=>void togglePause()} title="Tạm dừng / tiếp tục (Space)">{status?.paused ? 'Tiếp tục' : 'Tạm dừng'}</Button>
             <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>
-            <Button className="lc-stop" variant="danger" leftIcon={<Square size={16}/>} disabled={busy || !running} onClick={()=>setConfirmStop(true)}>Dừng</Button>
+            <Button className="lc-stop" variant="danger" leftIcon={<Square size={16}/>} disabled={busy || !running} onClick={()=>setConfirmStop(true)}>{activeSession ? 'Kết thúc' : 'Dừng'}</Button>
           </div>
           {pendingProduct && <div className="lc-pending">
             <span>Sau video này sẽ chuyển sang <b>{pendingProduct.name}</b></span>
@@ -233,7 +275,7 @@ export default function LiveControl(){
         <Card className="lc-queue" padding={false} title={<span className="lc-card-title"><ListVideo size={17}/>Hàng đợi phát</span>}
           description={running ? `${queue.length} video · ${status?.loop ? 'lặp liên tục' : 'phát một lượt'}` : 'Hàng đợi sẽ hiện khi phiên phát bắt đầu'}>
           {!running || !queue.length
-            ? <EmptyState icon={<ListVideo size={28}/>} title="Chưa có hàng đợi" description="Bắt đầu phiên theo sản phẩm để xem và chọn video đang phát."/>
+            ? <EmptyState icon={<ListVideo size={28}/>} title="Chưa có hàng đợi" description="Bắt đầu một phiên LIVE để xem và chọn video đang phát."/>
             : <ol className="lc-queue-list">{queue.map((id,i)=>{
               const video = videoById.get(id)
               const isCurrent = i === status?.index
@@ -247,31 +289,69 @@ export default function LiveControl(){
         </Card>
       </div>
 
-      {/* Product picker */}
-      <Card className="lc-products" padding={false} title={<span className="lc-card-title"><Package size={17}/>Sản phẩm LIVE</span>}
-        description={productSession ? 'Chọn sản phẩm để chuyển, không cần dừng phiên' : 'Chọn sản phẩm để bắt đầu phiên'}
-        actions={<Button variant="ghost" aria-label="Tải lại" title="Tải lại" onClick={()=>void loadAll()}><RefreshCw size={16}/></Button>}>
-        <div className="lc-products-search"><SearchInput value={productQuery} onChange={e=>setProductQuery(e.target.value)} placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm"/></div>
-        <ul className="lc-product-list">{visibleProducts.map(p=>{
-          const isLive = productSession && p.id === status?.product_id
-          const isPending = p.id === status?.pending_product_id
-          return <li key={p.id}><button type="button" className={(target === p.id ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} disabled={!p.video_count} onClick={()=>setTarget(p.id)}>
-            <span className="lc-p-text"><strong>{p.name}</strong><small>{p.sku} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
-            {isLive ? <Badge tone="danger" dot>LIVE</Badge> : isPending ? <Badge tone="warning">Chờ</Badge> : null}
-          </button></li>
-        })}{!visibleProducts.length && <li className="lc-muted">Không có sản phẩm khớp.</li>}</ul>
-        <div className="lc-product-actions">
-          {!targetProduct ? <p className="lc-muted">Chọn một sản phẩm trong danh sách.</p>
-          : !running ? <Button block leftIcon={<Play size={16}/>} disabled={busy || !status?.connected} onClick={()=>void startProduct(targetProduct.id)}>Bắt đầu LIVE · {targetProduct.name}</Button>
-          : productSession ? (targetProduct.id === status?.product_id
-            ? <p className="lc-muted">{targetProduct.name} đang phát.</p>
-            : <>
+      {/* Products of the running session, or the prepared sessions to start one */}
+      <Card className="lc-products" padding={false}
+        title={<span className="lc-card-title">{running ? <Package size={17}/> : <CalendarClock size={17}/>}{activeSession ? 'Sản phẩm trong phiên' : running ? 'Sản phẩm LIVE' : 'Bắt đầu phiên LIVE'}</span>}
+        description={activeSession ? `${activeSession.name} · ${lineup.length} sản phẩm` : running ? 'Phát ngoài Phiên LIVE' : 'Chọn một phiên đã chuẩn bị'}
+        actions={<>
+          {activeSession && <a className="lc-icon-link" href={sessionHref(activeSession.id)} title="Sửa danh sách sản phẩm của phiên" aria-label="Sửa danh sách sản phẩm của phiên"><Pencil size={15}/></a>}
+          <Button variant="ghost" aria-label="Tải lại" title="Tải lại" onClick={()=>void loadAll()}><RefreshCw size={16}/></Button>
+        </>}>
+        {activeSession ? <>
+          <div className="lc-products-search"><SearchInput value={productQuery} onChange={e=>setProductQuery(e.target.value)} placeholder="Tìm trong phiên hoặc toàn bộ sản phẩm…" aria-label="Tìm sản phẩm"/></div>
+          <ul className="lc-product-list">
+            {inSession.map(p=>productRow(p, false))}
+            {q && !inSession.length && <li className="lc-muted">Không có sản phẩm khớp trong phiên.</li>}
+            {outside.length > 0 && <li className="lc-group">Ngoài danh sách phiên</li>}
+            {outside.map(p=>productRow(p, true))}
+            {!q && <li className="lc-muted lc-small">Cần sản phẩm khác? Gõ tên để tìm trong toàn bộ danh mục.</li>}
+          </ul>
+          <div className="lc-product-actions">
+            {!targetProduct ? <p className="lc-muted">Chọn sản phẩm muốn đưa lên LIVE — không cần theo thứ tự.</p> : <>
+              <p className="lc-target">Đưa <b>{targetProduct.name}</b> lên LIVE{targetOutside ? ' (sẽ thêm vào phiên)' : ''}</p>
               <Button block leftIcon={<SkipForward size={16}/>} disabled={busy} onClick={()=>void switchProduct(targetProduct.id, 'immediate')}>Chuyển ngay</Button>
-              <Button block variant="outline" disabled={busy} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
-            </>)
-          : <p className="lc-muted">Đang phát playlist thủ công. Dừng phát để bắt đầu phiên theo sản phẩm.</p>}
-          {!status?.connected && targetProduct && !running && <small className="lc-hint">Cần kết nối OBS trước khi bắt đầu.</small>}
-        </div>
+              <Button block variant="outline" disabled={busy || targetProduct.id === status?.pending_product_id} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
+            </>}
+            <small className="lc-tip">Ghim sản phẩm trên TikTok LIVE trước, rồi mới chuyển video.</small>
+          </div>
+        </> : running ? <div className="lc-pad">
+          <Alert tone="warning" title={productSession ? 'Đang phát ngoài Phiên LIVE' : 'Đang phát playlist thủ công'}>
+            {productSession
+              ? 'Phiên phát này không gắn với Phiên LIVE nào nên không có danh sách sản phẩm và không được lưu lịch sử. Dừng phát rồi bắt đầu lại từ một phiên đã chuẩn bị.'
+              : 'Dừng playlist để bắt đầu một phiên LIVE theo danh sách sản phẩm.'}
+          </Alert>
+        </div> : <>{stale.length > 0 && <div className="lc-pad lc-stale">
+          <Alert tone="warning" title="Phiên bị ngắt">
+            {stale.map(s=><div key={s.id} className="lc-alert">
+              <span>“{s.name}” bị ngắt do Backend khởi động lại. Tiếp tục để phát lại {productById.get(s.current_product_id ?? -1)?.name ?? 'sản phẩm đang LIVE'}.</span>
+              <span className="lc-stale-actions">
+                <Button size="sm" variant="outline" disabled={busy} onClick={()=>void perform(()=>sessionsApi.finish(s.id), 'Đã đóng phiên bị ngắt').then(()=>loadAll())}>Đóng</Button>
+                <Button size="sm" leftIcon={<Play size={14}/>} disabled={busy || !status?.connected} title={status?.connected ? undefined : 'Cần kết nối OBS trước'}
+                  onClick={()=>void perform(()=>sessionsApi.resume(s.id), `Đã tiếp tục “${s.name}”`).then(()=>loadAll())}>Tiếp tục phiên</Button>
+              </span>
+            </div>)}
+          </Alert>
+        </div>}{!drafts.length ? <div className="lc-pad">
+          <EmptyState icon={<CalendarClock size={28}/>} title="Chưa có phiên nào được chuẩn bị" description="Tạo phiên LIVE và chọn những sản phẩm sẽ bán, rồi quay lại đây để bắt đầu."
+            actionLabel="Tạo phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/>
+        </div> : <>
+          <ul className="lc-product-list">{drafts.map(s=>{
+            const ready = s.product_ids.filter(id=>productById.get(id)?.video_count).length
+            return <li key={s.id}><button type="button" className={picked?.id === s.id ? 'is-selected' : ''} onClick={()=>{setPickSession(s.id);setStartProduct(null)}}>
+              <span className="lc-p-text"><strong>{s.name}</strong><small>{s.product_ids.length} sản phẩm · {ready}/{s.product_ids.length} có video</small></span>
+              {!s.product_ids.length ? <Badge tone="warning">Trống</Badge> : !ready ? <Badge tone="warning">Thiếu video</Badge> : null}
+            </button></li>
+          })}</ul>
+          <div className="lc-product-actions">
+            {picked && (pickedReady.length
+              ? <Select label="Phát đầu tiên" value={String(startId)} onChange={v=>setStartProduct(Number(v))}
+                options={pickedReady.map(id=>({value:String(id), label:productById.get(id)?.name ?? `Sản phẩm #${id}`}))}/>
+              : <small className="lc-hint">Phiên chưa có sản phẩm nào có video.</small>)}
+            <Button block leftIcon={<Play size={16}/>} disabled={busy || !picked || !status?.connected || startId == null} onClick={()=>{if (picked && startId != null) void startSession(picked, startId)}}>Bắt đầu LIVE</Button>
+            {!status?.connected && <small className="lc-hint">Cần kết nối OBS trước khi bắt đầu.</small>}
+            <a className="lc-link lc-center" href={sessionHref(picked?.id)}>Xem / sửa phiên ở trang Phiên LIVE →</a>
+          </div>
+        </>}</>}
       </Card>
     </div>
 
@@ -317,8 +397,11 @@ export default function LiveControl(){
       </form>
     </Modal>
 
-    <ConfirmModal open={confirmStop} title="Dừng phát?" description="Media Source trong OBS sẽ dừng và phiên LIVE theo sản phẩm kết thúc." confirmLabel="Dừng phát" loading={busy}
-      onClose={()=>setConfirmStop(false)} onConfirm={()=>{setConfirmStop(false);void act('/live/stop', post(), 'Đã dừng phát')}}/>
+    <ConfirmModal open={confirmStop} loading={busy}
+      title={activeSession ? 'Kết thúc phiên LIVE?' : 'Dừng phát?'}
+      description={activeSession ? `OBS sẽ dừng phát và “${activeSession.name}” được lưu vào lịch sử. Không thể tiếp tục phiên sau khi kết thúc.` : 'Media Source trong OBS sẽ dừng phát.'}
+      confirmLabel={activeSession ? 'Kết thúc phiên' : 'Dừng phát'}
+      onClose={()=>setConfirmStop(false)} onConfirm={()=>{setConfirmStop(false);void act('/live/stop', post(), activeSession ? 'Đã kết thúc phiên LIVE' : 'Đã dừng phát').then(()=>loadAll())}}/>
   </div>
 }
 

@@ -27,8 +27,8 @@ const descriptions: Record<Page, string> = {
   'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
   'product-videos': 'Chọn và sắp xếp video chuẩn bị LIVE theo từng sản phẩm.',
   playlists: 'Sắp xếp và điều phối thứ tự phát nội dung.',
-  sessions: 'Chuẩn bị danh sách sản phẩm, bắt đầu, điều khiển và xem lịch sử phiên LIVE.',
-  live: 'Theo dõi phiên phát và các thành phần chạy trên máy Windows.',
+  sessions: 'Lên kế hoạch từng buổi LIVE: chọn sản phẩm sẽ bán, sắp thứ tự giới thiệu, kiểm tra sẵn sàng và xem lại lịch sử.',
+  live: 'Vận hành phiên LIVE đang chạy: chuyển sản phẩm theo danh sách của phiên, điều khiển video trên OBS.',
   ai: 'Thiết lập cách trợ lý xử lý ngữ cảnh và phản hồi bình luận.',
   settings: 'Thông tin kết nối và cấu hình hệ thống.',
 }
@@ -61,7 +61,7 @@ function useHealth() {
 }
 
 function getInitialPage(): Page {
-  const key = window.location.hash.replace('#/', '') as Page
+  const key = window.location.hash.replace('#/', '').split('?')[0] as Page
   return key in titles ? key : 'dashboard'
 }
 
