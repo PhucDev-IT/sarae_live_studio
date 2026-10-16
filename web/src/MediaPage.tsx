@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Button, Modal, Select, Textarea } from './ui/core'
+import { Button, Input, Modal, Select, Textarea } from './ui/core'
 import { Film, Play, Search, Trash2, Upload, Pencil, RefreshCw } from 'lucide-react'
 import './media.css'
 
-type Media = { id:number; filename:string; size_bytes:number; duration_seconds:number|null; width:number|null; height:number|null; fps:number|null; video_codec:string; product_id:number|null; presenter_id:number|null; tags:string; created_at:string }
+type Media = { id:number; filename:string; size_bytes:number; duration_seconds:number|null; width:number|null; height:number|null; fps:number|null; video_codec:string; product_id:number|null; presenter_id:number|null; tags:string; created_at:string;local_path:string|null }
 type CatalogItem = { id:number; name:string }
 const api = ((import.meta.env.VITE_API_URL as string|undefined) || 'http://127.0.0.1:8000').replace(/\/$/, '')
 const sizeLabel = (bytes:number) => (bytes / (1024*1024)).toFixed(1) + ' MB'
@@ -26,6 +26,9 @@ export default function MediaPage(){
   const [error,setError] = useState('')
   const [message,setMessage] = useState('')
   const [file,setFile] = useState<File|null>(null)
+  const [folderOpen,setFolderOpen] = useState(false)
+  const [folder,setFolder] = useState('')
+  const [recursive,setRecursive] = useState(false)
   const [editing,setEditing] = useState<'new'|number|null>(null)
   const [productId,setProductId] = useState('')
   const [presenterId,setPresenterId] = useState('')
@@ -69,8 +72,21 @@ export default function MediaPage(){
     }catch(e){setError(e instanceof Error ? e.message : 'Có lỗi khi lưu video')}
     finally{setBusy(false)}
   }
+  const scan = async (event:FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true);setError('');setMessage('')
+    try {
+      const result=await apiRequest<{found:number;created:number;existing:number}>('/media/local/scan',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder,recursive})
+      })
+      setFolderOpen(false)
+      setMessage('Đã thêm '+result.created+' video; đã có '+result.existing+' video.')
+      await load()
+    } catch(e) {setError(e instanceof Error?e.message:String(e))}
+    finally {setBusy(false)}
+  }
   const remove = async(item:Media) => {
-    if(!window.confirm(`Xóa video "${item.filename}" và file lưu trên máy?`))return
+    if(!window.confirm(item.local_path ? `Bỏ video "${item.filename}" khỏi thư viện? File gốc được giữ nguyên.` : `Xóa video "${item.filename}" và file upload?`))return
     setBusy(true);setError('')
     try{await apiRequest<void>('/media/'+item.id,{method:'DELETE'});setMessage('Đã xóa video.');await load()}
     catch(e){setError(e instanceof Error ? e.message : 'Không xóa được video')}
@@ -78,11 +94,20 @@ export default function MediaPage(){
   }
   const filtered = items.filter(item=>(item.filename+' '+item.tags).toLocaleLowerCase('vi').includes(query.toLocaleLowerCase('vi')))
   return <section className="media-panel panel">
-    <div className="media-heading"><div><h3>Thư viện MP4</h3><p>Upload vào máy chạy Backend · {items.length} video</p></div><div className="media-buttons"><Button variant="outline" leftIcon={<RefreshCw size={16}/>} onClick={()=>void load()}>Tải lại</Button><Button leftIcon={<Upload size={16}/>} onClick={()=>showForm()}>Import MP4</Button></div></div>
+    <div className="media-heading"><div><h3>Thư viện MP4</h3><p>Upload vào máy chạy Backend · {items.length} video</p></div><div className="media-buttons"><Button variant="outline" leftIcon={<RefreshCw size={16}/>} onClick={()=>void load()}>Tải lại</Button><Button variant="outline" onClick={()=>setFolderOpen(true)}>Link Local Folder</Button><Button leftIcon={<Upload size={16}/>} onClick={()=>showForm()}>Upload MP4</Button></div></div>
     <div className="media-toolbar"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm video theo tên hoặc tags…" aria-label="Tìm video"/><span>{filtered.length} kết quả</span></div>
     {error && <div className="media-feedback media-error" role="alert">{error}</div>}
     {message && <div className="media-feedback" role="status">{message}</div>}
-    {loading ? <div className="media-empty">Đang tải video…</div> : filtered.length===0 ? <div className="media-empty"><Film size={36}/><h3>{query?'Không tìm thấy video':'Thư viện chưa có video'}</h3><p>{query?'Thử từ khóa khác.':'Chọn Import MP4 để tải video đầu tiên.'}</p></div> : <div className="media-grid">{filtered.map(item=><article className="media-card" key={item.id}><button className="media-preview" onClick={()=>setPreview(item)} aria-label={'Xem '+item.filename}><Film size={30}/><span className="media-play"><Play size={19}/></span></button><div className="media-details"><strong title={item.filename}>{item.filename}</strong><small>{durationLabel(item.duration_seconds)} · {sizeLabel(item.size_bytes)} · {item.width&&item.height?`${item.width}×${item.height}`:'Chưa có metadata'}</small><small>Sản phẩm: {products.find(x=>x.id===item.product_id)?.name||'Chưa gắn'}</small><small>Người giới thiệu: {presenters.find(x=>x.id===item.presenter_id)?.name||'Chưa gắn'}</small>{item.tags&&<span className="media-tags">{item.tags}</span>}<div className="media-actions"><Button size="sm" variant="outline" leftIcon={<Pencil size={14}/>} onClick={()=>showForm(item)}>Chỉnh sửa</Button><button disabled={busy} className="media-delete" title="Xóa video" onClick={()=>void remove(item)}><Trash2 size={17}/></button></div></div></article>)}</div>}
+    {loading ? <div className="media-empty">Đang tải video…</div> : filtered.length===0 ? <div className="media-empty"><Film size={36}/><h3>{query?'Không tìm thấy video':'Thư viện chưa có video'}</h3><p>{query?'Thử từ khóa khác.':'Chọn Import MP4 để tải video đầu tiên.'}</p></div> : <div className="media-grid">{filtered.map(item=><article className="media-card" key={item.id}><button className="media-preview" onClick={()=>setPreview(item)} aria-label={'Xem '+item.filename}><Film size={30}/><span className="media-play"><Play size={19}/></span></button><div className="media-details"><strong title={item.filename}>{item.filename}</strong><small>{item.local_path ? "Local · Không copy" : "Uploaded · Backend storage"}</small><small>{durationLabel(item.duration_seconds)} · {sizeLabel(item.size_bytes)} · {item.width&&item.height?`${item.width}×${item.height}`:'Chưa có metadata'}</small><small>Sản phẩm: {products.find(x=>x.id===item.product_id)?.name||'Chưa gắn'}</small><small>Người giới thiệu: {presenters.find(x=>x.id===item.presenter_id)?.name||'Chưa gắn'}</small>{item.tags&&<span className="media-tags">{item.tags}</span>}<div className="media-actions"><Button size="sm" variant="outline" leftIcon={<Pencil size={14}/>} onClick={()=>showForm(item)}>Chỉnh sửa</Button><button disabled={busy} className="media-delete" title="Xóa video" onClick={()=>void remove(item)}><Trash2 size={17}/></button></div></div></article>)}</div>}
+    <Modal open={folderOpen} title="Liên kết thư mục video" onClose={()=>{if(!busy)setFolderOpen(false)}} size="md">
+      <form className="media-form" onSubmit={event=>void scan(event)}>
+        <p>Nhập đường dẫn trên máy chạy Backend/OBS. Chỉ quét MP4, không copy file.</p>
+        <Input label="Thư mục Windows" required value={folder} onChange={e=>setFolder(e.target.value)} placeholder="D:\\Sarae\\Videos"/>
+        <label><input type="checkbox" checked={recursive} onChange={e=>setRecursive(e.target.checked)}/> Quét cả thư mục con</label>
+        {error&&<div className="media-feedback media-error" role="alert">{error}</div>}
+        <div className="media-form-actions"><Button type="button" variant="outline" disabled={busy} onClick={()=>setFolderOpen(false)}>Hủy</Button><Button type="submit" loading={busy}>Quét và liên kết</Button></div>
+      </form>
+    </Modal>
     <Modal open={editing!==null} title={editing==='new'?'Import video MP4':'Thông tin video'} onClose={()=>{if(!busy)setEditing(null)}} size="md">
       <form className="media-form" onSubmit={event=>void save(event)}>
         {editing==='new'&&<div className="media-upload"><input type="file" accept=".mp4,video/mp4" onChange={e=>setFile(e.target.files?.[0]??null)}/><p>Chọn MP4 từ máy tính (tối đa 500 MB/file).</p>{file&&<strong>{file.name} · {sizeLabel(file.size)}</strong>}</div>}
