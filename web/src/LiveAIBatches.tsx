@@ -40,7 +40,7 @@ export default function LiveAIBatches(){
     {b.questions.map(q=><div key={q.id} style={{fontSize:13}}><b>Nhóm #{q.id}:</b> {q.text} <small>({q.users.join(', ')})</small></div>)}
     {b.answer?.result.groups?.map((g,i)=><div key={i} style={{fontSize:13}}><b>{g.intent}:</b> {g.reply}</div>)}
     {b.answer?.result.reply&&<div style={{padding:10,borderRadius:8,background:'var(--soft)'}}><strong>Đề xuất trả lời: </strong>{b.answer.result.reply}</div>}
-    {b.answer?.result.reply&&<button type="button" onClick={()=>speak(b.answer!.result.reply)} style={{justifySelf:'start',display:'flex',alignItems:'center',gap:7}}><Volume2 size={16}/> Nghe thử trên máy</button> <button type="button" disabled={obsSpeaking} onClick={()=>void speakObs(b.answer!.result.reply)} style={{justifySelf:"start"}}>Phát vào OBS (xác nhận)</button>}
+    {b.answer?.result.reply&&<><button type="button" onClick={()=>speak(b.answer!.result.reply)} style={{justifySelf:'start',display:'flex',alignItems:'center',gap:7}}><Volume2 size={16}/> Nghe thử trên máy</button> <button type="button" disabled={obsSpeaking} onClick={()=>void speakObs(b.answer!.result.reply)} style={{justifySelf:"start"}}>Phát vào OBS (xác nhận)</button></>}
     {b.answer?.usage&&<small>{b.answer.usage.input_tokens} input · {b.answer.usage.output_tokens} output tokens</small>}
     {b.error&&<p className="tc-error">{b.error}</p>}
    </div>)}
