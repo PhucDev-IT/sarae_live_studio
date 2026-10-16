@@ -27,7 +27,7 @@ class MediaEntry {
     String? name, String? productCode, String? presenter,
     String? description, List<String>? tags, bool? enabled,
   }) => MediaEntry(
-    id: id, name: name, path: path, sizeBytes: sizeBytes,
+    id: id, name: name ?? this.name, path: path, sizeBytes: sizeBytes,
     importedAt: importedAt, productCode: productCode ?? this.productCode,
     presenter: presenter ?? this.presenter,
     description: description ?? this.description,
