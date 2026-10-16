@@ -11,6 +11,7 @@ export default function LiveAIBatches(){
  const [error,setError]=useState('')
  const [busy,setBusy]=useState(false)
  const [speaking,setSpeaking]=useState(false)
+ const [obsSpeaking,setObsSpeaking]=useState(false)
  const last=useRef(0)
  useEffect(()=>{
   let live=true
@@ -20,10 +21,11 @@ export default function LiveAIBatches(){
   return()=>{live=false;window.clearInterval(id)}
  },[])
  const save=async(next:Options)=>{setBusy(true);setError('');try{const v=await apiRequest<Options>('/ai/live/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});setOptions(v)}catch(e){setError(errorText(e,'Không lưu được cấu hình'))}finally{setBusy(false)}}
+ const speakObs=async(value:string)=>{if(!window.confirm("Phát câu trả lời này vào nguồn Sarae Voice trong OBS? Nếu đang LIVE, người xem có thể nghe thấy."))return;setObsSpeaking(true);setError("");try{await apiRequest("/ai/voice/speak",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:value})})}catch(e){setError(errorText(e,"Phát TTS lên OBS thất bại"))}finally{setObsSpeaking(false)}}
  const speak=(value:string)=>{if(!('speechSynthesis' in window)){setError('Trình duyệt này chưa hỗ trợ Speech Synthesis');return}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(value);u.lang='vi-VN';u.rate=1;u.onstart=()=>setSpeaking(true);u.onend=()=>setSpeaking(false);u.onerror=()=>setSpeaking(false);window.speechSynthesis.speak(u)}
  return <section className="tc-panel">
   <div className="tc-chat-title"><h3>AI LIVE Batch & Voice Preview</h3><span>{status?.pending??0} bình luận đang chờ</span></div>
-  <p className="tc-note">Chỉ xử lý khi AI Provider và Batch đều bật. Ngữ cảnh lấy từ sản phẩm đang phát trên OBS. Voice Preview phát tại máy mở Web; chưa xuất âm thanh vào OBS.</p>
+  <p className="tc-note">Chỉ xử lý khi AI Provider và Batch đều bật. Ngữ cảnh lấy từ sản phẩm đang phát trên OBS. Có thể nghe thử trên máy hoặc bấm phát thủ công vào nguồn âm thanh riêng Sarae Voice trong OBS. Không tự động đọc.</p>
   <div className="tc-meta" style={{marginTop:10}}>
    <label style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" disabled={busy} checked={options.enabled} onChange={e=>void save({...options,enabled:e.target.checked})}/> Bật xử lý AI realtime</label>
    <label>Cửa sổ gom (giây) <input style={{width:62}} type="number" min={1} max={10} step={0.5} value={options.window_seconds} onChange={e=>setOptions(x=>({...x,window_seconds:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
@@ -38,7 +40,7 @@ export default function LiveAIBatches(){
     {b.questions.map(q=><div key={q.id} style={{fontSize:13}}><b>Nhóm #{q.id}:</b> {q.text} <small>({q.users.join(', ')})</small></div>)}
     {b.answer?.result.groups?.map((g,i)=><div key={i} style={{fontSize:13}}><b>{g.intent}:</b> {g.reply}</div>)}
     {b.answer?.result.reply&&<div style={{padding:10,borderRadius:8,background:'var(--soft)'}}><strong>Đề xuất trả lời: </strong>{b.answer.result.reply}</div>}
-    {b.answer?.result.reply&&<button type="button" onClick={()=>speak(b.answer!.result.reply)} style={{justifySelf:'start',display:'flex',alignItems:'center',gap:7}}><Volume2 size={16}/> Nghe thử giọng Việt</button>}
+    {b.answer?.result.reply&&<button type="button" onClick={()=>speak(b.answer!.result.reply)} style={{justifySelf:'start',display:'flex',alignItems:'center',gap:7}}><Volume2 size={16}/> Nghe thử trên máy</button> <button type="button" disabled={obsSpeaking} onClick={()=>void speakObs(b.answer!.result.reply)} style={{justifySelf:"start"}}>Phát vào OBS (xác nhận)</button>}
     {b.answer?.usage&&<small>{b.answer.usage.input_tokens} input · {b.answer.usage.output_tokens} output tokens</small>}
     {b.error&&<p className="tc-error">{b.error}</p>}
    </div>)}
