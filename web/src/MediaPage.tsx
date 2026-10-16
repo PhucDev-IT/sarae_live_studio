@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Button, Input, Modal, Select, Textarea } from './ui/core'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Button, Modal, Select, Textarea } from './ui/core'
 import { Film, Play, Search, Trash2, Upload, Pencil, RefreshCw } from 'lucide-react'
 import './media.css'
 
@@ -31,7 +31,6 @@ export default function MediaPage(){
   const [presenterId,setPresenterId] = useState('')
   const [tags,setTags] = useState('')
   const [preview,setPreview] = useState<Media|null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
   const load = async () => {
     setError('')
     try{
@@ -86,7 +85,7 @@ export default function MediaPage(){
     {loading ? <div className="media-empty">Đang tải video…</div> : filtered.length===0 ? <div className="media-empty"><Film size={36}/><h3>{query?'Không tìm thấy video':'Thư viện chưa có video'}</h3><p>{query?'Thử từ khóa khác.':'Chọn Import MP4 để tải video đầu tiên.'}</p></div> : <div className="media-grid">{filtered.map(item=><article className="media-card" key={item.id}><button className="media-preview" onClick={()=>setPreview(item)} aria-label={'Xem '+item.filename}><Film size={30}/><span className="media-play"><Play size={19}/></span></button><div className="media-details"><strong title={item.filename}>{item.filename}</strong><small>{durationLabel(item.duration_seconds)} · {sizeLabel(item.size_bytes)} · {item.width&&item.height?`${item.width}×${item.height}`:'Chưa có metadata'}</small><small>Sản phẩm: {products.find(x=>x.id===item.product_id)?.name||'Chưa gắn'}</small><small>Người giới thiệu: {presenters.find(x=>x.id===item.presenter_id)?.name||'Chưa gắn'}</small>{item.tags&&<span className="media-tags">{item.tags}</span>}<div className="media-actions"><Button size="sm" variant="outline" leftIcon={<Pencil size={14}/>} onClick={()=>showForm(item)}>Chỉnh sửa</Button><button disabled={busy} className="media-delete" title="Xóa video" onClick={()=>void remove(item)}><Trash2 size={17}/></button></div></div></article>)}</div>}
     <Modal open={editing!==null} title={editing==='new'?'Import video MP4':'Thông tin video'} onClose={()=>{if(!busy)setEditing(null)}} size="md">
       <form className="media-form" onSubmit={event=>void save(event)}>
-        {editing==='new'&&<div className="media-upload"><input ref={inputRef} type="file" accept=".mp4,video/mp4" onChange={e=>setFile(e.target.files?.[0]??null)}/><p>Chọn MP4 từ máy tính (tối đa 500 MB/file).</p>{file&&<strong>{file.name} · {sizeLabel(file.size)}</strong>}</div>}
+        {editing==='new'&&<div className="media-upload"><input type="file" accept=".mp4,video/mp4" onChange={e=>setFile(e.target.files?.[0]??null)}/><p>Chọn MP4 từ máy tính (tối đa 500 MB/file).</p>{file&&<strong>{file.name} · {sizeLabel(file.size)}</strong>}</div>}
         <Select label="Sản phẩm" placeholder="Chưa liên kết" value={productId} options={[{value:'',label:'Chưa liên kết'},...products.map(p=>({value:String(p.id),label:p.name}))]} onChange={setProductId}/>
         <Select label="Người giới thiệu" value={presenterId} options={[{value:'',label:'Chưa liên kết'},...presenters.map(p=>({value:String(p.id),label:p.name}))]} onChange={setPresenterId}/>
         <Textarea label="Tags / ghi chú phân loại" value={tags} maxLength={1000} rows={3} onChange={e=>setTags(e.target.value)} placeholder="Ví dụ: áo trễ vai, review, quay studio"/>
