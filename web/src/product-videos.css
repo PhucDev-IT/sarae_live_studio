@@ -62,6 +62,7 @@
   .pv-order li{display:grid;grid-template-columns:auto 64px minmax(0,1fr);gap:4px 10px}
   .pv-grip{display:none}
   .pv-thumb{width:64px;height:40px}
+  .pv-order.is-unordered li{grid-template-columns:64px minmax(0,1fr)}
   .pv-row-actions{grid-column:1/-1;justify-content:flex-end;border-top:1px solid var(--ui-border);padding-top:4px}
   .pv-actions{width:100%}
   .pv-actions .ui-btn{flex:1 1 auto}

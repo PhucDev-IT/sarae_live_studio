@@ -1,7 +1,8 @@
 /** Media library API shared by the library page and the per-product LIVE video setup. */
-export type Media = { id:number; filename:string; size_bytes:number; duration_seconds:number|null; width:number|null; height:number|null; fps:number|null; video_codec:string; product_ids:number[]; presenter_id:number|null; tags:string; created_at:string; local_path:string|null }
+export type Media = { id:number; filename:string; size_bytes:number; duration_seconds:number|null; width:number|null; height:number|null; fps:number|null; video_codec:string; product_ids:number[]; presenter_ids:number[]; tags:string; created_at:string; local_path:string|null }
 export type CatalogItem = { id:number; name:string }
 export type Product = CatalogItem & { sku?:string; image_url?:string }
+export type Presenter = CatalogItem & { description?:string; avatar_url?:string }
 
 export const api = ((import.meta.env.VITE_API_URL as string|undefined) || 'http://127.0.0.1:8000').replace(/\/$/, '')
 export const fileUrl = (id:number) => `${api}/api/media/${id}/file`
@@ -35,4 +36,19 @@ export const putProductVideos = (productId:number, mediaIds:number[]) =>
 export const setVideoProducts = (mediaId:number, productIds:number[]) =>
   apiRequest<Media>(`/media/${mediaId}/products`, {
     method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({product_ids:productIds}),
+  })
+
+/** Replaces the people who appear in a video (many-to-many, unordered). */
+export const setVideoPresenters = (mediaId:number, presenterIds:number[]) =>
+  apiRequest<Media>(`/media/${mediaId}/presenters`, {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({presenter_ids:presenterIds}),
+  })
+
+/** Videos a person appears in. */
+export const getPresenterVideos = (presenterId:number) =>
+  apiRequest<{presenter_id:number;media_ids:number[]}>(`/presenter-videos/${presenterId}`).then(result=>result.media_ids)
+
+export const putPresenterVideos = (presenterId:number, mediaIds:number[]) =>
+  apiRequest<{presenter_id:number;media_ids:number[]}>(`/presenter-videos/${presenterId}`, {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({media_ids:mediaIds}),
   })

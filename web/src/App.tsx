@@ -4,23 +4,25 @@ import CatalogPage from './CatalogPage'
 import MediaPage from './MediaPage'
 import LiveWorkspace from './LiveWorkspace'
 import ProductVideoSetup from './ProductVideoSetup'
-import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
+import PresenterVideoSetup from './PresenterVideoSetup'
+import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Contact, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
-type Page = 'dashboard' | 'media' | 'products' | 'presenters' | 'product-videos' | 'playlists' | 'live' | 'ai' | 'settings'
+type Page = 'dashboard' | 'media' | 'products' | 'presenters' | 'presenter-videos' | 'product-videos' | 'playlists' | 'live' | 'ai' | 'settings'
 type Health = 'checking' | 'online' | 'offline'
 
 const navigation: { title: string; items: { id: Page; title: string; icon: LucideIcon }[] }[] = [
-  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'media', title: 'Thư viện video', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }] },
+  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'media', title: 'Thư viện video', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }, { id: 'presenter-videos', title: 'Video theo người', icon: Contact }] },
   { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
   { title: 'SYSTEM', items: [{ id: 'settings', title: 'Cài đặt', icon: Settings2 }] },
 ]
-const titles: Record<Page, string> = { dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', live: 'Điều khiển LIVE', ai: 'AI Assistant', settings: 'Cài đặt' }
+const titles: Record<Page, string> = { dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', live: 'Điều khiển LIVE', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
   media: 'Tổ chức các short video, phân loại nội dung và liên kết sản phẩm.',
   products: 'Danh mục sản phẩm sử dụng trong các video và phiên phát.',
   presenters: 'Quản lý những người xuất hiện và giới thiệu trong video.',
+  'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
   'product-videos': 'Chọn và sắp xếp video chuẩn bị LIVE theo từng sản phẩm.',
   playlists: 'Sắp xếp và điều phối thứ tự phát nội dung.',
   live: 'Theo dõi phiên phát và các thành phần chạy trên máy Windows.',
@@ -128,7 +130,7 @@ function App() {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : (page === 'playlists' || page === 'live') ? <LiveWorkspace key={page} mode={page}/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : (page === 'playlists' || page === 'live') ? <LiveWorkspace key={page} mode={page}/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
@@ -171,6 +173,7 @@ function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => 
     media: { icon: Film, title: 'Thư viện video sắp ra mắt', summary: 'Tại đây bạn sẽ import MP4 hàng loạt, chọn nơi lưu trữ và gắn sản phẩm cho từng video.', tasks: ['Import video / Link local folder', 'Metadata & ảnh đại diện', 'Phân loại theo sản phẩm, người mẫu'] },
     products: { icon: Package, title: 'Quản lý sản phẩm', summary: 'Dữ liệu sản phẩm sẽ được quản lý tập trung trên Backend và liên kết với video.', tasks: ['Sản phẩm và biến thể', 'Thông tin giới thiệu', 'Liên kết với video'] },
     presenters: { icon: Users, title: 'Người giới thiệu', summary: 'Quản lý người mẫu hoặc người giới thiệu xuất hiện trong từng video.', tasks: ['Hồ sơ người giới thiệu', 'Danh sách video liên quan', 'Thông tin mô tả'] },
+    'presenter-videos': { icon: Contact, title: 'Video theo người', summary: 'Gắn những người xuất hiện cho từng video.', tasks: ['Chọn người', 'Chọn video'] },
     'product-videos': { icon: ListVideo, title: 'Video theo sản phẩm', summary: 'Chọn và sắp xếp video phát LIVE theo sản phẩm.', tasks: ['Chọn sản phẩm', 'Chọn video', 'Sắp thứ tự'] },
     playlists: { icon: ListVideo, title: 'Playlist Engine', summary: 'Thiết lập thứ tự phát, điều kiện lựa chọn và ưu tiên video.', tasks: ['Playlist tuần tự / ngẫu nhiên', 'Quy tắc tránh lặp', 'Ưu tiên theo sản phẩm'] },
     live: { icon: Radio, title: 'LIVE Control', summary: 'Điều khiển và theo dõi phiên phát khi Desktop Agent và OBS được tích hợp.', tasks: ['Trạng thái phát', 'Video và sản phẩm hiện tại', 'Kết nối Desktop Agent'] },
