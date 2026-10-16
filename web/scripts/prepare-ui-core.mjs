@@ -72,6 +72,8 @@ if (builtSha === coreSha && required.every(existsSync)) {
 
 const pnpmCommand = isWindows ? 'pnpm.cmd' : 'pnpm'
 const corepackCommand = isWindows ? 'corepack.cmd' : 'corepack'
+let packageRunner = pnpmCommand
+let runnerPrefix = []
 
 if (!commandExists(pnpmCommand)) {
   if (!commandExists(corepackCommand)) {
@@ -79,26 +81,29 @@ if (!commandExists(pnpmCommand)) {
     console.error('Install pnpm ' + pnpmVersion + ' with: npm install -g pnpm@' + pnpmVersion)
     process.exit(1)
   }
-
-  console.log('pnpm not found. Activating pnpm ' + pnpmVersion + ' via Corepack...')
+  // Corepack prepare downloads pnpm, but does not always install the pnpm.cmd shim
+  // on Windows. Invoke Corepack's pnpm command explicitly in that case.
+  console.log('pnpm shim not found; using Corepack directly...')
   run(corepackCommand, ['prepare', 'pnpm@' + pnpmVersion, '--activate'])
+  packageRunner = corepackCommand
+  runnerPrefix = ['pnpm']
 }
 
-const activeVersion = capture(pnpmCommand, ['--version'])
+const activeVersion = capture(packageRunner, [...runnerPrefix, '--version'])
 if (activeVersion !== pnpmVersion) {
   if (!commandExists(corepackCommand)) {
     console.error('pnpm ' + activeVersion + ' is installed, but UI Core requires ' + pnpmVersion + '.')
-    console.error('Install the required version with: npm install -g pnpm@' + pnpmVersion)
     process.exit(1)
   }
-
-  console.log('Switching pnpm ' + activeVersion + ' -> ' + pnpmVersion + '...')
+  console.log('Using pnpm ' + pnpmVersion + ' via Corepack...')
   run(corepackCommand, ['prepare', 'pnpm@' + pnpmVersion, '--activate'])
+  packageRunner = corepackCommand
+  runnerPrefix = ['pnpm']
 }
 
 console.log('Preparing @sarae/ui from submodule ' + coreSha.slice(0, 8) + '...')
-run(pnpmCommand, ['--dir', coreDir, 'install', '--frozen-lockfile'])
-run(pnpmCommand, ['--dir', coreDir, '--filter', '@sarae/ui', 'build'])
+run(packageRunner, [...runnerPrefix, '--dir', coreDir, 'install', '--frozen-lockfile'])
+run(packageRunner, [...runnerPrefix, '--dir', coreDir, '--filter', '@sarae/ui', 'build'])
 
 mkdirSync(distDir, { recursive: true })
 writeFileSync(stampPath, coreSha + '\n')
