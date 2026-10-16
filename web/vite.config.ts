@@ -5,6 +5,7 @@ import { fileURLToPath, URL } from 'node:url'
 import path from 'node:path'
 
 const webNodeModules = fileURLToPath(new URL('./node_modules', import.meta.url))
+const corePackages = ['@tiptap/extension-placeholder', '@tiptap/react', '@tiptap/starter-kit', 'qrcode', 'jsbarcode']
 const uiSource = fileURLToPath(new URL('../vendor/react-ui-core/packages/ui/src', import.meta.url))
 
 export default defineConfig({
@@ -15,6 +16,7 @@ export default defineConfig({
     alias: [
       { find: /^@sarae\/ui\/styles$/, replacement: path.join(uiSource, 'theme/index.scss') },
       { find: /^@sarae\/ui$/, replacement: path.join(uiSource, 'index.ts') },
+      ...corePackages.map(pkg => ({ find: pkg, replacement: path.join(webNodeModules, pkg) })),
       { find: /^react$/, replacement: path.join(webNodeModules, 'react') },
       { find: /^react\/(jsx-runtime|jsx-dev-runtime)$/, replacement: path.join(webNodeModules, 'react/$1') },
       { find: /^react-dom$/, replacement: path.join(webNodeModules, 'react-dom') },
