@@ -18,43 +18,16 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "react": [
-        "./node_modules/@types/react/index.d.ts"
-      ],
-      "react/jsx-runtime": [
-        "./node_modules/@types/react/jsx-runtime.d.ts"
-      ],
-      "react/jsx-dev-runtime": [
-        "./node_modules/@types/react/jsx-dev-runtime.d.ts"
-      ],
-      "react-dom": [
-        "./node_modules/@types/react-dom/index.d.ts"
-      ],
       "@sarae/ui": [
-        "../vendor/react-ui-core/packages/ui/src/index.ts"
+        "../vendor/react-ui-core/packages/ui/dist/types/index.d.ts"
       ],
       "@sarae/ui/styles": [
-        "../vendor/react-ui-core/packages/ui/src/theme/index.scss"
-      ],
-      "@tiptap/react": [
-        "./node_modules/@tiptap/react"
-      ],
-      "@tiptap/starter-kit": [
-        "./node_modules/@tiptap/starter-kit"
-      ],
-      "@tiptap/extension-placeholder": [
-        "./node_modules/@tiptap/extension-placeholder"
-      ],
-      "qrcode": [
-        "./node_modules/@types/qrcode/index.d.ts"
-      ],
-      "jsbarcode": [
-        "./node_modules/@types/jsbarcode/index.d.ts"
+        "../vendor/react-ui-core/packages/ui/dist/styles.css"
       ]
     }
   },
