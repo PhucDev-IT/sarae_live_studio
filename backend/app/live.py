@@ -41,6 +41,15 @@ class ObsConfig(BaseModel):
     password: str = ""
     input_name: str = "Sarae Video"
     dual_mode: bool = False
+    # A/B Media Source names for dual mode; empty falls back to "<input_name> A" / "<input_name> B".
+    source_a: str = Field(default="", max_length=200)
+    source_b: str = Field(default="", max_length=200)
+
+
+class ObsConnection(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=4455, ge=1, le=65535)
+    password: str = ""
 
 
 class SeekPayload(BaseModel):
@@ -127,7 +136,8 @@ class PlayState:
                              password=self.config.password, timeout=4)
 
     def _sources(self):
-        return [self.config.input_name + " A", self.config.input_name + " B"]
+        return [self.config.source_a.strip() or self.config.input_name + " A",
+                self.config.source_b.strip() or self.config.input_name + " B"]
 
     def _locate_dual(self, client):
         """Only switch to A/B when BOTH scene items exist in current scene."""
@@ -162,7 +172,7 @@ class PlayState:
         if initial:
             located = self._locate_dual(client)
             if not located:
-                raise HTTPException(422, "Cần tạo đủ hai Media Source A/B trong scene OBS hiện tại")
+                raise HTTPException(422, "Cần có đủ hai Media Source " + " và ".join(self._sources()) + " trong scene OBS hiện tại")
             self.scene_name, self.slots, self.scene_item_ids = located
             self.active_slot = 0
             for slot, name in enumerate(self.slots):
@@ -199,7 +209,11 @@ class PlayState:
                 "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
                 "recovery_count": self.recovery_count,
-                "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0}
+                "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0,
+                # Current connection settings (never the password) so the UI can show and prefill them.
+                "obs": {"host": self.config.host, "port": self.config.port, "input_name": self.config.input_name,
+                        "dual_mode": self.dual_mode, "dual_sources": self._sources(),
+                        "has_password": bool(self.config.password)}}
 
     def status(self):
         with self.lock:
@@ -214,8 +228,10 @@ class PlayState:
                         source_name = self.slots[self.active_slot] if self.active and self.slots else located[1][0]
                     else:
                         source_name = self.config.input_name
-                    state = c.get_media_input_status(source_name).media_state
-                    return {"connected": True, "obs_version": version, "media_state": state,
+                    media = c.get_media_input_status(source_name)
+                    return {"connected": True, "obs_version": version, "media_state": media.media_state,
+                            "media_cursor": getattr(media, "media_cursor", None),
+                            "media_duration": getattr(media, "media_duration", None),
                             "running": self.active, "playlist_id": self.playlist_id,
                             "index": self.index, "count": len(self.ids),
                             "input_name": self.config.input_name, "dual_mode": self.dual_mode, "last_status": self.last_status, **self.metrics()}
@@ -406,17 +422,55 @@ def get_status():
     return state.status()
 
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 @router.post("/config")
 def set_config(body: ObsConfig):
-    if body.host not in {"localhost", "127.0.0.1", "::1"}:
+    if body.host not in LOCAL_HOSTS:
         raise HTTPException(422, "Thử nghiệm hiện chỉ hỗ trợ OBS trên cùng máy")
+    if body.dual_mode:
+        a, b = body.source_a.strip() or body.input_name + " A", body.source_b.strip() or body.input_name + " B"
+        if a == b:
+            raise HTTPException(422, "Hai Media Source A và B phải khác tên nhau")
     with state.lock:
+        # An empty password keeps the saved one, so the operator does not retype it on every change.
+        if not body.password:
+            body = body.model_copy(update={"password": state.config.password})
         state.active = False
         state.config = body
         state.dual_mode = body.dual_mode
         state.slots = []
         state.last_status = "Đã cập nhật cấu hình OBS"
     return state.status()
+
+
+@router.post("/obs/inputs")
+def list_obs_inputs(body: ObsConnection):
+    """List OBS inputs so the UI can offer real source names; marks those placed in the current program scene.
+
+    Uses the given connection (an empty password falls back to the saved one) and does not change the saved config.
+    """
+    if body.host not in LOCAL_HOSTS:
+        raise HTTPException(422, "Thử nghiệm hiện chỉ hỗ trợ OBS trên cùng máy")
+    password = body.password or state.config.password
+    try:
+        client = obs.ReqClient(host=body.host, port=body.port, password=password, timeout=4)
+    except Exception as exc:
+        raise HTTPException(503, f"Không kết nối được OBS: {exc}")
+    try:
+        scene = client.get_current_program_scene().current_program_scene_name
+        in_scene = {item.get("sourceName") for item in client.get_scene_item_list(scene).scene_items}
+        inputs = [{"name": item.get("inputName"), "kind": item.get("unversionedInputKind") or item.get("inputKind"),
+                   "in_scene": item.get("inputName") in in_scene}
+                  for item in client.get_input_list().inputs]
+        # Media Sources first, then those in the live scene, then by name.
+        inputs.sort(key=lambda i: (i["kind"] != "ffmpeg_source", not i["in_scene"], i["name"] or ""))
+        return {"scene": scene, "inputs": inputs}
+    except Exception as exc:
+        raise HTTPException(502, f"OBS từ chối yêu cầu: {exc}")
+    finally:
+        client.base_client.ws.close()
 
 
 @router.get("/playlists")
