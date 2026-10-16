@@ -94,7 +94,7 @@ export default function MediaPage(){
   }
   const filtered = items.filter(item=>(item.filename+' '+item.tags).toLocaleLowerCase('vi').includes(query.toLocaleLowerCase('vi')))
   return <section className="media-panel panel">
-    <div className="media-heading"><div><h3>Thư viện MP4</h3><p>Upload vào máy chạy Backend · {items.length} video</p></div><div className="media-buttons"><Button variant="outline" leftIcon={<RefreshCw size={16}/>} onClick={()=>void load()}>Tải lại</Button><Button variant="outline" onClick={()=>setFolderOpen(true)}>Link Local Folder</Button><Button leftIcon={<Upload size={16}/>} onClick={()=>showForm()}>Upload MP4</Button></div></div>
+    <div className="media-heading"><div><h3>Thư viện MP4</h3><p>Upload vào máy chạy Backend · {items.length} video</p></div><div className="media-buttons"><Button variant="outline" leftIcon={<RefreshCw size={16}/>} onClick={()=>void load()}>Tải lại</Button><Button variant="outline" onClick={()=>{window.location.hash="/product-videos"}}>Gắn video cho sản phẩm</Button><Button variant="outline" onClick={()=>setFolderOpen(true)}>Link Local Folder</Button><Button leftIcon={<Upload size={16}/>} onClick={()=>showForm()}>Upload MP4</Button></div></div>
     <div className="media-toolbar"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm video theo tên hoặc tags…" aria-label="Tìm video"/><span>{filtered.length} kết quả</span></div>
     {error && <div className="media-feedback media-error" role="alert">{error}</div>}
     {message && <div className="media-feedback" role="status">{message}</div>}
