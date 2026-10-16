@@ -4,3 +4,4 @@ sqlalchemy>=2.0,<3
 alembic>=1.14,<2
 pydantic-settings>=2.7,<3
 python-multipart>=0.0.20,<1
+obsws-python>=1.7,<2
