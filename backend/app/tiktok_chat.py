@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.comment_processing import monitor
+
 router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"])
 
 
@@ -69,6 +71,7 @@ class Reader:
             self.room_id = None
             self.messages.clear()
             self.seq = 0
+            monitor.reset()
             thread = threading.Thread(target=self._worker, args=(gen, username, TikTokLiveClient), daemon=True)
             thread.start()
 
@@ -98,13 +101,16 @@ class Reader:
                     return
                 self.seq += 1
                 user = event.user
-                self.messages.append({
+                message = {
                     "id": self.seq,
                     "username": str(getattr(user, "unique_id", "") or ""),
                     "nickname": str(getattr(user, "nickname", "") or ""),
                     "comment": str(event.comment),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                }
+                self.messages.append(message)
+                event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
+                monitor.process(message, event_id=event_id or None)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
@@ -162,3 +168,8 @@ def disconnect():
 @router.get("/status")
 def status(after: int = 0):
     return reader.snapshot(max(0, after))
+
+
+@router.get("/processing")
+def processing(after: int = 0):
+    return monitor.snapshot(max(0, after))
