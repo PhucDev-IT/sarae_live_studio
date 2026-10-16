@@ -1,5 +1,6 @@
 """Operator-managed LIVE sessions, product queues and history (Phase 1)."""
 from datetime import datetime, timezone
+import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -155,10 +156,13 @@ def start_session(session_id: int, body: StartInput):
             # Validate queue and OBS playback before marking the database session RUNNING.
             queue = state.product_queue(pid)
             state.ids = queue
+            state.session_started_at = time.time()
+            state.transition_count = state.error_count = state.recovery_count = 0
             state.loop = True
             state.playlist_id = None
             state.pending_product_id = None
             state.session_mode = "product"
+            state.session_id = None
             state.product_id = pid
             try:
                 result = state.play(0)
