@@ -38,6 +38,7 @@ class ObsConfig(BaseModel):
     port: int = Field(default=4455, ge=1, le=65535)
     password: str = ""
     input_name: str = "Sarae Video"
+    dual_mode: bool = False
 
 
 class StartPayload(BaseModel):
@@ -56,11 +57,78 @@ class PlayState:
         self.active = False
         self.last_status = ""
         self.generation = 0
+        self.dual_mode = False
+        self.active_slot = 0
+        self.slots = []
+        self.scene_name = ""
 
     def client(self):
         # OBS WebSocket 5.x. No output or streaming controls: test safely in preview.
         return obs.ReqClient(host=self.config.host, port=self.config.port,
                              password=self.config.password, timeout=4)
+
+    def _sources(self):
+        return [self.config.input_name + " A", self.config.input_name + " B"]
+
+    def _locate_dual(self, client):
+        """Only switch to A/B when BOTH scene items exist in current scene."""
+        scene = client.get_current_program_scene().current_program_scene_name
+        names = self._sources()
+        try:
+            ids = [client.get_scene_item_id(scene, name).scene_item_id for name in names]
+        except Exception:
+            return None
+        return scene, names, ids
+
+    def _media(self, index):
+        with SessionLocal() as db:
+            item = db.get(Media, self.ids[index])
+            if item is None:
+                raise HTTPException(409, "Video không còn trong thư viện")
+            path = (MEDIA_DIR / item.stored_name).resolve()
+            if not path.is_file():
+                raise HTTPException(409, f"Thiếu file {item.filename}")
+            return str(path), item.filename
+
+    def _stage(self, client, slot, index):
+        path, _ = self._media(index)
+        name = self.slots[slot]
+        # Keep decoder open when hidden. Mute the stand-by source to avoid audio overlap.
+        client.set_input_mute(name, True)
+        client.set_input_settings(name, {"local_file": path, "is_local_file": True,
+                                         "looping": False, "close_when_inactive": False}, overlay=True)
+        client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+
+    def _play_dual(self, client, index, initial=False):
+        if initial:
+            located = self._locate_dual(client)
+            if not located:
+                raise HTTPException(422, "Cần tạo đủ hai Media Source A/B trong scene OBS hiện tại")
+            self.scene_name, self.slots, self.scene_item_ids = located
+            self.active_slot = 0
+            for slot, name in enumerate(self.slots):
+                client.set_input_mute(name, True)
+                client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[slot], False)
+            self._stage(client, 0, index)
+            time.sleep(0.2)
+            client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[0], True)
+            client.set_input_mute(self.slots[0], False)
+        else:
+            incoming = 1 - self.active_slot
+            # The next input has been staged during the previous video.
+            expected_path, _ = self._media(index)
+            actual_settings = client.get_input_settings(self.slots[incoming]).input_settings
+            if actual_settings.get("local_file") != expected_path:
+                self._stage(client, incoming, index)
+                time.sleep(0.3)
+            # Show the next video first: no empty frame between sources.
+            client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[incoming], True)
+            client.set_input_mute(self.slots[incoming], False)
+            client.set_input_mute(self.slots[self.active_slot], True)
+            client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
+            self.active_slot = incoming
+        if index + 1 < len(self.ids):
+            self._stage(client, 1 - self.active_slot, index + 1)
 
     def status(self):
         with self.lock:
@@ -68,11 +136,11 @@ class PlayState:
                 c = self.client()
                 try:
                     version = c.get_version().obs_version
-                    state = c.get_media_input_status(self.config.input_name).media_state
+                    state = c.get_media_input_status(self.slots[self.active_slot] if self.dual_mode and self.slots else self.config.input_name).media_state
                     return {"connected": True, "obs_version": version, "media_state": state,
                             "running": self.active, "playlist_id": self.playlist_id,
                             "index": self.index, "count": len(self.ids),
-                            "input_name": self.config.input_name, "last_status": self.last_status}
+                            "input_name": self.config.input_name, "dual_mode": self.dual_mode, "last_status": self.last_status}
                 finally:
                     c.base_client.ws.close()
             except Exception as exc:
@@ -87,22 +155,20 @@ class PlayState:
                 raise HTTPException(409, "Playlist rỗng")
             if not 0 <= index < len(self.ids):
                 raise HTTPException(422, "Vị trí video không hợp lệ")
-            with SessionLocal() as db:
-                item = db.get(Media, self.ids[index])
-                if item is None:
-                    raise HTTPException(409, "Video không còn trong thư viện")
-                path = (MEDIA_DIR / item.stored_name).resolve()
-                if not path.is_file():
-                    raise HTTPException(409, f"Thiếu file {item.filename}")
-                name = item.filename
+            path, name = self._media(index)
             try:
                 client = self.client()
                 try:
-                    client.set_input_settings(self.config.input_name, {"local_file": str(path)}, overlay=True)
-                    client.trigger_media_input_action(self.config.input_name,
-                        "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+                    if self.dual_mode:
+                        self._play_dual(client, index, initial=not self.active)
+                    else:
+                        client.set_input_settings(self.config.input_name, {"local_file": path}, overlay=True)
+                        client.trigger_media_input_action(self.config.input_name,
+                            "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
                 finally:
                     client.base_client.ws.close()
+            except HTTPException:
+                raise
             except Exception as exc:
                 self.last_status = str(exc)
                 raise HTTPException(503, f"Không điều khiển được OBS: {exc}") from exc
@@ -143,7 +209,7 @@ def monitor():
             try:
                 client = state.client()
                 try:
-                    status = client.get_media_input_status(state.config.input_name).media_state
+                    status = client.get_media_input_status(state.slots[state.active_slot] if state.dual_mode and state.slots else state.config.input_name).media_state
                 finally:
                     client.base_client.ws.close()
                 if status == "OBS_MEDIA_STATE_ENDED":
@@ -171,6 +237,8 @@ def set_config(body: ObsConfig):
     with state.lock:
         state.active = False
         state.config = body
+        state.dual_mode = body.dual_mode
+        state.slots = []
         state.last_status = "Đã cập nhật cấu hình OBS"
     return state.status()
 
