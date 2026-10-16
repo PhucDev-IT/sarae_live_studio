@@ -42,7 +42,6 @@ class Media(Base):
 
 
 class MediaUpdate(BaseModel):
-    product_id: int | None = None
     presenter_id: int | None = None
     tags: str = Field(default="", max_length=1000)
 
@@ -58,7 +57,7 @@ class MediaOut(BaseModel):
     height: int | None
     fps: float | None
     video_codec: str
-    product_id: int | None
+    product_ids: list[int] = Field(default_factory=list)
     presenter_id: int | None
     tags: str
     created_at: datetime
@@ -72,6 +71,17 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 
 
+def output_media(db: Session, item: Media) -> MediaOut:
+    """Return product assignments from the ordered many-to-many LIVE setup."""
+    from app.product_videos import ProductLiveVideo
+    product_ids = list(db.scalars(
+        select(ProductLiveVideo.product_id)
+        .where(ProductLiveVideo.media_id == item.id)
+        .order_by(ProductLiveVideo.product_id)
+    ).all())
+    return MediaOut.model_validate(item).model_copy(update={"product_ids": product_ids})
+
+
 def media_or_404(db: Session, media_id: int) -> Media:
     media = db.get(Media, media_id)
     if media is None:
@@ -79,9 +89,7 @@ def media_or_404(db: Session, media_id: int) -> Media:
     return media
 
 
-def validate_links(db: Session, product_id: int | None, presenter_id: int | None):
-    if product_id is not None and db.get(Product, product_id) is None:
-        raise HTTPException(422, "Sản phẩm không tồn tại")
+def validate_links(db: Session, presenter_id: int | None):
     if presenter_id is not None and db.get(Presenter, presenter_id) is None:
         raise HTTPException(422, "Người giới thiệu không tồn tại")
 
@@ -116,16 +124,17 @@ def list_media(db: DB, q: str = "", limit: int = Query(100, ge=1, le=500), offse
     stmt = select(Media)
     if q.strip():
         stmt = stmt.where(Media.filename.ilike(f"%{q.strip()}%"))
-    return db.scalars(stmt.order_by(Media.id.desc()).offset(offset).limit(limit)).all()
+    items = db.scalars(stmt.order_by(Media.id.desc()).offset(offset).limit(limit)).all()
+    return [output_media(db, item) for item in items]
 
 
 @router.post("/upload", response_model=MediaOut, status_code=201)
 def upload_media(
     db: DB, file: UploadFile = File(...),
-    product_id: int | None = Form(None), presenter_id: int | None = Form(None),
+    presenter_id: int | None = Form(None),
     tags: str = Form("")
 ):
-    validate_links(db, product_id, presenter_id)
+    validate_links(db, presenter_id)
     name = Path((file.filename or "").replace("\\", "/")).name
     if not name.lower().endswith(".mp4"):
         raise HTTPException(415, "Hiện chỉ hỗ trợ file MP4")
@@ -148,11 +157,11 @@ def upload_media(
         if shutil.which("ffprobe") and not properties.get("video_codec"):
             raise HTTPException(422, "MP4 không chứa video hợp lệ")
         item = Media(filename=name[:255], stored_name=stored_name, size_bytes=size,
-                     product_id=product_id, presenter_id=presenter_id, tags=tags, **properties)
+                     presenter_id=presenter_id, tags=tags, **properties)
         db.add(item)
         db.commit()
         db.refresh(item)
-        return item
+        return output_media(db, item)
     except Exception:
         db.rollback()
         path.unlink(missing_ok=True)
@@ -163,7 +172,7 @@ def upload_media(
 
 @router.get("/{media_id}", response_model=MediaOut)
 def get_media(media_id: int, db: DB):
-    return media_or_404(db, media_id)
+    return output_media(db, media_or_404(db, media_id))
 
 
 @router.get("/{media_id}/file")
@@ -178,12 +187,12 @@ def stream_media(media_id: int, db: DB):
 @router.patch("/{media_id}", response_model=MediaOut)
 def update_media(media_id: int, body: MediaUpdate, db: DB):
     item = media_or_404(db, media_id)
-    validate_links(db, body.product_id, body.presenter_id)
+    validate_links(db, body.presenter_id)
     for key, value in body.model_dump().items():
         setattr(item, key, value)
     db.commit()
     db.refresh(item)
-    return item
+    return output_media(db, item)
 
 
 @router.delete("/{media_id}", status_code=204)
