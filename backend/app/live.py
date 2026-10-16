@@ -66,6 +66,12 @@ class PlayState:
         self.retry_count = 0
         self.next_retry_at = 0.0
         self.error_count = 0
+        self.transition_count = 0
+        self.recovery_count = 0
+        self.session_started_at = None
+        self.last_progress_at = time.monotonic()
+        self.last_cursor = None
+        self.stall_restarts = 0
 
     def client(self):
         # OBS WebSocket 5.x. No output or streaming controls: test safely in preview.
@@ -90,7 +96,7 @@ class PlayState:
             item = db.get(Media, self.ids[index])
             if item is None:
                 raise HTTPException(409, "Video không còn trong thư viện")
-            path = (MEDIA_DIR / item.stored_name).resolve()
+            path = (Path(item.local_path) if item.local_path else MEDIA_DIR / item.stored_name).resolve()
             if not path.is_file():
                 raise HTTPException(409, f"Thiếu file {item.filename}")
             return str(path), item.filename
@@ -139,6 +145,12 @@ class PlayState:
             except HTTPException as exc:
                 self.last_status = f"Không preload được video kế: {exc.detail}"
 
+    def metrics(self):
+        return {"loop": self.loop, "retry_count": self.retry_count,
+                "error_count": self.error_count, "transition_count": self.transition_count,
+                "recovery_count": self.recovery_count,
+                "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0}
+
     def status(self):
         with self.lock:
             try:
@@ -148,7 +160,7 @@ class PlayState:
                     if self.dual_mode:
                         located = self._locate_dual(c)
                         if located is None:
-                            return {"connected": False, "error": "Cần hai Media Sources: " + " và ".join(self._sources()) + " trong scene đang chạy", "dual_mode": True, "running": self.active, "playlist_id": self.playlist_id, "index": self.index, "count": len(self.ids), "last_status": self.last_status, "loop": self.loop, "retry_count": self.retry_count}
+                            return {"connected": False, "error": "Cần hai Media Sources: " + " và ".join(self._sources()) + " trong scene đang chạy", "dual_mode": True, "running": self.active, "playlist_id": self.playlist_id, "index": self.index, "count": len(self.ids), "last_status": self.last_status, "loop": self.loop, "retry_count": self.retry_count, **self.metrics()}
                         source_name = self.slots[self.active_slot] if self.active and self.slots else located[1][0]
                     else:
                         source_name = self.config.input_name
@@ -156,14 +168,14 @@ class PlayState:
                     return {"connected": True, "obs_version": version, "media_state": state,
                             "running": self.active, "playlist_id": self.playlist_id,
                             "index": self.index, "count": len(self.ids),
-                            "input_name": self.config.input_name, "dual_mode": self.dual_mode, "last_status": self.last_status}
+                            "input_name": self.config.input_name, "dual_mode": self.dual_mode, "last_status": self.last_status, **self.metrics()}
                 finally:
                     c.base_client.ws.close()
             except Exception as exc:
                 return {"connected": False, "error": str(exc), "running": self.active,
                         "playlist_id": self.playlist_id, "index": self.index,
                         "count": len(self.ids), "input_name": self.config.input_name,
-                        "last_status": self.last_status}
+                        "last_status": self.last_status, **self.metrics()}
 
     def play(self, index: int):
         with self.lock:
@@ -188,7 +200,12 @@ class PlayState:
             except Exception as exc:
                 self.last_status = str(exc)
                 raise HTTPException(503, f"Không điều khiển được OBS: {exc}") from exc
+            if self.active:
+                self.transition_count += 1
             self.index = index
+            self.last_progress_at = time.monotonic()
+            self.last_cursor = None
+            self.stall_restarts = 0
             self.retry_count = 0
             self.next_retry_at = 0.0
             self.active = True
@@ -345,6 +362,10 @@ def start(body: StartPayload):
         state.ids = ids
         state.playlist_id = body.playlist_id
         state.loop = body.loop
+        state.session_started_at = time.time()
+        state.transition_count = 0
+        state.recovery_count = 0
+        state.error_count = 0
         return state.play(body.start_index)
 
 
