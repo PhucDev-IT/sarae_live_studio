@@ -35,7 +35,7 @@ export default function ProductVideoSetup(){
     try{await req('/product-videos/'+selected,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_ids:chosen})});setDirty(false);setNotice('Đã lưu danh sách video LIVE cho sản phẩm.')}
     catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}
   }
-  return <section className="live-workspace panel">
+  return <section className="live-workspace product-video-setup panel">
     <div className="live-head"><div><h3>Cấu hình video LIVE theo sản phẩm</h3><p>Chọn video từ thư viện và lưu thứ tự phát cho từng sản phẩm. Không sao chép hay xóa video gốc.</p></div></div>
     {error&&<p className="live-message error" role="alert">{error}</p>}{notice&&<p className="live-message" role="status">{notice}</p>}
     <div className="live-section">
