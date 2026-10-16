@@ -4,9 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "ui:prepare": "node scripts/prepare-ui-core.mjs",
+    "predev": "npm run ui:prepare",
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "build": "npm run ui:prepare && npm run build:app",
+    "build:app": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "lint": "oxlint src",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,12 +21,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.4",
-    "tailwindcss": "^4.3.3",
-    "@tiptap/extension-placeholder": "^3.31.3",
-    "@tiptap/react": "^3.31.3",
-    "@tiptap/starter-kit": "^3.31.3",
-    "jsbarcode": "^3.12.1",
-    "qrcode": "^1.5.4"
+    "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
@@ -31,9 +30,6 @@
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0",
-    "sass": "^1.90.0",
-    "@types/jsbarcode": "^3.11.4",
-    "@types/qrcode": "^1.5.6"
+    "vite": "^8.3.0"
   }
 }
