@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.catalog import router as catalog_router
+from app.media import router as media_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -15,6 +16,7 @@ app.add_middleware(
 
 
 app.include_router(catalog_router)
+app.include_router(media_router)
 
 
 @app.get("/api/health", tags=["System"])
