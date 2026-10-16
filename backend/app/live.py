@@ -44,6 +44,7 @@ class ObsConfig(BaseModel):
 class StartPayload(BaseModel):
     playlist_id: int
     start_index: int = Field(default=0, ge=0)
+    loop: bool = False
 
 
 class PlayState:
@@ -61,6 +62,10 @@ class PlayState:
         self.active_slot = 0
         self.slots = []
         self.scene_name = ""
+        self.loop = False
+        self.retry_count = 0
+        self.next_retry_at = 0.0
+        self.error_count = 0
 
     def client(self):
         # OBS WebSocket 5.x. No output or streaming controls: test safely in preview.
@@ -127,8 +132,12 @@ class PlayState:
             client.set_input_mute(self.slots[self.active_slot], True)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
             self.active_slot = incoming
-        if index + 1 < len(self.ids):
-            self._stage(client, 1 - self.active_slot, index + 1)
+        following = index + 1 if index + 1 < len(self.ids) else (0 if self.loop else None)
+        if following is not None:
+            try:
+                self._stage(client, 1 - self.active_slot, following)
+            except HTTPException as exc:
+                self.last_status = f"Không preload được video kế: {exc.detail}"
 
     def status(self):
         with self.lock:
@@ -139,7 +148,7 @@ class PlayState:
                     if self.dual_mode:
                         located = self._locate_dual(c)
                         if located is None:
-                            return {"connected": False, "error": "Cần hai Media Sources: " + " và ".join(self._sources()) + " trong scene đang chạy", "dual_mode": True, "running": self.active, "playlist_id": self.playlist_id, "index": self.index, "count": len(self.ids), "last_status": self.last_status}
+                            return {"connected": False, "error": "Cần hai Media Sources: " + " và ".join(self._sources()) + " trong scene đang chạy", "dual_mode": True, "running": self.active, "playlist_id": self.playlist_id, "index": self.index, "count": len(self.ids), "last_status": self.last_status, "loop": self.loop, "retry_count": self.retry_count}
                         source_name = self.slots[self.active_slot] if self.active and self.slots else located[1][0]
                     else:
                         source_name = self.config.input_name
@@ -180,6 +189,8 @@ class PlayState:
                 self.last_status = str(exc)
                 raise HTTPException(503, f"Không điều khiển được OBS: {exc}") from exc
             self.index = index
+            self.retry_count = 0
+            self.next_retry_at = 0.0
             self.active = True
             self.generation += 1
             self.last_status = f"Đang phát {name}"
@@ -204,6 +215,7 @@ class PlayState:
                     client.base_client.ws.close()
             except Exception as exc:
                 raise HTTPException(503, f"Không dừng được OBS: {exc}") from exc
+            self.retry_count = 0
             self.last_status = "Đã dừng"
             return {"ok": True}
 
@@ -212,27 +224,55 @@ state = PlayState()
 
 
 def monitor():
-    # Automatic next-track, using OBS media end state instead of guessed durations.
-    # Avoids duplicate advancement: lock serializes skip and monitor.
+    """Monitor ended videos and retry transient OBS disconnects with bounded backoff."""
     while True:
         time.sleep(1.0)
         with state.lock:
-            if not state.active or not state.ids:
+            if not state.active or not state.ids or time.monotonic() < state.next_retry_at:
                 continue
             try:
                 client = state.client()
                 try:
-                    status = client.get_media_input_status(state.slots[state.active_slot] if state.dual_mode and state.slots else state.config.input_name).media_state
+                    source = state.slots[state.active_slot] if state.dual_mode and state.slots else state.config.input_name
+                    media_status = client.get_media_input_status(source).media_state
                 finally:
                     client.base_client.ws.close()
-                if status == "OBS_MEDIA_STATE_ENDED":
-                    if state.index + 1 >= len(state.ids):
+                state.retry_count = 0
+                if media_status == "OBS_MEDIA_STATE_ENDED":
+                    target = state.index + 1
+                    if target >= len(state.ids):
+                        if not state.loop:
+                            state.active = False
+                            state.last_status = "Đã hết playlist"
+                            continue
+                        target = 0
+                    # Skips missing media files, up to one complete playlist traversal.
+                    played = False
+                    for shift in range(len(state.ids)):
+                        candidate = (target + shift) % len(state.ids)
+                        if not state.loop and candidate < target:
+                            break
+                        try:
+                            state.play(candidate)
+                            played = True
+                            break
+                        except HTTPException as exc:
+                            if exc.status_code == 409:
+                                state.last_status = f"Bỏ qua video lỗi: {exc.detail}"
+                                continue
+                            raise
+                    if not played:
                         state.active = False
-                        state.last_status = "Đã hết playlist"
-                    else:
-                        state.play(state.index + 1)
+                        state.last_status = "Không còn video hợp lệ để phát"
             except Exception as exc:
-                state.last_status = f"OBS lỗi: {exc}"
+                state.retry_count += 1
+                state.error_count += 1
+                state.last_status = f"OBS lỗi (thử lại {state.retry_count}/5): {exc}"
+                if state.retry_count >= 5:
+                    state.active = False
+                    state.last_status = f"Đã tạm dừng do OBS lỗi nhiều lần: {exc}"
+                else:
+                    state.next_retry_at = time.monotonic() + min(2 ** state.retry_count, 20)
 
 
 threading.Thread(target=monitor, daemon=True, name="sarae-obs-monitor").start()
@@ -304,6 +344,7 @@ def start(body: StartPayload):
             raise HTTPException(409, "Hãy dừng playlist hiện tại trước")
         state.ids = ids
         state.playlist_id = body.playlist_id
+        state.loop = body.loop
         return state.play(body.start_index)
 
 
@@ -313,6 +354,8 @@ def next_video():
         if not state.active:
             raise HTTPException(409, "Chưa phát playlist")
         if state.index + 1 >= len(state.ids):
+            if state.loop:
+                return state.play(0)
             return state.stop()
         return state.play(state.index + 1)
 
