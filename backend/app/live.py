@@ -41,6 +41,14 @@ class ObsConfig(BaseModel):
     dual_mode: bool = False
 
 
+class SeekPayload(BaseModel):
+    milliseconds: int = Field(ge=0)
+
+
+class SelectPayload(BaseModel):
+    index: int = Field(ge=0)
+
+
 class StartPayload(BaseModel):
     playlist_id: int
     start_index: int = Field(default=0, ge=0)
@@ -56,6 +64,7 @@ class PlayState:
         self.index = 0
         self.ids: list[int] = []
         self.active = False
+        self.paused = False
         self.last_status = ""
         self.generation = 0
         self.dual_mode = False
@@ -146,7 +155,7 @@ class PlayState:
                 self.last_status = f"Không preload được video kế: {exc.detail}"
 
     def metrics(self):
-        return {"loop": self.loop, "retry_count": self.retry_count,
+        return {"paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
                 "recovery_count": self.recovery_count,
                 "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0}
@@ -209,6 +218,7 @@ class PlayState:
             self.retry_count = 0
             self.next_retry_at = 0.0
             self.active = True
+            self.paused = False
             self.generation += 1
             self.last_status = f"Đang phát {name}"
             return {"ok": True, "index": index, "filename": name}
@@ -216,6 +226,7 @@ class PlayState:
     def stop(self):
         with self.lock:
             self.active = False
+            self.paused = False
             self.generation += 1
             try:
                 client = self.client()
@@ -245,7 +256,7 @@ def monitor():
     while True:
         time.sleep(1.0)
         with state.lock:
-            if not state.active or not state.ids or time.monotonic() < state.next_retry_at:
+            if not state.active or state.paused or not state.ids or time.monotonic() < state.next_retry_at:
                 continue
             try:
                 client = state.client()
@@ -393,6 +404,7 @@ def start(body: StartPayload):
         state.ids = ids
         state.playlist_id = body.playlist_id
         state.loop = body.loop
+        state.paused = False
         state.session_started_at = time.time()
         state.transition_count = 0
         state.recovery_count = 0
@@ -415,3 +427,105 @@ def next_video():
 @router.post("/stop")
 def stop_video():
     return state.stop()
+
+
+@router.put("/playlists/{playlist_id}")
+def edit_playlist(playlist_id: int, body: PlaylistPayload):
+    import json
+    with state.lock:
+        if state.active and state.playlist_id == playlist_id:
+            raise HTTPException(409, "Hãy Stop playlist đang phát trước khi chỉnh sửa")
+        with SessionLocal() as db:
+            item = db.get(Playlist, playlist_id)
+            if item is None:
+                raise HTTPException(404, "Không tìm thấy playlist")
+            existing = set(db.scalars(select(Media.id).where(Media.id.in_(body.media_ids))).all())
+            if len(existing) != len(set(body.media_ids)):
+                raise HTTPException(422, "Playlist chứa video không tồn tại")
+            item.name = body.name.strip()
+            item.media_ids = json.dumps(body.media_ids)
+            db.commit()
+            return {"id": playlist_id, "name": item.name, "media_ids": body.media_ids}
+
+
+def active_source():
+    return state.slots[state.active_slot] if state.dual_mode and state.slots else state.config.input_name
+
+
+@router.post("/pause")
+def pause_video():
+    with state.lock:
+        if not state.active or state.paused:
+            raise HTTPException(409, "Không có video đang phát để Pause")
+        c = state.client()
+        try:
+            c.trigger_media_input_action(active_source(), "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE")
+        except Exception as exc:
+            raise HTTPException(503, f"OBS Pause thất bại: {exc}") from exc
+        finally:
+            c.base_client.ws.close()
+        state.paused = True
+        state.last_status = "Đã tạm dừng"
+        return {"ok": True}
+
+
+@router.post("/resume")
+def resume_video():
+    with state.lock:
+        if not state.active or not state.paused:
+            raise HTTPException(409, "Không có video tạm dừng để Resume")
+        c = state.client()
+        try:
+            c.trigger_media_input_action(active_source(), "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
+        except Exception as exc:
+            raise HTTPException(503, f"OBS Resume thất bại: {exc}") from exc
+        finally:
+            c.base_client.ws.close()
+        state.paused = False
+        state.last_cursor = None
+        state.last_progress_at = time.monotonic()
+        state.last_status = "Đã tiếp tục phát"
+        return {"ok": True}
+
+
+@router.post("/previous")
+def previous_video():
+    with state.lock:
+        if not state.active:
+            raise HTTPException(409, "Chưa phát playlist")
+        target = state.index - 1
+        if target < 0:
+            target = len(state.ids) - 1 if state.loop else 0
+        return state.play(target)
+
+
+@router.post("/select")
+def play_selected(body: SelectPayload):
+    with state.lock:
+        if not state.active:
+            raise HTTPException(409, "Hãy bắt đầu playlist trước")
+        return state.play(body.index)
+
+
+@router.post("/seek")
+def seek_video(body: SeekPayload):
+    with state.lock:
+        if not state.active:
+            raise HTTPException(409, "Chưa phát playlist")
+        with SessionLocal() as db:
+            item = db.get(Media, state.ids[state.index])
+            if item is None:
+                raise HTTPException(409, "Video không tồn tại")
+            if item.duration_seconds is not None and body.milliseconds > int(item.duration_seconds * 1000):
+                raise HTTPException(422, "Thời điểm tua vượt quá thời lượng video")
+        c = state.client()
+        try:
+            c.set_media_input_cursor(active_source(), body.milliseconds)
+        except Exception as exc:
+            raise HTTPException(503, f"OBS Seek thất bại: {exc}") from exc
+        finally:
+            c.base_client.ws.close()
+        state.last_progress_at = time.monotonic()
+        state.last_cursor = body.milliseconds
+        state.last_status = f"Đã tua đến {body.milliseconds / 1000:.1f}s"
+        return {"ok": True}
