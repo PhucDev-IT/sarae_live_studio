@@ -183,6 +183,7 @@ function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => 
     sessions: { icon: Activity, title: 'Phiên LIVE', summary: 'Chuẩn bị danh sách và lưu lịch sử phiên.', tasks: ['Tạo phiên', 'Điều khiển sản phẩm', 'Lịch sử'] },
     playlists: { icon: ListVideo, title: 'Playlist Engine', summary: 'Thiết lập thứ tự phát, điều kiện lựa chọn và ưu tiên video.', tasks: ['Playlist tuần tự / ngẫu nhiên', 'Quy tắc tránh lặp', 'Ưu tiên theo sản phẩm'] },
     live: { icon: Radio, title: 'LIVE Control', summary: 'Điều khiển và theo dõi phiên phát khi Desktop Agent và OBS được tích hợp.', tasks: ['Trạng thái phát', 'Video và sản phẩm hiện tại', 'Kết nối Desktop Agent'] },
+    'tiktok-chat': { icon: Bell, title: 'TikTok Chat', summary: 'Đọc bình luận LIVE công khai.', tasks: ['Nhập username', 'Kết nối', 'Xem chat realtime'] },
     ai: { icon: Bot, title: 'AI Assistant', summary: 'Thiết lập ngữ cảnh sản phẩm, quy tắc phản hồi và giọng nói ở giai đoạn AI.', tasks: ['Quy tắc phản hồi', 'Ngữ cảnh sản phẩm', 'Cấu hình TTS'] },
   }
   const config = content[page as Exclude<Page, 'dashboard' | 'settings'>]
