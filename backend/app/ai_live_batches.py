@@ -44,7 +44,7 @@ def context():
         if not product or product.status != "ACTIVE":
             return None
         details = {"id": product.id, "name": product.name, "price": product.price,
-                   "description": product.description[:1200], "status": product.status}
+                   "description": product.description[:950], "status": product.status}
         fingerprint = sha256(json.dumps(details, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
         return {"session_id": sid, "product": details, "version": fingerprint}
 
@@ -159,4 +159,4 @@ def set_config(body: BatchOptions):
 def get_status(after: int = 0):
     with lock:
         entries = [r for r in results if r["batch_id"] > after]
-        return {"stats": stats.copy(), "last_id": sequence, "batches": entries, "pending": sum(map(len, pending.values()))}
+        return {"stats": stats.copy(), "last_id": results[-1]["batch_id"] if results else 0, "batches": entries, "pending": sum(map(len, pending.values()))}
