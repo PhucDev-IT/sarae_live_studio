@@ -23,6 +23,7 @@ export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
   const [port,setPort]=useState('4455')
   const [password,setPassword]=useState('')
   const [source,setSource]=useState('Sarae Video')
+  const [dualMode,setDualMode]=useState(false)
   const [status,setStatus]=useState<Status|null>(null)
   const [error,setError]=useState('')
   const [notice,setNotice]=useState('')
@@ -45,7 +46,8 @@ export default function LiveWorkspace({mode}:{mode:'playlists'|'live'}){
         <div className="live-inline"><Input label="Host" value={host} onChange={e=>setHost(e.target.value)}/><Input label="Port" value={port} onChange={e=>setPort(e.target.value)}/></div>
         <Input label="Mật khẩu OBS WebSocket" type="password" autoComplete="off" value={password} onChange={e=>setPassword(e.target.value)}/>
         <Input label="Tên Media Source trong OBS" value={source} onChange={e=>setSource(e.target.value)}/>
-        <Button disabled={busy} onClick={()=>void act(()=>call('/live/config',json({host,port:Number(port),password,input_name:source})),'Đã lưu kết nối OBS trong phiên Backend')}>Kết nối / Kiểm tra</Button>
+        <label className="live-dual-toggle"><input type="checkbox" checked={dualMode} onChange={e=>setDualMode(e.target.checked)}/><span><strong>Phát A/B (giảm nháy khi Next)</strong><small>Cần tạo 2 Media Sources: Sarae Video A và Sarae Video B trong cùng scene.</small></span></label>
+        <Button disabled={busy} onClick={()=>void act(()=>call('/live/config',json({host,port:Number(port),password,input_name:source,dual_mode:dualMode})),'Đã lưu kết nối OBS trong phiên Backend')}>Kết nối / Kiểm tra</Button>
         <div className={'live-connection '+(status?.connected?'online':'offline')}><Radio size={16}/>{status?.connected?'Đã kết nối OBS '+(status.obs_version||''):status?.error||'OBS chưa kết nối'}</div>
       </div><div className="live-section"><h4>Điều khiển phát thử</h4>
         <Select label="Playlist" value={selected} options={[{value:'',label:'Chọn playlist…'},...playlists.map(p=>({value:String(p.id),label:p.name}))]} onChange={setSelected}/>
