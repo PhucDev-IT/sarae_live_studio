@@ -9,3 +9,5 @@ __pycache__/
 .env
 .env.local
 backend/data/media/
+backend/data/obs_config.json
+backend/data/obs_config.tmp

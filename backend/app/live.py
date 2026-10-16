@@ -4,6 +4,7 @@ OBS 28+ includes obs-websocket v5. Create an OBS Media Source named
 'Sarae Video' (uncheck local file looping) in the scene being streamed.
 Backend and OBS must run on the same Windows machine for file paths.
 """
+import json
 import threading
 import time
 from pathlib import Path
@@ -75,11 +76,33 @@ class StartPayload(BaseModel):
     loop: bool = False
 
 
+# OBS connection saved from the web console so a Backend restart does not ask for it again.
+# Lives next to the SQLite database on the operator's machine; it holds the WebSocket password, so it is git-ignored.
+OBS_CONFIG_FILE = DATA_DIR / "obs_config.json"
+
+
+def load_obs_config() -> ObsConfig:
+    default = ObsConfig(host=settings.obs_host, port=settings.obs_port,
+                        password=settings.obs_password, input_name=settings.obs_input_name)
+    try:
+        return ObsConfig.model_validate_json(OBS_CONFIG_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except Exception:
+        # A corrupt file must not stop the API from starting; the operator can save the config again.
+        return default
+
+
+def save_obs_config(config: ObsConfig):
+    tmp = OBS_CONFIG_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(config.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(OBS_CONFIG_FILE)
+
+
 class PlayState:
     def __init__(self):
         self.lock = threading.RLock()
-        self.config = ObsConfig(host=settings.obs_host, port=settings.obs_port,
-                                password=settings.obs_password, input_name=settings.obs_input_name)
+        self.config = load_obs_config()
         self.playlist_id: int | None = None
         self.index = 0
         self.ids: list[int] = []
@@ -87,7 +110,7 @@ class PlayState:
         self.paused = False
         self.last_status = ""
         self.generation = 0
-        self.dual_mode = False
+        self.dual_mode = self.config.dual_mode
         self.active_slot = 0
         self.slots = []
         self.scene_name = ""
@@ -446,6 +469,10 @@ def set_config(body: ObsConfig):
         state.dual_mode = body.dual_mode
         state.slots = []
         state.last_status = "Đã cập nhật cấu hình OBS"
+        try:
+            save_obs_config(body)
+        except OSError as exc:
+            state.last_status = f"Đã cập nhật cấu hình OBS nhưng không lưu được xuống đĩa: {exc}"
     return state.status()
 
 
@@ -670,12 +697,14 @@ def available_products():
         counts = {}
         for row in db.scalars(select(ProductLiveVideo)).all():
             counts[row.product_id] = counts.get(row.product_id, 0) + 1
-        return [{"id": p.id, "name": p.name, "sku": p.sku, "video_count": counts.get(p.id, 0)}
-                for p in products]
+        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": p.image_url,
+                 "video_count": counts.get(p.id, 0)} for p in products]
 
 
 @router.post("/product-session/start")
 def start_product_session(body: ProductStartPayload):
+    """Legacy ad-hoc start without a managed session (no lineup, no history). The web console starts
+    sessions through /api/live/sessions/{id}/start instead."""
     with state.lock:
         if state.active:
             raise HTTPException(409, "Hãy Stop phiên phát hiện tại trước")
@@ -715,5 +744,9 @@ def switch_product_session(body: ProductSwitchPayload):
 @router.post("/product-session/cancel-switch")
 def cancel_product_switch():
     with state.lock:
+        pending = state.pending_product_id
         state.pending_product_id = None
+        if pending is not None and state.session_id is not None:
+            from app.live_sessions import record_event
+            record_event(state.session_id, "SWITCH_CANCELLED", pending)
         return {"ok": True}
