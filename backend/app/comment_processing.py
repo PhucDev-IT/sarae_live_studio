@@ -80,9 +80,7 @@ class Monitor:
             self._log("ANTI_SPAM", "pass", "Cho phép xử lý.", mid, user)
             self.selected += 1
             self._log("SELECT", "selected", "Chọn bình luận này để phân loại.", mid, user)
-            intent, explanation = classify(content)
-            self._log("INTENT_RULES", intent, explanation, mid, user)
-            self._log("RESPONSE", "not_generated", "Chưa kết nối AI model; chưa tạo câu trả lời thực. Chỉ phân loại bằng quy tắc.", mid, user)
+            self._log("SELECT", "queued_if_enabled", "Đủ điều kiện vào Batch AI nếu chế độ realtime được bật.", mid, user)
             return "selected"
 
     def record(self, stage, decision, text, username=None):
