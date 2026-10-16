@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {Bot,Play,Save,AlertCircle} from 'lucide-react'
+import {Bot,Play,Save,AlertCircle,Volume2,VolumeX} from 'lucide-react'
 import {apiRequest,errorText} from './mediaApi'
 import './ai-settings.css'
 type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean}
@@ -15,10 +15,38 @@ export default function AISettings(){
  const [details,setDetails]=useState('')
  const [answer,setAnswer]=useState<Answer|null>(null)
  const [loading,setLoading]=useState(false)
+ const [voiceEnabled,setVoiceEnabled]=useState(true)
+ const [voices,setVoices]=useState<SpeechSynthesisVoice[]>([])
+ const [voiceURI,setVoiceURI]=useState('')
+ const [rate,setRate]=useState(1)
+ const [speaking,setSpeaking]=useState(false)
+ const [spokenText,setSpokenText]=useState('')
  const [notice,setNotice]=useState('')
  const [error,setError]=useState('')
  const reload=async()=>{const [s,u]=await Promise.all([apiRequest<Settings>('/ai/config'),apiRequest<Usage>('/ai/usage')]);setSettings(s);setUsage(u)}
  useEffect(()=>{void reload().catch(e=>setError(errorText(e,'Không tải được cấu hình AI')))},[])
+ useEffect(()=>{
+  if(!('speechSynthesis' in window))return
+  const refresh=()=>setVoices(window.speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('vi')))
+  refresh()
+  window.speechSynthesis.addEventListener('voiceschanged',refresh)
+  return()=>{window.speechSynthesis.removeEventListener('voiceschanged',refresh);window.speechSynthesis.cancel()}
+ },[])
+ const stopVoice=()=>{if('speechSynthesis' in window)window.speechSynthesis.cancel();setSpeaking(false)}
+ const speak=(text:string)=>{
+  if(!('speechSynthesis' in window)){setError('Trình duyệt không hỗ trợ Speech Synthesis. Hãy thử Chrome hoặc Edge.');return}
+  if(!text.trim())return
+  stopVoice()
+  const utterance=new SpeechSynthesisUtterance(text)
+  utterance.lang='vi-VN'
+  utterance.rate=rate
+  const voice=voices.find(v=>v.voiceURI===voiceURI)||voices[0]
+  if(voice)utterance.voice=voice
+  utterance.onstart=()=>setSpeaking(true)
+  utterance.onend=()=>setSpeaking(false)
+  utterance.onerror=e=>{setSpeaking(false);if(e.error!=='canceled'&&e.error!=='interrupted')setError('Không đọc được giọng tiếng Việt: '+e.error)}
+  window.speechSynthesis.speak(utterance)
+ }
  const exec=async(job:()=>Promise<void>)=>{setLoading(true);setError('');setNotice('');try{await job()}catch(e){setError(errorText(e,'Thao tác lỗi'))}finally{setLoading(false)}}
  const update=(v:Partial<Settings>)=>setSettings(old=>({...old,...v}))
  return <div className="ais-layout">
@@ -40,8 +68,10 @@ export default function AISettings(){
  <label>Bình luận<textarea value={comment} onChange={e=>setComment(e.target.value)} rows={3}/></label>
  <label>Tên sản phẩm (không bắt buộc)<input value={product} onChange={e=>setProduct(e.target.value)} placeholder="Áo trễ vai trắng"/></label>
  <label>Thông tin sản phẩm (không bắt buộc)<textarea value={details} onChange={e=>setDetails(e.target.value)} rows={2} placeholder="Chất liệu, giá, size thực tế..."/></label>
- <button disabled={loading||!comment.trim()} onClick={()=>void exec(async()=>{const result=await apiRequest<Answer>('/ai/analyze',JSONbody({comment,username:'playground',product_name:product||null,product_details:details||null}));setAnswer(result);setNotice('AI đã phân tích xong');await reload()})}><Play size={16}/> {loading?'Đang xử lý…':'Test AI'}</button>
- {answer&&<div className="ais-answer"><strong>{answer.result.intent} · {Math.round(answer.result.confidence*100)}%</strong><p>{answer.result.reply}</p><small>{answer.result.reason} · {answer.result.needs_review?'Cần xác nhận':'Không yêu cầu xác nhận'}</small><small>{answer.usage.input_tokens} input / {answer.usage.output_tokens} output tokens · {answer.usage.latency_ms}ms · Không thực hiện hành động LIVE</small></div>}
+ <button disabled={loading||!comment.trim()} onClick={()=>void exec(async()=>{const result=await apiRequest<Answer>('/ai/analyze',JSONbody({comment,username:'playground',product_name:product||null,product_details:details||null}));setAnswer(result);setSpokenText(result.result.reply||'');setNotice('AI đã phân tích xong');if(voiceEnabled&&result.result.reply)speak(result.result.reply);await reload()})}><Play size={16}/> {loading?'Đang xử lý…':'Test AI'}</button>
+ <div className="ais-voice-options"><label className="ais-toggle"><input type="checkbox" checked={voiceEnabled} onChange={e=>setVoiceEnabled(e.target.checked)}/> Tự đọc khi Test AI trả kết quả</label><label>Giọng tiếng Việt<select value={voiceURI} onChange={e=>setVoiceURI(e.target.value)}><option value="">Tự chọn giọng Việt</option>{voices.map(v=><option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>)}</select></label><label>Tốc độ đọc<select value={rate} onChange={e=>setRate(Number(e.target.value))}><option value={0.85}>Chậm</option><option value={1}>Bình thường</option><option value={1.15}>Nhanh</option></select></label></div>
+ {!voices.length&&<p className="ais-voice-hint">Chưa tìm thấy giọng tiếng Việt trong trình duyệt. Trình duyệt có thể dùng giọng mặc định; hãy thử Microsoft Edge và kiểm tra voice của hệ điều hành.</p>}
+ {answer&&<div className="ais-answer"><strong>{answer.result.intent} · {Math.round(answer.result.confidence*100)}%</strong><p>{answer.result.reply}</p><small>{answer.result.reason} · {answer.result.needs_review?'Cần xác nhận':'Không yêu cầu xác nhận'}</small><small>{answer.usage.input_tokens} input / {answer.usage.output_tokens} output tokens · {answer.usage.latency_ms}ms · Không thực hiện hành động LIVE</small><label>Câu trả lời để đọc thử<textarea rows={3} maxLength={1000} value={spokenText} onChange={e=>setSpokenText(e.target.value)}/></label><div className="ais-voice-actions"><button type="button" disabled={!spokenText.trim()} onClick={()=>speak(spokenText)}><Volume2 size={16}/> Đọc lại</button><button type="button" disabled={!speaking} onClick={stopVoice}><VolumeX size={16}/> Dừng đọc</button></div></div>}
  {usage&&<div className="ais-usage">Đã gọi: {usage.requests} · Input: {usage.input_tokens} tokens · Output: {usage.output_tokens} tokens</div>}
  </section>
  {(error||notice)&&<div className={'ais-alert '+(error?'is-error':'')}><AlertCircle size={17}/>{error||notice}</div>}
