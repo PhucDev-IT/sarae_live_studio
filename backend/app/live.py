@@ -193,7 +193,7 @@ class PlayState:
                 self.last_status = f"Không preload được video kế: {exc.detail}"
 
     def metrics(self):
-        return {"session_mode": self.session_mode, "product_id": self.product_id,
+        return {"session_mode": self.session_mode, "queue_ids": list(self.ids), "product_id": self.product_id,
                 "pending_product_id": self.pending_product_id,
                 "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
@@ -623,8 +623,8 @@ def start_product_session(body: ProductStartPayload):
         state.session_mode = "product"
         state.session_started_at = time.time()
         state.transition_count = state.recovery_count = state.error_count = 0
-        result = state.play(0)
         state.product_id = body.product_id
+        result = state.play(0)
         return result
 
 
