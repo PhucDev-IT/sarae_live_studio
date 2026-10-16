@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.comment_processing import monitor
+from app.ai_live_batches import enqueue
 
 router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"])
 
@@ -110,7 +111,9 @@ class Reader:
                 }
                 self.messages.append(message)
                 event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
-                monitor.process(message, event_id=event_id or None)
+                decision = monitor.process(message, event_id=event_id or None)
+                if decision == 'selected':
+                    enqueue(message)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
