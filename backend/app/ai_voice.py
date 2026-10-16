@@ -4,7 +4,7 @@ Create a Media Source named 'Sarae Voice' in OBS and enable its audio in the mix
 This is not automatic TikTok replying and does not touch the video media input.
 """
 import asyncio
-from pathlib import Path
+from uuid import uuid4
 from threading import RLock
 
 from fastapi import APIRouter, HTTPException
@@ -36,7 +36,7 @@ def speak(body: SpeakBody):
             import edge_tts
         except ImportError as exc:
             raise HTTPException(503, "Chưa cài edge-tts: python -m pip install edge-tts") from exc
-        output = (VOICE_DIR / "last_voice.mp3").resolve()
+        output = (VOICE_DIR / f"voice_{uuid4().hex}.mp3").resolve()
         async def generate():
             stream = edge_tts.Communicate(body.text, body.voice)
             await stream.save(str(output))
