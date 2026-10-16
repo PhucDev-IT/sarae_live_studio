@@ -16,6 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base, SessionLocal, DATA_DIR
 from app.media import Media, MEDIA_DIR
+from app.catalog import Product
 from app.config import settings
 
 router = APIRouter(prefix="/api/live", tags=["LIVE / OBS"])
@@ -47,6 +48,15 @@ class SeekPayload(BaseModel):
 
 class SelectPayload(BaseModel):
     index: int = Field(ge=0)
+
+
+class ProductStartPayload(BaseModel):
+    product_id: int = Field(gt=0)
+
+
+class ProductSwitchPayload(BaseModel):
+    product_id: int = Field(gt=0)
+    mode: str = Field(pattern="^(immediate|after_current)$")
 
 
 class StartPayload(BaseModel):
@@ -81,6 +91,34 @@ class PlayState:
         self.last_progress_at = time.monotonic()
         self.last_cursor = None
         self.stall_restarts = 0
+        self.session_mode = "playlist"
+        self.product_id = None
+        self.pending_product_id = None
+
+    def product_queue(self, product_id):
+        with SessionLocal() as db:
+            product = db.get(Product, product_id)
+            if product is None:
+                raise HTTPException(404, "Không tìm thấy sản phẩm")
+            rows = db.scalars(select(Media).where(Media.product_id == product_id).order_by(Media.id)).all()
+            ids = [m.id for m in rows if (Path(m.local_path) if m.local_path else MEDIA_DIR / m.stored_name).is_file()]
+            if not ids:
+                raise HTTPException(409, f"Sản phẩm {product.name} chưa có video hợp lệ")
+            return ids
+
+    def switch_product(self, product_id):
+        ids = self.product_queue(product_id)
+        old_ids, old_index, old_product = self.ids, self.index, self.product_id
+        self.ids = ids
+        try:
+            result = self.play(0)
+        except Exception:
+            self.ids, self.index, self.product_id = old_ids, old_index, old_product
+            raise
+        self.product_id = product_id
+        self.pending_product_id = None
+        self.session_mode = "product"
+        return result
 
     def client(self):
         # OBS WebSocket 5.x. No output or streaming controls: test safely in preview.
@@ -155,7 +193,9 @@ class PlayState:
                 self.last_status = f"Không preload được video kế: {exc.detail}"
 
     def metrics(self):
-        return {"paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
+        return {"session_mode": self.session_mode, "product_id": self.product_id,
+                "pending_product_id": self.pending_product_id,
+                "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
                 "recovery_count": self.recovery_count,
                 "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0}
@@ -244,6 +284,7 @@ class PlayState:
             except Exception as exc:
                 raise HTTPException(503, f"Không dừng được OBS: {exc}") from exc
             self.retry_count = 0
+            self.pending_product_id = None
             self.last_status = "Đã dừng"
             return {"ok": True}
 
@@ -298,6 +339,26 @@ def monitor():
                 state.retry_count = 0
                 state.next_retry_at = 0
                 if media_status == "OBS_MEDIA_STATE_ENDED":
+                    if state.session_mode == "product" and state.pending_product_id is not None:
+                        try:
+                            state.switch_product(state.pending_product_id)
+                            continue
+                        except HTTPException as exc:
+                            state.pending_product_id = None
+                            state.last_status = f"Chuyển sản phẩm lỗi: {exc.detail}; tiếp tục sản phẩm cũ"
+                    if state.session_mode == "product":
+                        try:
+                            refreshed = state.product_queue(state.product_id)
+                            previous_id = state.ids[state.index]
+                            if previous_id in refreshed:
+                                state.index = refreshed.index(previous_id)
+                            else:
+                                state.index = -1
+                            state.ids = refreshed
+                        except HTTPException as exc:
+                            state.active = False
+                            state.last_status = f"Dừng phiên: {exc.detail}"
+                            continue
                     target = state.index + 1
                     if target >= len(state.ids):
                         if not state.loop:
@@ -403,6 +464,9 @@ def start(body: StartPayload):
     with state.lock:
         if state.active:
             raise HTTPException(409, "Hãy dừng playlist hiện tại trước")
+        state.session_mode = "playlist"
+        state.product_id = None
+        state.pending_product_id = None
         state.ids = ids
         state.playlist_id = body.playlist_id
         state.loop = body.loop
@@ -419,6 +483,8 @@ def next_video():
     with state.lock:
         if not state.active:
             raise HTTPException(409, "Chưa phát playlist")
+        if state.pending_product_id is not None:
+            return state.switch_product(state.pending_product_id)
         if state.index + 1 >= len(state.ids):
             if state.loop:
                 return state.play(0)
@@ -530,4 +596,56 @@ def seek_video(body: SeekPayload):
         state.last_progress_at = time.monotonic()
         state.last_cursor = body.milliseconds
         state.last_status = f"Đã tua đến {body.milliseconds / 1000:.1f}s"
+        return {"ok": True}
+
+
+@router.get("/products")
+def available_products():
+    with SessionLocal() as db:
+        products = db.scalars(select(Product).order_by(Product.id)).all()
+        counts = {}
+        for media in db.scalars(select(Media).where(Media.product_id.is_not(None))).all():
+            counts[media.product_id] = counts.get(media.product_id, 0) + 1
+        return [{"id": p.id, "name": p.name, "sku": p.sku, "video_count": counts.get(p.id, 0)}
+                for p in products]
+
+
+@router.post("/product-session/start")
+def start_product_session(body: ProductStartPayload):
+    with state.lock:
+        if state.active:
+            raise HTTPException(409, "Hãy Stop phiên phát hiện tại trước")
+        ids = state.product_queue(body.product_id)
+        state.ids = ids
+        state.loop = True
+        state.playlist_id = None
+        state.pending_product_id = None
+        state.session_mode = "product"
+        state.session_started_at = time.time()
+        state.transition_count = state.recovery_count = state.error_count = 0
+        result = state.play(0)
+        state.product_id = body.product_id
+        return result
+
+
+@router.post("/product-session/switch")
+def switch_product_session(body: ProductSwitchPayload):
+    with state.lock:
+        if not state.active or state.session_mode != "product":
+            raise HTTPException(409, "Chưa có phiên LIVE theo sản phẩm")
+        state.product_queue(body.product_id)
+        if body.mode == "immediate":
+            return state.switch_product(body.product_id)
+        if body.product_id == state.product_id:
+            state.pending_product_id = None
+            return {"ok": True, "pending_product_id": None}
+        state.pending_product_id = body.product_id
+        state.last_status = f"Đã xếp sản phẩm #{body.product_id} sau video hiện tại"
+        return {"ok": True, "pending_product_id": body.product_id}
+
+
+@router.post("/product-session/cancel-switch")
+def cancel_product_switch():
+    with state.lock:
+        state.pending_product_id = None
         return {"ok": True}
