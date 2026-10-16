@@ -4,6 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Sarae Live Studio API"
     app_version: str = "0.1.0"
+    obs_host: str = "127.0.0.1"
+    obs_port: int = 4455
+    obs_password: str = ""
+    obs_input_name: str = "Sarae Video"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
