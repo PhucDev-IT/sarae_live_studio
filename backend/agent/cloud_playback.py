@@ -5,6 +5,7 @@ One Agent process owns this playback state. Downloads are verified before use.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from threading import RLock
 from urllib.request import Request, urlopen
@@ -22,6 +23,7 @@ class CloudPlayback:
         self.files=[]
         self.index=0
         self.active=False
+        self.last_transition=0.0
 
     def _get_json(self,url):
         req=Request(url,headers={"X-Sarae-Agent-Key":settings.sarae_agent_key})
@@ -72,6 +74,7 @@ class CloudPlayback:
             self.product_id=product_id
             self.index=0
             self._load_current()
+            self.last_transition=time.monotonic()
             self.active=True
             return self.status()
 
@@ -92,6 +95,7 @@ class CloudPlayback:
             if not self.active:raise ValueError("Chưa phát video Cloud")
             self.index=(self.index+1)%len(self.files)
             self._load_current()
+            self.last_transition=time.monotonic()
             return self.status()
 
     def stop(self):
@@ -107,6 +111,23 @@ class CloudPlayback:
                         client.base_client.ws.close()
             self.active=False
             return self.status()
+
+    def tick(self):
+        """Advance only after OBS reports the media source finished."""
+        with self.lock:
+            if not self.active or time.monotonic()-self.last_transition<2:
+                return
+            with obs_state.lock:
+                client=obs_state.client()
+                try:
+                    media=client.get_media_input_status(obs_state.config.input_name)
+                    ended=str(media.media_state).upper()
+                finally:
+                    client.base_client.ws.close()
+            if ended in ("OBS_MEDIA_STATE_ENDED","ENDED","OBS_MEDIA_STATE_STOPPED"):
+                self.index=(self.index+1)%len(self.files)
+                self._load_current()
+                self.last_transition=time.monotonic()
 
     def status(self):
         with self.lock:
