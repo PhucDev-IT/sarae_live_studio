@@ -25,6 +25,7 @@ def load():
         import win32crypt
         _,plaintext=win32crypt.CryptUnprotectData(base64.b64decode(data["dpapi"]),None,None,None,0)
         data=json.loads(plaintext.decode("utf-8"))
-    # Legacy plain-text activation is read for migration during the first run.
-    # Avoid rewriting without verified network access; re-activation preferred.
+    if "dpapi" not in data and os.name=="nt":
+        if "agent_id" in data and "agent_credential" in data:
+            save(data["agent_id"],data["agent_credential"])
     return data
