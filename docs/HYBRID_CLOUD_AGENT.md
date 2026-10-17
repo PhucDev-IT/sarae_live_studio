@@ -79,3 +79,28 @@ Before exposing to mobile/public Internet, add full user auth/RBAC, secure HTTPS
 ## Remote web use
 
 The React Web uses `VITE_API_URL` to call a chosen Backend. For remote mobile access, deploy Web to HTTPS and point `VITE_API_URL` at public HTTPS FastAPI. The Remote Status panel then reads the cloud Agent registry, not the phone's screen. Protect that deployment with user authentication before broad access.
+
+## Phase 2 — Remote commands (implemented)
+
+The Cloud API now maintains an authenticated SQLite command queue. On each cycle (5 seconds) the Windows Agent sends a heartbeat, polls one queued command, executes it locally, and acknowledges success/failure. The Web agent console supports:
+
+- CAPTCHA Monitor: start/stop and set **scan interval (0.5–15 s)** / match threshold (0.65–0.99).
+- OBS media: status, previous/next, pause/resume and stop.
+- Operator-approved TTS to dedicated `Sarae Voice` OBS source.
+- Command history with pending/running/completed/failed state.
+
+API: `POST /api/agents/commands`, `GET /api/agents/commands?agent_id=...`, `GET /api/agents/commands/{agent_id}/next`, `POST /api/agents/commands/ack`. Admin and Agent each have separate keys.
+
+**Important limitations:** This is an initial command queue, not yet a distributed job system. If Agent crashes after claiming a command, the command remains `running` until manually repaired; there is no lease expiration / retry. SQLite registry and queue are for a single Backend instance. Monitor configuration currently resets to defaults when Agent process restarts; Web can re-send configuration. Legacy local routes are still present, and do not automatically proxy through the command queue. A cloud-hosted backend cannot access the Agent's local video library. Also, the Agent's OBS playback session is process-local: if media playback is started by a different local Backend process, Agent commands may not know its state.
+
+### Windows Agent console example
+
+```text
+[13:20:29] Đã đồng bộ VPS | CAPTCHA: Đang quét màn hình, chưa thấy CAPTCHA
+```
+
+The label `watching` means **monitor is active and has not matched a CAPTCHA**, not that a CAPTCHA was found.
+
+### Before real VPS/mobile release
+
+Implement account sign-in and RBAC for **every** Web/API route, replacing the temporary manually-entered admin secret. Add persistent DB-backed command leases, sequence IDs, agent authorization scoped to a workstation, remote preview/result acknowledgements, user auditing, CORS/CSRF/rate limiting, PostgreSQL deployment, and transfer/sync of playlist metadata and media. Do **not** treat this milestone as a publicly secured production release.
