@@ -11,6 +11,7 @@ from urllib import request, parse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
+from app.config import settings
 
 router=APIRouter(prefix="/api/verification-monitor",tags=["Verification Monitor"])
 ROOT=DATA_DIR/"verification_monitor"
@@ -43,7 +44,7 @@ def emit(kind,detail,image=None):
         threading.Thread(target=notify,args=(event,),daemon=True).start()
 
 def notify(event):
-    token=os.getenv("SARAE_TELEGRAM_BOT_TOKEN","").strip()
+    token=settings.sarae_telegram_bot_token.strip()
     chat=config["telegram_chat_id"].strip()
     if not token or not chat:return
     message=f"Sarae LIVE | {event['kind']}\n{event['detail']}\n{event['at']}"
