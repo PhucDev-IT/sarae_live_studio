@@ -1,3 +1,5 @@
+> **SaaS UPDATE (Oct 2026):** For the current two-role, per-Agent activation and local-video architecture, follow [SAAS_PHASE1.md](./SAAS_PHASE1.md). Older shared `SARAE_AGENT_KEY` / `SARAE_ADMIN_KEY` instructions below are **historical and no longer valid** for the updated Agent protocol.
+
 # Sarae Hybrid Architecture — Cloud API + Windows Agent (Phase 1)
 
 ## Goal
