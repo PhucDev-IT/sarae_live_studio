@@ -10,8 +10,7 @@ from agent.credentials import load as load_credential
 from app.verification_monitor import start, stop, status, configure, ConfigBody
 from app.ai_voice import speak, SpeakBody
 from app.live import state as obs_state
-from agent.cloud_playback import cloud_playback
-from agent.local_library import scan as scan_media, resolve as resolve_media
+from agent.local_library import scan as scan_media
 
 LABELS={
     "idle":"Chưa bật giám sát","starting":"Đang khởi động",
@@ -34,11 +33,7 @@ def execute(command):
     if kind=="monitor_start":return start()
     if kind=="monitor_stop":return stop()
     if kind=="monitor_config":return configure(ConfigBody.model_validate(payload))
-    if kind=="cloud_product_play":return cloud_playback.play(int(payload["product_id"]))
-    if kind=="cloud_product_next":return cloud_playback.next()
-    if kind=="cloud_product_stop":return cloud_playback.stop()
     if kind=="local_media_play":
-        from app.live import state
         from agent.local_player import local_player
         return local_player.play(payload["media_id"])
     if kind=="local_playlist_start":
@@ -50,7 +45,7 @@ def execute(command):
     if kind=="local_media_stop":
         from agent.local_player import local_player
         return local_player.stop()
-    if kind=="obs_status":return {"legacy":obs_state.status(),"cloud":cloud_playback.status()}
+    if kind=="obs_status":return {"legacy":obs_state.status(),"local":local_player.status()}
     if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
         from app.live import pause_video, resume_video, next_video, previous_video, stop_video
         handlers={"obs_pause":pause_video,"obs_resume":resume_video,
@@ -107,7 +102,7 @@ def main():
                 last_obs_check=time.monotonic()
             report={"agent_id":agent_id,"hostname":platform.node(),
                     "verification":{"state":local["state"],"config":local["config"],
-                                    "events":local["events"][:10]},"obs":obs_snapshot,"cloud_playback":cloud_playback.status(),"local_playback":local_player.status()}
+                                    "events":local["events"][:10]},"obs":obs_snapshot,"local_playback":local_player.status()}
             request_json(server+"/agents/heartbeat","POST",agent_key,report)
             label=LABELS.get(st,st)
             if label!=last_label:
