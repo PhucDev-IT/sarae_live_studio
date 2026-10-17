@@ -6,7 +6,7 @@ import threading
 import time
 import urllib.request
 from app.config import settings
-from app.database import DATA_DIR
+from agent.credentials import load as load_credential
 from app.verification_monitor import start, stop, status, configure, ConfigBody
 from app.ai_voice import speak, SpeakBody
 from app.live import state as obs_state
@@ -62,10 +62,8 @@ def execute(command):
 def main():
     server=settings.sarae_cloud_api_url.rstrip("/")
     if not server:raise SystemExit("Chưa cấu hình SARAE_CLOUD_API_URL")
-    credential_file=DATA_DIR/"agent_activation.json"
-    if not credential_file.is_file():
-        raise SystemExit("Agent chưa kích hoạt. Chạy python -m agent.activate")
-    credential_data=json.loads(credential_file.read_text(encoding="utf-8"))
+    try:credential_data=load_credential()
+    except Exception as exc:raise SystemExit("Chưa kích hoạt hoặc không đọc được credential: "+str(exc))
     agent_key=credential_data["agent_credential"]
     if not server.startswith(("https://","http://localhost:","http://127.0.0.1:")):
         raise SystemExit("Chỉ cho phép HTTPS; HTTP chỉ dùng ở localhost")
