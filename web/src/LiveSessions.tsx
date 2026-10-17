@@ -376,7 +376,7 @@ function ProductPicker({products,exclude,onClose,onAdd}:{products:LiveProduct[];
   const [query,setQuery] = useState('')
   const [picked,setPicked] = useState<number[]>([])
   const q = query.trim().toLocaleLowerCase('vi')
-  const options = products.filter(p=>!exclude.includes(p.id) && (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q))
+  const options = products.filter(p=>!exclude.includes(p.id) && p.status !== 'INACTIVE' && (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q))
   const toggle = (id:number) => setPicked(prev=>prev.includes(id) ? prev.filter(x=>x !== id) : [...prev, id])
   return <Modal open title="Thêm sản phẩm vào phiên" size="md" onClose={onClose} footer={<>
     <span className="ls-picker-count">Đã chọn {picked.length}</span>

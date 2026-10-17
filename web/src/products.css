@@ -1,0 +1,87 @@
+/* Product catalog — layout only; colors come from @sarae/ui tokens. */
+.pp-page{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+.pp-page>*{min-width:0}
+
+/* Summary */
+.pp-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.pp-stat{display:flex;align-items:center;gap:14px;padding:16px 18px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-card);background:var(--ui-surface);box-shadow:var(--ui-shadow-sm);color:var(--ui-text);text-align:left;min-width:0}
+.pp-stat.is-link{cursor:pointer;font:inherit}
+.pp-stat.is-link:hover{border-color:var(--ui-border-strong)}
+.pp-stat-icon{flex:none;width:42px;height:42px;border-radius:11px;display:grid;place-items:center}
+.pp-stat-icon.violet{color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 13%,transparent)}
+.pp-stat-icon.blue{color:var(--ui-info);background:color-mix(in srgb,var(--ui-info) 13%,transparent)}
+.pp-stat-icon.mint{color:var(--ui-success);background:color-mix(in srgb,var(--ui-success) 13%,transparent)}
+.pp-stat-icon.peach{color:var(--ui-warning);background:color-mix(in srgb,var(--ui-warning) 15%,transparent)}
+.pp-stat-icon.muted{color:var(--ui-text-subtle);background:var(--ui-surface-2)}
+.pp-stat-text{display:grid;min-width:0}
+.pp-stat-text small{font-size:12px;color:var(--ui-text-muted);font-weight:600}
+.pp-stat-text strong{font-size:24px;line-height:1.2;font-variant-numeric:tabular-nums}
+.pp-stat-text em{font-style:normal;font-size:11.5px;color:var(--ui-text-subtle);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+/* Panel + toolbar */
+.pp-panel{border:1px solid var(--ui-border);border-radius:var(--ui-radius-card);background:var(--ui-surface);box-shadow:var(--ui-shadow-sm);min-width:0}
+.pp-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 18px 10px}
+.pp-search{flex:1 1 240px;min-width:0}
+.pp-select{flex:0 1 210px;min-width:170px}
+.pp-select .ui-field{margin:0}
+.pp-toolbar .ui-segmented button{white-space:nowrap}
+.pp-toolbar>.ui-btn{white-space:nowrap}
+.pp-count{display:flex;align-items:center;gap:12px;padding:0 18px 12px;font-size:12.5px;color:var(--ui-text-muted)}
+.pp-clear{border:0;background:none;padding:0;color:var(--ui-primary);font:inherit;font-weight:600;cursor:pointer}
+.pp-empty{padding:30px 16px 40px;border-top:1px solid var(--ui-border)}
+
+/* Table */
+.pp-table{border-top:1px solid var(--ui-border)}
+.pp-icon{display:inline-grid;place-items:center;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--ui-text-muted);cursor:pointer}
+.pp-icon:hover{background:var(--ui-surface-2);color:var(--ui-text)}
+.pp-icon.is-danger:hover{color:var(--ui-danger)}
+.pp-novideo{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:var(--ui-warning);text-decoration:none;white-space:nowrap}
+.pp-novideo:hover{text-decoration:underline}
+.pp-table .ui-badge,.pp-meta .ui-badge{gap:4px}
+.pp-row-main{display:flex;align-items:center;gap:12px;min-width:240px;padding:0;border:0;background:none;color:inherit;text-align:left;cursor:pointer;font:inherit}
+.pp-row-main.is-hidden .pp-row-thumb{opacity:.45;filter:grayscale(.6)}
+.pp-row-main.is-hidden strong{color:var(--ui-text-muted)}
+.pp-row-thumb{flex:none;width:46px;height:46px;border-radius:9px;overflow:hidden;background:var(--ui-surface-2)}
+.pp-row-thumb img{width:100%;height:100%;object-fit:cover}
+.pp-initials{width:100%;height:100%;display:grid;place-items:center;font-size:15px;font-weight:800;letter-spacing:.04em;color:color-mix(in srgb,var(--ui-primary) 70%,var(--ui-text-muted));background:linear-gradient(135deg,color-mix(in srgb,var(--ui-primary) 12%,var(--ui-surface-2)),var(--ui-surface-2))}
+.pp-row-text{display:grid;gap:2px;min-width:0}
+.pp-row-text strong{font-weight:600}
+.pp-row-text small{max-width:420px;font-size:12px;color:var(--ui-text-muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pp-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.pp-row-actions{display:flex;justify-content:flex-end;gap:2px}
+
+/* Add / edit sheet */
+.pp-form{display:grid;gap:16px}
+.pp-form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pp-image-field{display:grid;gap:10px}
+.pp-drop{position:relative;height:220px;border:2px dashed var(--ui-border-strong);border-radius:12px;background:var(--ui-surface-2);display:grid;place-items:center;overflow:hidden;cursor:pointer;transition:border-color .15s,background .15s}
+.pp-drop:hover,.pp-drop:focus-visible,.pp-drop.is-over{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 6%,var(--ui-surface-2));outline:0}
+.pp-drop.has-image{border-style:solid;border-color:var(--ui-border)}
+.pp-drop img{width:100%;height:100%;object-fit:contain;background:#11111b0d}
+.pp-drop .pp-initials{font-size:40px}
+.pp-drop-hint{display:grid;justify-items:center;gap:6px;padding:16px;text-align:center;color:var(--ui-text-muted)}
+.pp-drop-hint svg{color:var(--ui-primary)}
+.pp-drop-hint strong{font-size:13.5px;color:var(--ui-text)}
+.pp-drop-hint small{font-size:12px}
+.pp-drop-busy{position:absolute;inset:auto 10px 10px auto;padding:5px 10px;border-radius:999px;font-size:12px;color:#fff;background:rgba(20,18,35,.75)}
+.pp-image-actions{display:flex;gap:6px;flex-wrap:wrap}
+.pp-url-row{display:flex;gap:8px;align-items:center}
+.pp-url-row>:first-child{flex:1;min-width:0}
+.pp-switch-row{display:grid;gap:4px;padding:12px 14px;border:1px solid var(--ui-border);border-radius:10px}
+.pp-switch-row small{font-size:12px;color:var(--ui-text-muted)}
+.pp-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:12px 14px;border-radius:10px;background:var(--ui-surface-2);font-size:12.5px;color:var(--ui-text-muted)}
+.pp-meta a{color:var(--ui-primary);font-weight:600;text-decoration:none}
+.pp-sheet-footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;width:100%}
+
+@media(max-width:1100px){.pp-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){
+  .pp-stats{gap:10px}
+  .pp-stat{padding:12px;gap:10px}
+  .pp-stat-icon{width:36px;height:36px}
+  .pp-stat-text strong{font-size:20px}
+  .pp-toolbar{padding:14px}
+  .pp-toolbar .ui-segmented,.pp-select{flex:1 1 100%}
+  .pp-toolbar>.ui-btn{flex:1}
+  .pp-count{padding:0 14px 10px}
+  .pp-form-row{grid-template-columns:1fr}
+}

@@ -8,7 +8,7 @@ export type LiveSession = {
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
 /** Catalog product with the number of videos linked for LIVE (GET /live/products). */
-export type LiveProduct = { id:number; name:string; sku:string; image_url?:string; video_count:number }
+export type LiveProduct = { id:number; name:string; sku:string; image_url?:string; status?:'ACTIVE'|'INACTIVE'; price?:number|null; video_count:number }
 
 export const STATUS_META:Record<SessionStatus,{label:string;tone:'default'|'danger'|'primary'}> = {
   DRAFT:{label:'Chuẩn bị', tone:'primary'},

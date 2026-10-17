@@ -123,7 +123,7 @@ export default function LiveControl(){
   const q = productQuery.trim().toLocaleLowerCase('vi')
   const matches = (p:LiveProduct) => !q || (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q)
   const inSession = lineup.map(id=>productById.get(id) ?? {id, name:`Sản phẩm #${id}`, sku:'', video_count:0}).filter(matches)
-  const outside = q ? products.filter(p=>!lineup.includes(p.id) && matches(p)) : []
+  const outside = q ? products.filter(p=>!lineup.includes(p.id) && p.status !== 'INACTIVE' && matches(p)) : []
   const targetProduct = target != null && target !== status?.product_id ? productById.get(target) : undefined
   const targetOutside = !!targetProduct && !lineup.includes(targetProduct.id)
 

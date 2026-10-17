@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, ThemeProvider, ToastProvider } from './ui/core'
 import CatalogPage from './CatalogPage'
+import ProductsPage from './ProductsPage'
 import MediaPage from './MediaPage'
 import LiveWorkspace from './LiveWorkspace'
 import LiveControl from './LiveControl'
@@ -24,7 +25,7 @@ const titles: Record<Page, string> = { dashboard: 'Tổng quan', media: 'Thư vi
 const descriptions: Record<Page, string> = {
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
   media: 'Tổ chức các short video, phân loại nội dung và liên kết sản phẩm.',
-  products: 'Danh mục sản phẩm sử dụng trong các video và phiên phát.',
+  products: 'Những sản phẩm bán trên LIVE: ảnh, mã, giá, mô tả cho AI và trạng thái sẵn sàng video.',
   presenters: 'Quản lý những người xuất hiện và giới thiệu trong video.',
   'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
   'product-videos': 'Chọn và sắp xếp video chuẩn bị LIVE theo từng sản phẩm.',
@@ -136,7 +137,7 @@ function App() {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' || page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <CatalogPage key={page} kind={page}/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
