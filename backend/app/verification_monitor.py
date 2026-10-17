@@ -134,13 +134,22 @@ def loop():
                 bounds=win32gui.GetWindowRect(hwnd)
                 left,top,right,bottom=bounds
                 if right<=left or bottom<=top:raise ValueError("Kích thước cửa sổ không hợp lệ")
-                import ctypes
-                screen_w=ctypes.windll.user32.GetSystemMetrics(0)
-                screen_h=ctypes.windll.user32.GetSystemMetrics(1)
-                left=max(0,left);top=max(0,top);right=min(screen_w,right);bottom=min(screen_h,bottom)
-                if right-left<120 or bottom-top<100:raise ValueError("Cửa sổ nằm ngoài màn hình chính")
+                # MSS monitor[0] is the complete virtual desktop, including negative
+                # coordinates for displays positioned left/above the primary screen.
                 with mss.mss() as capture:
-                    shot=np.array(capture.grab({"left":left,"top":top,"width":right-left,"height":bottom-top}))
+                    virtual=capture.monitors[0]
+                    vx=int(virtual["left"]);vy=int(virtual["top"])
+                    vr=vx+int(virtual["width"]);vb=vy+int(virtual["height"])
+                    left=max(left,vx);top=max(top,vy)
+                    right=min(right,vr);bottom=min(bottom,vb)
+                    if right-left<120 or bottom-top<100:
+                        raise ValueError("Cửa sổ TikTok nằm ngoài vùng màn hình đang hiển thị")
+                    shot=np.array(capture.grab({"left":left,"top":top,
+                                                 "width":right-left,"height":bottom-top}))
+                with guard:
+                    state["capture_bounds"]={"left":left,"top":top,
+                                             "width":right-left,"height":bottom-top}
+                    state["monitors_detected"]=len(capture.monitors)-1
                 gray=cv2.cvtColor(shot,cv2.COLOR_BGRA2GRAY)
                 scores=[]
                 for candidate in all_templates():
