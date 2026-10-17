@@ -65,6 +65,14 @@
 .pp-drop-hint small{font-size:12px}
 .pp-drop-busy{position:absolute;inset:auto 10px 10px auto;padding:5px 10px;border-radius:999px;font-size:12px;color:#fff;background:rgba(20,18,35,.75)}
 .pp-image-actions{display:flex;gap:6px;flex-wrap:wrap}
+.pp-image-side{display:grid;gap:10px;min-width:0}
+.pp-image-field.is-round{grid-template-columns:104px minmax(0,1fr);align-items:center;gap:16px}
+.is-round .pp-drop{width:104px;height:104px;border-radius:50%}
+.is-round .pp-drop img{object-fit:cover}
+.is-round .pp-drop .pp-initials{font-size:30px}
+.is-round .pp-drop-busy{inset:auto 50% 8px auto;transform:translateX(50%);font-size:11px}
+.pp-image-note{font-size:12px;color:var(--ui-text-muted)}
+.pp-avatar{border-radius:50%}
 .pp-url-row{display:flex;gap:8px;align-items:center}
 .pp-url-row>:first-child{flex:1;min-width:0}
 .pp-switch-row{display:grid;gap:4px;padding:12px 14px;border:1px solid var(--ui-border);border-radius:10px}
@@ -85,3 +93,4 @@
   .pp-count{padding:0 14px 10px}
   .pp-form-row{grid-template-columns:1fr}
 }
+.pp-badge-link{text-decoration:none}

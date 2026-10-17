@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Badge, Button, ConfirmModal, EmptyState, Input, SearchInput, SegmentedControl, Select, Sheet, Switch, Table, Textarea, useToast, type TableColumn } from './ui/core'
 import {
-  CircleAlert, Copy, Edit3, Eye, ImagePlus, Link2, Package, Plus, Radio, Trash2, Upload, Video, X,
+  CircleAlert, Copy, Edit3, Eye, Package, Plus, Radio, Trash2, Video,
 } from 'lucide-react'
 import { apiRequest, errorText } from './mediaApi'
 import { sessionsApi, type LiveSession } from './liveSessionsApi'
-import './products.css'
+import { IconButton, ImageField, Stat, Thumb } from './CatalogParts'
 
 type Product = { id:number; sku:string; name:string; description:string; price:number|null; image_url:string; status:'ACTIVE'|'INACTIVE'; created_at:string }
 type Form = { name:string; sku:string; price:string; image_url:string; description:string; active:boolean }
@@ -15,7 +15,6 @@ type VideoFilter = 'ALL' | 'READY' | 'MISSING'
 type Row = Product & Record<string, unknown>
 
 const EMPTY:Form = {name:'', sku:'', price:'', image_url:'', description:'', active:true}
-const MAX_IMAGE_MB = 5
 const vnd = new Intl.NumberFormat('vi-VN', {style:'currency', currency:'VND', maximumFractionDigits:0})
 const digits = new Intl.NumberFormat('vi-VN', {maximumFractionDigits:0})
 const json = (data:unknown, method:string):RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
@@ -100,7 +99,7 @@ export default function ProductsPage(){
 
   const columns:TableColumn<Row>[] = [
     {key:'name', header:'Sản phẩm', render:p=><button type="button" className={'pp-row-main' + (p.status === 'INACTIVE' ? ' is-hidden' : '')} onClick={()=>openEdit(p)}>
-      <span className="pp-row-thumb"><ProductImage src={p.image_url} name={p.name}/></span>
+      <span className="pp-row-thumb"><Thumb src={p.image_url} name={p.name} fallback={<Package size={18}/>}/></span>
       <span className="pp-row-text"><strong>{p.name}</strong><small>{p.sku}{p.description ? ' · ' + p.description : ''}</small></span>
     </button>},
     {key:'price', header:'Giá bán', align:'right', render:p=><span className="pp-num">{p.price == null ? '—' : vnd.format(p.price)}</span>},
@@ -125,7 +124,7 @@ export default function ProductsPage(){
       <Stat icon={<Eye size={18}/>} label="Đang bán" value={stats.active} hint={`${stats.total - stats.active} tạm ẩn`} tone="blue"/>
       <Stat icon={<Radio size={18}/>} label="Sẵn sàng LIVE" value={stats.ready} hint="đang bán & đã có video" tone="mint"/>
       <Stat icon={<CircleAlert size={18}/>} label="Thiếu video" value={stats.missing} hint={stats.missing ? 'chưa đưa lên LIVE được' : 'không có'} tone={stats.missing ? 'peach' : 'muted'}
-        onClick={stats.missing ? ()=>{setStatusFilter('ACTIVE');setVideoFilter('MISSING')} : undefined}/>
+        onClick={stats.missing ? ()=>{setStatusFilter('ACTIVE');setVideoFilter('MISSING')} : undefined} actionTitle="Lọc sản phẩm thiếu video"/>
     </section>
 
     <section className="pp-panel">
@@ -152,7 +151,8 @@ export default function ProductsPage(){
       <Button type="submit" form="pp-form" loading={busy}>{editing === 'new' ? 'Thêm sản phẩm' : 'Lưu thay đổi'}</Button>
     </div>}>
       {editing !== null && <form id="pp-form" className="pp-form" onSubmit={(e:FormEvent)=>{e.preventDefault();void save(false)}}>
-        <ImageField value={form.image_url} name={form.name} onChange={url=>setForm(f=>({...f, image_url:url}))}/>
+        <ImageField value={form.image_url} name={form.name} uploadPath="/products/images" label="Chọn ảnh sản phẩm" fallback={<Package size={30}/>}
+          onChange={url=>setForm(f=>({...f, image_url:url}))}/>
         <Input label="Tên sản phẩm *" autoFocus maxLength={200} value={form.name} error={errors.name} placeholder="VD: Áo trễ vai trắng"
           onChange={e=>setForm(f=>({...f, name:e.target.value}))}/>
         <div className="pp-form-row">
@@ -182,68 +182,6 @@ export default function ProductsPage(){
   </div>
 }
 
-function Stat({icon,label,value,hint,tone,onClick}:{icon:ReactNode;label:string;value:number;hint?:string;tone:string;onClick?:()=>void}){
-  const body = <><span className={'pp-stat-icon ' + tone}>{icon}</span><span className="pp-stat-text"><small>{label}</small><strong>{value.toLocaleString('vi-VN')}</strong>{hint && <em>{hint}</em>}</span></>
-  return onClick ? <button type="button" className="pp-stat is-link" onClick={onClick} title="Lọc sản phẩm thiếu video">{body}</button> : <div className="pp-stat">{body}</div>
-}
-
 function VideoBadge({count}:{count?:number}){
   return count ? <Badge tone="success"><Video size={12}/>{count} video</Badge> : <a className="pp-novideo" href="#/product-videos" title="Gán video LIVE"><CircleAlert size={13}/>Chưa có video</a>
-}
-
-function IconButton({title,danger,onClick,children}:{title:string;danger?:boolean;onClick:()=>void;children:ReactNode}){
-  return <button type="button" className={'pp-icon' + (danger ? ' is-danger' : '')} title={title} aria-label={title} onClick={onClick}>{children}</button>
-}
-
-/** Product photo, falling back to the product's initials when missing or broken. */
-function ProductImage({src,name}:{src:string;name:string}){
-  const [failedSrc,setFailedSrc] = useState('')
-  if (src && src !== failedSrc) return <img src={src} alt="" loading="lazy" onError={()=>setFailedSrc(src)}/>
-  const initials = name.trim().split(/\s+/).slice(0, 2).map(w=>w[0]?.toUpperCase() ?? '').join('')
-  return <span className="pp-initials" aria-hidden="true">{initials || <Package size={22}/>}</span>
-}
-
-/** Photo picker: upload (click, drop or paste) to the Backend, or paste an image URL. */
-function ImageField({value,name,onChange}:{value:string;name:string;onChange:(url:string)=>void}){
-  const toast = useToast()
-  const input = useRef<HTMLInputElement>(null)
-  const [uploading,setUploading] = useState(false)
-  const [over,setOver] = useState(false)
-  const [urlMode,setUrlMode] = useState(false)
-  const [url,setUrl] = useState('')
-  const upload = async (file?:File) => {
-    if (!file) return
-    if (!file.type.startsWith('image/')) {toast.push({tone:'danger', title:'File không phải ảnh'});return}
-    if (file.size > MAX_IMAGE_MB * 1024 * 1024) {toast.push({tone:'danger', title:`Ảnh tối đa ${MAX_IMAGE_MB} MB`});return}
-    setUploading(true)
-    try{
-      const body = new FormData()
-      body.append('file', file)
-      onChange((await apiRequest<{url:string}>('/products/images', {method:'POST', body})).url)
-    }catch(e){toast.push({tone:'danger', title:'Không tải được ảnh lên', description:errorText(e, '')})}
-    finally{setUploading(false)}
-  }
-  const onDrop = (e:DragEvent) => {e.preventDefault();setOver(false);void upload(e.dataTransfer.files[0])}
-  return <div className="pp-image-field">
-    <div className={'pp-drop' + (over ? ' is-over' : '') + (value ? ' has-image' : '')} role="button" tabIndex={0}
-      onClick={()=>input.current?.click()} onKeyDown={e=>{if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();input.current?.click()}}}
-      onDragOver={e=>{e.preventDefault();setOver(true)}} onDragLeave={()=>setOver(false)} onDrop={onDrop}
-      onPaste={e=>void upload(Array.from(e.clipboardData.files)[0])} aria-label="Chọn ảnh sản phẩm">
-      {value ? <ProductImage src={value} name={name}/> : <span className="pp-drop-hint">
-        <ImagePlus size={26}/><strong>{uploading ? 'Đang tải ảnh…' : 'Kéo thả, dán hoặc bấm để chọn ảnh'}</strong><small>JPG, PNG, WEBP · tối đa {MAX_IMAGE_MB} MB</small>
-      </span>}
-      {uploading && value && <span className="pp-drop-busy">Đang tải…</span>}
-    </div>
-    <input ref={input} type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden onChange={e=>{void upload(e.target.files?.[0]);e.target.value = ''}}/>
-    <div className="pp-image-actions">
-      <Button type="button" size="sm" variant="outline" leftIcon={<Upload size={14}/>} disabled={uploading} onClick={()=>input.current?.click()}>{value ? 'Đổi ảnh' : 'Tải ảnh lên'}</Button>
-      <Button type="button" size="sm" variant="ghost" leftIcon={<Link2 size={14}/>} onClick={()=>{setUrl(value);setUrlMode(m=>!m)}}>Dùng URL</Button>
-      {value && <Button type="button" size="sm" variant="ghost" leftIcon={<X size={14}/>} onClick={()=>onChange('')}>Bỏ ảnh</Button>}
-    </div>
-    {urlMode && <div className="pp-url-row">
-      <Input aria-label="URL ảnh" type="url" value={url} placeholder="https://…" onChange={e=>setUrl(e.target.value)}
-        onKeyDown={e=>{if (e.key === 'Enter') {e.preventDefault();onChange(url.trim());setUrlMode(false)}}}/>
-      <Button type="button" size="sm" onClick={()=>{onChange(url.trim());setUrlMode(false)}}>Áp dụng</Button>
-    </div>}
-  </div>
 }
