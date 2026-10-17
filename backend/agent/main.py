@@ -32,6 +32,11 @@ def execute(command):
     if kind=="monitor_stop":return stop()
     if kind=="monitor_config":return configure(ConfigBody.model_validate(payload))
     if kind=="obs_status":return obs_state.status()
+    if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
+        from app.live import pause_video, resume_video, next_video, previous_video, stop_video
+        handlers={"obs_pause":pause_video,"obs_resume":resume_video,
+                  "obs_next":next_video,"obs_previous":previous_video,"obs_stop":stop_video}
+        return handlers[kind]()
     if kind=="tts_speak":return speak(SpeakBody.model_validate(payload))
     raise ValueError("Lệnh không được hỗ trợ")
 
