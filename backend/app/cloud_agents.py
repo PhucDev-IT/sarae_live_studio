@@ -38,13 +38,14 @@ class Heartbeat(BaseModel):
     agent_credential:str|None=None
     obs:dict|None=None
     cloud_playback:dict|None=None
+    local_playback:dict|None=None
 
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     verify_agent(body.agent_id, x_sarae_agent_key)
     import json
     at=datetime.now(timezone.utc).isoformat()
-    sanitized={"verification":body.verification,"obs":body.obs,"cloud_playback":body.cloud_playback}
+    sanitized={"verification":body.verification,"obs":body.obs,"cloud_playback":body.cloud_playback,"local_playback":body.local_playback}
     with connection() as db:
         db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json)
                       VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
@@ -75,7 +76,7 @@ def get_status(authorization:str|None=Header(None)):
 
 class CommandBody(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
-    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak|local_media_play|local_media_stop)$")
+    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak|local_media_play|local_media_next|local_media_stop|local_playlist_start)$")
     payload:dict=Field(default_factory=dict)
 
 class AckBody(BaseModel):
@@ -96,6 +97,15 @@ def queue_command(body:CommandBody, authorization:str|None=Header(None)):
             raise HTTPException(422,"Nội dung TTS từ 1 đến 450 ký tự")
         if body.payload.get("voice","vi-VN-HoaiMyNeural") not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
             raise HTTPException(422,"Giọng không được hỗ trợ")
+    elif body.kind=="local_playlist_start":
+        items=body.payload.get("media_ids")
+        if not isinstance(items,list) or not 1<=len(items)<=300 or any(
+            not isinstance(v,str) or len(v)!=64 or any(c not in "0123456789abcdef" for c in v)
+            for v in items):
+            raise HTTPException(422,"Danh sách media_ids không hợp lệ")
+        loop=body.payload.get("loop",True)
+        if not isinstance(loop,bool):raise HTTPException(422,"loop phải là boolean")
+        body.payload={"media_ids":items,"loop":loop}
     elif body.kind=="local_media_play":
         mid=body.payload.get("media_id")
         if not isinstance(mid,str) or len(mid)!=64 or any(c not in "0123456789abcdef" for c in mid):
