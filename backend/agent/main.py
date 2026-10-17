@@ -64,6 +64,10 @@ def main():
     obs_snapshot=None
     while not stop_event.is_set():
         try:
+            cloud_playback.tick()
+        except Exception as exc:
+            print("Không thể kiểm tra video Cloud:",str(exc)[:160])
+        try:
             local=status()
             st=local["state"]["status"]
             if time.monotonic()-last_obs_check>=15:
