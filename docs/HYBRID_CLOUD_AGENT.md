@@ -104,3 +104,15 @@ The label `watching` means **monitor is active and has not matched a CAPTCHA**, 
 ### Before real VPS/mobile release
 
 Implement account sign-in and RBAC for **every** Web/API route, replacing the temporary manually-entered admin secret. Add persistent DB-backed command leases, sequence IDs, agent authorization scoped to a workstation, remote preview/result acknowledgements, user auditing, CORS/CSRF/rate limiting, PostgreSQL deployment, and transfer/sync of playlist metadata and media. Do **not** treat this milestone as a publicly secured production release.
+
+## Multi-monitor capture (new)
+
+The Windows CAPTCHA detector now uses `mss.monitors[0]` virtual-desktop geometry, intersected with `win32gui.GetWindowRect(hwnd)`. This supports multiple displays, including negative X/Y coordinates (a secondary monitor to the left or above the primary). No screen selector is needed: the agent targets the detected LIVE Studio window. The `capture_bounds` and `monitors_detected` fields are included in monitor state to assist diagnostics.
+
+Important: TikTok LIVE Studio must not be minimized/covered, and windows spanning several monitors are captured only within the virtual desktop bounds. Mixed DPI scaling and display changes during capture require testing on the target Windows configuration.
+
+## Agent observability and command reliability update
+
+- Agent periodically uploads summarized OBS connectivity (~15 seconds), alongside CAPTCHA status.
+- Cloud job poll now marks `running` jobs older than 90 seconds as `failed` rather than automatically executing them again; this avoids duplicate TTS/OBS actions. The agent may still have performed the action before losing network access, so `failed` is not a guarantee that no side effect occurred.
+- **Still pending for production**: server-generated per-device credentials, complete authenticated Web access, proper command idempotency/leases, playlist and media-data relocation, full OBS owner-process migration, cloud startup/session control, automatic agent updates, integration tests on Windows, and database upgrade for scalable VPS use.
