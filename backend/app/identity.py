@@ -50,6 +50,7 @@ def db_open():
         id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,hostname TEXT NOT NULL,
         credential_hash TEXT UNIQUE NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL)""")
+    db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_super_admin ON users(role) WHERE role='SUPER_ADMIN'""")
     db.execute("""CREATE TABLE IF NOT EXISTS user_sessions (
         token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at TEXT NOT NULL)""")
     return db
@@ -162,7 +163,7 @@ def activate(body:Activate):
           WHERE k.key_hash=? AND k.used_at IS NULL AND u.active=1""",
           (secret_hash(body.activation_key),)).fetchone()
         if row is None:raise HTTPException(403,"Mã kích hoạt không hợp lệ hoặc đã sử dụng")
-        if not row["enabled"] or (row["expires_at"] and row["expires_at"]<=now()):
+        if not row["enabled"] or not license_not_expired(row["expires_at"]):
             raise HTTPException(403,"License đã hết hạn hoặc bị khóa")
         count=db.execute("SELECT COUNT(*) FROM registered_agents WHERE owner_id=? AND enabled=1",
                          (row["owner_id"],)).fetchone()[0]
@@ -188,6 +189,7 @@ def my_agents(authorization:str|None=Header(None)):
 
 def bootstrap_admin(email:str,password:str):
     with db_open() as db:
+        db.execute("BEGIN IMMEDIATE")
         if db.execute("SELECT 1 FROM users WHERE role='SUPER_ADMIN'").fetchone():
             raise RuntimeError("SUPER_ADMIN đã tồn tại")
         salt=secrets.token_hex(16)
