@@ -19,6 +19,7 @@ class LocalPlayer:
         self.media_ids=[]
         self.index=0
         self.active=False
+        self.paused=False
         self.loop=False
         self.last_transition=0.0
         self.last_error=None
@@ -68,6 +69,8 @@ class LocalPlayer:
             self.last_error=None
             self._load_current()
             self.active=True
+            self.paused=False
+            self.recovery=None
             self._persist()
             return self.status()
 
@@ -85,12 +88,49 @@ class LocalPlayer:
                 following=0
             self.index=following
             self._load_current()
+            self.paused=False
             self._persist()
+            return self.status()
+
+    def previous(self):
+        with self.lock:
+            if not self.active:raise ValueError("Chưa phát playlist")
+            self.index=(self.index-1)%len(self.media_ids)
+            self._load_current()
+            self.paused=False
+            self._persist()
+            return self.status()
+
+    def pause(self):
+        with self.lock,obs_state.lock:
+            if not self.active:raise ValueError("Chưa phát playlist")
+            if not self.paused:
+                client=obs_state.client()
+                try:
+                    client.trigger_media_input_action(
+                        obs_state.config.input_name,"OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE")
+                finally:
+                    client.base_client.ws.close()
+            self.paused=True
+            return self.status()
+
+    def resume(self):
+        with self.lock,obs_state.lock:
+            if not self.active:raise ValueError("Chưa phát playlist")
+            if self.paused:
+                client=obs_state.client()
+                try:
+                    client.trigger_media_input_action(
+                        obs_state.config.input_name,"OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
+                finally:
+                    client.base_client.ws.close()
+            self.paused=False
+            self.last_transition=time.monotonic()
             return self.status()
 
     def tick(self):
         with self.lock:
-            if not self.active or time.monotonic()-self.last_transition<2:
+            if not self.active or self.paused or time.monotonic()-self.last_transition<2:
                 return
             with obs_state.lock:
                 client=obs_state.client()
@@ -114,6 +154,8 @@ class LocalPlayer:
                     finally:
                         client.base_client.ws.close()
             self.active=False
+            self.paused=False
+            self.recovery=None
             self._persist()
             return self.status()
 
@@ -121,7 +163,7 @@ class LocalPlayer:
         with self.lock:
             return {"active":self.active,"media_ids":list(self.media_ids),
                     "index":self.index,"count":len(self.media_ids),
-                    "loop":self.loop,"needs_manual_resume":bool(
+                    "loop":self.loop,"paused":self.paused,"needs_manual_resume":bool(
                         self.recovery and self.recovery.get("was_active") and not self.active)}
 
 local_player=LocalPlayer()
