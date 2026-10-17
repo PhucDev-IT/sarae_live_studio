@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app.database import Base, SessionLocal, DATA_DIR
 
 PRODUCT_IMAGE_DIR = DATA_DIR / "product_images"
+PRESENTER_IMAGE_DIR = DATA_DIR / "presenter_images"
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
 IMAGE_NAME = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp|gif)$")
@@ -91,6 +92,11 @@ class PresenterInput(BaseModel):
             raise ValueError("Không được để trống")
         return value.strip()
 
+    @field_validator("avatar_url")
+    @classmethod
+    def strip_avatar(cls, value: str) -> str:
+        return value.strip()
+
     @field_validator("status")
     @classmethod
     def validate_status(cls, value: str) -> str:
@@ -109,6 +115,29 @@ class PresenterOut(PresenterInput):
     model_config = ConfigDict(from_attributes=True)
     id: int
     created_at: datetime
+
+
+def save_image(folder, file: UploadFile) -> str:
+    """Validates an uploaded photo and stores it under a random name; returns that name."""
+    ext = IMAGE_TYPES.get(file.content_type or "")
+    if ext is None:
+        raise HTTPException(415, "Chỉ hỗ trợ ảnh JPG, PNG, WEBP hoặc GIF")
+    data = file.file.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Ảnh tối đa 5 MB")
+    if not data:
+        raise HTTPException(422, "File ảnh rỗng")
+    folder.mkdir(parents=True, exist_ok=True)
+    name = uuid4().hex + ext
+    (folder / name).write_bytes(data)
+    return name
+
+
+def serve_image(folder, name: str):
+    path = folder / name
+    if not IMAGE_NAME.match(name) or not path.is_file():
+        raise HTTPException(404, "Không tìm thấy ảnh")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 def get_entity(db: Session, model, entity_id: int):
@@ -149,26 +178,12 @@ def create_product(body: ProductInput, db: DB):
 @router.post("/products/images", status_code=201)
 def upload_product_image(request: Request, file: UploadFile = File(...)):
     """Stores a product photo and returns an absolute URL to put in `image_url`."""
-    ext = IMAGE_TYPES.get(file.content_type or "")
-    if ext is None:
-        raise HTTPException(415, "Chỉ hỗ trợ ảnh JPG, PNG, WEBP hoặc GIF")
-    data = file.file.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(413, "Ảnh tối đa 5 MB")
-    if not data:
-        raise HTTPException(422, "File ảnh rỗng")
-    PRODUCT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    name = uuid4().hex + ext
-    (PRODUCT_IMAGE_DIR / name).write_bytes(data)
-    return {"url": str(request.url_for("product_image", name=name))}
+    return {"url": str(request.url_for("product_image", name=save_image(PRODUCT_IMAGE_DIR, file)))}
 
 
 @router.get("/products/images/{name}", name="product_image")
 def product_image(name: str):
-    path = PRODUCT_IMAGE_DIR / name
-    if not IMAGE_NAME.match(name) or not path.is_file():
-        raise HTTPException(404, "Không tìm thấy ảnh")
-    return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    return serve_image(PRODUCT_IMAGE_DIR, name)
 
 
 @router.get("/products/{entity_id}", response_model=ProductOut)
@@ -223,6 +238,17 @@ def create_presenter(body: PresenterInput, db: DB):
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/presenters/images", status_code=201)
+def upload_presenter_image(request: Request, file: UploadFile = File(...)):
+    """Stores a presenter photo and returns an absolute URL to put in `avatar_url`."""
+    return {"url": str(request.url_for("presenter_image", name=save_image(PRESENTER_IMAGE_DIR, file)))}
+
+
+@router.get("/presenters/images/{name}", name="presenter_image")
+def presenter_image(name: str):
+    return serve_image(PRESENTER_IMAGE_DIR, name)
 
 
 @router.get("/presenters/{entity_id}", response_model=PresenterOut)

@@ -1,7 +1,7 @@
 """People who appear in each video: a many-to-many, unordered link between media and presenters."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import ForeignKey, Integer, UniqueConstraint, delete, select
+from sqlalchemy import ForeignKey, Integer, UniqueConstraint, delete, func, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.catalog import Presenter
@@ -28,6 +28,15 @@ def presenter_or_404(db, presenter_id: int) -> Presenter:
     if presenter is None:
         raise HTTPException(404, "Không tìm thấy người giới thiệu")
     return presenter
+
+
+@router.get("")
+def presenter_video_counts(db: DB):
+    """Number of videos each person appears in, for list views (people with none are omitted)."""
+    rows = db.execute(select(MediaPresenter.presenter_id, func.count(MediaPresenter.id))
+                      .join(Media, Media.id == MediaPresenter.media_id)
+                      .group_by(MediaPresenter.presenter_id)).all()
+    return [{"presenter_id": pid, "video_count": count} for pid, count in rows]
 
 
 @router.get("/{presenter_id}")
