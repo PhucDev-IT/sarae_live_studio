@@ -75,7 +75,7 @@ def get_status(authorization:str|None=Header(None)):
 
 class CommandBody(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
-    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak|cloud_product_play|cloud_product_next|cloud_product_stop)$")
+    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak)$")
     payload:dict=Field(default_factory=dict)
 
 class AckBody(BaseModel):
