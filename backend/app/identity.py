@@ -18,6 +18,15 @@ DB=DATA_DIR/"identity.sqlite3"
 def now():
     return datetime.now(timezone.utc).isoformat()
 
+def license_not_expired(expires_at:str|None)->bool:
+    if not expires_at:return True
+    try:
+        expires=datetime.fromisoformat(expires_at.replace("Z","+00:00"))
+        if expires.tzinfo is None:expires=expires.replace(tzinfo=timezone.utc)
+        return expires>datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
 def secret_hash(value:str):
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -75,7 +84,7 @@ def verify_agent(agent_id:str,credential:str|None):
           JOIN users u ON u.id=a.owner_id
           WHERE a.id=? AND a.credential_hash=? AND a.enabled=1 AND u.active=1""",
           (agent_id,secret_hash(credential))).fetchone()
-    if not row or not row["enabled"] or (row["expires_at"] and row["expires_at"]<=now()):
+    if not row or not row["enabled"] or not license_not_expired(row["expires_at"]):
         raise HTTPException(403,"Agent không có license hợp lệ")
     return dict(row)
 
