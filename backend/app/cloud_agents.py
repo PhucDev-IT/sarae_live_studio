@@ -35,6 +35,7 @@ class Heartbeat(BaseModel):
     hostname:str=Field(min_length=1,max_length=160)
     verification:dict=Field(default_factory=dict)
     obs:dict|None=None
+    cloud_playback:dict|None=None
 
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
@@ -42,7 +43,7 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
         raise HTTPException(401,"Agent key không hợp lệ")
     import json
     at=datetime.now(timezone.utc).isoformat()
-    sanitized={"verification":body.verification,"obs":body.obs}
+    sanitized={"verification":body.verification,"obs":body.obs,"cloud_playback":body.cloud_playback}
     with connection() as db:
         db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json)
                       VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
