@@ -11,6 +11,7 @@ from app.verification_monitor import start, stop, status, configure, ConfigBody
 from app.ai_voice import speak, SpeakBody
 from app.live import state as obs_state
 from agent.cloud_playback import cloud_playback
+from agent.local_library import scan as scan_media, resolve as resolve_media
 
 LABELS={
     "idle":"Chưa bật giám sát","starting":"Đang khởi động",
@@ -36,6 +37,16 @@ def execute(command):
     if kind=="cloud_product_play":return cloud_playback.play(int(payload["product_id"]))
     if kind=="cloud_product_next":return cloud_playback.next()
     if kind=="cloud_product_stop":return cloud_playback.stop()
+    if kind=="local_media_play":
+        from app.live import state
+        from agent.local_player import local_player
+        return local_player.play(str(resolve_media(payload["media_id"])))
+    if kind=="local_media_next":
+        from agent.local_player import local_player
+        return local_player.next()
+    if kind=="local_media_stop":
+        from agent.local_player import local_player
+        return local_player.stop()
     if kind=="obs_status":return {"legacy":obs_state.status(),"cloud":cloud_playback.status()}
     if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
         from app.live import pause_video, resume_video, next_video, previous_video, stop_video
@@ -65,6 +76,7 @@ def main():
         except Exception as exc:print("Không bật được giám sát CAPTCHA:",exc)
     print(f"Agent Windows [{agent_id}] đang kết nối đến {server}")
     last_label=None
+    last_media_sync=0
     last_obs_check=0
     obs_snapshot=None
     while not stop_event.is_set():
@@ -73,6 +85,15 @@ def main():
         except Exception as exc:
             print("Không thể kiểm tra video Cloud:",str(exc)[:160])
         try:
+            if time.monotonic()-last_media_sync>=60:
+                try:
+                    files=scan_media()
+                    request_json(server+"/agent-library/sync","POST",agent_key,
+                                 {"agent_id":agent_id,"videos":files})
+                    last_media_sync=time.monotonic()
+                    print(f"Đã đồng bộ {len(files)} video local lên danh mục Cloud")
+                except Exception as exc:
+                    print("Đồng bộ danh mục video thất bại:",str(exc)[:160])
             local=status()
             st=local["state"]["status"]
             if time.monotonic()-last_obs_check>=15:
