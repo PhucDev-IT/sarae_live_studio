@@ -45,7 +45,9 @@ def execute(command):
     if kind=="local_media_stop":
         from agent.local_player import local_player
         return local_player.stop()
-    if kind=="obs_status":return {"legacy":obs_state.status(),"local":local_player.status()}
+    if kind=="obs_status":
+        from agent.local_player import local_player
+        return {"legacy":obs_state.status(),"local":local_player.status()}
     if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
         from agent.local_player import local_player
         actions={"obs_pause":local_player.pause,"obs_resume":local_player.resume,
@@ -55,7 +57,7 @@ def execute(command):
     if kind=="tts_speak":return speak(SpeakBody.model_validate(payload))
     raise ValueError("Lệnh không được hỗ trợ")
 
-def main():
+def main(external_stop:threading.Event|None=None):
     server=settings.sarae_cloud_api_url.rstrip("/")
     if not server:raise SystemExit("Chưa cấu hình SARAE_CLOUD_API_URL")
     try:credential_data=load_credential()
@@ -64,10 +66,11 @@ def main():
     if not server.startswith(("https://","http://localhost:","http://127.0.0.1:")):
         raise SystemExit("Chỉ cho phép HTTPS; HTTP chỉ dùng ở localhost")
     agent_id=credential_data["agent_id"]
-    stop_event=threading.Event()
-    for sig in (signal.SIGINT,signal.SIGTERM):
-        try:signal.signal(sig,lambda *_:stop_event.set())
-        except (OSError,ValueError):pass
+    stop_event=external_stop if external_stop is not None else threading.Event()
+    if external_stop is None:
+        for sig in (signal.SIGINT,signal.SIGTERM):
+            try:signal.signal(sig,lambda *_:stop_event.set())
+            except (OSError,ValueError):pass
     if settings.sarae_agent_autostart_monitor:
         try:print("Khởi động giám sát CAPTCHA:",start())
         except Exception as exc:print("Không bật được giám sát CAPTCHA:",exc)
