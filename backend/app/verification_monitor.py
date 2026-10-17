@@ -1,5 +1,6 @@
 """Windows-only, opt-in CAPTCHA presence monitor. Never solves or interacts with challenges."""
 import base64
+import json
 import re
 import io
 import os
@@ -23,6 +24,14 @@ stop_signal=threading.Event()
 worker=None
 state={"running":False,"window_found":False,"window_title":"","window_visible":False,"status":"idle","last_scan":None,"error":None,"events_count":0}
 config={"interval_seconds":2.0,"threshold":0.82,"telegram_enabled":False,"telegram_chat_id":"","template_loaded":False}
+config_file=ROOT/"monitor_config.json"
+try:
+    saved=json.loads(config_file.read_text(encoding="utf-8"))
+    if isinstance(saved,dict):
+        values={k:saved[k] for k in ("interval_seconds","threshold","telegram_enabled","telegram_chat_id") if k in saved}
+        config.update(values)
+except (OSError,ValueError,TypeError):
+    pass
 template_dir=ROOT/"templates"
 template_dir.mkdir(parents=True,exist_ok=True)
 template_file=ROOT/"captcha_reference.png"
@@ -181,6 +190,9 @@ def configure(body:ConfigBody):
     with guard:
         config.update(body.model_dump())
         config["template_loaded"]=bool(all_templates())
+        tmp=config_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(body.model_dump(),ensure_ascii=False),encoding="utf-8")
+        tmp.replace(config_file)
         return dict(config)
 
 @router.post("/template")
