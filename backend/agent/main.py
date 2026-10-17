@@ -9,6 +9,7 @@ from app.config import settings
 from app.verification_monitor import start, stop, status, configure, ConfigBody
 from app.ai_voice import speak, SpeakBody
 from app.live import state as obs_state
+from agent.cloud_playback import cloud_playback
 
 LABELS={
     "idle":"Chưa bật giám sát","starting":"Đang khởi động",
@@ -31,7 +32,10 @@ def execute(command):
     if kind=="monitor_start":return start()
     if kind=="monitor_stop":return stop()
     if kind=="monitor_config":return configure(ConfigBody.model_validate(payload))
-    if kind=="obs_status":return obs_state.status()
+    if kind=="cloud_product_play":return cloud_playback.play(int(payload["product_id"]))
+    if kind=="cloud_product_next":return cloud_playback.next()
+    if kind=="cloud_product_stop":return cloud_playback.stop()
+    if kind=="obs_status":return {"legacy":obs_state.status(),"cloud":cloud_playback.status()}
     if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
         from app.live import pause_video, resume_video, next_video, previous_video, stop_video
         handlers={"obs_pause":pause_video,"obs_resume":resume_video,
@@ -71,7 +75,7 @@ def main():
                 last_obs_check=time.monotonic()
             report={"agent_id":agent_id,"hostname":platform.node(),
                     "verification":{"state":local["state"],"config":local["config"],
-                                    "events":local["events"][:10]},"obs":obs_snapshot}
+                                    "events":local["events"][:10]},"obs":obs_snapshot,"cloud_playback":cloud_playback.status()}
             request_json(server+"/agents/heartbeat","POST",settings.sarae_agent_key,report)
             label=LABELS.get(st,st)
             if label!=last_label:
