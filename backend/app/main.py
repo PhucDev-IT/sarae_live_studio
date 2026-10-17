@@ -17,6 +17,7 @@ from app.verification_monitor import router as verification_monitor_router
 from app.cloud_agents import router as cloud_agents_router
 from app.agent_media import router as agent_media_router
 from app.identity import router as identity_router
+from app.agent_library import router as agent_library_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -44,6 +45,7 @@ app.include_router(cloud_agents_router)
 ## Cloud MP4 relay disabled in local-first multi-tenant phase.
 # app.include_router(agent_media_router)
 app.include_router(identity_router)
+app.include_router(agent_library_router)
 
 
 @app.get("/api/health", tags=["System"])
