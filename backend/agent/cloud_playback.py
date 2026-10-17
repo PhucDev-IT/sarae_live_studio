@@ -96,6 +96,15 @@ class CloudPlayback:
 
     def stop(self):
         with self.lock:
+            if self.active:
+                with obs_state.lock:
+                    client=obs_state.client()
+                    try:
+                        client.trigger_media_input_action(
+                            obs_state.config.input_name,
+                            "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
+                    finally:
+                        client.base_client.ws.close()
             self.active=False
             return self.status()
 
