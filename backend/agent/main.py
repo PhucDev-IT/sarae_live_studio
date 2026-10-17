@@ -15,19 +15,19 @@ from app.verification_monitor import start, status
 from app.config import settings
 
 def main():
-    server=os.environ.get("SARAE_CLOUD_API_URL","").rstrip("/")
+    server=settings.sarae_cloud_api_url.rstrip("/")
     if not server:
         raise SystemExit("Set SARAE_CLOUD_API_URL=https://your-host/api")
     if not settings.sarae_agent_key:
         raise SystemExit("Set SARAE_AGENT_KEY in backend/.env")
     if not server.startswith(("https://","http://localhost:","http://127.0.0.1:")):
         raise SystemExit("Cloud URL phải dùng HTTPS (ngoại trừ localhost dev)")
-    agent_id=os.environ.get("SARAE_AGENT_ID",platform.node() or "windows-agent")
+    agent_id=settings.sarae_agent_id or platform.node() or "windows-agent"
     stop_event=threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:signal.signal(sig,lambda *_:stop_event.set())
         except (ValueError,OSError):pass
-    if os.environ.get("SARAE_AGENT_AUTOSTART_MONITOR","false").lower()=="true":
+    if settings.sarae_agent_autostart_monitor:
         try:print("CAPTCHA Monitor:",start())
         except Exception as exc:print("CAPTCHA Monitor start failed:",exc)
     print("Sarae Agent connecting to",server,"as",agent_id)
@@ -35,10 +35,7 @@ def main():
         try:
             local=status()
             report={"agent_id":agent_id,"hostname":platform.node(),
-                    "verification":{"state":local["state"],
-                                    "template_count":len(local["events"]) if False else None,
-                                    "events":local["events"][:10]}}
-            report["verification"].pop("template_count")
+                    "verification":{"state":local["state"],"events":local["events"][:10]}}
             data=json.dumps(report).encode("utf-8")
             req=urllib.request.Request(server+"/agents/heartbeat", data=data,method="POST",
                         headers={"Content-Type":"application/json",
