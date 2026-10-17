@@ -40,7 +40,10 @@ def execute(command):
     if kind=="local_media_play":
         from app.live import state
         from agent.local_player import local_player
-        return local_player.play(str(resolve_media(payload["media_id"])))
+        return local_player.play(payload["media_id"])
+    if kind=="local_playlist_start":
+        from agent.local_player import local_player
+        return local_player.playlist(payload["media_ids"],payload.get("loop",True))
     if kind=="local_media_next":
         from agent.local_player import local_player
         return local_player.next()
@@ -81,9 +84,10 @@ def main():
     obs_snapshot=None
     while not stop_event.is_set():
         try:
-            cloud_playback.tick()
+            from agent.local_player import local_player
+            local_player.tick()
         except Exception as exc:
-            print("Không thể kiểm tra video Cloud:",str(exc)[:160])
+            print("Không thể kiểm tra video local:",str(exc)[:160])
         try:
             if time.monotonic()-last_media_sync>=60:
                 try:
@@ -105,7 +109,7 @@ def main():
                 last_obs_check=time.monotonic()
             report={"agent_id":agent_id,"hostname":platform.node(),
                     "verification":{"state":local["state"],"config":local["config"],
-                                    "events":local["events"][:10]},"obs":obs_snapshot,"cloud_playback":cloud_playback.status()}
+                                    "events":local["events"][:10]},"obs":obs_snapshot,"cloud_playback":cloud_playback.status(),"local_playback":local_player.status()}
             request_json(server+"/agents/heartbeat","POST",agent_key,report)
             label=LABELS.get(st,st)
             if label!=last_label:
