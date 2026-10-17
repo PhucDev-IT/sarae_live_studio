@@ -697,8 +697,8 @@ def available_products():
         counts = {}
         for row in db.scalars(select(ProductLiveVideo)).all():
             counts[row.product_id] = counts.get(row.product_id, 0) + 1
-        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": p.image_url,
-                 "video_count": counts.get(p.id, 0)} for p in products]
+        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": p.image_url, "status": p.status,
+                 "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 
 
 @router.post("/product-session/start")

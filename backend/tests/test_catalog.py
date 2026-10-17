@@ -51,8 +51,20 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/presenters/{presenter_id}").status_code, 204)
 
     def test_validation(self):
-        self.assertEqual(self.client.post("/api/products", json={"sku": "", "name": "A"}).status_code, 422)
+        self.assertEqual(self.client.post("/api/products", json={"sku": "", "name": " "}).status_code, 422)
         self.assertEqual(self.client.post("/api/presenters", json={"name": " "}).status_code, 422)
+
+    def test_blank_sku_is_generated_and_unique(self):
+        first = self.client.post("/api/products", json={"sku": "", "name": "A"})
+        second = self.client.post("/api/products", json={"name": "B"})
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+        self.assertTrue(first.json()["sku"].startswith("SP-"))
+        self.assertNotEqual(first.json()["sku"], second.json()["sku"])
+
+    def test_edit_keeps_sku_and_image(self):
+        created = self.client.post("/api/products", json={"sku": "K1", "name": "A", "image_url": "http://x/a.png"}).json()
+        updated = self.client.put(f"/api/products/{created['id']}", json={"name": "A2", "image_url": "http://x/a.png"}).json()
+        self.assertEqual((updated["sku"], updated["image_url"]), ("K1", "http://x/a.png"))
 
 
 if __name__ == "__main__":

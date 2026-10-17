@@ -1,14 +1,21 @@
 """Product and presenter CRUD for Sarae Live Studio."""
 from datetime import datetime, timezone
+import re
 from uuid import uuid4
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.database import Base, SessionLocal
+from app.database import Base, SessionLocal, DATA_DIR
+
+PRODUCT_IMAGE_DIR = DATA_DIR / "product_images"
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+IMAGE_NAME = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp|gif)$")
 
 router = APIRouter(prefix="/api", tags=["Catalog"])
 
@@ -56,6 +63,11 @@ class ProductInput(BaseModel):
     def strip_required(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("Không được để trống")
+        return value.strip()
+
+    @field_validator("sku", "image_url")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
         return value.strip()
 
     @field_validator("status")
@@ -115,15 +127,48 @@ def list_products(db: DB, q: str = "", limit: int = Query(100, ge=1, le=500), of
     return db.scalars(stmt).all()
 
 
+def new_sku(db: Session) -> str:
+    """Short unique code for products saved without one (SKU is unique, so blank cannot be stored twice)."""
+    while True:
+        sku = "SP-" + uuid4().hex[:6].upper()
+        if not db.scalar(select(Product.id).where(Product.sku == sku)):
+            return sku
+
+
 @router.post("/products", response_model=ProductOut, status_code=201)
 def create_product(body: ProductInput, db: DB):
-    if db.scalar(select(Product.id).where(Product.sku == body.sku)):
+    if body.sku and db.scalar(select(Product.id).where(Product.sku == body.sku)):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    item = Product(**body.model_dump())
+    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db)})
     db.add(item)
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/products/images", status_code=201)
+def upload_product_image(request: Request, file: UploadFile = File(...)):
+    """Stores a product photo and returns an absolute URL to put in `image_url`."""
+    ext = IMAGE_TYPES.get(file.content_type or "")
+    if ext is None:
+        raise HTTPException(415, "Chỉ hỗ trợ ảnh JPG, PNG, WEBP hoặc GIF")
+    data = file.file.read(MAX_IMAGE_BYTES + 1)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Ảnh tối đa 5 MB")
+    if not data:
+        raise HTTPException(422, "File ảnh rỗng")
+    PRODUCT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    name = uuid4().hex + ext
+    (PRODUCT_IMAGE_DIR / name).write_bytes(data)
+    return {"url": str(request.url_for("product_image", name=name))}
+
+
+@router.get("/products/images/{name}", name="product_image")
+def product_image(name: str):
+    path = PRODUCT_IMAGE_DIR / name
+    if not IMAGE_NAME.match(name) or not path.is_file():
+        raise HTTPException(404, "Không tìm thấy ảnh")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @router.get("/products/{entity_id}", response_model=ProductOut)
@@ -148,9 +193,16 @@ def update_product(entity_id: int, body: ProductInput, db: DB):
 @router.delete("/products/{entity_id}", status_code=204)
 def delete_product(entity_id: int, db: DB):
     from app.product_videos import ProductLiveVideo
+    from app.live import state
+    from app.live_sessions import LiveSession, SessionProduct
     item = get_entity(db, Product, entity_id)
+    if state.active and item.id in (state.product_id, state.pending_product_id):
+        raise HTTPException(status_code=409, detail="Sản phẩm đang phát trên LIVE, hãy chuyển sản phẩm khác trước khi xóa")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
     db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.product_id == item.id))
+    # Upcoming and running lineups lose the product; ended sessions keep it as history.
+    open_sessions = select(LiveSession.id).where(LiveSession.status != "ENDED")
+    db.execute(delete(SessionProduct).where(SessionProduct.product_id == item.id, SessionProduct.session_id.in_(open_sessions)))
     db.delete(item)
     db.commit()
     return Response(status_code=204)
