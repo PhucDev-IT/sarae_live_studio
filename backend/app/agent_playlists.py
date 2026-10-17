@@ -35,6 +35,12 @@ def check_owner(authorization:str|None, agent_id:str):
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
     return allow_owner(authorization,row["owner_id"]),row["owner_id"]
 
+def owner_write_access(authorization:str|None,agent_id:str):
+    actor,owner_id=check_owner(authorization,agent_id)
+    if actor["role"]!="OWNER" or actor["id"]!=owner_id:
+        raise HTTPException(403,"Chỉ OWNER sở hữu Agent mới có quyền sửa và phát playlist")
+    return owner_id
+
 def check_media(agent_id:str,ids:list[str]):
     if len(ids)!=len(set(ids)):raise HTTPException(422,"Playlist có video trùng")
     with media_connection() as db:
@@ -57,7 +63,7 @@ def list_playlists(agent_id:str,authorization:str|None=Header(None)):
 
 @router.post("")
 def create_playlist(body:PlaylistBody,authorization:str|None=Header(None)):
-    _,owner_id=check_owner(authorization,body.agent_id)
+    owner_id=owner_write_access(authorization,body.agent_id)
     check_media(body.agent_id,body.media_ids)
     pid="pl_"+uuid.uuid4().hex
     with connection() as db:
@@ -70,7 +76,7 @@ def update_playlist(playlist_id:str,body:PlaylistBody,authorization:str|None=Hea
     with connection() as db:
         row=db.execute("SELECT * FROM playlists WHERE id=?",(playlist_id,)).fetchone()
         if row is None:raise HTTPException(404,"Không tìm thấy playlist")
-        actor,owner_id=check_owner(authorization,row["agent_id"])
+        owner_write_access(authorization,row["agent_id"])
         if body.agent_id!=row["agent_id"]:
             raise HTTPException(422,"Không được chuyển playlist sang Agent khác")
         check_media(body.agent_id,body.media_ids)
@@ -83,7 +89,7 @@ def delete_playlist(playlist_id:str,authorization:str|None=Header(None)):
     with connection() as db:
         row=db.execute("SELECT * FROM playlists WHERE id=?",(playlist_id,)).fetchone()
         if row is None:raise HTTPException(404,"Không tìm thấy playlist")
-        check_owner(authorization,row["agent_id"])
+        owner_write_access(authorization,row["agent_id"])
         db.execute("DELETE FROM playlists WHERE id=?",(playlist_id,))
     return {"deleted":playlist_id}
 
@@ -92,8 +98,6 @@ def play_playlist(playlist_id:str,authorization:str|None=Header(None)):
     with connection() as db:
         row=db.execute("SELECT * FROM playlists WHERE id=?",(playlist_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy playlist")
-    actor,_=check_owner(authorization,row["agent_id"])
-    if actor["role"]=="SUPER_ADMIN":
-        raise HTTPException(403,"SUPER_ADMIN không điều khiển LIVE khách hàng")
+    owner_write_access(authorization,row["agent_id"])
     return queue_command(CommandBody(agent_id=row["agent_id"],kind="local_playlist_start",
                     payload={"media_ids":json.loads(row["media_json"]),"loop":bool(row["loop"])}),authorization)
