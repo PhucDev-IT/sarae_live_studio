@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.request
 from app.config import settings
+from app.database import DATA_DIR
 from app.verification_monitor import start, stop, status, configure, ConfigBody
 from app.ai_voice import speak, SpeakBody
 from app.live import state as obs_state
@@ -47,10 +48,14 @@ def execute(command):
 def main():
     server=settings.sarae_cloud_api_url.rstrip("/")
     if not server:raise SystemExit("Chưa cấu hình SARAE_CLOUD_API_URL")
-    if not settings.sarae_agent_key:raise SystemExit("Chưa cấu hình SARAE_AGENT_KEY")
+    credential_file=DATA_DIR/"agent_activation.json"
+    if not credential_file.is_file():
+        raise SystemExit("Agent chưa kích hoạt. Chạy python -m agent.activate")
+    credential_data=json.loads(credential_file.read_text(encoding="utf-8"))
+    agent_key=credential_data["agent_credential"]
     if not server.startswith(("https://","http://localhost:","http://127.0.0.1:")):
         raise SystemExit("Chỉ cho phép HTTPS; HTTP chỉ dùng ở localhost")
-    agent_id=settings.sarae_agent_id or platform.node() or "windows-agent"
+    agent_id=credential_data["agent_id"]
     stop_event=threading.Event()
     for sig in (signal.SIGINT,signal.SIGTERM):
         try:signal.signal(sig,lambda *_:stop_event.set())
@@ -80,12 +85,12 @@ def main():
             report={"agent_id":agent_id,"hostname":platform.node(),
                     "verification":{"state":local["state"],"config":local["config"],
                                     "events":local["events"][:10]},"obs":obs_snapshot,"cloud_playback":cloud_playback.status()}
-            request_json(server+"/agents/heartbeat","POST",settings.sarae_agent_key,report)
+            request_json(server+"/agents/heartbeat","POST",agent_key,report)
             label=LABELS.get(st,st)
             if label!=last_label:
                 print(f"[{time.strftime('%H:%M:%S')}] Đã đồng bộ VPS | CAPTCHA: {label}")
                 last_label=label
-            pending=request_json(server+"/agents/commands/"+agent_id+"/next","GET",settings.sarae_agent_key).get("command")
+            pending=request_json(server+"/agents/commands/"+agent_id+"/next","GET",agent_key).get("command")
             if pending:
                 print(f"[{time.strftime('%H:%M:%S')}] Nhận lệnh từ Web: {pending['kind']}")
                 success=True
@@ -94,7 +99,7 @@ def main():
                 except Exception as exc:
                     success=False;result=str(exc)[:1900]
                 try:
-                    request_json(server+"/agents/commands/ack","POST",settings.sarae_agent_key,
+                    request_json(server+"/agents/commands/ack","POST",agent_key,
                                  {"agent_id":agent_id,"command_id":pending["command_id"],
                                   "success":success,"result":result})
                 except Exception as exc:print("Không xác nhận được kết quả lệnh:",exc)
