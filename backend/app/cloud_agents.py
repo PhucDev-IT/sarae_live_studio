@@ -12,6 +12,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
 from app.config import settings
+from app.identity import auth, allow_owner, verify_agent, db_open
 
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 DB = DATA_DIR / "agents.sqlite3"
@@ -34,13 +35,13 @@ class Heartbeat(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
     hostname:str=Field(min_length=1,max_length=160)
     verification:dict=Field(default_factory=dict)
+    agent_credential:str|None=None
     obs:dict|None=None
     cloud_playback:dict|None=None
 
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
-    if not authorized(x_sarae_agent_key, settings.sarae_agent_key):
-        raise HTTPException(401,"Agent key không hợp lệ")
+    verify_agent(body.agent_id, x_sarae_agent_key)
     import json
     at=datetime.now(timezone.utc).isoformat()
     sanitized={"verification":body.verification,"obs":body.obs,"cloud_playback":body.cloud_playback}
@@ -52,15 +53,21 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     return {"ok":True,"server_time":at}
 
 @router.get("/status")
-def get_status(x_sarae_admin_key:str|None=Header(None)):
-    if not authorized(x_sarae_admin_key, settings.sarae_admin_key):
-        raise HTTPException(401,"Cần X-Sarae-Admin-Key")
+def get_status(authorization:str|None=Header(None)):
+    user=auth(authorization)
     import json
     with connection() as db:
         rows=db.execute("SELECT agent_id, host, last_seen, status_json FROM agent_status ORDER BY last_seen DESC LIMIT 30").fetchall()
     now=datetime.now(timezone.utc)
     agents=[]
     for aid,host,seen,payload in rows:
+        try:
+            with db_open() as registry:
+                owned=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(aid,)).fetchone()
+            if owned is None or (user["role"]!="SUPER_ADMIN" and owned["owner_id"]!=user["id"]):
+                continue
+        except Exception:
+            continue
         age=(now-datetime.fromisoformat(seen)).total_seconds()
         agents.append({"agent_id":aid,"hostname":host,"last_seen":seen,
                        "online":age<35,"seconds_ago":round(age,1),**json.loads(payload)})
@@ -78,9 +85,11 @@ class AckBody(BaseModel):
     result:str=Field(default="",max_length=2000)
 
 @router.post("/commands")
-def queue_command(body:CommandBody, x_sarae_admin_key:str|None=Header(None)):
-    if not authorized(x_sarae_admin_key, settings.sarae_admin_key):
-        raise HTTPException(401,"Cần xác thực quản trị")
+def queue_command(body:CommandBody, authorization:str|None=Header(None)):
+    with db_open() as registry:
+        row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(body.agent_id,)).fetchone()
+    if row is None:raise HTTPException(404,"Không tìm thấy Agent")
+    allow_owner(authorization,row["owner_id"])
     if body.kind=="tts_speak":
         text=body.payload.get("text","")
         if not isinstance(text,str) or not 1<=len(text)<=450:
@@ -110,8 +119,7 @@ def queue_command(body:CommandBody, x_sarae_admin_key:str|None=Header(None)):
 
 @router.get("/commands/{agent_id}/next")
 def next_command(agent_id:str,x_sarae_agent_key:str|None=Header(None)):
-    if not authorized(x_sarae_agent_key,settings.sarae_agent_key):
-        raise HTTPException(401,"Agent key không hợp lệ")
+    verify_agent(agent_id,x_sarae_agent_key)
     with connection() as db:
         # Mark abandoned commands failed rather than re-running potentially
         # non-idempotent OBS/TTS actions after a worker disconnect.
@@ -130,8 +138,7 @@ def next_command(agent_id:str,x_sarae_agent_key:str|None=Header(None)):
 
 @router.post("/commands/ack")
 def ack_command(body:AckBody,x_sarae_agent_key:str|None=Header(None)):
-    if not authorized(x_sarae_agent_key,settings.sarae_agent_key):
-        raise HTTPException(401,"Agent key không hợp lệ")
+    verify_agent(body.agent_id,x_sarae_agent_key)
     with connection() as db:
         count=db.execute("""UPDATE agent_commands SET state=?,result=?,updated_at=?
            WHERE agent_id=? AND command_id=? AND state='running'""",
@@ -141,9 +148,11 @@ def ack_command(body:AckBody,x_sarae_agent_key:str|None=Header(None)):
     return {"ok":True}
 
 @router.get("/commands")
-def list_commands(agent_id:str,x_sarae_admin_key:str|None=Header(None)):
-    if not authorized(x_sarae_admin_key,settings.sarae_admin_key):
-        raise HTTPException(401,"Cần xác thực quản trị")
+def list_commands(agent_id:str,authorization:str|None=Header(None)):
+    with db_open() as registry:
+        row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(agent_id,)).fetchone()
+    if row is None:raise HTTPException(404,"Không tìm thấy Agent")
+    allow_owner(authorization,row["owner_id"])
     with connection() as db:
         rows=db.execute("""SELECT command_id,kind,state,result,created_at,updated_at FROM agent_commands
            WHERE agent_id=? ORDER BY created_at DESC LIMIT 30""",(agent_id,)).fetchall()
