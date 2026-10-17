@@ -7,7 +7,7 @@ import hmac
 import sqlite3
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
@@ -106,6 +106,14 @@ def next_command(agent_id:str,x_sarae_agent_key:str|None=Header(None)):
     if not authorized(x_sarae_agent_key,settings.sarae_agent_key):
         raise HTTPException(401,"Agent key không hợp lệ")
     with connection() as db:
+        # Mark abandoned commands failed rather than re-running potentially
+        # non-idempotent OBS/TTS actions after a worker disconnect.
+        cutoff=(datetime.now(timezone.utc)-timedelta(seconds=90)).isoformat()
+        db.execute("""UPDATE agent_commands SET state='failed',
+                       result='Agent mất kết nối hoặc không xác nhận sau 90 giây',
+                       updated_at=?
+                       WHERE agent_id=? AND state='running' AND updated_at<?""",
+                   (datetime.now(timezone.utc).isoformat(),agent_id,cutoff))
         row=db.execute("""SELECT command_id,kind,payload FROM agent_commands
              WHERE agent_id=? AND state='pending' ORDER BY created_at LIMIT 1""",(agent_id,)).fetchone()
         if not row:return {"command":None}
