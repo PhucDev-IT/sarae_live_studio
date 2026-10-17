@@ -62,13 +62,13 @@ def get_status(authorization:str|None=Header(None)):
     for aid,host,seen,payload in rows:
         try:
             with db_open() as registry:
-                owned=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(aid,)).fetchone()
+                owned=registry.execute("SELECT owner_id,hostname FROM registered_agents WHERE id=? AND enabled=1",(aid,)).fetchone()
             if owned is None or (user["role"]!="SUPER_ADMIN" and owned["owner_id"]!=user["id"]):
                 continue
         except Exception:
             continue
         age=(now-datetime.fromisoformat(seen)).total_seconds()
-        agents.append({"agent_id":aid,"hostname":host,"last_seen":seen,
+        agents.append({"agent_id":aid,"hostname":owned["hostname"],"reported_hostname":host,"last_seen":seen,
                        "online":age<35,"seconds_ago":round(age,1),**json.loads(payload)})
     return {"agents":agents}
 
