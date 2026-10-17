@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     gemini_api_key: str = ""
     openai_api_key: str = ""
+    sarae_telegram_bot_token: str = ""
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""
