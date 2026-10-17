@@ -13,14 +13,13 @@ from app.catalog import Product
 from app.media import Media, MEDIA_DIR
 from app.product_videos import ProductLiveVideo
 from app.database import SessionLocal
-from app.cloud_agents import authorized
-from app.config import settings
+from app.identity import verify_agent
+
 
 router = APIRouter(prefix="/api/agent-media", tags=["Agent Media"])
 
-def require_agent(key):
-    if not authorized(key, settings.sarae_agent_key):
-        raise HTTPException(401, "Agent key không hợp lệ")
+def require_agent(agent_id,key):
+    verify_agent(agent_id,key)
 
 def cloud_file(item):
     # Only managed uploads are distributed. Imported absolute paths are local-PC
@@ -31,8 +30,8 @@ def cloud_file(item):
     return path
 
 @router.get("/products/{product_id}/manifest")
-def manifest(product_id:int,x_sarae_agent_key:str|None=Header(None)):
-    require_agent(x_sarae_agent_key)
+def manifest(product_id:int,x_sarae_agent_id:str|None=Header(None),x_sarae_agent_key:str|None=Header(None)):
+    require_agent(x_sarae_agent_id,x_sarae_agent_key)
     with SessionLocal() as db:
         if db.get(Product,product_id) is None:
             raise HTTPException(404,"Không tìm thấy sản phẩm")
@@ -53,8 +52,8 @@ def manifest(product_id:int,x_sarae_agent_key:str|None=Header(None)):
         return {"product_id":product_id,"videos":videos}
 
 @router.get("/files/{media_id}")
-def file(media_id:int,x_sarae_agent_key:str|None=Header(None)):
-    require_agent(x_sarae_agent_key)
+def file(media_id:int,x_sarae_agent_id:str|None=Header(None),x_sarae_agent_key:str|None=Header(None)):
+    require_agent(x_sarae_agent_id,x_sarae_agent_key)
     with SessionLocal() as db:
         item=db.get(Media,media_id)
         if item is None:raise HTTPException(404,"Không tìm thấy video")
