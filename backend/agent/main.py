@@ -47,10 +47,11 @@ def execute(command):
         return local_player.stop()
     if kind=="obs_status":return {"legacy":obs_state.status(),"local":local_player.status()}
     if kind in ("obs_pause","obs_resume","obs_next","obs_previous","obs_stop"):
-        from app.live import pause_video, resume_video, next_video, previous_video, stop_video
-        handlers={"obs_pause":pause_video,"obs_resume":resume_video,
-                  "obs_next":next_video,"obs_previous":previous_video,"obs_stop":stop_video}
-        return handlers[kind]()
+        from agent.local_player import local_player
+        actions={"obs_pause":local_player.pause,"obs_resume":local_player.resume,
+                 "obs_next":local_player.next,"obs_previous":local_player.previous,
+                 "obs_stop":local_player.stop}
+        return actions[kind]()
     if kind=="tts_speak":return speak(SpeakBody.model_validate(payload))
     raise ValueError("Lệnh không được hỗ trợ")
 
