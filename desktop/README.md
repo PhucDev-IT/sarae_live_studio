@@ -1,32 +1,49 @@
-# Sarae Live Studio
+# Sarae Windows Agent GUI — Tauri + React + Python Core
 
-Flutter Windows workspace for coordinating video based sales livestreams. Web currently provides a separate browser preview catalog; its data does not sync with Windows.
+**New direction (Oct 2026):** Tauri 2 + React GUI and Python sidecar. Existing Flutter Windows sources in `desktop/lib` and `desktop/windows` are kept for reference; new Tauri app uses `desktop/src`, `desktop/src-tauri` and `desktop/package.json`. Previous Flutter instructions are no longer the primary Agent GUI.
 
-## Implemented in Task 01
+## Architecture
 
-- Responsive desktop shell with nine routes, collapsible sidebar, 404 fallback and light/dark mode.
-- Media Library: multi-video import, search, filters, metadata editing, activation, and metadata-only deletion. Original files are never deleted.
-- Windows SQLite catalog via Drift in the application support directory.
-- One-time, transactional migration from the previous `shared_preferences` catalog.
+- React/TypeScript UI handles activation form, folder picker, start/stop, logs.
+- Tauri runs a packaged Python sidecar (`sarae-agent-core.exe`) as a child process, communicating over JSON lines on stdin/stdout.
+- Python handles Cloud HTTPS requests, DPAPI credentials, local files, OBS websocket and TikTok CAPTCHA/window monitoring.
+- Cloud FastAPI deployment is separate: **no Tauri, Node.js, PySide6 or Windows GUI dependencies on VPS**.
 
-## Run
+## Windows development
 
-```bash
-git checkout dev
-flutter pub get
-flutter run -d windows
+Requirements: Rust MSVC toolchain, Visual Studio C++ Build Tools, Node.js/npm, Python backend virtual environment, WebView2.
+
+```bat
+cd desktop
+prepare-dev.bat
 ```
 
-For browser preview: `flutter run -d chrome`. Browser entries contain metadata only because a browser does not expose a durable native path.
+This builds the Python sidecar for the installed Rust target and runs `npx tauri dev`.
 
-## Verify
+## Windows installer
 
-```bash
-dart format lib test
-flutter analyze
-flutter test
-flutter build windows
-flutter build web
+```bat
+cd desktop
+build-windows.bat
 ```
 
-See [architecture](docs/ARCHITECTURE.md), [database](docs/DATABASE.md), and [roadmap](docs/ROADMAP.md).
+Output (if Windows build succeeds): `desktop/src-tauri/target/release/bundle/nsis`.
+
+The customer uses one Windows installer/GUI, though it internally contains the Tauri executable and packaged Python sidecar. Customer does not need to install Python.
+
+## Setup
+
+1. SUPER_ADMIN issues activation code in Sarae Web.
+2. Enter Cloud URL ending in `/api`, save, paste activation code, activate.
+3. Select local MP4 folders, start Agent.
+4. GUI sends allowlisted IPC commands to Python; Agent polls Cloud and controls OBS. Videos stay on Windows.
+
+Packaged Agent writes settings and DPAPI-encrypted credential to `%LOCALAPPDATA%\SaraeAgent\data`.
+
+## Important caveats
+
+This source implementation **has not been built or tested on a real Windows machine here**. Complete a Tauri/NSIS/sidecar/OBS smoke test before commercial distribution. No signed installer, system tray, automatic Windows login startup or updater is implemented yet.
+
+The PySide6 prototype remains in `backend/agent/gui.py` for historical reference, and `backend/requirements-gui.txt` is **not required** for new Tauri desktop builds or Cloud VPS.
+
+The shared single-tenant modules remain blocked under `SARAE_SAAS_MODE=true` until migrated by OWNER.
