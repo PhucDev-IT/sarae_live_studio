@@ -18,6 +18,7 @@ from app.cloud_agents import router as cloud_agents_router
 from app.agent_media import router as agent_media_router
 from app.identity import router as identity_router
 from app.agent_library import router as agent_library_router
+from app.agent_playlists import router as agent_playlists_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
@@ -30,7 +31,7 @@ async def saas_legacy_guard(request, call_next):
     """
     from fastapi.responses import JSONResponse
     path=request.url.path
-    safe=("/api/identity", "/api/agents", "/api/agent-library")
+    safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists")
     if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
         if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
             return JSONResponse(status_code=403,content={
@@ -62,6 +63,7 @@ app.include_router(cloud_agents_router)
 # app.include_router(agent_media_router)
 app.include_router(identity_router)
 app.include_router(agent_library_router)
+app.include_router(agent_playlists_router)
 
 
 @app.get("/api/health", tags=["System"])
