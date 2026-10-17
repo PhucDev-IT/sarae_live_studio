@@ -41,7 +41,8 @@ app.include_router(ai_live_router)
 app.include_router(ai_voice_router)
 app.include_router(verification_monitor_router)
 app.include_router(cloud_agents_router)
-app.include_router(agent_media_router)
+## Cloud MP4 relay disabled in local-first multi-tenant phase.
+# app.include_router(agent_media_router)
 app.include_router(identity_router)
 
 
