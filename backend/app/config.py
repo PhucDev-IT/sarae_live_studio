@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     sarae_telegram_bot_token: str = ""
+    sarae_agent_key: str = ""
+    sarae_admin_key: str = ""
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""
