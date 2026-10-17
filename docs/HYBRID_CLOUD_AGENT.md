@@ -132,3 +132,17 @@ If the target app is running elevated while Agent lacks access to executable pat
 Install the updated Python packages (`pip install -r requirements.txt`) and launch `backend/run_agent_windows.bat` in the Windows interactive session.
 
 **Not completed:** Cloud-hosted Web/Backend is not yet a complete replacement for the local LIVE session engine. The full playlist/media path mapping, OBS process ownership, end-user login, remote upload/synchronization and installable Windows executable remain separate tasks. The provided `.bat` launcher is not an `.exe` installer.
+
+## Phase 3 — Agent-owned Cloud product video playback (experimental)
+
+Implemented:
+
+- `GET /api/agent-media/products/{product_id}/manifest` returns the ordered video list with SHA-256 and length, restricted by `X-Sarae-Agent-Key`.
+- `GET /api/agent-media/files/{media_id}` returns managed Cloud MP4 files, likewise restricted.
+- `backend/agent/cloud_playback.py` downloads and checks each MP4 before atomically caching at `backend/data/agent_media/<sha256>.mp4`. Existing SHA-verified cache files are reused.
+- Cloud command types `cloud_product_play` (positive product_id), `cloud_product_next`, `cloud_product_stop`; the Web remote Agent panel exposes them. Playback uses the Windows OBS source defined in Agent's local OBS config and never VPS filesystem paths.
+- Agent checks OBS media status on its poll cycle and auto-advances after the media source reports ENDED or STOPPED. Session progress exists only in that Agent process. A restart loses playback state; manually start it again.
+
+**Limitations**: This experiment plays **one product video list**, not the entire managed LIVE session workflow. Cloud must have **actual uploaded MP4 files** in `backend/data/media`; a metadata-only `local_path` from the old local database will fail with HTTP 409, and must be uploaded to Cloud. Large files are downloaded before playback starts (Agent cache). Reused cached media are hashed to verify integrity. Downloads assume suitable disk space and reliable network. The existing local OBS LIVE engine and this feature must never use the same OBS Media Source concurrently: do not start a legacy local session while Cloud product playback is active. The same media source name must exist on Windows OBS.
+
+**Before production**: integrate Cloud session history and scheduling with Agent-owned state, agent-specific media authorization, cloud-managed upload/synchronization, resilient download/resume/quotas/cleanup, proper OBS end event reliability, persistent Agent playback state, multi-Agent device ownership, signed per-user authorization and real integration tests. Do not expose legacy APIs publicly without the planned end-user auth/RBAC.
