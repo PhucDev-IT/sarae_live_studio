@@ -1,5 +1,6 @@
 import{useEffect,useState}from'react';
 import{open}from'@tauri-apps/plugin-dialog';
+import{getCurrentWindow}from'@tauri-apps/api/window';
 import{call,connect,subscribe,shutdown}from'./bridge';
 import{Activity,Cloud,FolderOpen,KeyRound,MonitorPlay,Play,Power,RefreshCw,Settings2,Square,Video}from'lucide-react';
 type State={agent_id:string|null;running:boolean;cloud_url:string;folders:string[]};
@@ -8,12 +9,22 @@ export default function App(){
  const[state,setState]=useState<State>(initial),[url,setUrl]=useState(''),[key,setKey]=useState(''),[busy,setBusy]=useState(false),[logs,setLogs]=useState<string[]>([]),[count,setCount]=useState<number|null>(null),[status,setStatus]=useState('Đang kết nối Agent Core...');
  const log=(message:string)=>setLogs(old=>[...old.slice(-200),new Date().toLocaleTimeString('vi-VN')+' · '+message]);
  const sync=async()=>{const info=await call<State>('status');setState(info);setUrl(info.cloud_url||'');return info};
- useEffect(()=>{const unsubscribe=subscribe(packet=>{
+ useEffect(()=>{
+  let disposed=false;
+  let unlisten:(()=>void)|undefined;
+  void getCurrentWindow().onCloseRequested(async event=>{
+   if(disposed)return;
+   event.preventDefault();
+   await shutdown();
+   disposed=true;
+   await getCurrentWindow().destroy();
+  }).then(fn=>{unlisten=fn}).catch(e=>log('Không đăng ký được xử lý thoát: '+String(e)));
+  const unsubscribe=subscribe(packet=>{
   if(packet.event==='ready'){log('Python Agent Core đã sẵn sàng');void sync().catch(e=>log(String(e)))}
   else if(packet.event==='started'){setStatus('Đang chạy');setState(old=>({...old,running:true}));log('Agent đã khởi động')}
   else if(packet.event==='stopped'){setStatus('Đã dừng');setState(old=>({...old,running:false}));log('Agent đã dừng')}
   else if(packet.event==='log'||packet.event==='error')log(packet.message||'Lỗi không xác định');
- });void connect().then(()=>sync()).catch(e=>{setStatus('Không thể khởi động Agent Core');log(String(e))});return()=>{unsubscribe()}},[]);
+ });void connect().then(()=>sync()).catch(e=>{setStatus('Không thể khởi động Agent Core');log(String(e))});return()=>{unsubscribe();unlisten?.()}},[]);
  const action=async<T,>(label:string,fn:()=>Promise<T>)=>{setBusy(true);try{return await fn()}catch(e){log('Lỗi '+label+': '+String(e));return undefined}finally{setBusy(false)}};
  const configure=()=>action('Cloud',async()=>{const result=await call<State>('configure_cloud',{url});setState(result);log('Đã lưu Cloud URL')});
  const activate=()=>action('kích hoạt',async()=>{if(state.running)throw new Error('Hãy dừng Agent trước khi kích hoạt');await call('configure_cloud',{url});const result=await call<State>('activate',{key});setState(result);setKey('');log('Kích hoạt thành công · '+result.agent_id)});
