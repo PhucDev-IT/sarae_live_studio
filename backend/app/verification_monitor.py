@@ -83,14 +83,9 @@ def dependencies():
         raise RuntimeError("Thiếu thư viện: pip install opencv-python numpy mss pywin32") from exc
 
 def find_window(win32gui):
-    matches=[]
-    def callback(hwnd,_):
-        if not win32gui.IsWindowVisible(hwnd):return
-        title=win32gui.GetWindowText(hwnd)
-        if "tiktok" in title.lower() and ("live studio" in title.lower() or "live" in title.lower()):
-            matches.append((hwnd,title))
-    win32gui.EnumWindows(callback,None)
-    return matches[0] if matches else (None,"")
+    from app.windows_window_finder import find_studio_window
+    return find_studio_window(win32gui)
+
 
 def match_reference(cv2, np, frame_gray, reference_gray):
     """Scale-tolerant edge matching inspired by the upstream detector.
@@ -124,9 +119,13 @@ def loop():
         cv2,np,mss,win32gui=dependencies()
         while not stop_signal.is_set():
             try:
-                hwnd,title=find_window(win32gui)
+                target=find_window(win32gui)
+                hwnd=target['hwnd'] if target else None
+                title=target['title'] if target else ''
                 with guard:
-                    state.update(window_found=hwnd is not None,window_title=title,window_visible=bool(hwnd and not win32gui.IsIconic(hwnd)),last_scan=datetime.now(timezone.utc).isoformat(),error=None)
+                    state.update(window_found=hwnd is not None,window_title=title,
+                                 window_visible=bool(target and not target["minimized"]),
+                                 window_info=target,last_scan=datetime.now(timezone.utc).isoformat(),error=None)
                 if not hwnd or win32gui.IsIconic(hwnd):
                     with guard:state["status"]="window_unavailable"
                     positive_count=negative_count=0
