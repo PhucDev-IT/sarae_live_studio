@@ -35,9 +35,7 @@ class Heartbeat(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
     hostname:str=Field(min_length=1,max_length=160)
     verification:dict=Field(default_factory=dict)
-    agent_credential:str|None=None
     obs:dict|None=None
-    cloud_playback:dict|None=None
     local_playback:dict|None=None
 
 @router.post("/heartbeat")
@@ -45,7 +43,7 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     verify_agent(body.agent_id, x_sarae_agent_key)
     import json
     at=datetime.now(timezone.utc).isoformat()
-    sanitized={"verification":body.verification,"obs":body.obs,"cloud_playback":body.cloud_playback,"local_playback":body.local_playback}
+    sanitized={"verification":body.verification,"obs":body.obs,"local_playback":body.local_playback}
     with connection() as db:
         db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json)
                       VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
@@ -115,11 +113,6 @@ def queue_command(body:CommandBody, authorization:str|None=Header(None)):
         if not isinstance(mid,str) or len(mid)!=64 or any(c not in "0123456789abcdef" for c in mid):
             raise HTTPException(422,"media_id không hợp lệ")
         body.payload={"media_id":mid}
-    elif body.kind=="cloud_product_play":
-        pid=body.payload.get("product_id")
-        if not isinstance(pid,int) or isinstance(pid,bool) or pid<=0:
-            raise HTTPException(422,"Cần product_id là số nguyên dương")
-        body.payload={"product_id":pid}
     elif body.kind=="monitor_config":
         from app.verification_monitor import ConfigBody
         body.payload=ConfigBody.model_validate(body.payload).model_dump()
