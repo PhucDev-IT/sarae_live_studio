@@ -75,7 +75,7 @@ def get_status(authorization:str|None=Header(None)):
 
 class CommandBody(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
-    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak)$")
+    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak|local_media_play|local_media_stop)$")
     payload:dict=Field(default_factory=dict)
 
 class AckBody(BaseModel):
@@ -96,6 +96,11 @@ def queue_command(body:CommandBody, authorization:str|None=Header(None)):
             raise HTTPException(422,"Nội dung TTS từ 1 đến 450 ký tự")
         if body.payload.get("voice","vi-VN-HoaiMyNeural") not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
             raise HTTPException(422,"Giọng không được hỗ trợ")
+    elif body.kind=="local_media_play":
+        mid=body.payload.get("media_id")
+        if not isinstance(mid,str) or len(mid)!=64 or any(c not in "0123456789abcdef" for c in mid):
+            raise HTTPException(422,"media_id không hợp lệ")
+        body.payload={"media_id":mid}
     elif body.kind=="cloud_product_play":
         pid=body.payload.get("product_id")
         if not isinstance(pid,int) or isinstance(pid,bool) or pid<=0:
