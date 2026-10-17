@@ -56,13 +56,22 @@ def main():
         except Exception as exc:print("Không bật được giám sát CAPTCHA:",exc)
     print(f"Agent Windows [{agent_id}] đang kết nối đến {server}")
     last_label=None
+    last_obs_check=0
+    obs_snapshot=None
     while not stop_event.is_set():
         try:
             local=status()
             st=local["state"]["status"]
+            if time.monotonic()-last_obs_check>=15:
+                try:
+                    raw=obs_state.status()
+                    obs_snapshot={k:raw.get(k) for k in ("connected","running","paused","media_state","product_id","index","count","last_status","error")}
+                except Exception as exc:
+                    obs_snapshot={"connected":False,"error":str(exc)[:160]}
+                last_obs_check=time.monotonic()
             report={"agent_id":agent_id,"hostname":platform.node(),
                     "verification":{"state":local["state"],"config":local["config"],
-                                    "events":local["events"][:10]}}
+                                    "events":local["events"][:10]},"obs":obs_snapshot}
             request_json(server+"/agents/heartbeat","POST",settings.sarae_agent_key,report)
             label=LABELS.get(st,st)
             if label!=last_label:
