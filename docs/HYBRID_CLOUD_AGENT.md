@@ -116,3 +116,19 @@ Important: TikTok LIVE Studio must not be minimized/covered, and windows spannin
 - Agent periodically uploads summarized OBS connectivity (~15 seconds), alongside CAPTCHA status.
 - Cloud job poll now marks `running` jobs older than 90 seconds as `failed` rather than automatically executing them again; this avoids duplicate TTS/OBS actions. The agent may still have performed the action before losing network access, so `failed` is not a guarantee that no side effect occurred.
 - **Still pending for production**: server-generated per-device credentials, complete authenticated Web access, proper command idempotency/leases, playlist and media-data relocation, full OBS owner-process migration, cloud startup/session control, automatic agent updates, integration tests on Windows, and database upgrade for scalable VPS use.
+
+## Windows process identification (October 2026)
+
+The CAPTCHA monitor now validates the visible top-level window against its owning Windows **process executable**, rather than searching for `TikTok` in the window title. It reads PID and executable path with `win32process` and `psutil`, and retains the selected HWND/window bounds for capture.
+
+Expected executable basenames currently include normalized `TikTok LIVE Studio.exe`, `TikTokLiveStudio.exe`, `TikTok_Live_Studio.exe`. Actual filenames can differ depending on TikTok release: verify the process name in Task Manager or the new **Ứng dụng đang giám sát** display. Optional extra executable basenames can be configured in the Windows machine's environment as a comma-separated list:
+
+```env
+SARAE_TIKTOK_EXE_NAMES=YourActualStudioExecutable.exe
+```
+
+If the target app is running elevated while Agent lacks access to executable path, the match may fail. Do not fall back to matching any window containing `TikTok` because that can silently capture browser content. Restart Agent after changing executable identification settings.
+
+Install the updated Python packages (`pip install -r requirements.txt`) and launch `backend/run_agent_windows.bat` in the Windows interactive session.
+
+**Not completed:** Cloud-hosted Web/Backend is not yet a complete replacement for the local LIVE session engine. The full playlist/media path mapping, OBS process ownership, end-user login, remote upload/synchronization and installable Windows executable remain separate tasks. The provided `.bat` launcher is not an `.exe` installer.
