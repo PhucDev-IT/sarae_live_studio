@@ -126,7 +126,7 @@ class Window(QMainWindow):
         layout.addLayout(row)
         self.state=QLabel("Trạng thái: Chưa chạy");layout.addWidget(self.state)
         self.auto=QCheckBox("Tự chạy Agent khi mở giao diện");self.auto.setChecked(bool(read_gui_settings().get("auto_run",True)))
-        self.auto.toggled.connect(self.save_settings);layout.addWidget(self.auto)
+        self.auto.toggled.connect(lambda _checked:self.save_settings());layout.addWidget(self.auto)
         layout.addWidget(QLabel("Nhật ký hoạt động"))
         self.logs=QTextEdit();self.logs.setReadOnly(True);layout.addWidget(self.logs,1)
         self.refresh_folders()
@@ -247,7 +247,8 @@ class Window(QMainWindow):
         try:
             data=monitor_status()
             label=data["state"].get("status","idle")
-            self.statusBar().showMessage("CAPTCHA: "+label+" · Monitor "+("đang chạy" if data["state"].get("running") else "đã dừng"))
+            from agent.main import LABELS
+            self.statusBar().showMessage("CAPTCHA: "+LABELS.get(label,label)+" · Monitor "+("đang chạy" if data["state"].get("running") else "đã dừng"))
         except Exception:pass
 
     def tray_activated(self,reason):
