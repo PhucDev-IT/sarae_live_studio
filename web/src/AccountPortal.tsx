@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react'
 import {api} from './mediaApi'
 
 type User={id:string;email:string;role:'SUPER_ADMIN'|'OWNER'}
-type Owner={id:string;email:string;active:number;max_agents:number;expires_at:string|null}
+type Owner={id:string;email:string;active:number;enabled:number;max_agents:number;expires_at:string|null}
 type Agent={id:string;owner_id:string;hostname:string;enabled:number}
 const storage='sarae-auth-token'
 export function getAuthToken(){return sessionStorage.getItem(storage)||''}
@@ -20,8 +20,9 @@ export default function AccountPortal(){
  const [activation,setActivation]=useState('')
  const [error,setError]=useState('')
  const [busy,setBusy]=useState(false)
- const request=async<T,>(path:string,body?:unknown,provided?:string):Promise<T>=>{
-  const res=await fetch(api+'/api/identity'+path,{method:body?'POST':'GET',
+ const [renames,setRenames]=useState<Record<string,string>>({})
+ const request=async<T,>(path:string,body?:unknown,provided?:string,method?:string):Promise<T>=>{
+  const res=await fetch(api+'/api/identity'+path,{method:method||(body?'POST':'GET'),
    headers:{'Content-Type':'application/json',Authorization:'Bearer '+(provided||token)},
    body:body?JSON.stringify(body):undefined})
   const data=await res.json().catch(()=>({}))
@@ -66,11 +67,17 @@ export default function AccountPortal(){
      const result=await request<{activation_key:string}>(`/owners/${o.id}/activation-keys`,{})
      setActivation(result.activation_key)
     })}>Cấp mã kích hoạt</button>
+    <div style={{display:'grid',gap:6,maxWidth:340,marginTop:8}}>
+     <label>Giới hạn máy<input type="number" min={1} max={100} value={o.max_agents} onChange={e=>setOwners(all=>all.map(x=>x.id===o.id?{...x,max_agents:Number(e.target.value)}:x))}/></label>
+     <label>Hết hạn license<input type="datetime-local" value={o.expires_at?.slice(0,16)||''} onChange={e=>setOwners(all=>all.map(x=>x.id===o.id?{...x,expires_at:e.target.value?new Date(e.target.value).toISOString():null}:x))}/></label>
+     <div><button disabled={busy} onClick={()=>void perform(async()=>{await request(`/owners/${o.id}/license`,{max_agents:o.max_agents,expires_at:o.expires_at,enabled:Boolean(o.enabled)},undefined,'PUT');await refresh()})}>Lưu license</button>
+     <button disabled={busy} onClick={()=>void perform(async()=>{await request(`/owners/${o.id}/license`,{max_agents:o.max_agents,expires_at:o.expires_at,enabled:!o.enabled},undefined,'PUT');await refresh()})}>{o.enabled?'Khóa license':'Mở license'}</button></div>
+    </div>
    </div>)}
   {activation&&<p><strong>Mã kích hoạt (chỉ hiện một lần):</strong><code style={{overflowWrap:'anywhere'}}>{activation}</code></p>}
   </section>}
   <section><h3>Thiết bị {user.role==='OWNER'?'của tôi':'trên hệ thống'}</h3>
-  {!agents.length?<p>Chưa có Agent được kích hoạt.</p>:agents.map(a=><div key={a.id} style={{borderTop:'1px solid #8884',padding:'12px 0'}}><strong>{a.hostname}</strong> — {a.id} · {a.enabled?'Được cấp quyền':'Đã khóa'}</div>)}</section>
+  {!agents.length?<p>Chưa có Agent được kích hoạt.</p>:agents.map(a=><div key={a.id} style={{borderTop:'1px solid #8884',padding:'12px 0'}}><strong>{a.hostname}</strong> — {a.id} · {a.enabled?'Được cấp quyền':'Đã khóa'}<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}><input value={renames[a.id]??a.hostname} onChange={e=>setRenames(x=>({...x,[a.id]:e.target.value}))}/><button disabled={busy} onClick={()=>void perform(async()=>{await request(`/agents/${a.id}`,{hostname:renames[a.id]??a.hostname},undefined,'PATCH');await refresh()})}>Đổi tên</button><button disabled={busy||!a.enabled} onClick={()=>{if(window.confirm('Thu hồi quyền kết nối Agent này?'))void perform(async()=>{await request(`/agents/${a.id}`,undefined,undefined,'DELETE');await refresh()})}}>Thu hồi Agent</button></div></div>)}</section>
   {error&&<p role="alert">{error}</p>}
  </section>
 }
