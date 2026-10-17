@@ -90,7 +90,11 @@ def queue_command(body:CommandBody, authorization:str|None=Header(None)):
     with db_open() as registry:
         row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(body.agent_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
-    allow_owner(authorization,row["owner_id"])
+    actor=allow_owner(authorization,row["owner_id"])
+    # Global administrators manage licenses/devices, but cannot silently
+    # intervene in a customer's active stream.
+    if actor["role"]=="SUPER_ADMIN":
+        raise HTTPException(403,"SUPER_ADMIN không trực tiếp điều khiển LIVE khách hàng")
     if body.kind=="tts_speak":
         text=body.payload.get("text","")
         if not isinstance(text,str) or not 1<=len(text)<=450:
