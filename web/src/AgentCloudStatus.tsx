@@ -1,11 +1,12 @@
 import {useEffect,useState} from 'react'
 import {api,errorText} from './mediaApi'
+import {getAuthToken} from './AccountPortal'
 type Agent={agent_id:string;hostname:string;last_seen:string;online:boolean;seconds_ago:number;obs?:{connected?:boolean;running?:boolean;media_state?:string;error?:string};cloud_playback?:{active:boolean;product_id:number|null;index:number;count:number};verification?:{state?:{status?:string;running?:boolean;window_found?:boolean;window_info?:{pid:number;hwnd:number;exe_name:string;exe_path:string;title:string;minimized:boolean}|null;monitors_detected?:number};config?:{interval_seconds:number;threshold:number;telegram_enabled:boolean;telegram_chat_id:string};events?:{at:string;kind:string;detail:string}[]}}
 type Job={command_id:string;kind:string;state:string;result:string|null;created_at:string}
 const labels:Record<string,string>={idle:'Chưa bật',watching:'Đang quét, chưa thấy CAPTCHA',captcha_detected:'Phát hiện CAPTCHA',window_unavailable:'Không thấy cửa sổ TikTok',template_missing_or_invalid:'Ảnh mẫu không hợp lệ',starting:'Đang bật',stopped:'Đã dừng',error:'Có lỗi'}
 const commands:Record<string,string>={monitor_start:'Bật Monitor',monitor_stop:'Dừng Monitor',monitor_config:'Lưu cấu hình',obs_status:'Kiểm tra OBS',obs_pause:'Tạm dừng video',obs_resume:'Tiếp tục video',obs_next:'Video tiếp',obs_previous:'Video trước',obs_stop:'Dừng video',tts_speak:'Phát giọng nói vào OBS',cloud_product_play:'Phát sản phẩm từ Cloud',cloud_product_next:'Video Cloud tiếp theo',cloud_product_stop:'Dừng phiên Cloud'}
 export default function AgentCloudStatus(){
- const [key,setKey]=useState(()=>sessionStorage.getItem('sarae-admin-key')||'')
+ const [key,setKey]=useState(getAuthToken())
  const [agents,setAgents]=useState<Agent[]>([])
  const [selected,setSelected]=useState('')
  const [period,setPeriod]=useState(2)
@@ -18,7 +19,7 @@ export default function AgentCloudStatus(){
  const [note,setNote]=useState('')
  const [busy,setBusy]=useState(false)
  const apiCall=async<T,>(url:string,options?:RequestInit):Promise<T>=>{
-  const response=await fetch(api+'/api/agents'+url,{...options,headers:{'X-Sarae-Admin-Key':key,'Content-Type':'application/json',...options?.headers}})
+  const response=await fetch(api+'/api/agents'+url,{...options,headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json',...options?.headers}})
   if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||'HTTP '+response.status)}
   return response.json() as Promise<T>
  }
@@ -26,7 +27,7 @@ export default function AgentCloudStatus(){
   if(!key.trim())return
   try{
    const data=await apiCall<{agents:Agent[]}>('/status')
-   setAgents(data.agents);setError('');sessionStorage.setItem('sarae-admin-key',key)
+   setAgents(data.agents);setError('');
    const current=selected||data.agents[0]?.agent_id||''
    if(!selected&&current){setSelected(current);const c=data.agents.find(a=>a.agent_id===current)?.verification?.config;if(c){setPeriod(c.interval_seconds);setThreshold(c.threshold)}}
    if(current){const j=await apiCall<{commands:Job[]}>('/commands?agent_id='+encodeURIComponent(current));setJobs(j.commands)}
@@ -44,7 +45,7 @@ export default function AgentCloudStatus(){
  }
  const selectedAgent=agents.find(a=>a.agent_id===selected)
  return <section className="vm-panel"><h3>Windows Agent · Điều khiển từ xa</h3><p>Truy cập Web bằng điện thoại hoặc máy tính khác, gửi lệnh tới Backend VPS. Windows Agent xử lý tại máy có TikTok LIVE Studio/OBS. Trạng thái được cập nhật khoảng 5 giây một lần.</p>
-  <label>Admin Key<input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="SARAE_ADMIN_KEY trên Cloud Backend"/></label>
+  <label>Phiên đăng nhập từ trang Tài khoản & Agent<input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="Đăng nhập để lấy access token"/></label>
   <div className="vm-actions"><button disabled={busy||!key} onClick={()=>void refresh()}>Làm mới Agent</button></div>
   {!!agents.length&&<><label>Máy Windows<select value={selected} onChange={e=>{setSelected(e.target.value);const c=agents.find(a=>a.agent_id===e.target.value)?.verification?.config;if(c){setPeriod(c.interval_seconds);setThreshold(c.threshold)}}}>{agents.map(a=><option key={a.agent_id} value={a.agent_id}>{a.hostname} — {a.online?'Online':'Offline'}</option>)}</select></label>
   {selectedAgent&&<div className="vm-stats"><div><small>Kết nối</small><strong>{selectedAgent.online?'Đang kết nối':'Mất kết nối'}</strong></div><div><small>Monitor</small><strong>{labels[selectedAgent.verification?.state?.status||'']||selectedAgent.verification?.state?.status||'Chưa có dữ liệu'}</strong></div><div><small>OBS trên Agent</small><strong>{selectedAgent.obs?.connected? "Đã kết nối" : "Chưa kết nối"}</strong></div><div><small>Lần cập nhật</small><strong>{new Date(selectedAgent.last_seen).toLocaleTimeString('vi-VN')}</strong></div></div>}
