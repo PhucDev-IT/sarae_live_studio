@@ -184,3 +184,39 @@ def bootstrap_admin(email:str,password:str):
         salt=secrets.token_hex(16)
         db.execute("INSERT INTO users VALUES(?,?,?,?,?,1)",
                    (str(uuid.uuid4()),email.strip().lower(),pass_hash(password,salt),salt,"SUPER_ADMIN"))
+
+class LicenseUpdate(BaseModel):
+    max_agents:int=Field(ge=1,le=100)
+    expires_at:str|None=None
+    enabled:bool=True
+
+class AgentRename(BaseModel):
+    hostname:str=Field(min_length=1,max_length=160)
+
+@router.put("/owners/{owner_id}/license")
+def update_license(owner_id:str,body:LicenseUpdate,authorization:str|None=Header(None)):
+    require_admin(authorization)
+    with db_open() as db:
+        count=db.execute("UPDATE licenses SET max_agents=?,expires_at=?,enabled=? WHERE owner_id=?",
+                         (body.max_agents,body.expires_at,int(body.enabled),owner_id)).rowcount
+    if not count:raise HTTPException(404,"Không tìm thấy license")
+    return {"ok":True}
+
+@router.patch("/agents/{agent_id}")
+def rename_agent(agent_id:str,body:AgentRename,authorization:str|None=Header(None)):
+    with db_open() as db:
+        row=db.execute("SELECT owner_id FROM registered_agents WHERE id=?",(agent_id,)).fetchone()
+        if row is None:raise HTTPException(404,"Không tìm thấy Agent")
+        allow_owner(authorization,row["owner_id"])
+        db.execute("UPDATE registered_agents SET hostname=? WHERE id=?",
+                   (body.hostname.strip(),agent_id))
+    return {"ok":True}
+
+@router.delete("/agents/{agent_id}")
+def revoke_agent(agent_id:str,authorization:str|None=Header(None)):
+    with db_open() as db:
+        row=db.execute("SELECT owner_id FROM registered_agents WHERE id=?",(agent_id,)).fetchone()
+        if row is None:raise HTTPException(404,"Không tìm thấy Agent")
+        allow_owner(authorization,row["owner_id"])
+        db.execute("UPDATE registered_agents SET enabled=0 WHERE id=?",(agent_id,))
+    return {"revoked":agent_id}
