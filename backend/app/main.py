@@ -20,6 +20,22 @@ from app.identity import router as identity_router
 from app.agent_library import router as agent_library_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
+
+@app.middleware("http")
+async def saas_legacy_guard(request, call_next):
+    """Fail closed for legacy single-tenant APIs in shared VPS deployments.
+
+    Until products/live sessions/media are partitioned by OWNER, they MUST NOT
+    be reachable by any SaaS user or by guessing endpoint URLs.
+    """
+    from fastapi.responses import JSONResponse
+    path=request.url.path
+    safe=("/api/identity", "/api/agents", "/api/agent-library")
+    if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
+        if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
+            return JSONResponse(status_code=403,content={
+                "detail":"API local cũ chưa hỗ trợ tách dữ liệu OWNER; không khả dụng trong SaaS mode"})
+    return await call_next(request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
