@@ -13,3 +13,6 @@ backend/data/obs_config.json
 backend/data/obs_config.tmp
 backend/data/product_images/
 backend/data/presenter_images/
+
+# Runtime credentials, local media metadata, session checkpoints and SaaS SQLite data
+backend/data/
