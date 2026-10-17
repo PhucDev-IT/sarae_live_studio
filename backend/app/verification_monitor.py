@@ -76,6 +76,32 @@ def find_window(win32gui):
     win32gui.EnumWindows(callback,None)
     return matches[0] if matches else (None,"")
 
+def match_reference(cv2, np, frame_gray, reference_gray):
+    """Scale-tolerant edge matching inspired by the upstream detector.
+
+    Only detects UI presence. It never extracts, solves or submits a challenge.
+    """
+    screen_edges = cv2.Canny(frame_gray, 70, 160)
+    reference_edges = cv2.Canny(reference_gray, 70, 160)
+    if cv2.countNonZero(reference_edges) < 25:
+        raise ValueError("Ảnh mẫu thiếu chi tiết cạnh; hãy cắt một vùng tiêu đề CAPTCHA rõ nét")
+    best_score, best_scale = -1.0, 1.0
+    for scale in (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2):
+        w = max(1, round(reference_gray.shape[1] * scale))
+        h = max(1, round(reference_gray.shape[0] * scale))
+        if w > frame_gray.shape[1] or h > frame_gray.shape[0]:
+            continue
+        template = cv2.resize(reference_edges, (w, h), interpolation=cv2.INTER_LINEAR)
+        if cv2.countNonZero(template) < 20:
+            continue
+        score = float(cv2.matchTemplate(screen_edges, template, cv2.TM_CCOEFF_NORMED).max())
+        if np.isfinite(score) and score > best_score:
+            best_score, best_scale = score, scale
+    if best_score < 0:
+        raise ValueError("Không thể so khớp ảnh mẫu với màn hình")
+    return best_score, best_scale
+
+
 def loop():
     global last_detection,positive_count,negative_count
     try:
@@ -107,11 +133,11 @@ def loop():
                 if reference.shape[0]>gray.shape[0] or reference.shape[1]>gray.shape[1]:
                     with guard:state["status"]="template_too_large"
                     stop_signal.wait(config["interval_seconds"]);continue
-                score=float(cv2.matchTemplate(gray,reference,cv2.TM_CCOEFF_NORMED).max())
+                score,matched_scale=match_reference(cv2,np,gray,reference)
                 detected=score>=config["threshold"]
                 positive_count=positive_count+1 if detected else 0
                 negative_count=negative_count+1 if not detected else 0
-                with guard:state.update(status="captcha_detected" if last_detection else "watching",match_score=round(score,3))
+                with guard:state.update(status="captcha_detected" if last_detection else "watching",match_score=round(score,3),match_scale=matched_scale)
                 if not last_detection and positive_count>=2:
                     last_detection=True
                     image_name="detected_"+datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")+".png"
