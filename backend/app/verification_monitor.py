@@ -146,10 +146,11 @@ def loop():
                         raise ValueError("Cửa sổ TikTok nằm ngoài vùng màn hình đang hiển thị")
                     shot=np.array(capture.grab({"left":left,"top":top,
                                                  "width":right-left,"height":bottom-top}))
+                monitor_count=len(capture.monitors)-1
                 with guard:
                     state["capture_bounds"]={"left":left,"top":top,
                                              "width":right-left,"height":bottom-top}
-                    state["monitors_detected"]=len(capture.monitors)-1
+                    state["monitors_detected"]=monitor_count
                 gray=cv2.cvtColor(shot,cv2.COLOR_BGRA2GRAY)
                 scores=[]
                 for candidate in all_templates():
