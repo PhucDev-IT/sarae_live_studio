@@ -1,10 +1,16 @@
+import os
+import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # Keep persistent development data outside the source code packages.
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SaraeAgent" / "data"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1] / "data"
+)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite:///{(DATA_DIR / 'sarae_live.db').as_posix()}"
 
