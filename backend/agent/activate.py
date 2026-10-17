@@ -5,9 +5,8 @@ import platform
 from pathlib import Path
 from urllib.request import Request,urlopen
 from app.config import settings
-from app.database import DATA_DIR
+from agent.credentials import save
 
-FILE=DATA_DIR/"agent_activation.json"
 def main():
     server=settings.sarae_cloud_api_url.rstrip("/")
     if not server or not server.startswith(("https://","http://127.0.0.1:","http://localhost:")):
@@ -16,7 +15,7 @@ def main():
     payload=json.dumps({"activation_key":key,"hostname":platform.node()}).encode()
     req=Request(server+"/identity/activate",method="POST",data=payload,headers={"Content-Type":"application/json"})
     with urlopen(req,timeout=20) as res:result=json.load(res)
-    FILE.write_text(json.dumps({"agent_id":result["agent_id"],"agent_credential":result["agent_credential"]}),encoding="utf-8")
+    save(result["agent_id"],result["agent_credential"])
     print("Đã kích hoạt Agent:",result["agent_id"])
 
 if __name__=="__main__":main()
