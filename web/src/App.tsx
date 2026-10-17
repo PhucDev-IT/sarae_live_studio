@@ -180,7 +180,7 @@ function Dashboard({ health, navigate }: { health: Health; navigate: (page: Page
 }
 
 function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => void }) {
-  const content: Record<Exclude<Page, 'dashboard' | 'settings'>, { icon: LucideIcon; title: string; summary: string; tasks: string[] }> = {
+  const content: Record<Exclude<Page, 'dashboard' | 'settings' | 'account'>, { icon: LucideIcon; title: string; summary: string; tasks: string[] }> = {
     media: { icon: Film, title: 'Thư viện video sắp ra mắt', summary: 'Tại đây bạn sẽ import MP4 hàng loạt, chọn nơi lưu trữ và gắn sản phẩm cho từng video.', tasks: ['Import video / Link local folder', 'Metadata & ảnh đại diện', 'Phân loại theo sản phẩm, người mẫu'] },
     products: { icon: Package, title: 'Quản lý sản phẩm', summary: 'Dữ liệu sản phẩm sẽ được quản lý tập trung trên Backend và liên kết với video.', tasks: ['Sản phẩm và biến thể', 'Thông tin giới thiệu', 'Liên kết với video'] },
     presenters: { icon: Users, title: 'Người giới thiệu', summary: 'Quản lý người mẫu hoặc người giới thiệu xuất hiện trong từng video.', tasks: ['Hồ sơ người giới thiệu', 'Danh sách video liên quan', 'Thông tin mô tả'] },
@@ -193,7 +193,7 @@ function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => 
     'verification-monitor': { icon: Activity, title: 'CAPTCHA Monitor', summary: 'Phát hiện yêu cầu xác minh trên TikTok LIVE Studio và cảnh báo qua Telegram.', tasks: ['Chụp màn hình', 'So khớp mẫu', 'Cảnh báo Telegram'] },
     ai: { icon: Bot, title: 'AI Assistant', summary: 'Thiết lập ngữ cảnh sản phẩm, quy tắc phản hồi và giọng nói ở giai đoạn AI.', tasks: ['Quy tắc phản hồi', 'Ngữ cảnh sản phẩm', 'Cấu hình TTS'] },
   }
-  const config = content[page as Exclude<Page, 'dashboard' | 'settings'>]
+  const config = content[page as Exclude<Page, 'dashboard' | 'settings' | 'account'>]
   const Icon = config.icon
   return <section className="module-panel panel"><div className="module-art"><span className="module-icon"><Icon size={31}/></span><div className="module-orbit orbit-a"/><div className="module-orbit orbit-b"/></div><div className="module-content"><div className="module-kicker">MODULE ROADMAP</div><h2>{config.title}</h2><p>{config.summary}</p><div className="module-tags">{config.tasks.map(task => <span key={task}>{task}</span>)}</div><Button variant="outline" className="secondary-button" leftIcon={<ChevronLeft size={17}/>} onClick={() => navigate('dashboard')}>Quay lại tổng quan</Button></div></section>
 }
