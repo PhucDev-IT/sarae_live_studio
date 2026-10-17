@@ -64,6 +64,7 @@ def run_agent():
 
 def invoke(method,params):
     global worker
+    if method not in {"status","configure_cloud","activate","add_folder","remove_folder","scan","start","stop","shutdown"}:raise ValueError("Lệnh IPC không được hỗ trợ")
     if method=="status":return status()
     if method=="configure_cloud":
         url=validate_url(str(params.get("url","")))
@@ -111,7 +112,9 @@ def invoke(method,params):
         return status()
     if method=="shutdown":
         stop_flag.set()
-        if worker and worker.is_alive():worker.join(timeout=18)
+        if worker and worker.is_alive():
+            worker.join(timeout=20)
+            if worker.is_alive():raise ValueError("Agent vẫn đang xử lý, chưa thể thoát")
         return {"ok":True}
     raise ValueError("Lệnh IPC không được hỗ trợ")
 
@@ -127,6 +130,6 @@ def serve():
         except Exception as exc:
             emit({"id":locals().get("request_id"),"ok":False,"error":str(exc)})
     stop_flag.set()
-    if worker and worker.is_alive():worker.join(timeout=18)
+    if worker and worker.is_alive():worker.join(timeout=20)
 
 if __name__=="__main__":serve()
