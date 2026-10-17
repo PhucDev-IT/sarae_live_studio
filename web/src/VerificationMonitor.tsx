@@ -4,7 +4,7 @@ import {apiRequest,errorText} from './mediaApi'
 import './verification-monitor.css'
 import AgentCloudStatus from './AgentCloudStatus'
 type Event={id:number;at:string;kind:string;detail:string;image:string|null}
-type Monitor={state:{running:boolean;window_found:boolean;window_title:string;window_visible:boolean;status:string;last_scan:string|null;error:string|null;events_count:number;match_score?:number};config:{interval_seconds:number;threshold:number;telegram_enabled:boolean;telegram_chat_id:string;template_loaded:boolean};events:Event[]}
+type Monitor={state:{running:boolean;window_found:boolean;window_title:string;window_visible:boolean;status:string;last_scan:string|null;error:string|null;events_count:number;match_score?:number;window_info?:{pid:number;hwnd:number;exe_name:string;exe_path:string;title:string;minimized:boolean}|null;monitors_detected?:number};config:{interval_seconds:number;threshold:number;telegram_enabled:boolean;telegram_chat_id:string;template_loaded:boolean};events:Event[]}
 const payload=(obj:unknown,method='POST'):RequestInit=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)})
 export default function VerificationMonitor(){
  const [data,setData]=useState<Monitor|null>(null)
@@ -25,6 +25,7 @@ export default function VerificationMonitor(){
  return <div className="vm-layout">
   <section className="vm-panel"><h3><Camera size={19}/> CAPTCHA Monitor V1</h3><p>Theo dõi sự xuất hiện của hộp thoại xác minh trên màn hình TikTok LIVE Studio. Không tự giải hoặc điều khiển chuột. Cửa sổ phải hiện trên màn hình và không bị che khuất.</p>
    <div className="vm-stats"><div><small>Monitor</small><strong>{data?.state.running?'Đang chạy':'Đã dừng'}</strong></div><div><small>TikTok LIVE Studio</small><strong>{data?.state.window_visible?'Đang hiển thị':data?.state.window_found?'Đã thu nhỏ':'Chưa tìm thấy'}</strong></div><div><small>CAPTCHA</small><strong>{data?.state.status==='captcha_detected'?'Nghi vấn phát hiện':data?.state.status==='watching'?'Chưa phát hiện':data?.state.status||'Chưa kết nối'}</strong></div><div><small>Độ khớp gần nhất</small><strong>{data?.state.match_score??'—'}</strong></div></div>
+   {data?.state.window_info&&<div className="vm-event"><strong>Ứng dụng đang giám sát</strong><p>{data.state.window_info.exe_name} · PID {data.state.window_info.pid} · HWND {data.state.window_info.hwnd}</p><small>Đường dẫn: {data.state.window_info.exe_path}</small><small>Tiêu đề: {data.state.window_info.title || '(Không có tiêu đề)'}</small><small>Số màn hình: {data.state.monitors_detected??'Đang kiểm tra'}</small></div>}
    {data?.state.error&&<p className="vm-error">{data.state.error}</p>}
    <div className="vm-actions"><button disabled={busy||!!data?.state.running} onClick={()=>void action(()=>apiRequest('/verification-monitor/start',{method:'POST'}),'Đã bật giám sát')}><Play size={16}/> Bật Monitor</button><button disabled={busy||!data?.state.running} onClick={()=>void action(()=>apiRequest('/verification-monitor/stop',{method:'POST'}),'Đã dừng giám sát')}><Square size={16}/> Dừng</button><button onClick={()=>void refresh()}><RefreshCw size={16}/> Làm mới</button></div>
   </section>
