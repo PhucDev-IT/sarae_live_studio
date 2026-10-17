@@ -12,7 +12,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
 from app.config import settings
-from app.identity import auth, allow_owner, verify_agent, db_open
+from app.identity import auth, allow_owner, verify_agent, db_open, license_not_expired
 
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 DB = DATA_DIR / "agents.sqlite3"
@@ -56,7 +56,7 @@ def get_status(authorization:str|None=Header(None)):
     user=auth(authorization)
     import json
     with connection() as db:
-        rows=db.execute("SELECT agent_id, host, last_seen, status_json FROM agent_status ORDER BY last_seen DESC LIMIT 30").fetchall()
+        rows=db.execute("SELECT agent_id, host, last_seen, status_json FROM agent_status ORDER BY last_seen DESC LIMIT 1000").fetchall()
     now=datetime.now(timezone.utc)
     agents=[]
     for aid,host,seen,payload in rows:
@@ -86,8 +86,12 @@ class AckBody(BaseModel):
 @router.post("/commands")
 def queue_command(body:CommandBody, authorization:str|None=Header(None)):
     with db_open() as registry:
-        row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(body.agent_id,)).fetchone()
+        row=registry.execute("""SELECT a.owner_id,l.enabled AS license_enabled,l.expires_at
+            FROM registered_agents a JOIN licenses l ON l.owner_id=a.owner_id
+            WHERE a.id=? AND a.enabled=1""",(body.agent_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
+    if not row["license_enabled"] or not license_not_expired(row["expires_at"]):
+        raise HTTPException(403,"License đã hết hạn hoặc bị khóa")
     actor=allow_owner(authorization,row["owner_id"])
     # Global administrators manage licenses/devices, but cannot silently
     # intervene in a customer's active stream.
@@ -133,6 +137,7 @@ def queue_command(body:CommandBody, authorization:str|None=Header(None)):
 def next_command(agent_id:str,x_sarae_agent_key:str|None=Header(None)):
     verify_agent(agent_id,x_sarae_agent_key)
     with connection() as db:
+        db.execute("BEGIN IMMEDIATE")
         # Mark abandoned commands failed rather than re-running potentially
         # non-idempotent OBS/TTS actions after a worker disconnect.
         cutoff=(datetime.now(timezone.utc)-timedelta(seconds=90)).isoformat()
