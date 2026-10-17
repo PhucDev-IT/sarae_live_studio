@@ -67,7 +67,7 @@ def get_status(x_sarae_admin_key:str|None=Header(None)):
 
 class CommandBody(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$")
-    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak)$")
+    kind:str=Field(pattern=r"^(monitor_start|monitor_stop|monitor_config|obs_status|obs_pause|obs_resume|obs_next|obs_previous|obs_stop|tts_speak|cloud_product_play|cloud_product_next|cloud_product_stop)$")
     payload:dict=Field(default_factory=dict)
 
 class AckBody(BaseModel):
@@ -86,6 +86,11 @@ def queue_command(body:CommandBody, x_sarae_admin_key:str|None=Header(None)):
             raise HTTPException(422,"Nội dung TTS từ 1 đến 450 ký tự")
         if body.payload.get("voice","vi-VN-HoaiMyNeural") not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
             raise HTTPException(422,"Giọng không được hỗ trợ")
+    elif body.kind=="cloud_product_play":
+        pid=body.payload.get("product_id")
+        if not isinstance(pid,int) or isinstance(pid,bool) or pid<=0:
+            raise HTTPException(422,"Cần product_id là số nguyên dương")
+        body.payload={"product_id":pid}
     elif body.kind=="monitor_config":
         from app.verification_monitor import ConfigBody
         body.payload=ConfigBody.model_validate(body.payload).model_dump()
