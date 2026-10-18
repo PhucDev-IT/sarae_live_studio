@@ -144,6 +144,7 @@ def stop_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = Id
 def available_products(owner: Owner, agent_id: AgentId):
     """The owner's products with how many LIVE videos each has on that Agent (products are shared by all Agents)."""
     from app.media import library
+    from app.media_access import public_url
     from app.product_videos import ProductLiveVideo
     agent = owned_agent(owner, agent_id)
     present = {mid for mid, row in library(agent["id"]).items() if row["available"]}
@@ -154,7 +155,7 @@ def available_products(owner: Owner, agent_id: AgentId):
                                                              ProductLiveVideo.agent_id == agent["id"])).all():
             if row.media_id in present:
                 counts[row.product_id] = counts.get(row.product_id, 0) + 1
-        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": p.image_url, "status": p.status,
+        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
                  "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 
 

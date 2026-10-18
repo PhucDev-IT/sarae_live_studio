@@ -102,10 +102,14 @@ def sync(body:Inventory,x_sarae_agent_key:str|None=Header(None)):
     return {"synced":len(body.videos),"thumbs_missing":missing}
 
 @router.get("/thumbs/{name}")
-def thumb(name:str):
-    """Unguessable 128-bit names act as capability URLs so <img> tags work without a Bearer header."""
+def thumb(name:str,exp:int|None=None,sig:str|None=None):
+    """Only through a URL signed for the owner of the Agent the thumbnail came from (see media_access)."""
+    from app import media_access
     if len(name)!=32 or any(c not in "0123456789abcdef" for c in name):
         raise HTTPException(404,"Không tìm thấy ảnh")
+    owner_id=media_access.thumb_owner(name)
+    if owner_id is None:raise HTTPException(404,"Không tìm thấy ảnh")
+    media_access.check("thumb",name,owner_id,exp,sig)
     path=THUMB_DIR/f"{name}.jpg"
     if not path.is_file():raise HTTPException(404,"Không tìm thấy ảnh")
     return FileResponse(path,media_type="image/jpeg",headers={"Cache-Control":"public, max-age=86400"})
@@ -116,6 +120,7 @@ def list_media(agent_id:str,authorization:str|None=Header(None)):
         row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(agent_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
     allow_owner(authorization,row["owner_id"])
+    from app.media_access import thumb_url
     db=connection()
     try:
         rows=db.execute("""SELECT media_id,filename,size_bytes,modified_ns,available,duration_seconds,thumb_name
@@ -125,6 +130,6 @@ def list_media(agent_id:str,authorization:str|None=Header(None)):
     videos=[]
     for x in rows:
         item=dict(x);name=item.pop("thumb_name")
-        item["thumb_url"]=f"/api/agent-library/thumbs/{name}" if name else None
+        item["thumb_url"]=thumb_url(name,row["owner_id"])
         videos.append(item)
     return {"agent_id":agent_id,"videos":videos}

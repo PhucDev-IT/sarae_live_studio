@@ -14,6 +14,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app.catalog import Presenter, Product
 from app.database import Base, SessionLocal
 from app.identity import current_owner
+from app.media_access import thumb_url
 from app.owner_agents import AgentId, owned_agent
 from app.ownership import Owner, owned_ids
 
@@ -93,7 +94,7 @@ def output(db: Session, owner_id: str, agent_id: str, row: dict, tags: str | Non
                                                       model.media_id == row["media_id"])).all())
     return {"id": row["media_id"], "agent_id": agent_id, "filename": row["filename"], "size_bytes": row["size_bytes"],
             "duration_seconds": row["duration_seconds"], "available": bool(row["available"]),
-            "thumb_url": f"/api/agent-library/thumbs/{row['thumb_name']}" if row["thumb_name"] else None,
+            "thumb_url": thumb_url(row["thumb_name"], owner_id),
             "tags": tags, "product_ids": linked(ProductLiveVideo, ProductLiveVideo.product_id),
             "presenter_ids": linked(MediaPresenter, MediaPresenter.presenter_id)}
 

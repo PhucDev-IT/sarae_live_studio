@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     sarae_agent_key: str = ""
     sarae_admin_key: str = ""
     sarae_saas_mode: bool = False
+    # HMAC key for signed image URLs; set the same value on every server behind a load balancer.
+    sarae_url_signing_secret: str = ""
     sarae_cloud_api_url: str = ""
     sarae_agent_id: str = ""
     sarae_agent_autostart_monitor: bool = False

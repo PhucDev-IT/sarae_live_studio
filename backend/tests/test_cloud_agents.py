@@ -422,7 +422,7 @@ class LibraryThumbnailTests(AgentChannelBase):
                                  headers={"Authorization": self.owner_token}).json()["videos"]
         first = next(v for v in videos if v["media_id"] == MID)
         self.assertEqual(first["duration_seconds"], 12.5)
-        name = first["thumb_url"].rsplit("/", 1)[-1]
+        name = first["thumb_url"].split("?")[0].rsplit("/", 1)[-1]
         self.assertRegex(name, r"^[0-9a-f]{32}$")
         image = self.client.get(first["thumb_url"])
         self.assertEqual(image.status_code, 200)
@@ -433,7 +433,7 @@ class LibraryThumbnailTests(AgentChannelBase):
                                  headers={"Authorization": self.owner_token}).json()["videos"]
         first = next(v for v in videos if v["media_id"] == MID)
         self.assertEqual(first["duration_seconds"], 12.5)
-        self.assertTrue(first["thumb_url"].endswith(name))
+        self.assertTrue(first["thumb_url"].split("?")[0].endswith(name))
         # A changed file drops its thumbnail until the Agent sends a new one.
         self.assertIn(MID, self.sync([{**base, "modified_ns": 2}]).json()["thumbs_missing"])
         self.assertEqual(self.client.get(f"/api/agent-library/thumbs/{name}").status_code, 404)

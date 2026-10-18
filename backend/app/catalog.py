@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 
 from app.identity import current_owner
 from app.ownership import Owner, owned
+from app import media_access
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
@@ -156,13 +157,31 @@ def sku_taken(db: Session, owner: dict, sku: str, exclude_id: int | None = None)
     return db.scalar(stmt) is not None
 
 
+def product_out(item: Product) -> dict:
+    """API view of a product; its photo URL is signed for its owner (see media_access)."""
+    return {**ProductOut.model_validate(item).model_dump(), "image_url": media_access.public_url(item.image_url, item.owner_id)}
+
+
+def presenter_out(item: Presenter) -> dict:
+    return {**PresenterOut.model_validate(item).model_dump(), "avatar_url": media_access.public_url(item.avatar_url, item.owner_id)}
+
+
+def photo_in_use(db: Session, ref: str) -> bool:
+    return db.scalar(select(Product.id).where(Product.image_url == ref)) is not None or \
+        db.scalar(select(Presenter.id).where(Presenter.avatar_url == ref)) is not None
+
+
+def release_photo(db: Session, value: str | None, directory):
+    media_access.release(db, value, directory, lambda ref: photo_in_use(db, ref))
+
+
 @router.get("/products", response_model=list[ProductOut])
 def list_products(db: DB, owner: Owner, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     stmt = select(Product).where(Product.owner_id == owner["id"])
     if q.strip():
         term = f"%{q.strip()}%"
         stmt = stmt.where((Product.name.ilike(term)) | (Product.sku.ilike(term)))
-    return db.scalars(stmt.order_by(Product.id.desc()).offset(offset).limit(limit)).all()
+    return [product_out(p) for p in db.scalars(stmt.order_by(Product.id.desc()).offset(offset).limit(limit)).all()]
 
 
 def new_sku(db: Session, owner: dict) -> str:
@@ -177,27 +196,36 @@ def new_sku(db: Session, owner: dict) -> str:
 def create_product(body: ProductInput, db: DB, owner: Owner):
     if body.sku and sku_taken(db, owner, body.sku):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db, owner), "owner_id": owner["id"]})
+    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db, owner), "owner_id": owner["id"],
+                      "image_url": media_access.stored_ref(db, owner, body.image_url, "products")})
     db.add(item)
     db.commit()
     db.refresh(item)
-    return item
+    return product_out(item)
 
 
 @router.post("/products/images", status_code=201)
-def upload_product_image(request: Request, file: UploadFile = File(...)):
-    """Stores a product photo and returns an absolute URL to put in `image_url`."""
-    return {"url": str(request.url_for("product_image", name=save_image(PRODUCT_IMAGE_DIR, file)))}
+def upload_product_image(db: DB, owner: Owner, file: UploadFile = File(...)):
+    """Stores a product photo owned by the caller. `url` (signed, for preview) or `ref` can be put in `image_url`."""
+    name = save_image(PRODUCT_IMAGE_DIR, file)
+    media_access.register(db, owner, name, "products")
+    ref = f"/api/products/images/{name}"
+    return {"url": media_access.public_url(ref, owner["id"]), "ref": ref}
 
 
 @public_router.get("/products/images/{name}", name="product_image")
-def product_image(name: str):
+def product_image(name: str, db: DB, exp: int | None = None, sig: str | None = None):
+    """Only through a signed URL issued to the photo's owner (see media_access)."""
+    owner_id = media_access.image_owner(db, name, "products")
+    if owner_id is None:
+        raise HTTPException(404, "Không tìm thấy ảnh")
+    media_access.check("product", name, owner_id, exp, sig)
     return serve_image(PRODUCT_IMAGE_DIR, name)
 
 
 @router.get("/products/{entity_id}", response_model=ProductOut)
 def get_product(entity_id: int, db: DB, owner: Owner):
-    return owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
+    return product_out(owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm"))
 
 
 @router.put("/products/{entity_id}", response_model=ProductOut)
@@ -205,13 +233,17 @@ def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
     item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
     if body.sku and sku_taken(db, owner, body.sku, exclude_id=entity_id):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    for key, value in body.model_dump(exclude={"sku"}).items():
+    previous = item.image_url
+    for key, value in body.model_dump(exclude={"sku", "image_url"}).items():
         setattr(item, key, value)
+    item.image_url = media_access.stored_ref(db, owner, body.image_url, "products")
     if body.sku:
         item.sku = body.sku
     db.commit()
     db.refresh(item)
-    return item
+    if previous != item.image_url:
+        release_photo(db, previous, PRODUCT_IMAGE_DIR)
+    return product_out(item)
 
 
 @router.delete("/products/{entity_id}", status_code=204)
@@ -228,8 +260,10 @@ def delete_product(entity_id: int, db: DB, owner: Owner):
     # Upcoming and running lineups lose the product; ended sessions keep it as history.
     open_sessions = select(LiveSession.id).where(LiveSession.owner_id == owner["id"], LiveSession.status != "ENDED")
     db.execute(delete(SessionProduct).where(SessionProduct.product_id == item.id, SessionProduct.session_id.in_(open_sessions)))
+    photo = item.image_url
     db.delete(item)
     db.commit()
+    release_photo(db, photo, PRODUCT_IMAGE_DIR)
     return Response(status_code=204)
 
 
@@ -238,42 +272,54 @@ def list_presenters(db: DB, owner: Owner, q: str = "", limit: int = Query(100, g
     stmt = select(Presenter).where(Presenter.owner_id == owner["id"])
     if q.strip():
         stmt = stmt.where(Presenter.name.ilike(f"%{q.strip()}%"))
-    return db.scalars(stmt.order_by(Presenter.id.desc()).offset(offset).limit(limit)).all()
+    return [presenter_out(p) for p in db.scalars(stmt.order_by(Presenter.id.desc()).offset(offset).limit(limit)).all()]
 
 
 @router.post("/presenters", response_model=PresenterOut, status_code=201)
 def create_presenter(body: PresenterInput, db: DB, owner: Owner):
-    item = Presenter(**body.model_dump(), owner_id=owner["id"])
+    item = Presenter(**{**body.model_dump(), "owner_id": owner["id"],
+                        "avatar_url": media_access.stored_ref(db, owner, body.avatar_url, "presenters")})
     db.add(item)
     db.commit()
     db.refresh(item)
-    return item
+    return presenter_out(item)
 
 
 @router.post("/presenters/images", status_code=201)
-def upload_presenter_image(request: Request, file: UploadFile = File(...)):
-    """Stores a presenter photo and returns an absolute URL to put in `avatar_url`."""
-    return {"url": str(request.url_for("presenter_image", name=save_image(PRESENTER_IMAGE_DIR, file)))}
+def upload_presenter_image(db: DB, owner: Owner, file: UploadFile = File(...)):
+    """Stores a presenter photo owned by the caller. `url` (signed, for preview) or `ref` can be put in `avatar_url`."""
+    name = save_image(PRESENTER_IMAGE_DIR, file)
+    media_access.register(db, owner, name, "presenters")
+    ref = f"/api/presenters/images/{name}"
+    return {"url": media_access.public_url(ref, owner["id"]), "ref": ref}
 
 
 @public_router.get("/presenters/images/{name}", name="presenter_image")
-def presenter_image(name: str):
+def presenter_image(name: str, db: DB, exp: int | None = None, sig: str | None = None):
+    owner_id = media_access.image_owner(db, name, "presenters")
+    if owner_id is None:
+        raise HTTPException(404, "Không tìm thấy ảnh")
+    media_access.check("presenter", name, owner_id, exp, sig)
     return serve_image(PRESENTER_IMAGE_DIR, name)
 
 
 @router.get("/presenters/{entity_id}", response_model=PresenterOut)
 def get_presenter(entity_id: int, db: DB, owner: Owner):
-    return owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
+    return presenter_out(owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu"))
 
 
 @router.put("/presenters/{entity_id}", response_model=PresenterOut)
 def update_presenter(entity_id: int, body: PresenterInput, db: DB, owner: Owner):
     item = owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
-    for key, value in body.model_dump().items():
+    previous = item.avatar_url
+    for key, value in body.model_dump(exclude={"avatar_url"}).items():
         setattr(item, key, value)
+    item.avatar_url = media_access.stored_ref(db, owner, body.avatar_url, "presenters")
     db.commit()
     db.refresh(item)
-    return item
+    if previous != item.avatar_url:
+        release_photo(db, previous, PRESENTER_IMAGE_DIR)
+    return presenter_out(item)
 
 
 @router.delete("/presenters/{entity_id}", status_code=204)
@@ -282,6 +328,8 @@ def delete_presenter(entity_id: int, db: DB, owner: Owner):
     item = owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
     db.execute(delete(MediaPresenter).where(MediaPresenter.presenter_id == item.id))
+    photo = item.avatar_url
     db.delete(item)
     db.commit()
+    release_photo(db, photo, PRESENTER_IMAGE_DIR)
     return Response(status_code=204)

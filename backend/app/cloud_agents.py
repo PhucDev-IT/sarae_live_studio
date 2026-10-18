@@ -155,11 +155,19 @@ class Heartbeat(BaseModel):
     # PlaybackEngine.status() on the Agent: same shape as GET /api/live/status.
     playback:dict|None=None
 
+def _without_paths(verification:dict)->dict:
+    """Drop absolute file paths of the Agent's PC before storing (the watched program's name is enough)."""
+    state=dict(verification.get("state") or {})
+    info=state.get("window_info")
+    if isinstance(info,dict) and info.get("exe_path"):
+        state["window_info"]={**info,"exe_path":str(info["exe_path"]).replace("\\","/").rsplit("/",1)[-1]}
+    return {**verification,"state":state} if verification else verification
+
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     agent=verify_agent(body.agent_id, x_sarae_agent_key)
     at=_now()
-    sanitized={"verification":body.verification,"obs":body.obs,"local_playback":body.local_playback,
+    sanitized={"verification":_without_paths(body.verification),"obs":body.obs,"local_playback":body.local_playback,
                "playback":body.playback}
     with _db() as db:
         db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json)
