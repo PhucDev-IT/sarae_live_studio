@@ -3,7 +3,7 @@ import {call} from '../../services/core'
 import type {AutoPinStatus} from '../../types/ipc'
 import {useApp} from '../../app/store'
 
-const DEFAULT_URL='https://livecenter.tiktok.com/'
+const DEFAULT_URL='https://shop.tiktok.com/streamer/live/product/dashboard'
 export function AutoPinPage(){
  const {run}=useApp()
  const [url,setUrl]=useState(DEFAULT_URL)
