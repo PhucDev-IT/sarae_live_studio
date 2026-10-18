@@ -5,3 +5,6 @@
 .product-video-setup.live-workspace{overflow:visible}
 .product-video-setup .live-section{overflow:visible;position:relative}
 .product-video-setup .live-pick{position:relative}
+
+/* Agent playlist page (LiveWorkspace) */
+.live-columns.lw{padding:0;align-items:start}.lw .live-section{border:0;padding:0}.lw-error{grid-column:1/-1}.live-row{display:flex;gap:8px;flex-wrap:wrap}.live-order small{color:var(--muted);margin-left:6px}

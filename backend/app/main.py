@@ -30,17 +30,17 @@ def start_runtime_janitor():
 
 @app.middleware("http")
 async def saas_legacy_guard(request, call_next):
-    """Fail closed in shared VPS deployments for APIs not yet partitioned by OWNER.
+    """Fail closed in shared VPS deployments: only APIs partitioned by OWNER (and by Agent where it applies) answer.
 
-    Allowed: SaaS APIs and legacy modules already scoped per owner. Still blocked: server-side OBS
-    control (/api/live/* except sessions/products) and MP4 storage on the server (/api/media), which
-    move to the Windows Agent.
+    Every router below checks the caller (current_owner / Agent credential). /api/media and /api/live are the Agent
+    library and the LIVE facade: they need an agent_id owned by the caller and never touch MP4 files on the server.
+    A new router must be added here on purpose, after it is scoped.
     """
     from fastapi.responses import JSONResponse
     path=request.url.path
     safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists", "/api/owner",
           "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
-          "/api/live/sessions", "/api/live/products", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor")
+          "/api/media", "/api/live", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor")
     if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
         if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
             return JSONResponse(status_code=403,content={

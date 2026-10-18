@@ -126,3 +126,5 @@
   .lc-shortcuts{display:none}
   .lc-form-row{grid-template-columns:1fr}
 }
+
+.lc-agent{margin-bottom:0}.lc-agent.is-offline{background:#fff0ed;color:#b3433e}

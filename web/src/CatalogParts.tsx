@@ -2,7 +2,7 @@
 import { useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { Button, Input, useToast } from './ui/core'
 import { ImagePlus, Link2, Upload, X } from 'lucide-react'
-import { apiRequest, errorText } from './mediaApi'
+import { apiRequest, assetUrl, errorText } from './mediaApi'
 import './products.css'
 
 export const MAX_IMAGE_MB = 5
@@ -16,10 +16,11 @@ export function IconButton({title,danger,onClick,children}:{title:string;danger?
   return <button type="button" className={'pp-icon' + (danger ? ' is-danger' : '')} title={title} aria-label={title} onClick={onClick}>{children}</button>
 }
 
-/** Photo, falling back to the name's initials (or `fallback`) when missing or broken. */
+/** Photo, falling back to the name's initials (or `fallback`) when missing or broken. Our photos come as signed paths. */
 export function Thumb({src,name,fallback}:{src:string;name:string;fallback:ReactNode}){
   const [failedSrc,setFailedSrc] = useState('')
-  if (src && src !== failedSrc) return <img src={src} alt="" loading="lazy" onError={()=>setFailedSrc(src)}/>
+  const url = assetUrl(src)
+  if (url && url !== failedSrc) return <img src={url} alt="" loading="lazy" onError={()=>setFailedSrc(url)}/>
   const initials = name.trim().split(/\s+/).slice(0, 2).map(w=>w[0]?.toUpperCase() ?? '').join('')
   return <span className="pp-initials" aria-hidden="true">{initials || fallback}</span>
 }

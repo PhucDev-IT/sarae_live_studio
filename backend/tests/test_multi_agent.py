@@ -109,6 +109,29 @@ class MultiAgentTests(SaasTestCase):
         self.assertEqual(self.client.get("/api/live/status", params=self.on1, headers=self.ADMIN).status_code, 403)
         self.assertEqual(self.client.post("/api/live/sessions", json={"name": "x", **self.on1}, headers=self.ADMIN).status_code, 403)
         self.assertEqual(self.client.post("/api/live/pause", params=self.on1, headers=self.ADMIN).status_code, 403)
+        self.assertEqual(self.client.get("/api/agent-playlists", params=self.on1, headers=self.ADMIN).status_code, 403)
+
+    def test_playlists_stay_on_their_agent_and_owner(self):
+        made = self.tab1.post("/api/agent-playlists", json={**self.on1, "name": "Test", "media_ids": self.v1})
+        self.assertEqual(made.status_code, 200, made.text)
+        pid = made.json()["id"]
+        self.assertEqual(self.tab1.post("/api/agent-playlists", json={**self.on1, "name": "x", "media_ids": self.v2}).status_code, 422,
+                         "PC-2's video is not on PC-1")
+        self.assertEqual([p["id"] for p in self.tab1.get("/api/agent-playlists", params=self.on1).json()], [pid])
+        self.assertEqual(self.tab2.get("/api/agent-playlists", params=self.on2).json(), [])
+        self.assertEqual(self.tab1.put(f"/api/agent-playlists/{pid}", json={**self.on2, "name": "x", "media_ids": self.v2}).status_code, 422)
+        self.assertEqual(self.client.get("/api/agent-playlists", params=self.on1, headers=self.B).status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/agent-playlists/{pid}", headers=self.B).status_code, 404)
+        self.assertEqual(self.client.post(f"/api/agent-playlists/{pid}/play", headers=self.B).status_code, 404)
+        played = self.tab1.post(f"/api/agent-playlists/{pid}/play")
+        self.assertEqual((played.status_code, played.json()["agent"]["id"]), (200, self.a1["agent_id"]))
+
+    def test_agent_list_summarises_each_pc(self):
+        self.heartbeat(self.a1, {"connected": True, "running": True, "session_id": 7})
+        rows = {a["id"]: a for a in self.tab1.get("/api/owner/agents").json()["agents"]}
+        self.assertEqual((rows[self.a1["agent_id"]]["obs_connected"], rows[self.a1["agent_id"]]["playing"]), (True, True))
+        self.assertEqual(rows[self.a2["agent_id"]]["playing"], False)
+        self.assertNotIn("status", rows[self.a1["agent_id"]], "raw heartbeat is not exposed")
 
 
 if __name__ == "__main__":

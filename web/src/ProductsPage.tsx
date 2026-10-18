@@ -3,7 +3,8 @@ import { Badge, Button, ConfirmModal, EmptyState, Input, SearchInput, SegmentedC
 import {
   CircleAlert, Copy, Edit3, Eye, Package, Plus, Radio, Trash2, Video,
 } from 'lucide-react'
-import { apiRequest, errorText } from './mediaApi'
+import { apiRequest, errorText, onAgent } from './mediaApi'
+import { useAgent } from './agentContext'
 import { sessionsApi, type LiveSession } from './liveSessionsApi'
 import { IconButton, ImageField, Stat, Thumb } from './CatalogParts'
 
@@ -24,6 +25,8 @@ const toBody = (f:Form) => ({name:f.name.trim(), sku:f.sku.trim(), price:f.price
 /** Product catalog: what can be sold on LIVE, with photo, code, price and LIVE-video readiness. */
 export default function ProductsPage(){
   const toast = useToast()
+  const {agent} = useAgent()
+  const agentId = agent?.id
   const [products,setProducts] = useState<Product[]>([])
   const [videoCounts,setVideoCounts] = useState<Record<number,number>>({})
   const [sessions,setSessions] = useState<LiveSession[]>([])
@@ -40,11 +43,11 @@ export default function ProductsPage(){
   const load = useCallback(async ()=>{
     const [p, live, s] = await Promise.all([
       apiRequest<Product[]>('/products?limit=500'),
-      apiRequest<{id:number;video_count:number}[]>('/live/products'),
+      agentId ? apiRequest<{id:number;video_count:number}[]>(onAgent('/live/products', agentId)) : Promise.resolve([]),
       sessionsApi.list().catch(()=>[] as LiveSession[]),
     ])
     setProducts(p);setVideoCounts(Object.fromEntries(live.map(x=>[x.id,x.video_count])));setSessions(s);setLoaded(true)
-  },[])
+  },[agentId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được sản phẩm',description:errorText(e, '')})})},[load,toast])
 
   const q = query.trim().toLocaleLowerCase('vi')
@@ -103,7 +106,7 @@ export default function ProductsPage(){
       <span className="pp-row-text"><strong>{p.name}</strong><small>{p.sku}{p.description ? ' · ' + p.description : ''}</small></span>
     </button>},
     {key:'price', header:'Giá bán', align:'right', render:p=><span className="pp-num">{p.price == null ? '—' : vnd.format(p.price)}</span>},
-    {key:'videos', header:'Video LIVE', render:p=><VideoBadge count={videoCounts[p.id]}/>},
+    {key:'videos', header:agent ? `Video LIVE · ${agent.hostname}` : 'Video LIVE', render:p=><VideoBadge count={videoCounts[p.id]}/>},
     {key:'status', header:'Đang bán', render:p=><Switch aria-label={`Đang bán ${p.name}`} checked={p.status === 'ACTIVE'} onChange={()=>void toggleStatus(p)}/>},
     {key:'actions', header:'Thao tác', align:'right', render:p=><div className="pp-row-actions">
       <IconButton title="Sửa" onClick={()=>openEdit(p)}><Edit3 size={15}/></IconButton>

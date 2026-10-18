@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react'
-import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, useToast } from './ui/core'
+import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
   CalendarClock, Check, CheckCircle2, CircleAlert, CircleDashed, Clock3, Copy, GripVertical, History, ListPlus,
-  Package, Pencil, Play, Plus, Radio, RotateCcw, Square, Trash2, Video,
+  MonitorPlay, Package, Pencil, Play, Plus, Radio, RotateCcw, Square, Trash2, Video,
 } from 'lucide-react'
-import { apiRequest, errorText } from './mediaApi'
+import { apiRequest, assetUrl, errorText, onAgent, type OwnerAgent } from './mediaApi'
+import { useAgent } from './agentContext'
 import {
   EVENT_LABEL, STATUS_META, dateTime, durationText, eventDetail, sessionIdFromHash, sessionsApi, timeOnly,
   type LiveProduct, type LiveSession, type SessionEvent, type SessionStatus,
@@ -25,6 +26,9 @@ const STEPS:{status:SessionStatus;label:string;hint:string}[] = [
 /** Plans LIVE sessions: build the product lineup, check readiness, start, and review history. Live switching happens in #/live. */
 export default function LiveSessions(){
   const toast = useToast()
+  const {agents, agentId:tabAgentId} = useAgent()
+  const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
+  const [createAgent,setCreateAgent] = useState('')
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [products,setProducts] = useState<LiveProduct[]>([])
   const [status,setStatus] = useState<LiveStatus|null>(null)
@@ -47,15 +51,20 @@ export default function LiveSessions(){
   const [dragIndex,setDragIndex] = useState<number|null>(null)
 
   const loadSessions = useCallback(async ()=>{setSessions(await sessionsApi.list())},[])
-  const loadAll = useCallback(async ()=>{
-    const [s, p, st] = await Promise.all([sessionsApi.list(), sessionsApi.products(), apiRequest<LiveStatus>('/live/status')])
-    setSessions(s);setProducts(p);setStatus(st);setLoaded(true)
-  },[])
+  const loadAll = useCallback(async ()=>{setSessions(await sessionsApi.list());setLoaded(true)},[])
   useEffect(()=>{void loadAll().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được phiên LIVE',description:errorText(e, '')})})},[loadAll,toast])
+  // Video readiness and playback belong to one Agent: the chosen session's own Agent.
+  const viewAgentId = sessions.find(s=>s.id === selected)?.agent_id ?? tabAgentId
   useEffect(()=>{
-    const t = window.setInterval(()=>void apiRequest<LiveStatus>('/live/status').then(setStatus).catch(()=>{}), POLL_MS)
-    return ()=>window.clearInterval(t)
-  },[])
+    setStatus(null)
+    if (!viewAgentId) {setProducts([]);return}
+    let active = true
+    const poll = () => void apiRequest<LiveStatus>(onAgent('/live/status', viewAgentId)).then(s=>{if (active) setStatus(s)}).catch(()=>{if (active) setStatus(null)})
+    void sessionsApi.products(viewAgentId).then(p=>{if (active) setProducts(p)}).catch(()=>{if (active) setProducts([])})
+    poll()
+    const t = window.setInterval(poll, POLL_MS)
+    return ()=>{active = false;window.clearInterval(t)}
+  },[viewAgentId])
   // The running session's current product changes from the LIVE console; refresh when playback moves.
   useEffect(()=>{if (loaded) void loadSessions().catch(()=>{})},[loaded,loadSessions,status?.running,status?.session_id,status?.product_id,status?.pending_product_id])
   // Default selection: the running session, else the newest one.
@@ -77,15 +86,23 @@ export default function LiveSessions(){
   const dirty = draft != null
   const editable = !!chosen && chosen.status !== 'ENDED'
   const owner = chosen?.status === 'RUNNING' && !!status?.running && status?.session_id === chosen.id
-  const stale = sessions.filter(s=>s.status === 'RUNNING' && !(status?.running && status.session_id === s.id))
-  const running = sessions.find(s=>s.status === 'RUNNING' && status?.running && status.session_id === s.id)
+  // Several Agents can be LIVE at once; each RUNNING session is checked against its own Agent's last heartbeat.
+  const playingOnAgent = (s:LiveSession) => {const a = agentById.get(s.agent_id);return !!a?.playing && a.session_id === s.id}
+  const stale = sessions.filter(s=>s.status === 'RUNNING' && !playingOnAgent(s))
+  const live = sessions.filter(s=>s.status === 'RUNNING' && playingOnAgent(s))
+  const agentName = (id:string) => agentById.get(id)?.hostname ?? 'Agent đã thu hồi'
+  const chosenAgent:OwnerAgent|undefined = chosen ? agentById.get(chosen.agent_id) : undefined
   const counts = {ALL:sessions.length, DRAFT:0, RUNNING:0, ENDED:0} as Record<Filter,number>
   sessions.forEach(s=>{counts[s.status]++})
   const visible = sessions.filter(s=>(filter === 'ALL' || s.status === filter) && s.name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))
 
-  const canResume = !!status?.connected && !status?.running
-  const resumeHint = status?.running ? 'OBS đang phát phiên khác' : !status?.connected ? 'Cần kết nối OBS trước (màn Điều khiển LIVE)' : undefined
-  const resume = (session:LiveSession) => void run(async ()=>{await sessionsApi.resume(session.id);window.location.hash = '/live'}, `Đã tiếp tục “${session.name}”`)
+  /** A RUNNING session resumes only on its own Agent, when that Agent is online, has OBS and plays nothing else. */
+  const resumeBlock = (s:LiveSession) => {
+    const a = agentById.get(s.agent_id)
+    return !a ? 'Agent của phiên đã bị thu hồi' : !a.online ? `${a.hostname} đang offline` : a.playing ? `${a.hostname} đang phát nội dung khác`
+      : !a.obs_connected ? `OBS trên ${a.hostname} chưa kết nối` : undefined
+  }
+  const resume = (session:LiveSession) => void run(async ()=>{await sessionsApi.resume(session);window.location.hash = '/live'}, `Đã tiếp tục “${session.name}”`)
   const select = (id:number) => {
     if (id === selected) return
     if (dirty && chosen) {setConfirm({kind:'discard', session:chosen, next:id});return}
@@ -104,12 +121,13 @@ export default function LiveSessions(){
   }
   const onDrop = (event:DragEvent, to:number) => {event.preventDefault();if (dragIndex != null) move(dragIndex, to);setDragIndex(null)}
 
+  const openCreate = () => {setNameInput('');setCreateAgent(tabAgentId ?? agents[0]?.id ?? '');setCreateOpen(true)}
   const create = (event:FormEvent) => {
     event.preventDefault()
     const name = nameInput.trim()
     if (!name) return
     void run(async ()=>{
-      const created = await sessionsApi.create(name)
+      const created = await sessionsApi.create(name, createAgent)
       setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL');setPickerOpen(true)
     }, 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
   }
@@ -136,8 +154,9 @@ export default function LiveSessions(){
     {ok:lineup.length > 0, label:'Có ít nhất 1 sản phẩm trong danh sách', blocking:true},
     {ok:readyIds.length > 0, label:'Có ít nhất 1 sản phẩm đã có video để phát', blocking:true, href:'#/product-videos'},
     {ok:!dirty, label:'Đã lưu thay đổi danh sách', blocking:true},
-    {ok:!!status?.connected, label:'OBS đã kết nối', blocking:true, href:'#/live'},
-    {ok:!status?.running, label:'Không có phiên nào khác đang phát', blocking:true},
+    {ok:!!chosenAgent?.online, label:chosenAgent ? `Máy ${chosenAgent.hostname} đang online` : 'Agent của phiên còn hiệu lực', blocking:true, href:'#/agents'},
+    {ok:!!status?.connected, label:'OBS trên máy này đã kết nối', blocking:true, href:'#/live'},
+    {ok:!status?.running, label:'Máy này không phát nội dung khác', blocking:true},
     {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/product-videos'},
   ]
   const canStart = chosen?.status === 'DRAFT' && checks.every(c=>c.ok || !c.blocking)
@@ -145,20 +164,20 @@ export default function LiveSessions(){
   const switches = events.filter(e=>e.event_type === 'PRODUCT_SWITCHED').length
 
   return <div className="ls-page">
-    {running && <div className="ls-live-banner" role="status">
+    {live.map(running=><div key={running.id} className="ls-live-banner" role="status">
       <span className="ls-live-dot"><Radio size={16}/>ĐANG LIVE</span>
       <div className="ls-live-text">
         <strong>{running.name}</strong>
-        <small>Đang phát: {productById.get(status?.product_id ?? -1)?.name ?? '—'} · {durationText(running.started_at, null)}</small>
+        <small><MonitorPlay size={12}/> {agentName(running.agent_id)} · {durationText(running.started_at, null)}</small>
       </div>
       <Button size="sm" variant="outline" onClick={()=>select(running.id)}>Xem phiên</Button>
       <Button size="sm" leftIcon={<Radio size={15}/>} onClick={()=>{window.location.hash = '/live'}}>Mở Điều khiển LIVE</Button>
-    </div>}
+    </div>)}
     {stale.length > 0 && <Alert tone="warning" title={`${stale.length} phiên LIVE bị ngắt`}>
-      <span>Backend đã khởi động lại nên OBS không còn phát. Tiếp tục để phát lại sản phẩm đang LIVE (giữ nguyên lịch sử), hoặc đóng nếu buổi LIVE đã xong.</span>
+      <span>Máy Windows của phiên không còn phát (Agent, OBS hoặc máy đã khởi động lại). Tiếp tục để phát lại sản phẩm đang LIVE trên đúng máy đó (giữ nguyên lịch sử), hoặc đóng nếu buổi LIVE đã xong.</span>
       {stale.map(s=><div key={s.id} className="ls-inline">
-        <strong>{s.name}</strong>
-        <Button size="sm" leftIcon={<Play size={14}/>} disabled={busy || !canResume} title={resumeHint} onClick={()=>resume(s)}>Tiếp tục phiên</Button>
+        <strong>{s.name} · {agentName(s.agent_id)}</strong>
+        <Button size="sm" leftIcon={<Play size={14}/>} disabled={busy || !!resumeBlock(s)} title={resumeBlock(s)} onClick={()=>resume(s)}>Tiếp tục phiên</Button>
         <Button size="sm" variant="outline" disabled={busy} onClick={()=>setConfirm({kind:'close-stale', session:s})}>Đóng phiên</Button>
       </div>)}
     </Alert>}
@@ -166,7 +185,7 @@ export default function LiveSessions(){
     <div className="ls-layout">
       {/* Session list */}
       <Card className="ls-list" padding={false} title={<span className="ls-card-title"><CalendarClock size={17}/>Danh sách phiên</span>}
-        actions={<Button size="sm" leftIcon={<Plus size={15}/>} onClick={()=>{setNameInput('');setCreateOpen(true)}}>Tạo phiên</Button>}>
+        actions={<Button size="sm" leftIcon={<Plus size={15}/>} disabled={!agents.length} title={agents.length ? undefined : 'Cần kích hoạt Windows Agent trước'} onClick={openCreate}>Tạo phiên</Button>}>
         <div className="ls-list-tools">
           <SegmentedControl<Filter> fullWidth value={filter} onChange={setFilter} items={[
             {value:'ALL', label:<>Tất cả<span className="ls-count">{counts.ALL}</span></>}, {value:'DRAFT', label:<>Chuẩn bị<span className="ls-count">{counts.DRAFT}</span></>},
@@ -176,12 +195,14 @@ export default function LiveSessions(){
         </div>
         <ul className="ls-sessions">
           {visible.map(s=>{
-            const ready = s.product_ids.filter(id=>productById.get(id)?.video_count).length
+            // Video counts are only known for the Agent whose products are loaded.
+            const ready = s.agent_id === viewAgentId ? s.product_ids.filter(id=>productById.get(id)?.video_count).length : null
             return <li key={s.id}><button type="button" className={'ls-session' + (s.id === selected ? ' is-selected' : '') + (s.status === 'RUNNING' ? ' is-live' : '')} onClick={()=>select(s.id)}>
               <span className="ls-session-top"><strong>{s.name}</strong><Badge tone={STATUS_META[s.status].tone} dot={s.status === 'RUNNING'}>{STATUS_META[s.status].label}</Badge></span>
               <span className="ls-session-meta">
                 <span><Package size={13}/>{s.product_ids.length} sản phẩm</span>
-                {s.status === 'DRAFT' && s.product_ids.length > 0 && <span className={ready === s.product_ids.length ? 'is-ok' : 'is-warn'}><Video size={13}/>{ready}/{s.product_ids.length} có video</span>}
+                {s.status === 'DRAFT' && s.product_ids.length > 0 && ready != null && <span className={ready === s.product_ids.length ? 'is-ok' : 'is-warn'}><Video size={13}/>{ready}/{s.product_ids.length} có video</span>}
+                <span><MonitorPlay size={13}/>{agentName(s.agent_id)}</span>
                 <span><Clock3 size={13}/>{dateTime(s.status === 'DRAFT' ? s.created_at : s.started_at ?? s.created_at)}</span>
               </span>
             </button></li>
@@ -194,7 +215,7 @@ export default function LiveSessions(){
       {!chosen ? <Card className="ls-detail-empty">
         <EmptyState icon={<CalendarClock size={30}/>} title={loaded ? 'Chưa chọn phiên LIVE' : 'Đang tải…'}
           description="Một phiên LIVE là danh sách sản phẩm sẽ bán, theo đúng thứ tự giới thiệu. Tạo phiên, thêm sản phẩm rồi bắt đầu phát."
-          actionLabel={loaded ? 'Tạo phiên LIVE' : undefined} onAction={()=>{setNameInput('');setCreateOpen(true)}}/>
+          actionLabel={loaded && agents.length ? 'Tạo phiên LIVE' : undefined} onAction={openCreate}/>
       </Card> : <div className="ls-detail">
         <Card className="ls-head" padding={false}>
           <div className="ls-head-main">
@@ -205,6 +226,7 @@ export default function LiveSessions(){
               </h2>
               <div className="ls-head-meta">
                 <Badge tone={STATUS_META[chosen.status].tone} dot={chosen.status === 'RUNNING'}>{STATUS_META[chosen.status].label}</Badge>
+                <span className={'ls-agent' + (chosenAgent?.online ? ' is-online' : '')} title="Máy Windows phát phiên này"><MonitorPlay size={13}/>{agentName(chosen.agent_id)}{chosenAgent && !chosenAgent.online ? ' · offline' : ''}</span>
                 <span>Tạo {dateTime(chosen.created_at)}</span>
                 {chosen.started_at && <span>Bắt đầu {dateTime(chosen.started_at)}</span>}
                 {chosen.ended_at && <span>Kết thúc {dateTime(chosen.ended_at)}</span>}
@@ -221,7 +243,7 @@ export default function LiveSessions(){
                 <Button leftIcon={<Radio size={16}/>} onClick={()=>{window.location.hash = '/live'}}>Mở Điều khiển LIVE</Button>
               </> : <>
                 <Button variant="outline" disabled={busy} onClick={()=>setConfirm({kind:'close-stale', session:chosen})}>Đóng phiên</Button>
-                <Button leftIcon={<Play size={16}/>} disabled={busy || !canResume} title={resumeHint} onClick={()=>resume(chosen)}>Tiếp tục phiên</Button>
+                <Button leftIcon={<Play size={16}/>} disabled={busy || !!resumeBlock(chosen)} title={resumeBlock(chosen)} onClick={()=>resume(chosen)}>Tiếp tục phiên</Button>
               </>)}
               {chosen.status === 'ENDED' && <>
                 <Button variant="ghost" leftIcon={<Trash2 size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'delete', session:chosen})}>Xóa</Button>
@@ -285,8 +307,14 @@ export default function LiveSessions(){
               description={canStart ? 'Mọi điều kiện bắt buộc đã đạt.' : 'Hoàn tất các mục bắt buộc để bắt đầu.'}>
               <ul className="ls-checklist">{checks.map(c=><li key={c.label} className={c.ok ? 'is-ok' : c.blocking ? 'is-bad' : 'is-warn'}>
                 {c.ok ? <CheckCircle2 size={16}/> : c.blocking ? <CircleDashed size={16}/> : <CircleAlert size={16}/>}
-                <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : 'Gán video'}</a></>}</span>
+                <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : 'Gán video'}</a></>}</span>
               </li>)}</ul>
+              {agents.length > 1 && <div className="ls-move-agent">
+                <Select label="Phát trên máy" value={chosen.agent_id} disabled={busy || dirty}
+                  options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
+                  onChange={value=>{if (value && value !== chosen.agent_id) void run(()=>sessionsApi.moveToAgent(chosen.id, value), 'Đã chuyển phiên sang máy khác')}}/>
+                <small>Chỉ đổi được khi phiên chưa bắt đầu. Video gán cho sản phẩm là riêng của từng máy.</small>
+              </div>}
             </Card>}
             {chosen.status !== 'DRAFT' && <Card className="ls-summary" title={<span className="ls-card-title"><Clock3 size={17}/>Tóm tắt</span>}>
               <dl className="ls-stats">
@@ -314,10 +342,13 @@ export default function LiveSessions(){
 
     <Modal open={createOpen} title="Tạo phiên LIVE" size="sm" onClose={()=>!busy && setCreateOpen(false)} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
-      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim()}>Tạo & thêm sản phẩm</Button>
+      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAgent}>Tạo & thêm sản phẩm</Button>
     </>}>
-      <form id="ls-create-form" onSubmit={create}>
+      <form id="ls-create-form" className="ls-create-form" onSubmit={create}>
         <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint="Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự."/>
+        <Select label="Phát trên máy Windows" value={createAgent} onChange={setCreateAgent}
+          options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
+          hint="Phiên luôn phát trên máy này (OBS và video của máy đó). Đổi được trước khi bắt đầu."/>
       </form>
     </Modal>
 
@@ -338,7 +369,7 @@ export default function LiveSessions(){
     {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="md" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
       <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startId == null}
-        onClick={()=>void run(async ()=>{await sessionsApi.start(chosen.id, startId);setStartOpen(false);window.location.hash = '/live'}, 'Đã bắt đầu LIVE')}>Bắt đầu LIVE</Button>
+        onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startId);setStartOpen(false);window.location.hash = '/live'}, 'Đã bắt đầu LIVE')}>Bắt đầu LIVE</Button>
     </>}>
       <div className="ls-picker">
         <p className="ls-muted">Chọn sản phẩm phát đầu tiên. Trong lúc LIVE bạn chuyển sang sản phẩm nào cũng được, kể cả sản phẩm chưa có trong danh sách.</p>
@@ -368,7 +399,7 @@ function confirmText({kind, session}:NonNullable<Confirm>){
 
 function ProductImage({product}:{product?:LiveProduct}){
   const [failed,setFailed] = useState(false)
-  return <span className="ls-thumb">{product?.image_url && !failed ? <img src={product.image_url} alt="" loading="lazy" onError={()=>setFailed(true)}/> : <Package size={18}/>}</span>
+  return <span className="ls-thumb">{product?.image_url && !failed ? <img src={assetUrl(product.image_url) ?? undefined} alt="" loading="lazy" onError={()=>setFailed(true)}/> : <Package size={18}/>}</span>
 }
 
 /** Multi-select dialog that appends products to the lineup in the order they are ticked. */

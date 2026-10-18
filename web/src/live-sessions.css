@@ -147,3 +147,11 @@
   .ls-row-tags{justify-content:flex-start;padding-left:36px}
   .ls-row-actions{margin-left:auto}
 }
+
+/* Windows Agent of a session */
+.ls-agent{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.ls-agent.is-online{color:#24865b}
+.ls-move-agent{display:grid;gap:6px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+.ls-move-agent small{color:var(--muted);font-size:11px;line-height:1.5}
+.ls-create-form{display:grid;gap:14px}
+.ls-live-text small{display:inline-flex;align-items:center;gap:4px}

@@ -1,18 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  Alert, Badge, Button, Card, ConfirmModal, EmptyState, FileUpload, FilterBar, Input, LoadingState, Modal, MultiSelect, Pagination, Popover,
-  SearchInput, SegmentedControl, Select, Sheet, SkeletonCard, StatCard, Switch, Table, TagsInput, useToast, type TableColumn,
+  Alert, Badge, Button, Card, EmptyState, FilterBar, LoadingState, MultiSelect, Pagination, SearchInput, SegmentedControl, Select, Sheet,
+  SkeletonCard, StatCard, Table, TagsInput, useToast, type TableColumn,
 } from './ui/core'
-import {
-  AlertTriangle, Copy, Eye, Film, FolderOpen, HardDrive, LayoutGrid, Link2, List, MoreHorizontal, Package, Pencil, Play,
-  RefreshCw, Trash2, Upload, User, Users,
-} from 'lucide-react'
-import { apiRequest, durationLabel, errorText, fileUrl, sizeLabel, setVideoPresenters, setVideoProducts, type CatalogItem, type Media } from './mediaApi'
-import VideoThumb, { type ClientMeta } from './VideoThumb'
+import { AlertTriangle, Film, HardDrive, LayoutGrid, Link2, List, MonitorPlay, Package, Pencil, RefreshCw, ScanSearch, User, Users } from 'lucide-react'
+import { apiRequest, durationLabel, errorText, listVideos, onAgent, sizeLabel, setVideoPresenters, setVideoProducts, type CatalogItem, type Media, type OwnerAgent } from './mediaApi'
+import { WithAgent } from './agentContext'
+import VideoThumb from './VideoThumb'
 import './media.css'
 
-type SourceFilter = 'all'|'local'|'upload'
-type SortKey = 'newest'|'oldest'|'name'|'size'
+type Availability = 'all'|'available'|'missing'
+type SortKey = 'name'|'size'|'longest'
 type ViewMode = 'grid'|'list'
 
 const PAGE_SIZE = 24
@@ -21,46 +19,43 @@ const VIEW_KEY = 'sarae-media-view'
 const CARD_PRODUCTS = 2
 
 const parseTags = (value:string) => value.split(',').map(tag => tag.trim()).filter(Boolean)
-const dateLabel = (value:string) => new Date(value).toLocaleString('vi-VN', { dateStyle:'short', timeStyle:'short' })
 const readView = ():ViewMode => { try { return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid' } catch { return 'grid' } }
 
+/** The video library of the Windows Agent this tab works with (switching Agent remounts the library). */
 export default function MediaPage(){
+  return <WithAgent purpose="Thư viện video">{agent=><MediaLibrary key={agent.id} agent={agent}/>}</WithAgent>
+}
+
+/** MP4 files on one Windows Agent, with tags and product / presenter links (links are per Agent). */
+function MediaLibrary({agent}:{agent:OwnerAgent}){
   const toast = useToast()
   const [items,setItems] = useState<Media[]>([])
   const [products,setProducts] = useState<CatalogItem[]>([])
   const [presenters,setPresenters] = useState<CatalogItem[]>([])
   const [loading,setLoading] = useState(true)
   const [loadError,setLoadError] = useState('')
-  const [meta,setMeta] = useState<Record<number,ClientMeta>>({})
 
   const [query,setQuery] = useState('')
-  const [source,setSource] = useState<SourceFilter>('all')
+  const [availability,setAvailability] = useState<Availability>('all')
   const [productFilter,setProductFilter] = useState('all')
   const [presenterFilter,setPresenterFilter] = useState('all')
-  const [sort,setSort] = useState<SortKey>('newest')
+  const [sort,setSort] = useState<SortKey>('name')
   const [view,setView] = useState<ViewMode>(readView)
   const [page,setPage] = useState(1)
 
-  const [uploadOpen,setUploadOpen] = useState(false)
-  const [folderOpen,setFolderOpen] = useState(false)
   const [editing,setEditing] = useState<Media|null>(null)
-  const [deleting,setDeleting] = useState<Media|null>(null)
-  const [preview,setPreview] = useState<Media|null>(null)
   const [busy,setBusy] = useState(false)
+  const [scanning,setScanning] = useState(false)
   const [formError,setFormError] = useState('')
-
-  const [file,setFile] = useState<File|null>(null)
   const [productIds,setProductIds] = useState<string[]>([])
   const [presenterIds,setPresenterIds] = useState<string[]>([])
   const [tags,setTags] = useState<string[]>([])
-  const [folder,setFolder] = useState('')
-  const [recursive,setRecursive] = useState(false)
 
   const load = async () => {
     setLoadError('')
     try{
       const [videos, p, a] = await Promise.all([
-        apiRequest<Media[]>('/media?limit=500'),
+        listVideos(agent.id),
         apiRequest<CatalogItem[]>('/products?limit=500'),
         apiRequest<CatalogItem[]>('/presenters?limit=500'),
       ])
@@ -75,19 +70,19 @@ export default function MediaPage(){
   const presenterName = useMemo(()=>new Map(presenters.map(p=>[p.id,p.name])),[presenters])
 
   const stats = useMemo(()=>{
-    const local = items.filter(item=>item.local_path).length
     const linked = items.filter(item=>item.product_ids.length > 0).length
     const withPeople = items.filter(item=>item.presenter_ids.length > 0).length
     const links = items.reduce((sum,item)=>sum + item.product_ids.length, 0)
     const bytes = items.reduce((sum,item)=>sum + item.size_bytes, 0)
-    return { local, upload:items.length - local, linked, links, withPeople, bytes }
+    const missing = items.filter(item=>!item.available).length
+    return { linked, links, withPeople, bytes, missing }
   },[items])
 
   const filtered = useMemo(()=>{
     const needle = query.trim().toLocaleLowerCase('vi')
     const result = items.filter(item=>{
-      if (source === 'local' && !item.local_path) return false
-      if (source === 'upload' && item.local_path) return false
+      if (availability === 'available' && !item.available) return false
+      if (availability === 'missing' && item.available) return false
       if (productFilter === 'none' && item.product_ids.length > 0) return false
       if (productFilter !== 'all' && productFilter !== 'none' && !item.product_ids.includes(Number(productFilter))) return false
       if (presenterFilter === 'none' && item.presenter_ids.length > 0) return false
@@ -96,111 +91,53 @@ export default function MediaPage(){
       const haystack = [item.filename, item.tags, ...item.product_ids.map(id=>productName.get(id)), ...item.presenter_ids.map(id=>presenterName.get(id))].join(' ')
       return haystack.toLocaleLowerCase('vi').includes(needle)
     })
-    const byDate = (a:Media,b:Media) => a.created_at.localeCompare(b.created_at) || a.id - b.id
     return result.sort(
-      sort === 'oldest' ? byDate
-      : sort === 'name' ? (a,b)=>a.filename.localeCompare(b.filename,'vi',{numeric:true})
-      : sort === 'size' ? (a,b)=>b.size_bytes - a.size_bytes
-      : (a,b)=>byDate(b,a)
+      sort === 'size' ? (a,b)=>b.size_bytes - a.size_bytes
+      : sort === 'longest' ? (a,b)=>(b.duration_seconds ?? 0) - (a.duration_seconds ?? 0)
+      : (a,b)=>a.filename.localeCompare(b.filename,'vi',{numeric:true})
     )
-  },[items,query,source,productFilter,presenterFilter,sort,productName,presenterName])
+  },[items,query,availability,productFilter,presenterFilter,sort,productName,presenterName])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const current = Math.min(page, pageCount)
   const visible = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)
-  const filtering = query !== '' || source !== 'all' || productFilter !== 'all' || presenterFilter !== 'all'
+  const filtering = query !== '' || availability !== 'all' || productFilter !== 'all' || presenterFilter !== 'all'
 
-  const reportMeta = (id:number, next:ClientMeta) => setMeta(prev=>prev[id]?.missing === next.missing && prev[id]?.duration === next.duration ? prev : { ...prev, [id]:{ ...prev[id], ...next } })
-  const durationOf = (item:Media) => item.duration_seconds ?? meta[item.id]?.duration
-  const resolutionOf = (item:Media) => {
-    const width = item.width ?? meta[item.id]?.width, height = item.height ?? meta[item.id]?.height
-    return width && height ? { width, height } : null
+  const openEdit = (item:Media) => {
+    setFormError('')
+    setProductIds(item.product_ids.map(String))
+    setPresenterIds(item.presenter_ids.map(String))
+    setTags(parseTags(item.tags))
+    setEditing(item)
   }
-
-  const resetForm = (item?:Media) => {
-    setFile(null);setFormError('')
-    setProductIds((item?.product_ids ?? []).map(String))
-    setPresenterIds((item?.presenter_ids ?? []).map(String))
-    setTags(parseTags(item?.tags ?? ''))
-  }
-  const openUpload = () => {resetForm();setUploadOpen(true)}
-  const openEdit = (item:Media) => {resetForm(item);setEditing(item)}
-  const clearFilters = () => {setQuery('');setSource('all');setProductFilter('all');setPresenterFilter('all');setPage(1)}
+  const clearFilters = () => {setQuery('');setAvailability('all');setProductFilter('all');setPresenterFilter('all');setPage(1)}
   /** Wraps a filter setter so any filter change jumps back to the first page. */
   const resetting = <T,>(set:(value:T)=>void) => (value:T) => {set(value);setPage(1)}
 
-  const upload = async (event:FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!file) {setFormError('Chọn file MP4 để upload');return}
-    setBusy(true);setFormError('')
-    try{
-      const body = new FormData()
-      body.append('file',file)
-      body.append('tags',tags.join(', '))
-      const created = await apiRequest<Media>('/media/upload',{method:'POST',body})
-      setUploadOpen(false)
-      try{
-        await Promise.all([
-          productIds.length ? setVideoProducts(created.id, productIds.map(Number)) : null,
-          presenterIds.length ? setVideoPresenters(created.id, presenterIds.map(Number)) : null,
-        ])
-        toast.push({tone:'success',title:'Đã upload video',description:file.name})
-      }catch(e){toast.push({tone:'warning',title:'Đã upload nhưng chưa gắn đủ sản phẩm / người',description:errorText(e, 'Thử gắn lại trong phần chỉnh sửa video.')})}
-      await load()
-    }catch(e){setFormError(errorText(e, 'Có lỗi khi upload video'))}
-    finally{setBusy(false)}
-  }
   const saveEdit = async (event:FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!editing) return
     setBusy(true);setFormError('')
     try{
-      await apiRequest<Media>('/media/'+editing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        tags:tags.join(', '),
-      })})
-      await Promise.all([setVideoProducts(editing.id, productIds.map(Number)), setVideoPresenters(editing.id, presenterIds.map(Number))])
+      await apiRequest<Media>(onAgent('/media/'+editing.id, agent.id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:tags.join(', ')})})
+      await Promise.all([setVideoProducts(agent.id, editing.id, productIds.map(Number)), setVideoPresenters(agent.id, editing.id, presenterIds.map(Number))])
       setEditing(null)
       toast.push({tone:'success',title:'Đã lưu thay đổi',description:editing.filename})
       await load()
     }catch(e){setFormError(errorText(e, 'Có lỗi khi lưu video'));await load()}
     finally{setBusy(false)}
   }
-  const scan = async (event:FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setBusy(true);setFormError('')
-    try {
-      const result = await apiRequest<{found:number;created:number;existing:number}>('/media/local/scan',{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder,recursive}),
-      })
-      setFolderOpen(false)
-      toast.push({tone:'success',title:`Đã thêm ${result.created} video`,description:`Tìm thấy ${result.found} file · ${result.existing} video đã có trong thư viện.`})
-      await load()
-    } catch(e) {setFormError(errorText(e, 'Không quét được thư mục'))}
-    finally {setBusy(false)}
-  }
-  const remove = async () => {
-    if (!deleting) return
-    setBusy(true)
+  /** Ask the Agent to rescan its folders now (it also syncs about once a minute on its own). */
+  const rescan = async () => {
+    setScanning(true)
     try{
-      await apiRequest<void>('/media/'+deleting.id,{method:'DELETE'})
-      toast.push({tone:'success',title:deleting.local_path?'Đã bỏ video khỏi thư viện':'Đã xóa video',description:deleting.filename})
-      setDeleting(null)
+      await apiRequest(onAgent('/media/rescan', agent.id),{method:'POST'})
+      toast.push({tone:'success',title:'Đã quét lại thư mục trên Agent'})
       await load()
-    }catch(e){toast.push({tone:'danger',title:'Không xóa được video',description:errorText(e, '')})}
-    finally{setBusy(false)}
-  }
-  const copyPath = async (item:Media) => {
-    if (!item.local_path) return
-    try{await navigator.clipboard.writeText(item.local_path);toast.push({tone:'success',title:'Đã copy đường dẫn'})}
-    catch{toast.push({tone:'danger',title:'Không copy được',description:item.local_path})}
+    }catch(e){toast.push({tone:'danger',title:'Không quét lại được',description:errorText(e, '')})}
+    finally{setScanning(false)}
   }
 
-  const actionsFor = (item:Media):MenuAction[] => [
-    { label:'Xem video', icon:<Eye size={15}/>, onSelect:()=>setPreview(item) },
-    { label:'Chỉnh sửa', icon:<Pencil size={15}/>, onSelect:()=>openEdit(item) },
-    ...(item.local_path ? [{ label:'Copy đường dẫn', icon:<Copy size={15}/>, onSelect:()=>void copyPath(item) }] : []),
-    { label:item.local_path?'Bỏ khỏi thư viện':'Xóa video', icon:<Trash2 size={15}/>, danger:true, separatorBefore:true, onSelect:()=>setDeleting(item) },
-  ]
   const productLabel = (id:number) => productName.get(id) ?? 'Sản phẩm #' + id
   const presenterLabel = (id:number) => presenterName.get(id) ?? 'Người #' + id
   /** Product badges for a video; `limit` collapses the remainder into a "+N" badge listing them on hover. */
@@ -218,29 +155,28 @@ export default function MediaPage(){
 
   const columns:TableColumn<Media>[] = [
     { key:'filename', header:'Video', render:item=><div className="media-row-title">
-      <button className="media-row-thumb" onClick={()=>setPreview(item)} aria-label={'Xem '+item.filename}><VideoThumb id={item.id} onMeta={next=>reportMeta(item.id,next)}/></button>
-      <div><strong title={item.filename}>{item.filename}</strong><small>{item.local_path ? 'Local' : 'Upload'} · {dateLabel(item.created_at)}</small></div>
+      <button className="media-row-thumb" onClick={()=>openEdit(item)} aria-label={'Sửa '+item.filename}><VideoThumb src={item.thumb_url}/></button>
+      <div><strong title={item.filename}>{item.filename}</strong><small>{item.available ? 'Có trên máy' : 'Không còn trên máy'}</small></div>
     </div> },
-    { key:'duration_seconds', header:'Thời lượng', width:110, render:item=>durationLabel(durationOf(item)) ?? '—' },
+    { key:'duration_seconds', header:'Thời lượng', width:110, render:item=>durationLabel(item.duration_seconds) ?? '—' },
     { key:'size_bytes', header:'Dung lượng', width:110, render:item=>sizeLabel(item.size_bytes) },
-    { key:'product_ids', header:'Sản phẩm · người trong video', render:item=><div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{peopleBadges(item, CARD_PRODUCTS)}{meta[item.id]?.missing && <MissingBadge/>}</div> },
+    { key:'product_ids', header:'Sản phẩm · người trong video', render:item=><div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{peopleBadges(item, CARD_PRODUCTS)}{!item.available && <MissingBadge/>}</div> },
     { key:'tags', header:'Tags', render:item=><TagList tags={parseTags(item.tags)}/> },
-    { key:'actions', header:'', width:56, align:'right', render:item=><ActionMenu actions={actionsFor(item)}/> },
+    { key:'actions', header:'', width:56, align:'right', render:item=><button type="button" className="media-icon-btn" aria-label="Chỉnh sửa" title="Chỉnh sửa" onClick={()=>openEdit(item)}><Pencil size={15}/></button> },
   ]
 
   const productOptions = products.map(p=>({value:String(p.id),label:p.name}))
   const presenterOptions = presenters.map(p=>({value:String(p.id),label:p.name}))
-  const linkFields = <>
-    <MultiSelect label="Sản phẩm sử dụng video" placeholder="Chưa gắn sản phẩm" maxVisible={4} value={productIds} options={productOptions} onChange={setProductIds}
-      hint="Một video có thể dùng cho nhiều sản phẩm. Sản phẩm mới gắn sẽ phát video này ở cuối danh sách; đổi thứ tự tại trang Video theo sản phẩm."/>
-    <MultiSelect label="Người xuất hiện trong video" placeholder="Chưa gắn người" maxVisible={4} value={presenterIds} options={presenterOptions} onChange={setPresenterIds}
-      hint="Chọn tất cả những người có mặt trong video."/>
-    <TagsInput label="Tags" hint="Nhấn Enter hoặc dấu phẩy để thêm tag" value={tags} onChange={setTags} placeholder="áo trễ vai, review, quay studio…"/>
-  </>
 
   return <div className="media-page">
+    <div className={'media-agent' + (agent.online ? ' is-online' : '')}>
+      <MonitorPlay size={18}/>
+      <span>Video trên máy <b>{agent.hostname}</b> · {agent.online ? 'Online' : 'Offline'} · thêm / bớt thư mục video trong ứng dụng Sarae Agent. File MP4 không được tải lên máy chủ. Đổi máy ở góc trên bên phải.</span>
+      <Button size="sm" variant="outline" leftIcon={<ScanSearch size={15}/>} loading={scanning} disabled={!agent.online} onClick={()=>void rescan()}>Quét lại</Button>
+    </div>
+
     <section className="media-stats" aria-label="Thống kê thư viện">
-      <StatCard label="Tổng video" icon={<Film size={18}/>} value={items.length} delta={`${stats.local} local · ${stats.upload} upload`} trend="neutral"/>
+      <StatCard label="Tổng video" icon={<Film size={18}/>} value={items.length} delta={stats.missing ? `${stats.missing} không còn trên máy` : `trên ${agent.hostname}`} trend="neutral"/>
       <StatCard label="Dung lượng" icon={<HardDrive size={18}/>} value={sizeLabel(stats.bytes)} delta={items.length ? `TB ${sizeLabel(stats.bytes / items.length)}/video` : 'Chưa có dữ liệu'} trend="neutral"/>
       <StatCard label="Đã gắn sản phẩm" icon={<Link2 size={18}/>} value={`${stats.linked}/${items.length}`} delta={items.length ? `${Math.round(stats.linked / items.length * 100)}% thư viện · ${stats.links} liên kết` : '—'} trend={stats.linked === items.length ? 'up' : 'neutral'}/>
       <StatCard label="Đã gắn người" icon={<Users size={18}/>} value={`${stats.withPeople}/${items.length}`} delta={items.length - stats.withPeople ? `${items.length - stats.withPeople} video chưa rõ người trong video` : 'Đã gắn đầy đủ'} trend={stats.withPeople === items.length ? 'up' : 'neutral'}/>
@@ -249,12 +185,10 @@ export default function MediaPage(){
     <Card
       className="media-library"
       padding={false}
-      title="Thư viện MP4"
-      description={filtering ? `${filtered.length} / ${items.length} video khớp bộ lọc` : `${items.length} video trên máy chạy Backend`}
+      title="Thư viện video"
+      description={filtering ? `${filtered.length} / ${items.length} video khớp bộ lọc` : `${items.length} video trên Windows Agent`}
       actions={<div className="media-actions">
         <Button variant="ghost" aria-label="Tải lại" title="Tải lại" onClick={()=>{setLoading(true);void load()}}><RefreshCw size={16}/></Button>
-        <Button variant="outline" leftIcon={<FolderOpen size={16}/>} onClick={()=>{setFormError('');setFolderOpen(true)}}>Liên kết thư mục</Button>
-        <Button leftIcon={<Upload size={16}/>} onClick={openUpload}>Upload MP4</Button>
       </div>}
     >
       <FilterBar className="media-filters" actions={<SegmentedControl<ViewMode> value={view} onChange={setView} items={[
@@ -262,10 +196,10 @@ export default function MediaPage(){
         {value:'list',label:<span className="media-seg"><List size={15}/>Danh sách</span>},
       ]}/>}>
         <SearchInput value={query} onChange={e=>resetting(setQuery)(e.target.value)} placeholder="Tìm theo tên file, tags, sản phẩm…" aria-label="Tìm video"/>
-        <Select value={source} onChange={value=>resetting(setSource)(value as SourceFilter)} options={[{value:'all',label:'Mọi nguồn'},{value:'local',label:'Local (không copy)'},{value:'upload',label:'Đã upload'}]}/>
+        <Select value={availability} onChange={value=>resetting(setAvailability)(value as Availability)} options={[{value:'all',label:'Mọi video'},{value:'available',label:'Có trên máy'},{value:'missing',label:'Không còn trên máy'}]}/>
         <Select value={productFilter} onChange={resetting(setProductFilter)} options={[{value:'all',label:'Mọi sản phẩm'},{value:'none',label:'Chưa gắn sản phẩm'},...products.map(p=>({value:String(p.id),label:p.name}))]}/>
         <Select value={presenterFilter} onChange={resetting(setPresenterFilter)} options={[{value:'all',label:'Mọi người'},{value:'none',label:'Chưa gắn người'},...presenters.map(p=>({value:String(p.id),label:p.name}))]}/>
-        <Select value={sort} onChange={value=>resetting(setSort)(value as SortKey)} options={[{value:'newest',label:'Mới nhất'},{value:'oldest',label:'Cũ nhất'},{value:'name',label:'Tên A → Z'},{value:'size',label:'Dung lượng lớn nhất'}]}/>
+        <Select value={sort} onChange={value=>resetting(setSort)(value as SortKey)} options={[{value:'name',label:'Tên A → Z'},{value:'size',label:'Dung lượng lớn nhất'},{value:'longest',label:'Dài nhất'}]}/>
       </FilterBar>
 
       <div className="media-body">
@@ -273,21 +207,21 @@ export default function MediaPage(){
         : loadError ? <LoadingState error={loadError} errorTitle="Không tải được thư viện" onRetry={()=>{setLoading(true);void load()}}>{null}</LoadingState>
         : filtered.length === 0 ? (filtering
           ? <EmptyState icon={<Film size={32}/>} title="Không có video khớp bộ lọc" description="Thử từ khóa khác hoặc bỏ bớt điều kiện lọc." actionLabel="Xóa bộ lọc" onAction={clearFilters}/>
-          : <EmptyState icon={<Film size={32}/>} title="Thư viện chưa có video" description="Upload file MP4 hoặc liên kết một thư mục trên máy chạy Backend/OBS." actionLabel="Upload MP4 đầu tiên" onAction={openUpload}/>)
+          : <EmptyState icon={<Film size={32}/>} title="Thư viện chưa có video"
+            description="Thêm thư mục chứa MP4 trong ứng dụng Sarae Agent trên máy, rồi bấm Quét lại."/>)
         : view === 'grid'
           ? <div className="media-grid">{visible.map(item=>{
-            const duration = durationLabel(durationOf(item)), resolution = resolutionOf(item)
-            return <article className="media-card" key={item.id}>
-              <button className="media-thumb" onClick={()=>setPreview(item)} aria-label={'Xem '+item.filename}>
-                <VideoThumb id={item.id} onMeta={next=>reportMeta(item.id,next)}/>
-                <span className="media-thumb-play"><Play size={18} fill="currentColor"/></span>
-                <span className="media-chip media-chip--source">{item.local_path ? <><FolderOpen size={12}/>Local</> : <><HardDrive size={12}/>Upload</>}</span>
+            const duration = durationLabel(item.duration_seconds)
+            return <article className={'media-card' + (item.available ? '' : ' is-missing')} key={item.id}>
+              <button className="media-thumb" onClick={()=>openEdit(item)} aria-label={'Sửa '+item.filename}>
+                <VideoThumb src={item.thumb_url}/>
                 {duration && <span className="media-chip media-chip--duration">{duration}</span>}
               </button>
               <div className="media-card-body">
-                <div className="media-card-title"><strong title={item.filename}>{item.filename}</strong><ActionMenu actions={actionsFor(item)}/></div>
-                <small className="media-card-meta">{sizeLabel(item.size_bytes)}{resolution && <> · {resolution.width}×{resolution.height} · {resolution.height > resolution.width ? 'Dọc' : 'Ngang'}</>}</small>
-                <div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{peopleBadges(item, CARD_PRODUCTS)}{meta[item.id]?.missing && <MissingBadge/>}</div>
+                <div className="media-card-title"><strong title={item.filename}>{item.filename}</strong>
+                  <button type="button" className="media-icon-btn" aria-label="Chỉnh sửa" title="Chỉnh sửa" onClick={()=>openEdit(item)}><Pencil size={15}/></button></div>
+                <small className="media-card-meta">{sizeLabel(item.size_bytes)}</small>
+                <div className="media-badges">{linkBadges(item, CARD_PRODUCTS)}{peopleBadges(item, CARD_PRODUCTS)}{!item.available && <MissingBadge/>}</div>
                 <TagList tags={parseTags(item.tags)} limit={3}/>
               </div>
             </article>
@@ -301,84 +235,29 @@ export default function MediaPage(){
       </div>}
     </Card>
 
-    <Modal open={uploadOpen} title="Upload video MP4" size="md" onClose={()=>{if(!busy)setUploadOpen(false)}} footer={<>
-      <Button variant="ghost" disabled={busy} onClick={()=>setUploadOpen(false)}>Hủy</Button>
-      <Button type="submit" form="media-upload-form" loading={busy} leftIcon={<Upload size={16}/>}>Upload video</Button>
-    </>}>
-      <form id="media-upload-form" className="media-form" onSubmit={event=>void upload(event)}>
-        <FileUpload accept=".mp4,video/mp4" maxSizeMb={500} label="Kéo thả file MP4 vào đây hoặc bấm để chọn" onFiles={files=>{setFile(files[0] ?? null);setFormError('')}}/>
-        {file && <div className="media-file-picked"><Film size={16}/><strong>{file.name}</strong><span>{sizeLabel(file.size)}</span></div>}
-        {linkFields}
-        {formError && <Alert tone="danger">{formError}</Alert>}
-      </form>
-    </Modal>
-
-    <Modal open={folderOpen} title="Liên kết thư mục video" size="md" onClose={()=>{if(!busy)setFolderOpen(false)}} footer={<>
-      <Button variant="ghost" disabled={busy} onClick={()=>setFolderOpen(false)}>Hủy</Button>
-      <Button type="submit" form="media-folder-form" loading={busy} leftIcon={<FolderOpen size={16}/>}>Quét và liên kết</Button>
-    </>}>
-      <form id="media-folder-form" className="media-form" onSubmit={event=>void scan(event)}>
-        <Alert tone="info" title="Không copy file">Chỉ quét file MP4 trong thư mục trên máy chạy Backend/OBS. File gốc được giữ nguyên tại chỗ.</Alert>
-        <Input label="Thư mục Windows" required value={folder} onChange={e=>setFolder(e.target.value)} placeholder="D:\Sarae\Videos"/>
-        <Switch label="Quét cả thư mục con" checked={recursive} onChange={e=>setRecursive(e.target.checked)}/>
-        {formError && <Alert tone="danger">{formError}</Alert>}
-      </form>
-    </Modal>
-
     <Sheet open={editing !== null} title="Thông tin video" width={480} onClose={()=>{if(!busy)setEditing(null)}} footer={<div className="media-sheet-actions">
       <Button variant="ghost" disabled={busy} onClick={()=>setEditing(null)}>Hủy</Button>
       <Button type="submit" form="media-edit-form" loading={busy}>Lưu thay đổi</Button>
     </div>}>
       {editing && <div className="media-form">
-        <video className="media-player media-player--sheet" src={fileUrl(editing.id)} controls preload="metadata" playsInline/>
+        <div className="media-sheet-thumb"><VideoThumb src={editing.thumb_url}/></div>
         <dl className="media-facts">
           <Fact label="Tên file">{editing.filename}</Fact>
-          <Fact label="Nguồn">{editing.local_path ? 'Local · không copy' : 'Upload · lưu trên Backend'}</Fact>
-          {editing.local_path && <Fact label="Đường dẫn"><span className="media-path">{editing.local_path}</span><button type="button" className="media-icon-btn" aria-label="Copy đường dẫn" title="Copy đường dẫn" onClick={()=>void copyPath(editing)}><Copy size={14}/></button></Fact>}
+          <Fact label="Trên máy">{agent.hostname} · {editing.available ? 'có file' : 'không còn file'}</Fact>
           <Fact label="Dung lượng">{sizeLabel(editing.size_bytes)}</Fact>
-          <Fact label="Thời lượng">{durationLabel(durationOf(editing)) ?? '—'}</Fact>
-          <Fact label="Độ phân giải">{(()=>{const r = resolutionOf(editing);return r ? `${r.width}×${r.height}` : '—'})()}</Fact>
-          <Fact label="Ngày thêm">{dateLabel(editing.created_at)}</Fact>
-          <Fact label="Đang dùng cho">{editing.product_ids.length ? <div className="media-badges">{linkBadges(editing)}</div> : 'Chưa gắn sản phẩm'}</Fact>
-          <Fact label="Người trong video">{editing.presenter_ids.length ? <div className="media-badges">{peopleBadges(editing)}</div> : 'Chưa gắn người'}</Fact>
+          <Fact label="Thời lượng">{durationLabel(editing.duration_seconds) ?? '—'}</Fact>
         </dl>
         <form id="media-edit-form" className="media-form" onSubmit={event=>void saveEdit(event)}>
-          {linkFields}
+          <MultiSelect label="Sản phẩm sử dụng video" placeholder="Chưa gắn sản phẩm" maxVisible={4} value={productIds} options={productOptions} onChange={setProductIds}
+            hint="Một video có thể dùng cho nhiều sản phẩm. Sản phẩm mới gắn sẽ phát video này ở cuối danh sách; đổi thứ tự tại trang Video theo sản phẩm."/>
+          <MultiSelect label="Người xuất hiện trong video" placeholder="Chưa gắn người" maxVisible={4} value={presenterIds} options={presenterOptions} onChange={setPresenterIds}
+            hint="Chọn tất cả những người có mặt trong video."/>
+          <TagsInput label="Tags" hint="Nhấn Enter hoặc dấu phẩy để thêm tag" value={tags} onChange={setTags} placeholder="áo trễ vai, review, quay studio…"/>
           {formError && <Alert tone="danger">{formError}</Alert>}
         </form>
       </div>}
     </Sheet>
-
-    <Modal open={preview !== null} title={preview?.filename ?? 'Xem video'} size="lg" onClose={()=>setPreview(null)} footer={preview && <>
-      <div className="media-badges media-preview-links">{linkBadges(preview)}{peopleBadges(preview)}</div>
-      <Button variant="outline" leftIcon={<Pencil size={15}/>} onClick={()=>{const item = preview;setPreview(null);openEdit(item)}}>Chỉnh sửa</Button>
-    </>}>
-      {preview && <video className="media-player" src={fileUrl(preview.id)} controls autoPlay playsInline/>}
-    </Modal>
-
-    <ConfirmModal
-      open={deleting !== null}
-      loading={busy}
-      onClose={()=>{if(!busy)setDeleting(null)}}
-      onConfirm={()=>void remove()}
-      title={deleting?.local_path ? 'Bỏ video khỏi thư viện?' : 'Xóa video?'}
-      description={deleting?.local_path ? `"${deleting.filename}" sẽ bị bỏ khỏi thư viện. File gốc trên ổ đĩa được giữ nguyên.` : `"${deleting?.filename ?? ''}" và file đã upload sẽ bị xóa vĩnh viễn.`}
-      confirmLabel={deleting?.local_path ? 'Bỏ khỏi thư viện' : 'Xóa video'}
-    />
   </div>
-}
-
-type MenuAction = { label:string; icon:ReactNode; onSelect:()=>void; danger?:boolean; separatorBefore?:boolean }
-
-/** Row/card overflow menu. Controlled so the popover closes after an item is chosen. */
-function ActionMenu({actions}:{actions:MenuAction[]}){
-  const [open,setOpen] = useState(false)
-  return <Popover open={open} onOpenChange={setOpen} align="end" trigger={<button type="button" className="media-icon-btn" aria-label="Thao tác" aria-expanded={open}><MoreHorizontal size={17}/></button>}>
-    <div className="ui-menu-list media-menu">{actions.map(action=><div key={action.label}>
-      {action.separatorBefore && <hr/>}
-      <div className="ui-menu-list__row"><button type="button" className={action.danger ? 'is-danger' : ''} onClick={()=>{setOpen(false);action.onSelect()}}>{action.icon}<span>{action.label}</span></button></div>
-    </div>)}</div>
-  </Popover>
 }
 
 function TagList({tags,limit}:{tags:string[];limit?:number}){
@@ -388,7 +267,7 @@ function TagList({tags,limit}:{tags:string[];limit?:number}){
 }
 
 function MissingBadge(){
-  return <Badge tone="danger"><AlertTriangle size={12}/>Không đọc được file</Badge>
+  return <Badge tone="danger"><AlertTriangle size={12}/>Không còn trên máy</Badge>
 }
 
 function Fact({label,children}:{label:string;children:ReactNode}){

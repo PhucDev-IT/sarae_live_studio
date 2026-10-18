@@ -11,7 +11,7 @@ const config:AssignmentConfig = {
   linkKey:'presenter_ids',
   loadEntities:async()=>(await apiRequest<Presenter[]>('/presenters?limit=500')).map(p=>({id:p.id, name:p.name, subtitle:p.description, image:p.avatar_url})),
   loadVideos:getPresenterVideos,
-  saveVideos:async(id, mediaIds)=>(await putPresenterVideos(id, mediaIds)).media_ids,
+  saveVideos:async(agentId, id, mediaIds)=>(await putPresenterVideos(agentId, id, mediaIds)).media_ids,
   catalogHash:'/presenters',
   text:{
     summary:(count, duration)=>`Xuất hiện trong ${count} video${duration ? ` · tổng ${duration}` : ''}`,

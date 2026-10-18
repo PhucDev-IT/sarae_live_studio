@@ -1,9 +1,10 @@
 /** Managed LIVE sessions shared by the session planner (#/sessions) and the operator console (#/live). */
-import { apiRequest } from './mediaApi'
+import { agentAction, apiRequest, onAgent, type AgentCommand } from './mediaApi'
 
 export type SessionStatus = 'DRAFT' | 'RUNNING' | 'ENDED'
+/** A LIVE session is bound to the Windows Agent it was created on; every action goes to that Agent, never another. */
 export type LiveSession = {
-  id:number; name:string; status:SessionStatus; product_ids:number[]; current_product_id:number|null
+  id:number; name:string; status:SessionStatus; agent_id:string; product_ids:number[]; current_product_id:number|null
   created_at:string; started_at:string|null; ended_at:string|null
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
@@ -26,6 +27,17 @@ export const EVENT_LABEL:Record<string,string> = {
   PRODUCT_SWITCHED:'Chuyển sản phẩm',
   ENDED:'Kết thúc phiên',
   RESUMED:'Tiếp tục phát sau khi bị ngắt',
+  RECONCILED:'Đồng bộ lại với Agent',
+  AGENT_CHANGED:'Đổi Windows Agent',
+  START_FAILED:'Bắt đầu thất bại',
+  START_TIMEOUT:'Agent không phản hồi khi bắt đầu',
+  SWITCH_FAILED:'Chuyển sản phẩm thất bại',
+  SWITCH_TIMEOUT:'Agent không phản hồi khi chuyển',
+  RESUME_FAILED:'Tiếp tục thất bại',
+  RESUME_TIMEOUT:'Agent không phản hồi khi tiếp tục',
+  RECONCILE_STOP:'Dừng phát thừa trên Agent',
+  PLAYBACK_ENDED:'Agent dừng phát',
+  ERROR:'Lỗi trên Agent',
 }
 
 /** Turns the backend's `key=value;…` event detail into a short Vietnamese note. */
@@ -35,6 +47,8 @@ export function eventDetail(detail:string){
   if (values.during_live) return 'Đưa lên LIVE ngoài danh sách chuẩn bị'
   if (values.stale) return 'Đóng phiên bị treo sau khi Backend khởi động lại'
   if (values.duplicate_of) return `Nhân bản từ phiên #${values.duplicate_of}`
+  if (values.agent) return 'Phiên được chuyển sang máy Windows khác'
+  if (values.command) return values.reason ?? values.error ?? ''
   if (values.transitions != null) return `${values.transitions} lần chuyển video · ${values.errors ?? 0} lỗi · ${values.recoveries ?? 0} lần phục hồi`
   return detail
 }
@@ -51,20 +65,26 @@ export function durationText(from:string|null, to:string|null){
 }
 
 const json = (data:unknown, method = 'POST'):RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+/** Answer of start / resume / switch: the Agent command and the session after it. */
+export type SessionAction = { command?:AgentCommand; session?:LiveSession; unchanged?:boolean }
 export const sessionsApi = {
   list:() => apiRequest<LiveSession[]>('/live/sessions'),
   events:(id:number) => apiRequest<SessionEvent[]>(`/live/sessions/${id}/events`),
-  create:(name:string) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[]})),
+  create:(name:string, agentId:string) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], agent_id:agentId})),
   rename:(id:number, name:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({name}, 'PATCH')),
+  /** Only while DRAFT: a session never moves to another Agent once it has started. */
+  moveToAgent:(id:number, agentId:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({agent_id:agentId}, 'PATCH')),
   remove:(id:number) => apiRequest<void>(`/live/sessions/${id}`, {method:'DELETE'}),
   duplicate:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/duplicate`, {method:'POST'}),
   saveProducts:(id:number, productIds:number[]) => apiRequest<LiveSession>(`/live/sessions/${id}/products`, json({product_ids:productIds}, 'PUT')),
-  start:(id:number, productId?:number) => apiRequest(`/live/sessions/${id}/start`, json(productId ? {product_id:productId} : {})),
-  switchTo:(id:number, productId:number, mode:'immediate'|'after_current') => apiRequest(`/live/sessions/${id}/switch`, json({product_id:productId, mode})),
-  /** Re-attaches OBS to a RUNNING session whose playback was lost when the Backend restarted. */
-  resume:(id:number, productId?:number) => apiRequest(`/live/sessions/${id}/resume`, json(productId ? {product_id:productId} : {})),
+  // Sent to the session's own Agent; resolved once the Agent confirmed (or rejected with its error).
+  start:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/start`, json(productId ? {product_id:productId} : {})),
+  switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
+  /** Plays a RUNNING session again on its Agent after playback was lost (Agent or OBS restarted). */
+  resume:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/resume`, json(productId ? {product_id:productId} : {})),
   finish:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/finish`, {method:'POST'}),
-  products:() => apiRequest<LiveProduct[]>('/live/products'),
+  /** The owner's products with how many LIVE videos each has on that Agent. */
+  products:(agentId:string) => apiRequest<LiveProduct[]>(onAgent('/live/products', agentId)),
 }
 
 /** Hash route helpers: `#/sessions?id=3` opens a session in the planner. */

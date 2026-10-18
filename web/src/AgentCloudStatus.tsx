@@ -1,122 +1,102 @@
-import {useEffect,useState} from 'react'
-import {api,errorText} from './mediaApi'
-import {getAuthToken} from './AuthGate'
-type Agent={agent_id:string;hostname:string;last_seen:string;online:boolean;seconds_ago:number;obs?:{connected?:boolean;running?:boolean;media_state?:string;error?:string};cloud_playback?:{active:boolean;product_id:number|null;index:number;count:number};local_playback?:{active:boolean;count:number;index:number;loop:boolean;needs_manual_resume?:boolean};verification?:{state?:{status?:string;running?:boolean;window_found?:boolean;window_info?:{pid:number;hwnd:number;exe_name:string;exe_path:string;title:string;minimized:boolean}|null;monitors_detected?:number};config?:{interval_seconds:number;threshold:number;telegram_enabled:boolean;telegram_chat_id:string};events?:{at:string;kind:string;detail:string}[]}}
-type AgentPlaylist={id:string;agent_id:string;name:string;media_ids:string[];loop:boolean}
-type Job={command_id:string;kind:string;state:string;result:string|null;created_at:string}
-const labels:Record<string,string>={idle:'Chưa bật',watching:'Đang quét, chưa thấy CAPTCHA',captcha_detected:'Phát hiện CAPTCHA',window_unavailable:'Không thấy cửa sổ TikTok',template_missing_or_invalid:'Ảnh mẫu không hợp lệ',starting:'Đang bật',stopped:'Đã dừng',error:'Có lỗi'}
-const commands:Record<string,string>={monitor_start:'Bật Monitor',monitor_stop:'Dừng Monitor',monitor_config:'Lưu cấu hình',obs_status:'Kiểm tra OBS',obs_pause:'Tạm dừng video',obs_resume:'Tiếp tục video',obs_next:'Video tiếp',obs_previous:'Video trước',obs_stop:'Dừng video',tts_speak:'Phát giọng nói vào OBS',local_media_play:'Phát video local',local_media_stop:'Dừng video local',local_playlist_start:'Phát playlist local'}
+import { useCallback, useEffect, useState } from 'react'
+import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, Table, useToast, type TableColumn } from './ui/core'
+import { Ban, Check, KeyRound, MonitorPlay, MonitorX, Pencil, RefreshCw, X } from 'lucide-react'
+import { apiRequest, errorText, type AgentCommand, type OwnerAgent } from './mediaApi'
+import { agentState, useAgent } from './agentContext'
+import { dateTime } from './liveSessionsApi'
+import './agent-picker.css'
+
+const KIND:Record<string,string> = {
+  product_play:'Phát sản phẩm', playback_pause:'Tạm dừng', playback_resume:'Tiếp tục', playback_next:'Video tiếp', playback_previous:'Video trước',
+  playback_select:'Chọn video', playback_seek:'Tua video', playback_stop:'Dừng phát', playback_cancel_pending:'Hủy hẹn chuyển', obs_configure:'Cấu hình OBS',
+  obs_inputs:'Đọc source OBS', media_rescan:'Quét lại thư mục', monitor_start:'Bật CAPTCHA Monitor', monitor_stop:'Dừng CAPTCHA Monitor',
+  monitor_config:'Cấu hình CAPTCHA Monitor', tts_speak:'Phát giọng nói', local_playlist_start:'Phát thử playlist',
+}
+const STATUS:Record<AgentCommand['status'],{label:string;tone:'default'|'info'|'success'|'danger'|'warning'}> = {
+  PENDING:{label:'Chờ Agent nhận', tone:'default'}, RUNNING:{label:'Đang chạy', tone:'info'}, SUCCESS:{label:'Thành công', tone:'success'},
+  FAILED:{label:'Lỗi', tone:'danger'}, TIMEOUT:{label:'Hết hạn', tone:'warning'}, CANCELLED:{label:'Đã hủy', tone:'default'},
+}
+
+/** The OWNER's Windows Agents: state of each PC, which one this tab drives, and the commands sent to it. */
 export default function AgentCloudStatus(){
- const [key,setKey]=useState(getAuthToken())
- const [agents,setAgents]=useState<Agent[]>([])
- const [selected,setSelected]=useState('')
- const [period,setPeriod]=useState(2)
- const [threshold,setThreshold]=useState(.82)
- const [ttsText,setTtsText]=useState('')
- const [mediaItems,setMediaItems]=useState<{media_id:string;filename:string;size_bytes:number;available:number}[]>([])
- const [voice,setVoice]=useState('vi-VN-HoaiMyNeural')
- const [chosen,setChosen]=useState<string[]>([])
- const [playlistName,setPlaylistName]=useState('')
- const [playlists,setPlaylists]=useState<AgentPlaylist[]>([])
- const [jobs,setJobs]=useState<Job[]>([])
- const [error,setError]=useState('')
- const [note,setNote]=useState('')
- const [busy,setBusy]=useState(false)
- const apiCall=async<T,>(url:string,options?:RequestInit):Promise<T>=>{
-  const response=await fetch(api+'/api/agents'+url,{...options,headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json',...options?.headers}})
-  if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||'HTTP '+response.status)}
-  return response.json() as Promise<T>
- }
- const refresh=async()=>{
-  if(!key.trim())return
-  try{
-   const data=await apiCall<{agents:Agent[]}>('/status')
-   setAgents(data.agents);setError('');
-   const current=selected||data.agents[0]?.agent_id||''
-   if(!selected&&current){setSelected(current);const c=data.agents.find(a=>a.agent_id===current)?.verification?.config;if(c){setPeriod(c.interval_seconds);setThreshold(c.threshold)}}
-   if(current){const j=await apiCall<{commands:Job[]}>('/commands?agent_id='+encodeURIComponent(current));setJobs(j.commands)}
-  }catch(e){setError(errorText(e,'Không tải được trạng thái Agent'))}
- }
- useEffect(()=>{if(!key)return;void refresh();const id=setInterval(()=>void refresh(),5000);return()=>clearInterval(id)},[key,selected])
- const command=async(kind:string,payload:Record<string,unknown>={})=>{
-  if(!selected)return
-  setBusy(true);setError('');setNote('')
-  try{
-   const r=await apiCall<{command_id:string;state:string}>('/commands',{method:'POST',body:JSON.stringify({agent_id:selected,kind,payload})})
-   setNote('Đã gửi lệnh '+(commands[kind]||kind)+'; đang chờ Agent xử lý ('+r.command_id.slice(0,8)+')')
-   await refresh()
-  }catch(e){setError(errorText(e,'Gửi lệnh thất bại'))}finally{setBusy(false)}
- }
- const performMedia=async()=>{
-  try{
-   const res=await fetch(api+'/api/agent-library/'+encodeURIComponent(selected),{
-    headers:{Authorization:'Bearer '+key}})
-   const data=await res.json()
-   if(!res.ok)throw new Error(data.detail||'Không tải được thư viện')
-   setMediaItems(data.videos||[])
-   setError('')
-  }catch(e){setError(errorText(e,'Không lấy được danh mục video'))}
- }
- const loadPlaylists=async()=>{
-  if(!selected)return
-  try{
-   const response=await fetch(api+'/api/agent-playlists?agent_id='+encodeURIComponent(selected),{
-    headers:{Authorization:'Bearer '+key}})
-   const result=await response.json()
-   if(!response.ok)throw new Error(result.detail||'Không lấy được playlist')
-   setPlaylists(result as AgentPlaylist[])
-  }catch(e){setError(errorText(e,'Không thể tải playlist'))}
- }
- const savePlaylist=async()=>{
-  if(!playlistName.trim()||!chosen.length)return
-  setBusy(true);setError('')
-  try{
-   const response=await fetch(api+'/api/agent-playlists',{
-    method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},
-    body:JSON.stringify({agent_id:selected,name:playlistName,media_ids:chosen,loop:true})})
-   const result=await response.json()
-   if(!response.ok)throw new Error(result.detail||'Không lưu được playlist')
-   setNote('Đã tạo playlist '+playlistName);setPlaylistName('');setChosen([])
-   await loadPlaylists()
-  }catch(e){setError(errorText(e,'Không thể lưu playlist'))}finally{setBusy(false)}
- }
- const playPlaylist=async(id:string)=>{
-  setBusy(true);setError('')
-  try{
-   const response=await fetch(api+'/api/agent-playlists/'+encodeURIComponent(id)+'/play',{
-    method:'POST',headers:{Authorization:'Bearer '+key}})
-   const result=await response.json()
-   if(!response.ok)throw new Error(result.detail||'Không phát được playlist')
-   setNote('Đã gửi lệnh phát playlist tới Windows Agent')
-   await refresh()
-  }catch(e){setError(errorText(e,'Không phát được playlist'))}finally{setBusy(false)}
- }
- const selectedAgent=agents.find(a=>a.agent_id===selected)
- return <section className="vm-panel"><h3>Windows Agent · Điều khiển từ xa</h3><p>Truy cập Web bằng điện thoại hoặc máy tính khác, gửi lệnh tới Backend VPS. Windows Agent xử lý tại máy có TikTok LIVE Studio/OBS. Trạng thái được cập nhật khoảng 5 giây một lần.</p>
-  <label>Phiên đăng nhập từ trang Tài khoản & Agent<input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="Đăng nhập để lấy access token"/></label>
-  <div className="vm-actions"><button disabled={busy||!key} onClick={()=>void refresh()}>Làm mới Agent</button></div>
-  {!!agents.length&&<><label>Máy Windows<select value={selected} onChange={e=>{setSelected(e.target.value);setMediaItems([]);setPlaylists([]);setChosen([]);const c=agents.find(a=>a.agent_id===e.target.value)?.verification?.config;if(c){setPeriod(c.interval_seconds);setThreshold(c.threshold)}}}>{agents.map(a=><option key={a.agent_id} value={a.agent_id}>{a.hostname} — {a.online?'Online':'Offline'}</option>)}</select></label>
-  {selectedAgent&&<div className="vm-stats"><div><small>Kết nối</small><strong>{selectedAgent.online?'Đang kết nối':'Mất kết nối'}</strong></div><div><small>Monitor</small><strong>{labels[selectedAgent.verification?.state?.status||'']||selectedAgent.verification?.state?.status||'Chưa có dữ liệu'}</strong></div><div><small>OBS trên Agent</small><strong>{selectedAgent.obs?.connected? "Đã kết nối" : "Chưa kết nối"}</strong></div><div><small>Lần cập nhật</small><strong>{new Date(selectedAgent.last_seen).toLocaleTimeString('vi-VN')}</strong></div></div>}
-  {selectedAgent?.verification?.state?.window_info&&<div className="vm-event"><strong>Ứng dụng giám sát trên Windows</strong><p>{selectedAgent.verification.state.window_info.exe_name} · PID {selectedAgent.verification.state.window_info.pid} · HWND {selectedAgent.verification.state.window_info.hwnd}</p><small>{selectedAgent.verification.state.window_info.exe_path}</small><small>Số màn hình: {selectedAgent.verification.state.monitors_detected??'—'}</small></div>}
-  <div className="vm-actions"><button disabled={busy||!selectedAgent?.online} onClick={()=>void command('monitor_start')}>Bật Monitor</button><button disabled={busy||!selectedAgent?.online} onClick={()=>void command('monitor_stop')}>Dừng Monitor</button><button disabled={busy||!selectedAgent?.online} onClick={()=>void command('obs_status')}>Kiểm tra OBS</button></div>
-  <div className="vm-actions">{([['obs_previous','Video trước'],['obs_pause','Tạm dừng'],['obs_resume','Tiếp tục'],['obs_next','Video tiếp'],['obs_stop','Dừng phát']] as const).map(([kind,label])=><button key={kind} disabled={busy||!selectedAgent?.online} onClick={()=>void command(kind)}>{label}</button>)}</div>
-  <div className="vm-inputs"><label>Chu kỳ kiểm tra CAPTCHA (giây)<input type="number" min={.5} max={15} step={.5} value={period} onChange={e=>setPeriod(Number(e.target.value))}/></label><label>Ngưỡng nhận diện<input type="number" min={.65} max={.99} step={.01} value={threshold} onChange={e=>setThreshold(Number(e.target.value))}/></label></div>
-  <div className="vm-actions"><button disabled={busy||!selectedAgent?.online||period<.5||period>15||threshold<.65||threshold>.99} onClick={()=>void command('monitor_config',{interval_seconds:period,threshold,telegram_enabled:selectedAgent?.verification?.config?.telegram_enabled||false,telegram_chat_id:selectedAgent?.verification?.config?.telegram_chat_id||''})}>Lưu cấu hình trên Windows Agent</button></div>
-  <h4>Thư viện video của Agent</h4>
-  {selectedAgent?.local_playback&&<p>Playlist Windows: {selectedAgent.local_playback.active?'Đang phát':'Đã dừng'} · Video {selectedAgent.local_playback.count?selectedAgent.local_playback.index+1:0}/{selectedAgent.local_playback.count}{selectedAgent.local_playback.needs_manual_resume?' · Phiên cũ cần khởi động lại thủ công':''}</p>}
-  <p>Video vẫn ở máy Windows. Cloud chỉ giữ tên, kích thước và định danh video được Agent đồng bộ.</p>
-  <button disabled={busy||!selected} onClick={()=>void performMedia()}>Tải danh mục video</button>
-  <div className="vm-events">{mediaItems.filter(x=>x.available).slice(0,200).map(v=><div className="vm-event" key={v.media_id}>
-   <label><input type="checkbox" checked={chosen.includes(v.media_id)} onChange={e=>setChosen(old=>e.target.checked?[...old,v.media_id]:old.filter(id=>id!==v.media_id))}/> {v.filename}</label><small>{(v.size_bytes/1024/1024).toFixed(1)} MB</small>
-   <button disabled={busy||!selectedAgent?.online} onClick={()=>void command('local_media_play',{media_id:v.media_id})}>Phát trong OBS</button>
-  </div>)}</div>
-  <div className="vm-inputs"><label>Tên playlist mới<input value={playlistName} maxLength={150} onChange={e=>setPlaylistName(e.target.value)} placeholder="Playlist LIVE tối nay"/></label></div>
-  <div className="vm-actions"><button disabled={busy||!chosen.length||!playlistName.trim()} onClick={()=>void savePlaylist()}>Tạo playlist từ {chosen.length} video đã chọn</button><button disabled={busy||!selected} onClick={()=>void loadPlaylists()}>Tải playlist</button></div>
-  <div className="vm-events">{playlists.map(pl=><div className="vm-event" key={pl.id}><strong>{pl.name}</strong><small>{pl.media_ids.length} video · {pl.loop?'Phát lặp':'Phát một lượt'}</small><button disabled={busy||!selectedAgent?.online} onClick={()=>void playPlaylist(pl.id)}>Phát trên Windows Agent</button></div>)}</div>
-  <div className="vm-actions"><button disabled={busy||!selectedAgent?.online} onClick={()=>void command('local_media_next')}>Video kế tiếp</button><button disabled={busy||!selectedAgent?.online} onClick={()=>void command('local_media_stop')}>Dừng playlist local</button></div>
-  <label>Đọc thử nội dung qua OBS (cần nguồn Sarae Voice)<textarea rows={2} value={ttsText} onChange={e=>setTtsText(e.target.value)} maxLength={450} placeholder="Dạ em chào các chị ạ..."/></label><label>Giọng đọc<select value={voice} onChange={e=>setVoice(e.target.value)}><option value="vi-VN-HoaiMyNeural">Hoài My (nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (nam)</option></select></label>
-  <div className="vm-actions"><button disabled={busy||!selectedAgent?.online||!ttsText.trim()} onClick={()=>void command('tts_speak',{text:ttsText,voice})}>Phát TTS vào OBS trên Windows</button></div>
-  <h4>Lịch sử lệnh</h4><div className="vm-events">{jobs.map(j=><div className="vm-event" key={j.command_id}><strong>{commands[j.kind]||j.kind} — {j.state==='completed'?'Thành công':j.state==='failed'?'Thất bại':j.state==='pending'?'Đang chờ':'Đang xử lý'}</strong><small>{new Date(j.created_at).toLocaleString('vi-VN')}</small>{j.result&&<p>{j.result.slice(0,500)}</p>}</div>)}</div></>}
-  {error&&<p className="vm-error">{error}</p>}{note&&<p className="vm-success">{note}</p>}
- </section>
+  const toast = useToast()
+  const {agents, agent:current, select, refresh, loaded} = useAgent()
+  const [commands,setCommands] = useState<AgentCommand[]>([])
+  const [renaming,setRenaming] = useState<OwnerAgent|null>(null)
+  const [name,setName] = useState('')
+  const [revoking,setRevoking] = useState<OwnerAgent|null>(null)
+  const [busy,setBusy] = useState(false)
+  const currentId = current?.id
+
+  const loadCommands = useCallback(async ()=>{
+    if (!currentId) {setCommands([]);return}
+    try{setCommands((await apiRequest<{commands:AgentCommand[]}>(`/agents/${encodeURIComponent(currentId)}/commands`)).commands)}catch{/* keep the last list */}
+  },[currentId])
+  useEffect(()=>{
+    void loadCommands()
+    const timer = window.setInterval(()=>void loadCommands(), 4000)
+    return ()=>window.clearInterval(timer)
+  },[loadCommands])
+
+  const run = async (job:()=>Promise<unknown>, success:string) => {
+    setBusy(true)
+    try{await job();toast.push({tone:'success', title:success});await refresh();await loadCommands()}
+    catch(e){toast.push({tone:'danger', title:'Không thực hiện được', description:errorText(e, '')})}
+    finally{setBusy(false)}
+  }
+
+  const columns:TableColumn<AgentCommand>[] = [
+    {key:'kind', header:'Lệnh', render:c=><strong>{KIND[c.kind] ?? c.kind}</strong>},
+    {key:'status', header:'Trạng thái', width:150, render:c=><span className="ag-status"><Badge tone={STATUS[c.status].tone}>{STATUS[c.status].label}</Badge>{c.late_ack && <small title="Agent phản hồi sau khi lệnh đã hết hạn">phản hồi trễ</small>}</span>},
+    {key:'created_at', header:'Gửi lúc', width:170, render:c=>dateTime(c.created_at)},
+    {key:'error', header:'Ghi chú', render:c=><small className="ag-note">{c.error ?? (c.attempts > 1 ? `Giao lại ${c.attempts} lần` : '')}</small>},
+    {key:'actions', header:'', width:60, align:'right', render:c=>c.status === 'PENDING' ? <button type="button" className="media-icon-btn" title="Hủy lệnh chưa được Agent nhận" aria-label="Hủy lệnh"
+      onClick={()=>void run(()=>apiRequest(`/agents/${encodeURIComponent(c.agent_id)}/commands/${encodeURIComponent(c.command_id)}/cancel`, {method:'POST'}), 'Đã hủy lệnh')}><X size={15}/></button> : null},
+  ]
+
+  if (!loaded) return null
+  return <div className="ag-page">
+    <Alert tone="info" title="Thêm máy Windows mới">
+      Quản trị nền tảng cấp mã kích hoạt theo License của bạn. Cài Sarae Agent trên máy chạy OBS / TikTok LIVE Studio và nhập mã đó trong ứng dụng.
+      Video MP4 và cấu hình OBS luôn ở trên máy; máy chủ chỉ giữ tên file, thời lượng và ảnh thu nhỏ.
+    </Alert>
+    {!agents.length ? <Card><EmptyState icon={<MonitorX size={32}/>} title="Chưa có Windows Agent" description="Sau khi kích hoạt, máy sẽ xuất hiện ở đây trong vài giây."/></Card>
+      : <div className="ag-grid">{agents.map(a=><Card key={a.id} className={'ag-card' + (a.id === currentId ? ' is-current' : '')} padding={false}>
+        <div className="ag-card-head">
+          <span className={'agent-dot' + (a.online ? ' is-online' : '')}/>
+          <div><strong>{a.hostname}</strong><small>{agentState(a)}</small></div>
+          {a.id === currentId && <Badge tone="primary"><Check size={12}/>Tab này</Badge>}
+        </div>
+        <dl className="ag-facts">
+          <div><dt>Kết nối</dt><dd>{a.online ? 'Online' : 'Offline'}</dd></div>
+          <div><dt>OBS</dt><dd>{a.obs_connected ? 'Đã kết nối' : '—'}</dd></div>
+          <div><dt>Đang phát</dt><dd>{a.playing ? (a.session_id ? `Phiên #${a.session_id}` : 'Có') : 'Không'}</dd></div>
+          <div><dt>CAPTCHA</dt><dd>{a.monitor_running ? 'Đang giám sát' : 'Tắt'}</dd></div>
+          <div className="ag-wide"><dt>Liên lạc gần nhất</dt><dd>{a.last_seen ? dateTime(a.last_seen) : 'Chưa từng kết nối'}</dd></div>
+        </dl>
+        <div className="ag-actions">
+          {a.id !== currentId && <Button size="sm" leftIcon={<MonitorPlay size={14}/>} onClick={()=>select(a.id)}>Dùng trong tab này</Button>}
+          <Button size="sm" variant="ghost" leftIcon={<Pencil size={14}/>} onClick={()=>{setName(a.hostname);setRenaming(a)}}>Đổi tên</Button>
+          <Button size="sm" variant="ghost" leftIcon={<Ban size={14}/>} disabled={a.playing} title={a.playing ? 'Kết thúc phiên LIVE trên máy này trước' : undefined} onClick={()=>setRevoking(a)}>Thu hồi</Button>
+        </div>
+      </Card>)}</div>}
+
+    {current && <Card padding={false} title={<span className="ag-title"><KeyRound size={17}/>Lệnh gửi tới {current.hostname}</span>}
+      description="30 lệnh gần nhất. Lệnh có tác động (phát, chuyển, tua…) không tự gửi lại khi hết hạn để tránh phát hai lần."
+      actions={<Button size="sm" variant="ghost" aria-label="Tải lại" onClick={()=>void loadCommands()}><RefreshCw size={15}/></Button>}>
+      {commands.length ? <Table<AgentCommand> columns={columns} data={commands}/> : <p className="ag-empty">Chưa có lệnh nào.</p>}
+    </Card>}
+
+    <Modal open={!!renaming} title="Đổi tên máy" size="sm" onClose={()=>!busy && setRenaming(null)} footer={<>
+      <Button variant="ghost" disabled={busy} onClick={()=>setRenaming(null)}>Hủy</Button>
+      <Button loading={busy} disabled={!name.trim()} onClick={()=>{const a = renaming!;void run(async ()=>{await apiRequest(`/identity/agents/${encodeURIComponent(a.id)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({hostname:name.trim()})});setRenaming(null)}, 'Đã đổi tên máy')}}>Lưu</Button>
+    </>}>
+      <Input label="Tên hiển thị" autoFocus maxLength={120} value={name} onChange={e=>setName(e.target.value)} hint="VD: PC phòng LIVE 1"/>
+    </Modal>
+
+    <ConfirmModal open={!!revoking} loading={busy} tone="danger" title={`Thu hồi “${revoking?.hostname ?? ''}”?`}
+      description="Máy này sẽ không nhận lệnh nữa và cần mã kích hoạt mới để dùng lại. Video, playlist và phiên đã gắn với máy này không chuyển sang máy khác."
+      confirmLabel="Thu hồi" onClose={()=>setRevoking(null)}
+      onConfirm={()=>{const a = revoking!;setRevoking(null);void run(()=>apiRequest(`/identity/agents/${encodeURIComponent(a.id)}`, {method:'DELETE'}), `Đã thu hồi ${a.hostname}`)}}/>
+  </div>
 }

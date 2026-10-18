@@ -1,10 +1,11 @@
 import {useEffect,useRef,useState} from 'react'
-import {apiRequest,errorText} from './mediaApi'
+import {agentAction,apiRequest,errorText,onAgent,type OwnerAgent} from './mediaApi'
 import {Volume2,VolumeX} from 'lucide-react'
 type Options={enabled:boolean;window_seconds:number;max_comments:number}
 type Batch={batch_id:number;product_name:string;product_id:number;comments:{id:number;username:string;comment:string}[];questions:{id:number;text:string;users:string[]}[];answer:{result:{reply:string;groups?:{intent:string;question_ids:number[];reply:string}[]};usage:{input_tokens:number;output_tokens:number}}|null;status:string;cache_hit:boolean;error?:string}
 type Status={stats:{received:number;processed:number;cached:number;batches:number;skipped:number};last_id:number;pending:number;batches:Batch[]}
-export default function LiveAIBatches(){
+/** AI batches of one LIVE desk (the Agent); batching options are the OWNER's and shared by all Agents. */
+export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const [options,setOptions]=useState<Options>({enabled:false,window_seconds:2.5,max_comments:8})
  const [status,setStatus]=useState<Status|null>(null)
  const [batches,setBatches]=useState<Batch[]>([])
@@ -16,12 +17,12 @@ export default function LiveAIBatches(){
  useEffect(()=>{
   let live=true
   void apiRequest<Options>('/ai/live/config').then(v=>{if(live)setOptions(v)}).catch(e=>{if(live)setError(errorText(e,'Không tải được cấu hình batch'))})
-  const poll=async()=>{try{const d=await apiRequest<Status>(`/ai/live/status?after=${last.current}`);if(!live)return;setStatus(d);if(d.last_id<last.current){setBatches(d.batches)}else if(d.batches.length){setBatches(old=>[...old,...d.batches.filter(x=>!old.some(y=>y.batch_id===x.batch_id))].slice(-50))}last.current=d.last_id}catch(e){if(live)setError(errorText(e,'Không tải được batch'))}}
+  const poll=async()=>{try{const d=await apiRequest<Status>(onAgent(`/ai/live/status?after=${last.current}`,agent.id));if(!live)return;setStatus(d);if(d.last_id<last.current){setBatches(d.batches)}else if(d.batches.length){setBatches(old=>[...old,...d.batches.filter(x=>!old.some(y=>y.batch_id===x.batch_id))].slice(-50))}last.current=d.last_id}catch(e){if(live)setError(errorText(e,'Không tải được batch'))}}
   void poll();const id=window.setInterval(()=>void poll(),1700)
   return()=>{live=false;window.clearInterval(id)}
- },[])
+ },[agent.id])
  const save=async(next:Options)=>{setBusy(true);setError('');try{const v=await apiRequest<Options>('/ai/live/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});setOptions(v)}catch(e){setError(errorText(e,'Không lưu được cấu hình'))}finally{setBusy(false)}}
- const speakObs=async(value:string)=>{if(!window.confirm("Phát câu trả lời này qua Windows Agent vào nguồn Sarae Voice trong OBS? Nếu đang LIVE, người xem có thể nghe thấy."))return;setObsSpeaking(true);setError("");try{await apiRequest("/ai/voice/speak",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:value})})}catch(e){setError(errorText(e,"Phát TTS lên OBS thất bại"))}finally{setObsSpeaking(false)}}
+ const speakObs=async(value:string)=>{if(!window.confirm(`Phát câu trả lời này qua máy ${agent.hostname} vào nguồn Sarae Voice trong OBS? Nếu đang LIVE, người xem có thể nghe thấy.`))return;setObsSpeaking(true);setError("");try{await agentAction(agent.id,"/ai/voice/speak",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:value,agent_id:agent.id})})}catch(e){setError(errorText(e,"Phát TTS lên OBS thất bại"))}finally{setObsSpeaking(false)}}
  const speak=(value:string)=>{if(!('speechSynthesis' in window)){setError('Trình duyệt này chưa hỗ trợ Speech Synthesis');return}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(value);u.lang='vi-VN';u.rate=1;u.onstart=()=>setSpeaking(true);u.onend=()=>setSpeaking(false);u.onerror=()=>setSpeaking(false);window.speechSynthesis.speak(u)}
  return <section className="tc-panel">
   <div className="tc-chat-title"><h3>AI LIVE Batch & Voice Preview</h3><span>{status?.pending??0} bình luận đang chờ</span></div>

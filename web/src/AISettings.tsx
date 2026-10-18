@@ -1,12 +1,15 @@
 import {useEffect,useRef,useState} from 'react'
-import {Bot,Play,Save,AlertCircle,Volume2,VolumeX} from 'lucide-react'
+import {Bot,Play,Save,AlertCircle,Volume2,VolumeX,KeyRound,Trash2} from 'lucide-react'
 import {api,apiRequest,errorText} from './mediaApi'
 import {authHeaders} from './authToken'
 import './ai-settings.css'
-type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean}
+type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean;key_source?:'owner'|'platform'|null}
+/** What the server tells about a stored key: never the key itself, only whether it exists and its last 4 characters. */
+type Credential={provider:'gemini'|'openai';configured:boolean;last4:string|null;updated_at:string|null}
 type Usage={requests:number;input_tokens:number;output_tokens:number}
 type Answer={provider:string;model:string;result:{intent:string;confidence:number;reply:string;needs_review:boolean;reason:string};usage:{input_tokens:number;output_tokens:number;latency_ms:number};action_executed:boolean}
-const defaults:Settings={provider:'gemini',model:'gemini-3.5-flash-lite',enabled:false,max_output_tokens:220,max_requests_per_session:100,has_api_key:false}
+const defaults:Settings={provider:'gemini',model:'gemini-3.5-flash-lite',enabled:false,max_output_tokens:220,max_requests_per_session:100,has_api_key:false,key_source:null}
+const PROVIDER_NAME:Record<Credential['provider'],string>={gemini:'Google Gemini',openai:'OpenAI'}
 const JSONbody=(value:unknown,method='POST'):RequestInit=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(value)})
 export default function AISettings(){
  const [settings,setSettings]=useState<Settings>(defaults)
@@ -25,8 +28,10 @@ export default function AISettings(){
  const [speaking,setSpeaking]=useState(false)
  const [spokenText,setSpokenText]=useState('')
  const [notice,setNotice]=useState('')
+ const [credentials,setCredentials]=useState<Credential[]>([])
+ const [keyInput,setKeyInput]=useState('')
  const [error,setError]=useState('')
- const reload=async()=>{const [s,u]=await Promise.all([apiRequest<Settings>('/ai/config'),apiRequest<Usage>('/ai/usage')]);setSettings(s);setUsage(u)}
+ const reload=async()=>{const [s,u,c]=await Promise.all([apiRequest<Settings>('/ai/config'),apiRequest<Usage>('/ai/usage'),apiRequest<{credentials:Credential[]}>('/ai/credentials')]);setSettings(s);setUsage(u);setCredentials(c.credentials)}
  useEffect(()=>{void reload().catch(e=>setError(errorText(e,'Không tải được cấu hình AI')))},[])
  useEffect(()=>()=>{audioRef.current?.pause();if(urlRef.current)URL.revokeObjectURL(urlRef.current)},[])
  const stopVoice=()=>{audioRef.current?.pause();audioRef.current=null;setSpeaking(false)}
@@ -61,8 +66,20 @@ export default function AISettings(){
  <label>Giới hạn lượt gọi mỗi lần chạy Backend<input type="number" min={1} max={10000} value={settings.max_requests_per_session} onChange={e=>update({max_requests_per_session:Number(e.target.value)})}/></label>
  </div>
  <label className="ais-toggle"><input type="checkbox" checked={settings.enabled} onChange={e=>update({enabled:e.target.checked})}/> Bật AI (chỉ xử lý khi bấm Test AI; chưa tự động đọc toàn bộ comment)</label>
- <p className="ais-key">API key: <strong>{settings.has_api_key?'Đã có trong Backend':'Chưa phát hiện'}</strong>. Thiết lập <code>{settings.provider==='gemini'?'GEMINI_API_KEY':'OPENAI_API_KEY'}</code> trong môi trường Backend trước khi khởi động. Key không nhập hoặc trả về từ giao diện.</p>
+ <p className="ais-key">API key đang dùng: <strong>{settings.key_source==='owner'?'Key của tài khoản bạn':settings.key_source==='platform'?'Key chung của nền tảng':'Chưa có'}</strong>{settings.key_source==='platform'?' · nhập key riêng ở khung “API key” để dùng hạn mức của bạn.':''}</p>
  <button disabled={loading} onClick={()=>void exec(async()=>{const s=await apiRequest<Settings>('/ai/config',JSONbody({provider:settings.provider,model:settings.model,enabled:settings.enabled,max_output_tokens:settings.max_output_tokens,max_requests_per_session:settings.max_requests_per_session},'PUT'));setSettings(s);setNotice('Đã lưu cấu hình')})}><Save size={16}/> Lưu cấu hình</button>
+ </section>
+ <section className="ais-panel">
+ <h3><KeyRound size={19}/> API key</h3>
+ <p>Key được mã hóa và lưu riêng cho tài khoản của bạn. Sau khi lưu, giao diện chỉ hiện 4 ký tự cuối; không ai xem lại được key đầy đủ (kể cả quản trị nền tảng).</p>
+ <div className="ais-creds">{credentials.map(c=><div key={c.provider} className={'ais-cred'+(c.provider===settings.provider?' is-current':'')}>
+  <span><strong>{PROVIDER_NAME[c.provider]}</strong><small>{c.configured?`Đã lưu · ••••${c.last4}`:'Chưa có key'}{c.provider===settings.provider?' · đang dùng':''}</small></span>
+  {c.configured&&<button type="button" title="Xóa key" aria-label={'Xóa key '+PROVIDER_NAME[c.provider]} disabled={loading} onClick={()=>{if(window.confirm(`Xóa API key ${PROVIDER_NAME[c.provider]}?`))void exec(async()=>{const r=await apiRequest<{credentials:Credential[]}>('/ai/credentials/'+c.provider,{method:'DELETE'});setCredentials(r.credentials);await reload();setNotice('Đã xóa key')})}}><Trash2 size={15}/></button>}
+ </div>)}</div>
+ <form className="ais-key-form" onSubmit={e=>{e.preventDefault();const key=keyInput.trim();if(key.length<8)return;void exec(async()=>{const r=await apiRequest<{credentials:Credential[]}>('/ai/credentials',JSONbody({provider:settings.provider,api_key:key},'PUT'));setKeyInput('');setCredentials(r.credentials);await reload();setNotice('Đã lưu key '+PROVIDER_NAME[settings.provider])})}}>
+  <label>Key {PROVIDER_NAME[settings.provider]}<input type="password" autoComplete="off" spellCheck={false} value={keyInput} onChange={e=>setKeyInput(e.target.value)} placeholder={settings.provider==='gemini'?'AIza…':'sk-…'}/></label>
+  <button disabled={loading||keyInput.trim().length<8}><Save size={16}/> Lưu key</button>
+ </form>
  </section>
  <section className="ais-panel">
  <h3>AI Playground</h3><p>Thử từng bình luận thực tế. Không gửi trả lời lên TikTok hoặc điều khiển OBS.</p>

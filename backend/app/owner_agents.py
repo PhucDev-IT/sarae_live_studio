@@ -82,4 +82,16 @@ def public(agent: dict | None) -> dict | None:
 @router.get("/agents")
 def list_owner_agents(owner: Owner):
     """The caller's Agents; which one a browser tab works with is kept by that tab, not by the server."""
-    return {"agents": [public(a) for a in agents_of(owner["id"])]}
+    return {"agents": [{**public(a), **summary(a)} for a in agents_of(owner["id"])]}
+
+
+def summary(agent: dict) -> dict:
+    """What the Agent picker shows next to each PC (from its last heartbeat; nothing path-like)."""
+    status = agent.get("status") or {}
+    playback = status.get("playback") or {}
+    monitor = ((status.get("verification") or {}).get("state") or {})
+    online = agent["online"]
+    return {"obs_connected": online and bool(playback.get("connected")),
+            "playing": online and bool(playback.get("running")),
+            "session_id": playback.get("session_id") if online else None,
+            "monitor_running": online and bool(monitor.get("running"))}

@@ -11,7 +11,7 @@ const config:AssignmentConfig = {
   linkKey:'product_ids',
   loadEntities:async()=>(await apiRequest<Product[]>('/products?limit=500')).map(p=>({id:p.id, name:p.name, subtitle:p.sku, image:p.image_url})),
   loadVideos:getProductVideos,
-  saveVideos:async(id, mediaIds)=>(await putProductVideos(id, mediaIds)).media_ids,
+  saveVideos:async(agentId, id, mediaIds)=>(await putProductVideos(agentId, id, mediaIds)).media_ids,
   catalogHash:'/products',
   text:{
     summary:(count, duration)=>`${count} video · ${duration ? `${duration} mỗi vòng` : 'chưa rõ thời lượng'} · phát lặp theo thứ tự`,

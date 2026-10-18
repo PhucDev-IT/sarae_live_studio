@@ -14,6 +14,7 @@ import VerificationMonitor from './VerificationMonitor'
 import AccountPortal from './AccountPortal'
 import AgentCloudStatus from './AgentCloudStatus'
 import ProductVideoSetup from './ProductVideoSetup'
+import { AgentPicker, AgentProvider } from './agentContext'
 import PresenterVideoSetup from './PresenterVideoSetup'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Contact, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -29,7 +30,7 @@ const navigation: { title: string; items: { id: Page; title: string; icon: Lucid
 const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & Agent', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
   account: 'Đăng nhập, quản lý license và kích hoạt thiết bị theo SUPER_ADMIN / OWNER.',
-  agents: 'Điều khiển Agent, quản lý video local và playlist từ xa.',
+  agents: 'Các máy Windows chạy OBS của bạn: trạng thái, chọn máy cho tab này và lịch sử lệnh.',
   'verification-monitor': 'Phát hiện yêu cầu xác minh TikTok LIVE Studio, theo dõi sự kiện và nhận cảnh báo Telegram.',
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
   media: 'Tổ chức các short video, phân loại nội dung và liên kết sản phẩm.',
@@ -37,7 +38,7 @@ const descriptions: Record<Page, string> = {
   presenters: 'Người mẫu / người dẫn xuất hiện trong video: ảnh, mô tả và số video đã gắn.',
   'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
   'product-videos': 'Chọn và sắp xếp video chuẩn bị LIVE theo từng sản phẩm.',
-  playlists: 'Sắp xếp và điều phối thứ tự phát nội dung.',
+  playlists: 'Playlist phát thử trên máy Windows đang chọn (không dùng cho phiên LIVE theo sản phẩm).',
   sessions: 'Lên kế hoạch từng buổi LIVE: chọn sản phẩm sẽ bán, kiểm tra sẵn sàng và xem lại lịch sử.',
   live: 'Vận hành phiên LIVE đang chạy: đưa bất kỳ sản phẩm nào lên LIVE, điều khiển video trên OBS.',
   'tiktok-chat': 'Kết nối đến LIVE công khai bằng username và theo dõi bình luận realtime.',
@@ -126,7 +127,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
     </>
   )
   return (
-    <ThemeProvider value={{ mode: dark ? 'dark' : 'light', primary: dark ? '#a898ff' : '#6553d7', density: 'comfortable', radius: 'soft', fontSize: 'normal' }}><ToastProvider><div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
+    <ThemeProvider value={{ mode: dark ? 'dark' : 'light', primary: dark ? '#a898ff' : '#6553d7', density: 'comfortable', radius: 'soft', fontSize: 'normal' }}><ToastProvider><AgentProvider><div className={`shell ${collapsed ? 'is-collapsed' : ''}`}>
       <aside className="sidebar">{renderNav()}</aside>
       {drawerOpen && <div className="mobile-overlay" onClick={() => setDrawerOpen(false)}><aside className="mobile-sidebar" onClick={e => e.stopPropagation()}><div className="drawer-heading"><strong>Sarae Live Studio</strong><button className="icon-button" onClick={() => setDrawerOpen(false)} aria-label="Đóng menu"><X size={20}/></button></div>{renderNav()}</aside></div>}
       <div className="workspace">
@@ -136,6 +137,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
             <span className="breadcrumb-root">Workspace</span><ChevronRight size={15} className="breadcrumb-chevron"/><span className="breadcrumb-active">{titles[page]}</span>
           </div>
           <div className="topbar-actions">
+            <AgentPicker/>
             <span className={`connection ${health}`}><span className="status-dot"/><span>{health === 'online' ? 'Backend online' : health === 'checking' ? 'Đang kết nối' : 'Backend offline'}</span></span>
             <span className="topbar-separator"/>
             <button className="icon-button" onClick={() => setDark(!dark)} aria-label={dark ? 'Chế độ sáng' : 'Chế độ tối'}>{dark ? <Sun size={19}/> : <Moon size={19}/>}</button>
@@ -154,7 +156,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
       </div>
-    </div></ToastProvider></ThemeProvider>
+    </div></AgentProvider></ToastProvider></ThemeProvider>
   )
 }
 

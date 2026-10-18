@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Badge, Button, ConfirmModal, EmptyState, Input, SearchInput, SegmentedControl, Select, Sheet, Switch, Table, Textarea, useToast, type TableColumn } from './ui/core'
 import { CircleAlert, Edit3, Film, Plus, Trash2, UserCheck, Users } from 'lucide-react'
-import { apiRequest, errorText } from './mediaApi'
+import { apiRequest, errorText, onAgent } from './mediaApi'
+import { useAgent } from './agentContext'
 import { IconButton, ImageField, Stat, Thumb } from './CatalogParts'
 
 type Presenter = { id:number; name:string; description:string; avatar_url:string; status:'ACTIVE'|'INACTIVE'; created_at:string }
@@ -19,6 +20,8 @@ const toBody = (f:Form) => ({name:f.name.trim(), description:f.description, avat
 /** People who appear in the videos (models / hosts), with photo and how many videos they are tagged in. */
 export default function PresentersPage(){
   const toast = useToast()
+  const {agent} = useAgent()
+  const agentId = agent?.id
   const [people,setPeople] = useState<Presenter[]>([])
   const [videoCounts,setVideoCounts] = useState<Record<number,number>>({})
   const [loaded,setLoaded] = useState(false)
@@ -34,10 +37,10 @@ export default function PresentersPage(){
   const load = useCallback(async ()=>{
     const [p, counts] = await Promise.all([
       apiRequest<Presenter[]>('/presenters?limit=500'),
-      apiRequest<{presenter_id:number;video_count:number}[]>('/presenter-videos'),
+      agentId ? apiRequest<{presenter_id:number;video_count:number}[]>(onAgent('/presenter-videos', agentId)) : Promise.resolve([]),
     ])
     setPeople(p);setVideoCounts(Object.fromEntries(counts.map(c=>[c.presenter_id,c.video_count])));setLoaded(true)
-  },[])
+  },[agentId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được người giới thiệu',description:errorText(e, '')})})},[load,toast])
 
   const q = query.trim().toLocaleLowerCase('vi')
@@ -89,7 +92,7 @@ export default function PresentersPage(){
       <span className="pp-row-thumb pp-avatar"><Thumb src={p.avatar_url} name={p.name} fallback={<Users size={18}/>}/></span>
       <span className="pp-row-text"><strong>{p.name}</strong><small>{p.description || 'Chưa có mô tả'}</small></span>
     </button>},
-    {key:'videos', header:'Xuất hiện trong', render:p=>videoCounts[p.id]
+    {key:'videos', header:agent ? `Video · ${agent.hostname}` : 'Xuất hiện trong', render:p=>videoCounts[p.id]
       ? <a className="pp-badge-link" href="#/presenter-videos" title="Xem / gắn video"><Badge tone="success"><Film size={12}/>{videoCounts[p.id]} video</Badge></a>
       : <a className="pp-novideo" href="#/presenter-videos" title="Gắn video cho người này"><CircleAlert size={13}/>Chưa gắn video</a>},
     {key:'status', header:'Đang hoạt động', render:p=><Switch aria-label={`Đang hoạt động ${p.name}`} checked={p.status === 'ACTIVE'} onChange={()=>void toggleStatus(p)}/>},
