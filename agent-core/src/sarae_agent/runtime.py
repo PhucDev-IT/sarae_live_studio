@@ -22,6 +22,7 @@ from typing import Callable
 
 from sarae_agent import IPC_PROTOCOL_VERSION, __version__
 from sarae_agent.activation.service import ActivationService
+from sarae_agent.auto_pin import AutoPinService
 from sarae_agent.cloud.commands import CommandRouter
 from sarae_agent.cloud.journal import CommandJournal, CommandLock, EventOutbox
 from sarae_agent.cloud.worker import CloudWorker
@@ -80,6 +81,7 @@ class AgentRuntime:
         self.playback = PlaybackService(self.engine, self.library, self.emit)
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.voice = VoiceService(self.config, self.obs)
+        self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
@@ -246,6 +248,7 @@ class AgentRuntime:
             "media": self.library.summary(),
             "playback": self.playback.status(live=False),
             "monitor": self.monitor.status(),
+            "auto_pin": self.auto_pin.status(),
         }
 
     def build_report(self) -> dict:
@@ -287,5 +290,9 @@ class AgentRuntime:
         except Exception:  # noqa: BLE001
             log.exception("Lỗi khi dừng CAPTCHA Monitor")
         self.engine.stop_monitor()
+        try:
+            self.auto_pin.close()
+        except Exception:
+            log.exception('Không đóng được Chrome Auto Pin')
         self.obs.close()
         log.info("Agent Core đã giải phóng tài nguyên")
