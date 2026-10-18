@@ -122,6 +122,13 @@ def login(body:Login):
 def me(authorization:str|None=Header(None)):
     return auth(authorization)
 
+@router.post("/logout")
+def logout(authorization:str|None=Header(None)):
+    auth(authorization)
+    with db_open() as db:
+        db.execute("DELETE FROM user_sessions WHERE token_hash=?",(secret_hash(authorization[7:]),))
+    return {"ok":True}
+
 @router.post("/owners")
 def create_owner(body:CreateOwner,authorization:str|None=Header(None)):
     require_admin(authorization)
