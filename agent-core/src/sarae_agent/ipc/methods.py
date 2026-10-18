@@ -78,6 +78,13 @@ class SpeakParams(Strict):
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
 
 
+class AutoPinOpenParams(Strict):
+    url: str = Field(min_length=12, max_length=1000)
+
+class AutoPinConfigureParams(Strict):
+    products: list[str] = Field(min_length=1, max_length=100)
+    interval_seconds: int = Field(ge=5, le=3600)
+
 class LogsParams(Strict):
     limit: int = Field(default=200, ge=1, le=500)
 
@@ -191,6 +198,13 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
 
     # voice
     reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice), SpeakParams)
+
+    # Auto Pin: controlled Chrome profile, local-only IPC (no Cloud command support).
+    reg("autopin.status", lambda _: rt.auto_pin.status())
+    reg("autopin.open", lambda p: rt.auto_pin.open_browser(p.url), AutoPinOpenParams)
+    reg("autopin.configure", lambda p: rt.auto_pin.configure(p.products, p.interval_seconds), AutoPinConfigureParams)
+    reg("autopin.start", lambda _: rt.auto_pin.start())
+    reg("autopin.stop", lambda _: rt.auto_pin.stop())
 
     # diagnostics
     reg("diagnostics.export", lambda _: rt.diagnostics())
