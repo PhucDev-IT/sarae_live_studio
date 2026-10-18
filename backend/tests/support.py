@@ -40,8 +40,8 @@ class SaasTestCase(unittest.TestCase):
         admin = identity.login(identity.Login(email="admin@example.test", password="AdminSecretPassword123!"))["access_token"]
         self.ADMIN = {"Authorization": "Bearer " + admin}
         self.ANON = {"Authorization": ""}
-        self.owner_a = identity.create_owner(identity.CreateOwner(email="a@example.test", password=PASSWORD), authorization=self.ADMIN["Authorization"])
-        self.owner_b = identity.create_owner(identity.CreateOwner(email="b@example.test", password=PASSWORD), authorization=self.ADMIN["Authorization"])
+        self.owner_a = identity.create_owner(identity.CreateOwner(email="a@example.test", password=PASSWORD, max_agents=3), authorization=self.ADMIN["Authorization"])
+        self.owner_b = identity.create_owner(identity.CreateOwner(email="b@example.test", password=PASSWORD, max_agents=3), authorization=self.ADMIN["Authorization"])
         self.A = {"Authorization": "Bearer " + identity.login(identity.Login(email="a@example.test", password=PASSWORD))["access_token"]}
         self.B = {"Authorization": "Bearer " + identity.login(identity.Login(email="b@example.test", password=PASSWORD))["access_token"]}
 

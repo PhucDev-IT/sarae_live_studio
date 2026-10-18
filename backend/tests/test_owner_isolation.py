@@ -47,25 +47,32 @@ class OwnerIsolationTests(SaasTestCase):
         self.assertEqual(self.client.post("/api/products", json={"name": "A2", "sku": "SAME"}).status_code, 409)
 
     def test_sessions_cannot_use_or_touch_another_owners_data(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
         theirs = self.client.post("/api/products", json={"name": "Áo của A"}).json()["id"]
-        session = self.client.post("/api/live/sessions", json={"name": "LIVE của A", "product_ids": [theirs]}).json()
+        session = self.client.post("/api/live/sessions", json={"name": "LIVE của A", "product_ids": [theirs], "agent_id": agent["agent_id"]}).json()
         self.assertEqual(self.client.get("/api/live/sessions", headers=self.B).json(), [])
         for method, suffix, body in (("get", "", None), ("patch", "", {"name": "x"}), ("delete", "", None),
                                      ("get", "/events", None), ("post", "/duplicate", None), ("put", "/products", {"product_ids": []})):
             response = self.client.request(method.upper(), f"/api/live/sessions/{session['id']}{suffix}", json=body, headers=self.B)
             self.assertEqual(response.status_code, 404, f"{method} {suffix}")
         # B cannot put A's product into B's own session either.
-        created = self.client.post("/api/live/sessions", json={"name": "LIVE của B", "product_ids": [theirs]}, headers=self.B)
+        mine = self.activate_agent(self.owner_b, "PC-B")
+        created = self.client.post("/api/live/sessions", json={"name": "LIVE của B", "product_ids": [theirs], "agent_id": mine["agent_id"]}, headers=self.B)
         self.assertEqual(created.status_code, 422)
+        # ...nor create a session on A's Agent.
+        on_a = self.client.post("/api/live/sessions", json={"name": "x", "agent_id": agent["agent_id"]}, headers=self.B)
+        self.assertEqual(on_a.status_code, 404)
 
     def test_video_links_stay_within_owner(self):
+        agent = self.activate_agent(self.owner_b, "PC-B")
+        on = {"agent_id": agent["agent_id"]}
         theirs = self.client.post("/api/products", json={"name": "Áo"}).json()["id"]
-        self.assertEqual(self.client.get(f"/api/product-videos/{theirs}", headers=self.B).status_code, 404)
-        self.assertEqual(self.client.put(f"/api/product-videos/{theirs}", json={"media_ids": []}, headers=self.B).status_code, 404)
-        self.assertEqual(self.client.get("/api/live/products", headers=self.B).json(), [])
+        self.assertEqual(self.client.get(f"/api/product-videos/{theirs}", headers=self.B, params=on).status_code, 404)
+        self.assertEqual(self.client.put(f"/api/product-videos/{theirs}", json={"media_ids": []}, headers=self.B, params=on).status_code, 404)
+        self.assertEqual(self.client.get("/api/live/products", headers=self.B, params=on).json(), [])
 
     def test_anonymous_and_super_admin_are_refused(self):
-        for path in ("/api/products", "/api/presenters", "/api/media", "/api/live/sessions", "/api/live/products"):
+        for path in ("/api/products", "/api/presenters", "/api/media?agent_id=x", "/api/live/sessions", "/api/live/products?agent_id=x"):
             self.assertEqual(self.client.get(path, headers=self.ANON).status_code, 401, path)
             self.assertEqual(self.client.get(path, headers=self.ADMIN).status_code, 403, path)
 

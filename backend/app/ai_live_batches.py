@@ -11,7 +11,8 @@ from sqlalchemy import select
 
 from app.identity import current_owner
 from app.ownership import Owner
-from app.per_owner import PerOwner
+from app.owner_agents import AgentId, owned_agent
+from app.per_owner import PerOwner, live_key
 from app.catalog import Product
 from app.database import SessionLocal
 from app.comment_processing import monitors, normalize
@@ -27,12 +28,12 @@ class BatchOptions(BaseModel):
 
 
 class BatchState:
-    """One OWNER's batching options, pending comments, answer cache and history."""
+    """Pending comments, answer cache and history of one LIVE desk (an OWNER's Windows Agent)."""
 
-    def __init__(self, owner_id: str):
-        self.owner_id = owner_id
+    def __init__(self, key: str):
+        self.key = key
+        self.owner_id, self.agent_id = key.split(":", 1)
         self.lock = RLock()
-        self.options = BatchOptions()
         self.pending = {}
         self.results = deque(maxlen=150)
         self.cache = {}
@@ -42,14 +43,17 @@ class BatchState:
 
 
 states = PerOwner(BatchState)
+# Batching options are an OWNER preference shared by all their Agents.
+owner_options = PerOwner(lambda _owner_id: {"value": BatchOptions(), "lock": RLock()})
 executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sarae-ai-live")
 
 
-def context(owner_id: str):
-    """The product live in the owner's RUNNING session, snapshotted when the comment arrives."""
+def context(owner_id: str, agent_id: str):
+    """The product live in the RUNNING session on that Agent, snapshotted when the comment arrives."""
     from app.live_sessions import LiveSession
     with SessionLocal() as db:
-        session = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner_id, LiveSession.status == "RUNNING")
+        session = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner_id, LiveSession.agent_id == agent_id,
+                                                       LiveSession.status == "RUNNING")
                              .order_by(LiveSession.started_at.desc())).first()
         if session is None or session.current_product_id is None:
             return None
@@ -77,7 +81,7 @@ def flush(st: BatchState, key):
 
 
 def run_batch(st: BatchState, batch_id, items):
-    monitor = monitors(st.owner_id)
+    monitor = monitors(st.key)
     ctx = items[0]["context"]
     product = ctx["product"]
     # Exact normalized repetitions are one intent request, but keep all affected users.
@@ -117,7 +121,7 @@ def run_batch(st: BatchState, batch_id, items):
                 product_name=product["name"],
                 product_details=f"Giá: {product['price']} VND; trạng thái: {product['status']}; mô tả: {product['description']}"
             )
-            response = ai_service.analyze(st.owner_id, body)
+            response = ai_service.analyze(st.owner_id, body, log_key=st.key)
             result["answer"] = response
             result["status"] = "ready"
             with st.lock:
@@ -133,14 +137,14 @@ def run_batch(st: BatchState, batch_id, items):
         st.results.append(result)
 
 
-def enqueue(owner_id: str, message):
-    st = states(owner_id)
-    with st.lock:
-        if not st.options.enabled:
-            return
-    ctx = context(owner_id)
+def enqueue(owner_id: str, agent_id: str, message):
+    st = states(live_key(owner_id, agent_id))
+    options = owner_options(owner_id)["value"]
+    if not options.enabled:
+        return
+    ctx = context(owner_id, agent_id)
     if not ctx:
-        monitors(owner_id).record("BATCH_SKIP", "no_live_product", "Chưa có sản phẩm đang phát trong phiên LIVE; không gọi AI.")
+        monitors(st.key).record("BATCH_SKIP", "no_live_product", "Chưa có sản phẩm đang phát trong phiên LIVE; không gọi AI.")
         with st.lock:
             st.stats["skipped"] += 1
         return
@@ -152,33 +156,33 @@ def enqueue(owner_id: str, message):
         queue = st.pending.setdefault(key, [])
         queue.append(item)
         if key not in st.timers:
-            timer = Timer(st.options.window_seconds, flush, args=(st, key))
+            timer = Timer(options.window_seconds, flush, args=(st, key))
             timer.daemon = True
             st.timers[key] = timer
             timer.start()
-        full = len(queue) >= st.options.max_comments
+        full = len(queue) >= options.max_comments
     if full:
         flush(st, key)
 
 
 @router.get("/config")
 def get_config(owner: Owner):
-    st = states(owner["id"])
-    with st.lock:
-        return st.options.model_dump()
+    opts = owner_options(owner["id"])
+    with opts["lock"]:
+        return opts["value"].model_dump()
 
 
 @router.put("/config")
 def set_config(body: BatchOptions, owner: Owner):
-    st = states(owner["id"])
-    with st.lock:
-        st.options = body
-        return st.options.model_dump()
+    opts = owner_options(owner["id"])
+    with opts["lock"]:
+        opts["value"] = body
+        return body.model_dump()
 
 
 @router.get("/status")
-def get_status(owner: Owner, after: int = 0):
-    st = states(owner["id"])
+def get_status(owner: Owner, agent_id: AgentId, after: int = 0):
+    st = states(live_key(owner["id"], owned_agent(owner, agent_id)["id"]))
     with st.lock:
         entries = [r for r in st.results if r["batch_id"] > after]
         return {"stats": st.stats.copy(), "last_id": st.results[-1]["batch_id"] if st.results else 0,

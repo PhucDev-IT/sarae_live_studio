@@ -107,11 +107,11 @@ def usage(owner: Owner):
 def analyze_endpoint(body: AnalyzeBody, owner: Owner):
     return analyze(owner["id"], body)
 
-def analyze(owner_id: str, body: AnalyzeBody):
+def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
     """One AI call on behalf of an OWNER (their config, counters and processing log)."""
     config = load_config(owner_id)
     count = COUNTS(owner_id)
-    monitor = monitors(owner_id)
+    monitor = monitors(log_key or owner_id)
     if not config.enabled:
         raise HTTPException(409, "AI chưa được bật trong cấu hình")
     key = settings.gemini_api_key if config.provider=="gemini" else settings.openai_api_key

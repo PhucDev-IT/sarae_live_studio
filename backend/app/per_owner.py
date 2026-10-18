@@ -19,3 +19,8 @@ class PerOwner(Generic[T]):
             if item is None:
                 item = self._items[owner_id] = self._factory(owner_id)
             return item
+
+
+def live_key(owner_id: str, agent_id: str) -> str:
+    """Runtime key of one LIVE desk: an OWNER's Windows Agent. Several Agents of an owner can be LIVE at the same time."""
+    return f"{owner_id}:{agent_id}"

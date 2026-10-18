@@ -13,6 +13,7 @@ from urllib import request, parse
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.identity import current_owner
+from app.owner_agents import AgentId
 from app.ownership import Owner
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
@@ -262,7 +263,7 @@ def delete_template(name:str):
     return {"deleted":name}
 
 
-# ---- Web API: each OWNER's monitor runs on their own Windows Agent; these endpoints talk to it. ----
+# ---- Web API: the monitor runs on a Windows Agent (one per PC); every call names the Agent (agent_id). ----
 DEFAULT_CONFIG=ConfigBody().model_dump()|{"template_loaded":False}
 
 def local_templates_only():
@@ -271,13 +272,11 @@ def local_templates_only():
         raise HTTPException(409,"Ảnh mẫu CAPTCHA được quản lý trên máy Windows Agent; tính năng gửi mẫu qua web sẽ có ở bản Agent mới")
 
 @router.get("/status")
-def agent_status(owner:Owner):
-    from app.owner_agents import active_agent,public
-    agent=active_agent(owner["id"])
-    verification=(agent or {}).get("status",{}).get("verification") or {}
-    if agent is None:
-        state_={"running":False,"status":"no_agent","error":None}
-    elif not agent["online"]:
+def agent_status(owner:Owner,agent_id:AgentId):
+    from app.owner_agents import owned_agent,public
+    agent=owned_agent(owner,agent_id)
+    verification=agent.get("status",{}).get("verification") or {}
+    if not agent["online"]:
         state_={**(verification.get("state") or {}),"running":False,"status":"agent_offline"}
     else:
         state_=verification.get("state") or {"running":False,"status":"idle","error":None}
@@ -285,16 +284,16 @@ def agent_status(owner:Owner):
             "events":verification.get("events") or [],"agent":public(agent)}
 
 @router.put("/config")
-def agent_configure(body:ConfigBody,owner:Owner,authorization:str|None=Header(None)):
+def agent_configure(body:ConfigBody,owner:Owner,agent_id:AgentId):
     from app.owner_agents import send_command
-    return {**send_command(owner,authorization,"monitor_config",body.model_dump()),"config":body.model_dump()}
+    return {**send_command(owner,agent_id,"monitor_config",body.model_dump()),"config":body.model_dump()}
 
 @router.post("/start")
-def agent_start(owner:Owner,authorization:str|None=Header(None)):
+def agent_start(owner:Owner,agent_id:AgentId):
     from app.owner_agents import send_command
-    return send_command(owner,authorization,"monitor_start")
+    return send_command(owner,agent_id,"monitor_start")
 
 @router.post("/stop")
-def agent_stop(owner:Owner,authorization:str|None=Header(None)):
+def agent_stop(owner:Owner,agent_id:AgentId):
     from app.owner_agents import send_command
-    return send_command(owner,authorization,"monitor_stop")
+    return send_command(owner,agent_id,"monitor_stop")

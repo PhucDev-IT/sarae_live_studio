@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.identity import current_owner
 from app.ownership import Owner
-from app.per_owner import PerOwner
+from app.owner_agents import AgentId, owned_agent
+from app.per_owner import PerOwner, live_key
 from pydantic import BaseModel
 
 from app.comment_processing import monitors
@@ -21,6 +22,8 @@ router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"], dep
 
 class ConnectPayload(BaseModel):
     username: str
+    # The Windows Agent whose LIVE this chat belongs to (product context for AI comes from its session).
+    agent_id: str
 
 
 def parse_username(value: str) -> str:
@@ -37,10 +40,11 @@ def parse_username(value: str) -> str:
 
 
 class Reader:
-    """One OWNER's connection to a public TikTok LIVE chat."""
+    """Connection to a public TikTok LIVE chat for one LIVE desk (an OWNER's Windows Agent)."""
 
-    def __init__(self, owner_id: str):
-        self.owner_id = owner_id
+    def __init__(self, key: str):
+        self.key = key
+        self.owner_id, self.agent_id = key.split(":", 1)
         self.lock = threading.RLock()
         self.messages = deque(maxlen=300)
         self.seq = 0
@@ -79,7 +83,7 @@ class Reader:
             self.room_id = None
             self.messages.clear()
             self.seq = 0
-            monitors(self.owner_id).reset()
+            monitors(self.key).reset()
             thread = threading.Thread(target=self._worker, args=(gen, username, TikTokLiveClient), daemon=True)
             thread.start()
 
@@ -118,9 +122,9 @@ class Reader:
                 }
                 self.messages.append(message)
                 event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
-                decision = monitors(self.owner_id).process(message, event_id=event_id or None)
+                decision = monitors(self.key).process(message, event_id=event_id or None)
                 if decision == 'selected':
-                    enqueue(self.owner_id, message)
+                    enqueue(self.owner_id, self.agent_id, message)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
@@ -165,23 +169,23 @@ readers = PerOwner(Reader)
 
 @router.post("/connect")
 def connect(body: ConnectPayload, owner: Owner):
-    reader = readers(owner["id"])
+    reader = readers(live_key(owner["id"], owned_agent(owner, body.agent_id)["id"]))
     reader.start(parse_username(body.username))
     return reader.snapshot()
 
 
 @router.post("/disconnect")
-def disconnect(owner: Owner):
-    reader = readers(owner["id"])
+def disconnect(owner: Owner, agent_id: AgentId):
+    reader = readers(live_key(owner["id"], owned_agent(owner, agent_id)["id"]))
     reader.stop()
     return reader.snapshot()
 
 
 @router.get("/status")
-def status(owner: Owner, after: int = 0):
-    return readers(owner["id"]).snapshot(max(0, after))
+def status(owner: Owner, agent_id: AgentId, after: int = 0):
+    return readers(live_key(owner["id"], owned_agent(owner, agent_id)["id"])).snapshot(max(0, after))
 
 
 @router.get("/processing")
-def processing(owner: Owner, after: int = 0):
-    return monitors(owner["id"]).snapshot(max(0, after))
+def processing(owner: Owner, agent_id: AgentId, after: int = 0):
+    return monitors(live_key(owner["id"], owned_agent(owner, agent_id)["id"])).snapshot(max(0, after))

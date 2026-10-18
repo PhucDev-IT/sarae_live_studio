@@ -17,8 +17,9 @@ class LiveSessionTests(SaasTestCase):
             db.commit()
         self.agent = self.activate_agent(self.owner_a, "PC-A")
         self.ao, self.quan = self.sync_videos(self.agent, "ao.mp4", "quan.mp4")
-        self.client.put("/api/product-videos/1", json={"media_ids": [self.ao]})
-        self.client.put("/api/product-videos/2", json={"media_ids": [self.quan]})
+        self.on_agent = {"agent_id": self.agent["agent_id"]}
+        self.client.put("/api/product-videos/1", json={"media_ids": [self.ao]}, params=self.on_agent)
+        self.client.put("/api/product-videos/2", json={"media_ids": [self.quan]}, params=self.on_agent)
         self.rpc = patch("app.cloud_agents.rpc", side_effect=lambda agent_id, owner_id, kind, payload=None, timeout=10: {"ok": True, "kind": kind})
         self.calls = self.rpc.start()
 
@@ -34,19 +35,19 @@ class LiveSessionTests(SaasTestCase):
         return [(c.args[3] if len(c.args) > 3 else c.kwargs.get("payload")) for c in self.calls.call_args_list if c.args[2] == kind]
 
     def start(self, product_ids=(1, 2)):
-        sid = self.client.post("/api/live/sessions", json={"name": "Tối nay", "product_ids": list(product_ids)}).json()["id"]
+        sid = self.client.post("/api/live/sessions", json={"name": "Tối nay", "product_ids": list(product_ids), "agent_id": self.agent["agent_id"]}).json()["id"]
         started = self.client.post(f"/api/live/sessions/{sid}/start", json={})
         self.assertEqual(started.status_code, 200, started.text)
         self.playing(sid)
         return sid
 
     def test_draft_can_be_created_empty_but_not_started(self):
-        created = self.client.post("/api/live/sessions", json={"name": "Tối nay"})
+        created = self.client.post("/api/live/sessions", json={"name": "Tối nay", "agent_id": self.agent["agent_id"]})
         self.assertEqual(created.json()["product_ids"], [])
         self.assertEqual(self.client.post(f"/api/live/sessions/{created.json()['id']}/start", json={}).status_code, 409)
 
     def test_rename_duplicate_and_delete(self):
-        sid = self.client.post("/api/live/sessions", json={"name": "A", "product_ids": [2, 1]}).json()["id"]
+        sid = self.client.post("/api/live/sessions", json={"name": "A", "product_ids": [2, 1], "agent_id": self.agent["agent_id"]}).json()["id"]
         self.assertEqual(self.client.patch(f"/api/live/sessions/{sid}", json={"name": "  B  "}).json()["name"], "B")
         copy = self.client.post(f"/api/live/sessions/{sid}/duplicate").json()
         self.assertEqual((copy["product_ids"], copy["status"]), ([2, 1], "DRAFT"))
@@ -58,17 +59,17 @@ class LiveSessionTests(SaasTestCase):
         self.assertEqual(self.sent("product_play")[0], {"session_id": sid, "product_id": 1, "media_ids": [self.ao], "mode": "immediate"})
         session = self.client.get(f"/api/live/sessions/{sid}").json()
         self.assertEqual((session["status"], session["current_product_id"]), ("RUNNING", 1))
-        status = self.client.get("/api/live/status").json()
+        status = self.client.get("/api/live/status", params=self.on_agent).json()
         self.assertEqual((status["session_id"], status["running"], status["agent"]["id"]), (sid, True, self.agent["agent_id"]))
 
     def test_product_without_videos_cannot_start(self):
-        sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [3]}).json()["id"]
+        sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [3], "agent_id": self.agent["agent_id"]}).json()["id"]
         refused = self.client.post(f"/api/live/sessions/{sid}/start", json={})
         self.assertEqual(refused.status_code, 409)
         self.assertEqual(self.client.get(f"/api/live/sessions/{sid}").json()["status"], "DRAFT")
 
     def test_offline_agent_cannot_start(self):
-        sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [1]}).json()["id"]
+        sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [1], "agent_id": self.agent["agent_id"]}).json()["id"]
         from app.cloud_agents import connection
         with connection() as db:
             db.execute("UPDATE agent_status SET last_seen='2000-01-01T00:00:00+00:00'")
@@ -128,11 +129,11 @@ class LiveSessionTests(SaasTestCase):
         self.assertEqual(self.client.put("/api/live/sessions/1/products", json={"product_ids": [1]}).status_code, 409)
 
     def test_playback_controls_go_to_the_owners_agent_only(self):
-        self.assertEqual(self.client.post("/api/live/pause").status_code, 200)
-        self.assertEqual(self.client.post("/api/live/seek", json={"milliseconds": 5000}).status_code, 200)
+        self.assertEqual(self.client.post("/api/live/pause", params=self.on_agent).status_code, 200)
+        self.assertEqual(self.client.post("/api/live/seek", json={"milliseconds": 5000}, params=self.on_agent).status_code, 200)
         self.assertEqual(self.sent("playback_seek"), [{"ms": 5000}])
-        self.assertEqual(self.client.post("/api/live/pause", headers=self.B).status_code, 409, "B has no Agent")
-        self.assertEqual(self.client.get("/api/live/status", headers=self.B).json()["agent"], None)
+        self.assertEqual(self.client.post("/api/live/pause", headers=self.B, params=self.on_agent).status_code, 404, "not B's Agent")
+        self.assertEqual(self.client.get("/api/live/status", headers=self.B, params=self.on_agent).status_code, 404)
 
 
 if __name__ == "__main__":

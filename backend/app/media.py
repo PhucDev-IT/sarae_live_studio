@@ -1,4 +1,4 @@
-"""An OWNER's video library: the MP4 files on their active Windows Agent.
+"""An OWNER's video libraries: the MP4 files on each of their Windows Agents (every call names the Agent).
 
 The Agent syncs metadata (and a small thumbnail) to `agent_library`; video bytes never leave the PC. The server keeps
 what the OWNER adds on top — tags and links to products / presenters — keyed by (agent_id, media_id), where media_id is
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app.catalog import Presenter, Product
 from app.database import Base, SessionLocal
 from app.identity import current_owner
+from app.owner_agents import AgentId, owned_agent
 from app.ownership import Owner, owned_ids
 
 router = APIRouter(prefix="/api/media", tags=["Media"], dependencies=[Depends(current_owner)])
@@ -59,20 +60,12 @@ def library(agent_id: str) -> dict[str, dict]:
     return {r["media_id"]: dict(r) for r in rows}
 
 
-def library_agent(owner: dict, required: bool = False) -> dict | None:
-    """The owner's active Agent, whose library the pages show. With `required`, 409 when there is none."""
-    from app.owner_agents import active_agent
-    agent = active_agent(owner["id"])
-    if agent is None and required:
-        raise HTTPException(409, "Chưa có Windows Agent nào được kích hoạt; video nằm trên máy chạy Agent")
-    return agent
-
-
-def video_or_404(owner: dict, media_id: str) -> tuple[dict, dict]:
-    agent = library_agent(owner, required=True)
+def video_or_404(owner: dict, agent_id: str, media_id: str) -> tuple[dict, dict]:
+    """A video of one of the owner's Agents; ids from another Agent (even the owner's) are a 404."""
+    agent = owned_agent(owner, agent_id)
     row = library(agent["id"]).get(media_id)
     if row is None:
-        raise HTTPException(404, "Không tìm thấy video trên Agent đang dùng")
+        raise HTTPException(404, "Không tìm thấy video trên Windows Agent này")
     return agent, row
 
 
@@ -106,10 +99,8 @@ def output(db: Session, owner_id: str, agent_id: str, row: dict, tags: str | Non
 
 
 @router.get("")
-def list_media(db: DB, owner: Owner, q: str = ""):
-    agent = library_agent(owner)
-    if agent is None:
-        return []
+def list_media(db: DB, owner: Owner, agent_id: AgentId, q: str = ""):
+    agent = owned_agent(owner, agent_id)
     tags = {t.media_id: t.tags for t in db.scalars(select(VideoTag).where(
         VideoTag.owner_id == owner["id"], VideoTag.agent_id == agent["id"])).all()}
     term = q.strip().lower()
@@ -118,23 +109,22 @@ def list_media(db: DB, owner: Owner, q: str = ""):
 
 
 @router.post("/rescan")
-def rescan(owner: Owner):
+def rescan(owner: Owner, agent_id: AgentId):
     """Ask the Agent to rescan its media folders and sync now (otherwise it syncs about once a minute)."""
     from app.cloud_agents import rpc
-    from app.owner_agents import require_online_agent
-    agent = require_online_agent(owner["id"])
+    agent = owned_agent(owner, agent_id, online=True)
     return rpc(agent["id"], owner["id"], "media_rescan", timeout=90)
 
 
 @router.get("/{media_id}")
-def get_media(media_id: str, db: DB, owner: Owner):
-    agent, row = video_or_404(owner, media_id)
+def get_media(media_id: str, db: DB, owner: Owner, agent_id: AgentId):
+    agent, row = video_or_404(owner, agent_id, media_id)
     return output(db, owner["id"], agent["id"], row)
 
 
 @router.patch("/{media_id}")
-def update_media(media_id: str, body: MediaUpdate, db: DB, owner: Owner):
-    agent, row = video_or_404(owner, media_id)
+def update_media(media_id: str, body: MediaUpdate, db: DB, owner: Owner, agent_id: AgentId):
+    agent, row = video_or_404(owner, agent_id, media_id)
     tag = db.get(VideoTag, (agent["id"], media_id))
     if tag is None:
         tag = VideoTag(agent_id=agent["id"], media_id=media_id, owner_id=owner["id"])
@@ -145,14 +135,14 @@ def update_media(media_id: str, body: MediaUpdate, db: DB, owner: Owner):
 
 
 @router.put("/{media_id}/products")
-def set_media_products(media_id: str, body: MediaProducts, db: DB, owner: Owner):
+def set_media_products(media_id: str, body: MediaProducts, db: DB, owner: Owner, agent_id: AgentId):
     """Replace the products whose LIVE playlist contains this video, in one transaction.
 
     Newly linked products get the video appended to the end of their playlist; the order of
     existing entries is kept. Reordering within a product stays on PUT /api/product-videos/{id}.
     """
     from app.product_videos import ProductLiveVideo
-    agent, row = video_or_404(owner, media_id)
+    agent, row = video_or_404(owner, agent_id, media_id)
     wanted = list(dict.fromkeys(body.product_ids))
     if owned_ids(db, Product, wanted, owner) != set(wanted):
         raise HTTPException(422, "Danh sách chứa sản phẩm không tồn tại")
@@ -171,10 +161,10 @@ def set_media_products(media_id: str, body: MediaProducts, db: DB, owner: Owner)
 
 
 @router.put("/{media_id}/presenters")
-def set_media_presenters(media_id: str, body: MediaPresenters, db: DB, owner: Owner):
+def set_media_presenters(media_id: str, body: MediaPresenters, db: DB, owner: Owner, agent_id: AgentId):
     """Replace the people who appear in this video (many-to-many, unordered)."""
     from app.media_presenters import MediaPresenter
-    agent, row = video_or_404(owner, media_id)
+    agent, row = video_or_404(owner, agent_id, media_id)
     wanted = list(dict.fromkeys(body.presenter_ids))
     if owned_ids(db, Presenter, wanted, owner) != set(wanted):
         raise HTTPException(422, "Danh sách chứa người giới thiệu không tồn tại")

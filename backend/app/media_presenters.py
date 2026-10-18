@@ -7,7 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.catalog import Presenter
 from app.database import Base
 from app.identity import current_owner
-from app.media import DB, library, library_agent
+from app.media import DB, library
+from app.owner_agents import AgentId, owned_agent
 from app.ownership import Owner, owned
 
 router = APIRouter(prefix="/api/presenter-videos", tags=["Presenter videos"], dependencies=[Depends(current_owner)])
@@ -36,34 +37,30 @@ def scope(owner: dict, agent_id: str):
 
 
 @router.get("")
-def presenter_video_counts(db: DB, owner: Owner):
-    """Number of videos each person appears in on the active Agent (people with none are omitted)."""
-    agent = library_agent(owner)
-    if agent is None:
-        return []
+def presenter_video_counts(db: DB, owner: Owner, agent_id: AgentId):
+    """Number of videos each person appears in on that Agent (people with none are omitted)."""
+    agent = owned_agent(owner, agent_id)
     rows = db.execute(select(MediaPresenter.presenter_id, func.count(MediaPresenter.id))
                       .where(*scope(owner, agent["id"])).group_by(MediaPresenter.presenter_id)).all()
     return [{"presenter_id": pid, "video_count": count} for pid, count in rows]
 
 
 @router.get("/{presenter_id}")
-def read_presenter_videos(presenter_id: int, db: DB, owner: Owner):
+def read_presenter_videos(presenter_id: int, db: DB, owner: Owner, agent_id: AgentId):
     presenter_or_404(db, presenter_id, owner)
-    agent = library_agent(owner)
-    if agent is None:
-        return {"presenter_id": presenter_id, "media_ids": []}
+    agent = owned_agent(owner, agent_id)
     ids = db.scalars(select(MediaPresenter.media_id).where(*scope(owner, agent["id"]), MediaPresenter.presenter_id == presenter_id)
                      .order_by(MediaPresenter.id)).all()
     return {"presenter_id": presenter_id, "media_ids": list(ids)}
 
 
 @router.put("/{presenter_id}")
-def save_presenter_videos(presenter_id: int, body: PresenterVideos, db: DB, owner: Owner):
+def save_presenter_videos(presenter_id: int, body: PresenterVideos, db: DB, owner: Owner, agent_id: AgentId):
     """Replace the set of videos this person appears in; other people in those videos are untouched."""
     if len(body.media_ids) != len(set(body.media_ids)):
         raise HTTPException(422, "Không được thêm trùng video cho cùng một người")
     presenter_or_404(db, presenter_id, owner)
-    agent = library_agent(owner, required=True)
+    agent = owned_agent(owner, agent_id)
     if not set(body.media_ids) <= set(library(agent["id"])):
         raise HTTPException(422, "Danh sách chứa video không có trên Agent đang dùng")
     where = (*scope(owner, agent["id"]), MediaPresenter.presenter_id == presenter_id)

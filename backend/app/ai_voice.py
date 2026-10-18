@@ -6,7 +6,7 @@ This is not automatic TikTok replying and does not touch the video media input.
 import asyncio
 from threading import RLock
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.identity import current_owner
 from app.ownership import Owner
@@ -25,15 +25,17 @@ VOICE = "vi-VN-HoaiMyNeural"
 preview_locks = PerOwner(lambda _owner_id: RLock())
 
 class SpeakBody(BaseModel):
+    # The Windows Agent whose OBS plays the speech; required, the server never guesses it.
+    agent_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     text: str = Field(min_length=1, max_length=450)
     voice: str = Field(default=VOICE, pattern=r"^vi-VN-(HoaiMy|NamMinh)Neural$")
     obs_source: str = Field(default=VOICE_SOURCE, min_length=1, max_length=100)
 
 @router.post("/speak")
-def speak_on_agent(body: SpeakBody, owner: Owner, authorization: str | None = Header(None)):
-    """Read the text aloud on the OBS of the OWNER's own Windows Agent (it runs `speak` there)."""
+def speak_on_agent(body: SpeakBody, owner: Owner):
+    """Read the text aloud on the OBS of one of the OWNER's Windows Agents."""
     from app.owner_agents import send_command
-    sent = send_command(owner, authorization, "tts_speak", {"text": body.text, "voice": body.voice})
+    sent = send_command(owner, body.agent_id, "tts_speak", {"text": body.text, "voice": body.voice})
     monitors(owner["id"]).record("TTS_QUEUED", body.voice, f"Gửi tới Agent {sent['agent']['hostname']}: {body.text}")
     return {"status": "sent_to_agent", "agent": sent["agent"], "command_id": sent["command_id"],
             "voice": body.voice, "text": body.text}

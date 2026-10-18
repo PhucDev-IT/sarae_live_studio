@@ -255,6 +255,12 @@ def _enqueue(agent_id:str,kind:str,payload:dict)->str:
     _notify(agent_id)
     return command_id
 
+def create_command(agent_id:str, owner_id:str, kind:str, payload:dict|None=None)->dict:
+    """Queue a validated command for an Agent the caller already checked belongs to `owner_id`."""
+    if _owner_row(agent_id)["owner_id"]!=owner_id:raise HTTPException(404,"Không tìm thấy Agent")
+    command_id=_enqueue(agent_id,kind,validate_payload(kind,payload))
+    return {"command_id":command_id,"status":"PENDING"}
+
 @router.post("/commands")
 def queue_command(body:CommandBody, authorization:str|None=Header(None)):
     row=_owner_row(body.agent_id)
