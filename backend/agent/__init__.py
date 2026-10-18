@@ -1,1 +1,0 @@
-"""Windows Local Agent package."""

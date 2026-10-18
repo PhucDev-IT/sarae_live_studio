@@ -402,10 +402,8 @@ class PayloadValidationTests(unittest.TestCase):
 
 class LibraryThumbnailTests(AgentChannelBase):
     def jpeg(self):
-        import cv2
-        import numpy as np
-        ok, data = cv2.imencode(".jpg", np.full((90, 160, 3), 128, dtype=np.uint8))
-        return data.tobytes()
+        # The Cloud only checks the JPEG signature and size; OpenCV is an Agent-side dependency.
+        return bytes.fromhex("ffd8ffe0") + bytes(200) + bytes.fromhex("ffd9")
 
     def sync(self, videos):
         return self.client.post("/api/agent-library/sync", headers=self.headers,

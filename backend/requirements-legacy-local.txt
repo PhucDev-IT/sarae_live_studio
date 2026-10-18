@@ -1,0 +1,11 @@
+# OPTIONAL: legacy single-tenant local studio routers (live.py, verification_monitor.py,
+# ai_voice.py...). Only for running the old all-in-one studio on a Windows workstation with
+# SARAE_SAAS_MODE=false. Never install on the Cloud VPS; the Windows Agent replaces these.
+-r requirements.txt
+obsws-python>=1.7,<2
+mss>=9,<11
+opencv-python>=4.9,<5
+numpy>=1.26,<3
+pywin32>=306; sys_platform == 'win32'
+psutil>=5.9,<8
+edge-tts>=6.1,<8

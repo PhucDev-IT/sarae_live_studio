@@ -1,10 +1,14 @@
 """PlaybackEngine against a fake obsws ReqClient. Run: python -m unittest discover -s tests -p test_*.py"""
 import hashlib
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+if importlib.util.find_spec("obsws_python") is None:
+    raise unittest.SkipTest("Agent-side engine (agent-core): pip install -r requirements-legacy-local.txt")
 
 from app import playback_engine
 from app.playback_engine import PlaybackEngine, PlaybackError

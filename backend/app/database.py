@@ -1,16 +1,12 @@
 import os
-import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-# Keep persistent development data outside the source code packages.
-DATA_DIR = (
-    Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SaraeAgent" / "data"
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parents[1] / "data"
-)
+# Keep persistent data outside the source code packages. The Windows Agent has its own
+# storage (agent-core, %LOCALAPPDATA%\SaraeAgent); this is Cloud/server data only.
+DATA_DIR = Path(os.environ.get("SARAE_DATA_DIR") or Path(__file__).resolve().parents[1] / "data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite:///{(DATA_DIR / 'sarae_live.db').as_posix()}"
 

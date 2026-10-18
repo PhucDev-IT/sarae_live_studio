@@ -1,23 +1,13 @@
+# Sarae Cloud API (FastAPI) — server dependencies only.
+# Installs on a Linux VPS without Tauri, GUI, Win32, OpenCV, OBS or PyInstaller.
+# The Windows Agent has its own dependency set in agent-core/pyproject.toml.
 fastapi>=0.115,<1
 uvicorn[standard]>=0.32,<1
 sqlalchemy>=2.0,<3
 alembic>=1.14,<2
 pydantic-settings>=2.7,<3
 python-multipart>=0.0.20,<1
-obsws-python>=1.7,<2
-
 httpx>=0.27,<1
-
-# Windows verification presence monitor (optional, Windows Desktop only)
-mss>=9,<11
-opencv-python>=4.9,<5
-numpy>=1.26,<3
-pywin32>=306; sys_platform == 'win32'
-
-psutil>=5.9,<8
-
-# Agent text-to-speech (app/ai_voice.py)
-edge-tts>=6.1,<8
 
 # Per-OWNER AI provider keys are encrypted at rest (app/credentials.py)
 cryptography>=42,<47
