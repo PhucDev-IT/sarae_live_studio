@@ -1,7 +1,8 @@
+import { AutoPinPage } from '../features/auto-pin/AutoPinPage'
 import { useState } from 'react'
 import {
   Activity, AlertTriangle, CheckCircle2, Clapperboard, Cloud, FolderOpen, Info, KeyRound, LayoutDashboard,
-  RefreshCw, ScanEye, ScrollText, X, XCircle,
+  RefreshCw, ScanEye, ScrollText, Pin, X, XCircle,
 } from 'lucide-react'
 import { useApp } from './store'
 import { Badge, Button, type Tone } from './ui'
@@ -14,13 +15,14 @@ import { LogsPage } from '../features/logs/LogsPage'
 import { coreProcess } from '../services/core'
 import type { AgentState } from '../types/ipc'
 
-type Page = 'overview' | 'connection' | 'media' | 'obs' | 'monitor' | 'logs'
+type Page = 'overview' | 'connection' | 'media' | 'obs' | 'auto-pin' | 'monitor' | 'logs'
 
 const NAV: { id: Page; label: string; icon: typeof Activity }[] = [
   { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
   { id: 'connection', label: 'Kích hoạt & Cloud', icon: KeyRound },
   { id: 'media', label: 'Thư viện video', icon: FolderOpen },
   { id: 'obs', label: 'OBS & Phát', icon: Clapperboard },
+  { id: 'auto-pin', label: 'Tự động ghim', icon: Pin },
   { id: 'monitor', label: 'CAPTCHA Monitor', icon: ScanEye },
   { id: 'logs', label: 'Nhật ký & Chẩn đoán', icon: ScrollText },
 ]
@@ -87,6 +89,7 @@ export function App() {
               {page === 'media' && <MediaPage />}
               {page === 'obs' && <ObsPage />}
               {page === 'monitor' && <MonitorPage />}
+              {page === 'auto-pin' && <AutoPinPage />}
               {page === 'logs' && <LogsPage />}
             </>
           )}
