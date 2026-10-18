@@ -52,7 +52,7 @@ export default function AccountPortal(){
  </section>
  return <section className="panel" style={{padding:24,display:'grid',gap:16}}>
   <header><h2>Quản lý tài khoản và Agent</h2><p>{user.email} — {user.role}</p>
-   <button onClick={()=>{sessionStorage.removeItem(storage);setToken('');setUser(null)}}>Đăng xuất</button>
+   <button onClick={()=>{clearAuth();setToken('');setUser(null)}}>Đăng xuất</button>
    <button disabled={busy} onClick={()=>void perform(()=>refresh())}>Làm mới</button></header>
   {user.role==='SUPER_ADMIN'&&<section><h3>Khách hàng OWNER</h3><form onSubmit={e=>{e.preventDefault();void perform(async()=>{await request('/owners',{email:newEmail,password:newPassword,max_agents:maxAgents,expires_at:licenseEnd?new Date(licenseEnd).toISOString():null});setNewEmail('');setNewPassword('');await refresh()})}}>
     <label>Email OWNER<input required type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)}/></label>
