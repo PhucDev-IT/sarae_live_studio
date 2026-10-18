@@ -1,5 +1,10 @@
 node_modules/
 dist/
+backend/build/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
+*.tsbuildinfo
 .venv/
 __pycache__/
 *.pyc
