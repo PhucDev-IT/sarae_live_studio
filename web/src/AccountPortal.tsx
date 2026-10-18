@@ -56,7 +56,7 @@ export default function AccountPortal(){
    <button disabled={busy} onClick={()=>void perform(()=>refresh())}>Làm mới</button></header>
   {user.role==='SUPER_ADMIN'&&<section><h3>Khách hàng OWNER</h3><form onSubmit={e=>{e.preventDefault();void perform(async()=>{await request('/owners',{email:newEmail,password:newPassword,max_agents:maxAgents,expires_at:licenseEnd?new Date(licenseEnd).toISOString():null});setNewEmail('');setNewPassword('');await refresh()})}}>
     <label>Email OWNER<input required type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)}/></label>
-    <label>Mật khẩu OWNER (tối thiểu 12 ký tự)<input required type="password" minLength={12} value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>
+    <label>Mật khẩu OWNER (tối thiểu 6 ký tự)<input required type="password" minLength={6} value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>
     <label>Giới hạn Agent<input type="number" min={1} max={100} value={maxAgents} onChange={e=>setMaxAgents(+e.target.value)}/></label>
     <label>License hết hạn (tùy chọn)<input type="datetime-local" value={licenseEnd} onChange={e=>setLicenseEnd(e.target.value)}/></label>
     <button disabled={busy}>Tạo OWNER</button>
