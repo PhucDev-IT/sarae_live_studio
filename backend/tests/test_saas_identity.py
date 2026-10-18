@@ -56,6 +56,18 @@ class IdentityTests(unittest.TestCase):
             identity.me(authorization=self.admin_header)
         self.assertEqual(context.exception.status_code, 401)
 
+    def test_platform_summary_admin_only(self):
+        summary=identity.platform_summary(authorization=self.admin_header)
+        self.assertEqual(summary["owners_total"],0)
+        self.assertEqual(summary["agents_total"],0)
+        owner=self.create_owner("owner@example.test")
+        summary=identity.platform_summary(authorization=self.admin_header)
+        self.assertEqual(summary["owners_total"],1)
+        token=identity.login(identity.Login(email="owner@example.test",password="OwnerSecretPassword123!"))["access_token"]
+        with self.assertRaises(HTTPException) as exc:
+            identity.platform_summary(authorization="Bearer "+token)
+        self.assertEqual(exc.exception.status_code,403)
+
     def test_license_agent_limit(self):
         owner=self.create_owner("a@example.test")
         first=identity.issue_key(owner["id"],authorization=self.admin_header)["activation_key"]
