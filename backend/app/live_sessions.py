@@ -1,7 +1,7 @@
 """Operator-managed LIVE sessions, product queues and history (Phase 1)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.identity import current_owner
 from app.ownership import Owner, owned_ids
@@ -159,22 +159,127 @@ def session_agent(owner: dict, item, free: bool = False):
     return agent
 
 
-def play_product(db, owner, agent, session_id: int, product_id: int, mode: str = "immediate"):
-    """Send the product's videos on that Agent; the Agent starts the session or switches within it."""
-    from app.cloud_agents import rpc
+# How long a LIVE action waits for the Agent before answering 202 (the command keeps going; poll it or the session).
+LIVE_WAIT_SECONDS = 8
+
+
+def in_flight(session_id: int, agent_id: str, kind: str = "product_play"):
+    """A product command for this session still on its way (PENDING/RUNNING), if any."""
+    from app.cloud_agents import _db, command_view
+    with _db() as db:
+        row = db.execute("""SELECT * FROM agent_commands WHERE agent_id=? AND session_id=? AND kind=?
+            AND status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1""", (agent_id, session_id, kind)).fetchone()
+    return command_view(row) if row else None
+
+
+def play_product(db, owner, agent, item, product_id: int, mode: str, action: str, idempotency_key: str | None):
+    """Create the product_play command for the session's Agent and wait briefly; its outcome is applied by
+    apply_command_outcome (here if the Agent answers in time, otherwise when it does)."""
+    from app.cloud_agents import run_command
     from app.media import product_media
+    busy = in_flight(item.id, agent["id"])
+    if busy is not None and not idempotency_key:
+        raise HTTPException(409, "Lệnh trước của phiên này còn đang được Agent xử lý")
     media_ids = product_media(db, owner["id"], agent["id"], product_id)
     if not media_ids:
         raise HTTPException(409, f"Sản phẩm chưa có video trên máy “{agent['hostname']}”")
-    return rpc(agent["id"], owner["id"], "product_play",
-               {"session_id": session_id, "product_id": product_id, "media_ids": media_ids, "mode": mode}, timeout=15)
+    return run_command(agent["id"], owner["id"], "product_play",
+                       {"session_id": item.id, "product_id": product_id, "media_ids": media_ids, "mode": mode},
+                       wait=LIVE_WAIT_SECONDS, idempotency_key=idempotency_key, session_id=item.id,
+                       context={"module": "live_sessions", "action": action, "session_id": item.id,
+                                "product_id": product_id, "mode": mode})
+
+
+def apply_command_outcome(command: dict, context: dict):
+    """Apply a final product_play outcome to its session. Called exactly once per final status (cloud_agents)."""
+    # CANCELLED is the server's own decision (e.g. the session ended); the event that caused it says why.
+    if context.get("module") != "live_sessions" or command["status"] == "CANCELLED":
+        return
+    sid, pid, action = context["session_id"], context.get("product_id"), context.get("action")
+    ok = command["status"] == "SUCCESS"
+    with SessionLocal() as db:
+        item = db.get(LiveSession, sid)
+        if item is None or item.agent_id != command["agent_id"]:
+            return
+        if not ok:
+            reason = command["error"] or command["status"]
+            event(db, sid, f"{(action or 'command').upper()}_{command['status']}", pid, f"command={command['command_id']};{reason}"[:500])
+            db.commit()
+            return
+        late = ";late_ack=true" if command["late_ack"] else ""
+        if action == "start" and item.status in ("DRAFT", "RUNNING"):
+            if item.status == "DRAFT":
+                item.started_at = now()
+            item.status = "RUNNING"
+            item.current_product_id = pid
+            event(db, sid, "STARTED", pid, f"agent={item.agent_id}{late}")
+        elif action == "resume" and item.status == "RUNNING":
+            ids = ids_for(db, sid)
+            if pid not in ids:
+                db.add(SessionProduct(session_id=sid, product_id=pid, sort_order=len(ids)))
+            item.current_product_id = pid
+            event(db, sid, "RESUMED", pid, f"agent={item.agent_id}{late}")
+        elif action == "switch" and item.status == "RUNNING":
+            if context.get("mode") == "after_current" and pid != item.current_product_id:
+                event(db, sid, "SWITCH_QUEUED", pid, late.lstrip(";"))
+            else:
+                item.current_product_id = pid
+                event(db, sid, "PRODUCT_SWITCHED", pid, f"trigger=immediate{late}")
+        db.commit()
+
+
+RECONCILE_STOP_SECONDS = 60
+
+
+def stop_sent_recently(agent_id: str, session_id: int) -> bool:
+    """A stop for this session was already sent within the last minute (heartbeats come every few seconds)."""
+    from app.cloud_agents import _db
+    since = (datetime.now(timezone.utc) - timedelta(seconds=RECONCILE_STOP_SECONDS)).isoformat()
+    with _db() as db:
+        return db.execute("""SELECT 1 FROM agent_commands WHERE agent_id=? AND session_id=? AND kind='playback_stop'
+            AND status!='CANCELLED' AND created_at>? LIMIT 1""", (agent_id, session_id, since)).fetchone() is not None
+
+
+def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
+    """Compare what an Agent reports playing (heartbeat) with the Cloud's sessions; called on every heartbeat.
+
+    - It plays a session the Cloud has ended (or one that is not this owner's / not on this Agent): stop it.
+    - It plays a RUNNING session's other product than recorded and no product command is on its way: record the
+      product the Agent actually plays.
+    A RUNNING session the Agent no longer plays is shown as interrupted (is_running_owner) and resumed by the operator.
+    """
+    from app.cloud_agents import create_command
+    sid = playback.get("session_id") if playback.get("running") else None
+    if not sid:
+        return
+    with SessionLocal() as db:
+        item = db.get(LiveSession, sid)
+        foreign = item is None or item.owner_id != owner_id or item.agent_id != agent_id
+        if foreign or item.status == "ENDED":
+            if stop_sent_recently(agent_id, sid):
+                return
+            try:
+                create_command(agent_id, owner_id, "playback_stop", session_id=sid, require_online=False)
+            except HTTPException:
+                return
+            if not foreign:
+                event(db, sid, "RECONCILE_STOP", playback.get("product_id"), "agent_still_playing_ended_session")
+                db.commit()
+            return
+        reported = playback.get("product_id")
+        if item.status == "RUNNING" and reported and reported != item.current_product_id and in_flight(sid, agent_id) is None:
+            item.current_product_id = reported
+            event(db, sid, "RECONCILED", reported, "product_from_agent_heartbeat")
+            db.commit()
 
 
 def sync_agent_events(owner_id: str):
-    """Apply what the owner's Agents did on their own (pending switch applied, playback ended, errors) to sessions."""
-    from app.cloud_agents import pop_events
+    """Apply what the owner's Agents did on their own (pending switch applied, playback ended, errors) and any
+    command outcomes not applied yet."""
+    from app.cloud_agents import apply_outcomes, pop_events
     from app.owner_agents import agents_of
     for agent in agents_of(owner_id):
+        apply_outcomes(agent["id"])
         for ev in pop_events(agent["id"]):
             with SessionLocal() as db:
                 item = db.get(LiveSession, ev.get("session_id") or 0)
@@ -187,6 +292,13 @@ def sync_agent_events(owner_id: str):
                 elif ev["type"] in ("PLAYBACK_ENDED", "ERROR"):
                     event(db, item.id, ev["type"], ev.get("product_id"), detail[:500])
                 db.commit()
+
+
+def answer(view: dict, owner: dict, session_id: int):
+    """HTTP answer of a session action: the session (after any outcome applied) and its command."""
+    from app.cloud_agents import respond
+    with SessionLocal() as db:
+        return respond(view, session=serialize(db, get_session(db, session_id, owner)))
 
 
 @router.get("")
@@ -234,10 +346,13 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         return serialize(db, item)
 
 @router.post("/{session_id}/start")
-def start_session(session_id: int, body: StartInput, owner: Owner):
+def start_session(session_id: int, body: StartInput, owner: Owner,
+                  idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    """Start on the session's Agent. 200 when the Agent confirmed in time, 202 while the command is on its way
+    (the session turns RUNNING when it succeeds). Retrying with the same Idempotency-Key never starts twice."""
     with SessionLocal() as db:
         item = get_session(db, session_id, owner)
-        if item.status != "DRAFT":
+        if item.status != "DRAFT" and not idempotency_key:
             raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
         ids = ids_for(db, session_id)
         if not ids:
@@ -246,17 +361,12 @@ def start_session(session_id: int, body: StartInput, owner: Owner):
         if pid not in ids:
             raise HTTPException(422, "Sản phẩm không nằm trong phiên")
         agent = session_agent(owner, item, free=True)
-        # The Agent validates the files and starts OBS before the session is marked RUNNING.
-        result = play_product(db, owner, agent, session_id, pid)
-        item.status = "RUNNING"
-        item.current_product_id = pid
-        item.started_at = now()
-        event(db, session_id, "STARTED", pid, f"agent={agent['hostname']}")
-        db.commit()
-        return {"session": serialize(db, item), "playback": result}
+        view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
+    return answer(view, owner, session_id)
 
 @router.post("/{session_id}/resume")
-def resume_session(session_id: int, body: StartInput, owner: Owner):
+def resume_session(session_id: int, body: StartInput, owner: Owner,
+                   idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
     """Play a RUNNING session again after its playback was lost (Agent restart, PC sleep, OBS crash…).
 
     Plays `product_id` (added to the session if missing) or the product that was live, on the session's own
@@ -266,7 +376,7 @@ def resume_session(session_id: int, body: StartInput, owner: Owner):
         item = get_session(db, session_id, owner)
         if item.status != "RUNNING":
             raise HTTPException(409, "Chỉ tiếp tục được phiên đang LIVE bị ngắt")
-        if is_running_owner(item):
+        if is_running_owner(item) and not idempotency_key:
             raise HTTPException(409, "Phiên đang phát bình thường")
         ids = ids_for(db, session_id)
         pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
@@ -274,16 +384,12 @@ def resume_session(session_id: int, body: StartInput, owner: Owner):
             raise HTTPException(409, "Phiên chưa có sản phẩm nào")
         ensure_products(db, [pid], owner)
         agent = session_agent(owner, item, free=True)
-        result = play_product(db, owner, agent, session_id, pid)
-        if pid not in ids:
-            db.add(SessionProduct(session_id=session_id, product_id=pid, sort_order=len(ids)))
-        item.current_product_id = pid
-        event(db, session_id, "RESUMED", pid, f"agent={agent['hostname']}")
-        db.commit()
-        return {"session": serialize(db, item), "playback": result}
+        view = play_product(db, owner, agent, item, pid, "immediate", "resume", idempotency_key)
+    return answer(view, owner, session_id)
 
 @router.post("/{session_id}/switch")
-def switch_session_product(session_id: int, body: SwitchInput, owner: Owner):
+def switch_session_product(session_id: int, body: SwitchInput, owner: Owner,
+                           idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
     with SessionLocal() as db:
         item = get_session(db, session_id, owner)
         if item.status != "RUNNING":
@@ -291,22 +397,15 @@ def switch_session_product(session_id: int, body: SwitchInput, owner: Owner):
         agent = session_agent(owner, item)
         # The lineup is a prepared pool, not a fixed order: any of the owner's products with videos can go live.
         ensure_products(db, [body.product_id], owner)
-        if body.product_id == item.current_product_id and body.mode == "immediate":
+        if body.product_id == item.current_product_id and body.mode == "immediate" and not idempotency_key:
             return {"ok": True, "unchanged": True}
-        result = play_product(db, owner, agent, session_id, body.product_id, body.mode)
         ids = ids_for(db, session_id)
         if body.product_id not in ids:
             db.add(SessionProduct(session_id=session_id, product_id=body.product_id, sort_order=len(ids)))
             event(db, session_id, "PRODUCT_ADDED", body.product_id, "during_live=true")
-        if body.mode == "after_current" and body.product_id != item.current_product_id:
-            event(db, session_id, "SWITCH_QUEUED", body.product_id)
             db.commit()
-            return {"ok": True, "pending_product_id": body.product_id}
-        db.commit()
-    # Immediate switches are recorded here; the Agent reports deferred ones as events.
-    record_product_switch(session_id, body.product_id)
-    with SessionLocal() as db:
-        return {"ok": True, "playback": result, "session": serialize(db, get_session(db, session_id, owner))}
+        view = play_product(db, owner, agent, item, body.product_id, body.mode, "switch", idempotency_key)
+    return answer(view, owner, session_id)
 
 @router.patch("/{session_id}")
 def update_session(session_id: int, body: SessionPatch, owner: Owner):
@@ -355,30 +454,37 @@ def duplicate_session(session_id: int, owner: Owner):
 
 @router.post("/{session_id}/finish")
 def finish_session(session_id: int, owner: Owner):
-    from app.cloud_agents import rpc
+    """End the session in the Cloud right away, cancel its commands not yet delivered and ask its Agent to stop.
+
+    If the Agent is offline or no longer plays it, nothing is sent: when it reconnects still playing an ENDED
+    session, reconcile_playback stops it.
+    """
+    from app.cloud_agents import cancel_commands, create_command
     from app.live import playback_of
     sync_agent_events(owner["id"])
     with SessionLocal() as db:
         item = get_session(db, session_id, owner)
-        if item.status != "RUNNING":
-            raise HTTPException(409, "Phiên chưa bắt đầu hoặc đã kết thúc")
-        if not is_running_owner(item):
-            # Its Agent no longer plays it (Agent restarted, offline…): nothing to stop, just close the record.
-            item.status = "ENDED"
-            item.ended_at = now()
-            event(db, session_id, "ENDED", item.current_product_id, "stale=true")
-            db.commit()
+        if item.status == "ENDED":
             return serialize(db, item)
-        agent = session_agent(owner, item)
-        counters = playback_of(agent)
-        rpc(agent["id"], owner["id"], "playback_stop")
+        if item.status != "RUNNING":
+            raise HTTPException(409, "Phiên chưa bắt đầu")
+        playing = is_running_owner(item)
+        agent = agent_by_id(owner["id"], item.agent_id)
+        counters = playback_of(agent) if playing else {}
         item.status = "ENDED"
         item.ended_at = now()
-        event(db, session_id, "ENDED", item.current_product_id,
-              f"transitions={counters.get('transition_count', 0)};errors={counters.get('error_count', 0)};"
-              f"recoveries={counters.get('recovery_count', 0)}")
+        detail = ("stale=true" if not playing else
+                  f"transitions={counters.get('transition_count', 0)};errors={counters.get('error_count', 0)};"
+                  f"recoveries={counters.get('recovery_count', 0)}")
+        event(db, session_id, "ENDED", item.current_product_id, detail)
         db.commit()
-        return serialize(db, item)
+        if item.agent_id:
+            cancel_commands(item.agent_id, session_id=session_id)
+        stop = None
+        if playing:
+            stop = create_command(item.agent_id, owner["id"], "playback_stop", session_id=session_id,
+                                  idempotency_key=f"finish:{session_id}")
+        return {**serialize(db, item), "command": stop}
 
 @router.get("/{session_id}/events")
 def list_events(session_id: int, owner: Owner):

@@ -5,7 +5,7 @@ Nothing here touches OBS directly. Every call names its Agent (`agent_id`); the 
 two Agents of the same OWNER cannot affect each other. Status is the Agent's latest heartbeat (`PlaybackEngine.status()`);
 commands go through `cloud_agents`. Product LIVE sessions themselves are managed in `live_sessions`.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -58,11 +58,24 @@ def playback_of(agent: dict | None) -> dict:
     return status
 
 
+CONTROL_WAIT_SECONDS = 5
+IdempotencyKey = Header(None, alias="Idempotency-Key")
+
+
 def agent_call(owner: dict, agent_id: str, kind: str, payload: dict | None = None, timeout: float = 10):
-    """Run a quick command on the owner's Agent and return its result (short wait; see cloud_agents.rpc)."""
+    """A call whose answer the page needs now (OBS inputs, saved config): the Agent's result or an error."""
     from app.cloud_agents import rpc
     agent = owned_agent(owner, agent_id, online=True)
     return rpc(agent["id"], owner["id"], kind, payload, timeout)
+
+
+def control(owner: dict, agent_id: str, kind: str, payload: dict | None = None, idempotency_key: str | None = None):
+    """A playback control as a tracked command: 200 when the Agent confirmed within a few seconds, else 202 with the
+    command to poll. The same Idempotency-Key (e.g. a retried click) never runs the control twice."""
+    from app.cloud_agents import respond, run_command
+    agent = owned_agent(owner, agent_id, online=True)
+    return respond(run_command(agent["id"], owner["id"], kind, payload, wait=CONTROL_WAIT_SECONDS,
+                               idempotency_key=idempotency_key))
 
 
 @router.get("/status")
@@ -87,44 +100,44 @@ def list_obs_inputs(body: ObsConnection, owner: Owner, agent_id: AgentId):
 
 
 @router.post("/pause")
-def pause_video(owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_pause")
+def pause_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_pause", idempotency_key=idempotency_key)
 
 
 @router.post("/resume")
-def resume_video(owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_resume")
+def resume_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_resume", idempotency_key=idempotency_key)
 
 
 @router.post("/next")
-def next_video(owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_next")
+def next_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_next", idempotency_key=idempotency_key)
 
 
 @router.post("/previous")
-def previous_video(owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_previous")
+def previous_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_previous", idempotency_key=idempotency_key)
 
 
 @router.post("/select")
-def play_selected(body: SelectPayload, owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_select", {"index": body.index})
+def play_selected(body: SelectPayload, owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_select", {"index": body.index}, idempotency_key)
 
 
 @router.post("/seek")
-def seek_video(body: SeekPayload, owner: Owner, agent_id: AgentId):
-    return agent_call(owner, agent_id, "playback_seek", {"ms": body.milliseconds})
+def seek_video(body: SeekPayload, owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    return control(owner, agent_id, "playback_seek", {"ms": body.milliseconds}, idempotency_key)
 
 
 @router.post("/stop")
-def stop_video(owner: Owner, agent_id: AgentId):
+def stop_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
     """Stop playback on that Agent; a LIVE session it is playing ends with it (kept in history)."""
     from app.live_sessions import playing_session, finish_session
     owned_agent(owner, agent_id)
     session_id = playing_session(owner["id"], agent_id)
     if session_id is not None:
         return finish_session(session_id, owner)
-    return agent_call(owner, agent_id, "playback_stop")
+    return control(owner, agent_id, "playback_stop", idempotency_key=idempotency_key)
 
 
 @router.get("/products")
@@ -148,7 +161,7 @@ def available_products(owner: Owner, agent_id: AgentId):
 @router.post("/product-session/cancel-switch")
 def cancel_product_switch(owner: Owner, agent_id: AgentId):
     from app.live_sessions import playing_session, record_event
-    result = agent_call(owner, agent_id, "playback_cancel_pending")
+    result = agent_call(owner, agent_id, "playback_cancel_pending", timeout=CONTROL_WAIT_SECONDS)
     session_id = playing_session(owner["id"], agent_id)
     cancelled = (result or {}).get("cancelled_product_id")
     if session_id is not None and cancelled is not None:

@@ -112,7 +112,7 @@ class DispatchTests(unittest.TestCase):
                               ("https://vps/api", "key", "agent_1"))
         url, method, key, body = request.call_args.args
         self.assertTrue(url.endswith("/agents/commands/ack"))
-        self.assertEqual(body, {"agent_id": "agent_1", "command_id": "c1", "success": False,
+        self.assertEqual(body, {"agent_id": "agent_1", "command_id": "c1", "claim_token": "", "success": False,
                                 "result": "Không có video đang phát để Pause"})
 
     def test_handle_acks_json_result(self):
@@ -123,6 +123,44 @@ class DispatchTests(unittest.TestCase):
         body = request.call_args.args[3]
         self.assertTrue(body["success"])
         self.assertEqual(json.loads(body["result"]), {"ok": True, "index": 1})
+
+
+class JournalTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.journal = agent_main.CommandJournal(Path(self.tmp.name) / "journal.json")
+        self.patches = [mock.patch.object(agent_main, "journal", self.journal),
+                        mock.patch.object(agent_main, "execute", return_value={"ok": True}),
+                        mock.patch.object(agent_main, "request_json"),
+                        # Vietnamese log lines; a cp1252 test console cannot print them.
+                        mock.patch("builtins.print")]
+        started = [patcher.start() for patcher in self.patches]
+        self.execute, self.request = started[1], started[2]
+
+    def tearDown(self):
+        for patcher in self.patches:
+            patcher.stop()
+        self.tmp.cleanup()
+
+    def test_redelivered_command_is_acked_not_executed_again(self):
+        command = {"command_id": "c9", "kind": "playback_next", "payload": {}, "claim_token": "t1"}
+        agent_main.handle(command, ("https://vps/api", "key", "agent_1"))
+        agent_main.handle({**command, "claim_token": "t2"}, ("https://vps/api", "key", "agent_1"))
+        self.assertEqual(self.execute.call_count, 1)
+        bodies = [c.args[3] for c in self.request.call_args_list]
+        self.assertEqual([b["claim_token"] for b in bodies], ["t1", "t2"])
+        self.assertEqual(bodies[0]["result"], bodies[1]["result"])
+
+    def test_journal_survives_restart(self):
+        agent_main.handle({"command_id": "c10", "kind": "playback_next", "payload": {}}, ("https://vps/api", "key", "a"))
+        reloaded = agent_main.CommandJournal(self.journal.path)
+        self.assertTrue(reloaded.get("c10")["success"])
+
+    def test_ack_is_retried_on_network_error(self):
+        self.request.side_effect = [OSError("offline"), {"ok": True}]
+        with mock.patch.object(agent_main.time, "sleep"):
+            self.assertTrue(agent_main.ack(("https://vps/api", "key", "a"), {"command_id": "c11"}, True, "{}"))
+        self.assertEqual(self.request.call_count, 2)
 
 
 class OutboxTests(unittest.TestCase):

@@ -10,11 +10,14 @@ Threads (all outbound, no inbound port):
 import json
 import platform
 import signal
+import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from app.config import settings
+from app.database import DATA_DIR
 from app.playback_engine import PlaybackEngine, PlaybackError
 from agent.credentials import load as load_credential
 from app.verification_monitor import start, stop, status, configure, ConfigBody
@@ -144,10 +147,57 @@ def execute(command,context=None):
         return speak(engine,payload)
     raise ValueError("Lệnh không được hỗ trợ")
 
-def handle(command,context):
-    """Run one command and ack it with its JSON result or the error message."""
+class CommandJournal:
+    """Commands this Agent has executed (id → outcome), kept on disk so a command delivered again — its ack was
+    lost, the Cloud re-delivered a retryable command, or the Agent restarted — is acked with the first outcome
+    instead of being executed twice."""
+
+    def __init__(self,path,limit=500):
+        self.path=path;self.limit=limit;self.lock=threading.Lock()
+        try:self.entries=json.loads(path.read_text(encoding="utf-8"))
+        except (OSError,ValueError):self.entries={}
+
+    def get(self,command_id):
+        with self.lock:return self.entries.get(command_id)
+
+    def record(self,command_id,success,result):
+        with self.lock:
+            self.entries[command_id]={"success":success,"result":result,"at":time.time()}
+            while len(self.entries)>self.limit:
+                self.entries.pop(next(iter(self.entries)))
+            tmp=self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.entries,ensure_ascii=False),encoding="utf-8")
+            tmp.replace(self.path)
+
+journal=CommandJournal(DATA_DIR/"agent_command_journal.json")
+ACK_RETRY_DELAYS=(1,2,4,8,15)
+
+def ack(context,command,success,result):
+    """Ack with the claim token; retry on network errors (a late ack is still accepted by the Cloud)."""
     server,key,agent_id=context
-    print(f"[{time.strftime('%H:%M:%S')}] Nhận lệnh từ Web: {command['kind']}")
+    body={"agent_id":agent_id,"command_id":command["command_id"],"claim_token":command.get("claim_token",""),
+          "success":success,"result":result}
+    for delay in (0,)+ACK_RETRY_DELAYS:
+        if delay:time.sleep(delay)
+        try:
+            request_json(server+"/agents/commands/ack","POST",key,body)
+            return True
+        except urllib.error.HTTPError as exc:
+            # 404/409: the Cloud no longer accepts this ack (cancelled, unknown token); retrying cannot help.
+            print("Cloud từ chối xác nhận lệnh:",exc.code)
+            return False
+        except Exception as exc:
+            print("Không gửi được xác nhận lệnh, thử lại:",str(exc)[:160])
+    return False
+
+def handle(command,context):
+    """Run one command (once, see CommandJournal) and ack it with its JSON result or the error message."""
+    print(f"[{time.strftime('%H:%M:%S')}] Nhận lệnh từ Web: {command['kind']} (lần {command.get('attempt',1)})")
+    done=journal.get(command["command_id"])
+    if done is not None:
+        print("Lệnh đã thực thi trước đó; chỉ gửi lại kết quả")
+        ack(context,command,done["success"],done["result"])
+        return
     success=True
     try:
         result=json.dumps(execute(command,context),ensure_ascii=False,default=str)
@@ -157,11 +207,26 @@ def handle(command,context):
         success=False;result=str(exc.detail)[:1900]
     except Exception as exc:
         success=False;result=str(exc)[:1900]
-    try:
-        request_json(server+"/agents/commands/ack","POST",key,
-                     {"agent_id":agent_id,"command_id":command["command_id"],"success":success,"result":result})
-    except Exception as exc:print("Không xác nhận được kết quả lệnh:",exc)
+    # Record before acking: if the ack is lost, a re-delivery must not run the action again.
+    journal.record(command["command_id"],success,result)
+    ack(context,command,success,result)
     print("Thực thi thành công:" if success else "Thực thi thất bại:",result[:200])
+
+def acquire_command_lock():
+    """Only one process per PC may take commands from the Cloud (OS file lock, released when the process exits)."""
+    handle=open(DATA_DIR/"agent_commands.lock","a+")
+    try:
+        handle.seek(0)
+        if sys.platform=="win32":
+            import msvcrt
+            msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return handle
+    except OSError:
+        handle.close()
+        return None
 
 def command_loop(context,stop_event):
     server,key,agent_id=context
@@ -212,6 +277,9 @@ def main(external_stop:threading.Event|None=None):
     context=(server,agent_key,agent_id)
     # The watchdog keeps running when the cloud link stops: an ongoing LIVE must not freeze.
     engine.start_monitor()
+    command_lock=acquire_command_lock()
+    if command_lock is None:
+        raise SystemExit("Một tiến trình Sarae Agent khác đang xử lý lệnh trên máy này; không chạy song song để tránh thực thi trùng")
     for target,name in ((command_loop,"SaraeAgentCommands"),(media_loop,"SaraeAgentMedia")):
         threading.Thread(target=target,args=(context,stop_event),daemon=True,name=name).start()
     last_label=None

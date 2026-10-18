@@ -101,3 +101,20 @@ class SaasTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return ids
 
+    def run_agent(self, agent, reply=None):
+        """The Agent taking every deliverable command and acking it with reply(command) -> (success, result).
+        Returns the commands it processed, in order."""
+        import json
+        headers = {"X-Sarae-Agent-Key": agent["agent_credential"]}
+        processed = []
+        while True:
+            command = self.client.get(f"/api/agents/commands/{agent['agent_id']}/next", headers=headers).json()["command"]
+            if command is None:
+                return processed
+            success, result = reply(command) if reply else (True, {"ok": True})
+            response = self.client.post("/api/agents/commands/ack", headers=headers, json={
+                "agent_id": agent["agent_id"], "command_id": command["command_id"], "claim_token": command["claim_token"],
+                "success": success, "result": json.dumps(result) if success else str(result)})
+            self.assertEqual(response.status_code, 200, response.text)
+            processed.append(command)
+

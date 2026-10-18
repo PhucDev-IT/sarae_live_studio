@@ -1,18 +1,32 @@
-"""Cloud-side registry and command channel for Windows Local Agents.
+"""Cloud-side registry and command channel for Windows Agents.
 
-Agent initiates HTTPS connections; no inbound Windows firewall rule is needed.
-OBS/LIVE control runs on the Agent (app.playback_engine); the VPS queues commands.
+Agents initiate HTTPS connections (no inbound firewall rule). OBS/LIVE control runs on the Agent
+(app.playback_engine); the server creates commands and tracks each one through a lifecycle:
 
-Contract used by the cloud LIVE facade (keep stable):
-    rpc(agent_id, owner_id, kind, payload, timeout=10) -> Agent result (dict/list/str)
-        409 Agent offline, 504 no ack in time, 502 Agent reported failure (detail = its message).
-    pop_events(agent_id, limit=500) -> [{seq,type,session_id,product_id,detail,created_at}]
-        Returns unprocessed Agent events in seq order and marks them processed.
+    PENDING ──claim──► RUNNING ──ack──► SUCCESS | FAILED
+       │                  │
+       │ expires_at       │ lease_until passed without ack
+       ▼                  ▼
+    TIMEOUT        retryable kind & attempts left & not expired → PENDING again (re-delivered)
+    CANCELLED      otherwise → TIMEOUT (never re-delivered: the action may already have happened)
 
-Agent side:
-    GET  /api/agents/commands/{agent_id}/next?wait=0..25  long-poll, {"command": {...}|None}
-    POST /api/agents/commands/ack                         {agent_id,command_id,success,result}
-    POST /api/agents/events                               {agent_id,events:[{seq,type,session_id,product_id,detail}]}
+- Claim is atomic (BEGIN IMMEDIATE) and per lane: at most one RUNNING command per Agent in the "live" lane (OBS
+  playback) and one in the "background" lane (TTS, library rescan, CAPTCHA monitor), so commands of a lane run in
+  order and a long TTS never blocks a product switch.
+- Each claim gets a claim_token; an ack must carry a token issued for that command. A late ack (after TIMEOUT, or from an
+  earlier claim of a re-delivered retryable command) is recorded with late_ack=1 because the action did happen.
+- Idempotency-Key: the same key for the same Agent returns the existing command instead of creating a second one.
+- The Agent also keeps a journal of executed command ids (agent/main.py) and re-acks instead of running one twice.
+
+Server-side API (used by the web facade): create_command(), wait_command(), run_command(), rpc(), cancel_commands(),
+command_view(), pop_events(). Agent side:
+    GET  /api/agents/commands/{agent_id}/next?wait=0..25   long-poll, {"command": {..., claim_token}|None}
+    POST /api/agents/commands/ack                          {agent_id, command_id, claim_token, success, result}
+    POST /api/agents/heartbeat, POST /api/agents/events
+Web side (OWNER):
+    POST /api/agents/{agent_id}/commands                   {kind, payload, idempotency_key?, wait?}
+    GET  /api/agents/{agent_id}/commands[/{command_id}]
+    POST /api/agents/{agent_id}/commands/{command_id}/cancel
 """
 import asyncio
 import hmac
@@ -26,25 +40,65 @@ from datetime import datetime, timezone, timedelta
 from typing import Literal
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
-from app.config import settings
 from app.identity import auth, allow_owner, verify_agent, db_open, license_not_expired
 
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 DB = DATA_DIR / "agents.sqlite3"
 ONLINE_SECONDS = 35
 MAX_WAIT_SECONDS = 25
+FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
+
+# ----- command policy --------------------------------------------------------------------------------
+
+# Safe to deliver again when an ack is lost: running them twice leaves the same end state.
+RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "media_rescan", "monitor_config", "monitor_start",
+                   "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
+                   "obs_pause", "obs_resume", "obs_stop", "local_media_stop"}
+BACKGROUND_KINDS = {"tts_speak", "media_rescan", "monitor_config", "monitor_start", "monitor_stop"}
+MAX_ATTEMPTS = 3
+DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
+SLOW_TTL_SECONDS = 180
+DEFAULT_LEASE_SECONDS = 30        # time the Agent has to ack after claiming
+SLOW_LEASE_SECONDS = 150
+SLOW_KINDS = {"media_rescan", "tts_speak", "obs_configure", "obs_inputs"}
+
+
+def lane(kind: str) -> str:
+    return "background" if kind in BACKGROUND_KINDS else "live"
+
+
+def ttl_seconds(kind: str) -> int:
+    return SLOW_TTL_SECONDS if kind in SLOW_KINDS or kind in BACKGROUND_KINDS else DEFAULT_TTL_SECONDS
+
+
+def lease_seconds(kind: str) -> int:
+    return SLOW_LEASE_SECONDS if kind in SLOW_KINDS else DEFAULT_LEASE_SECONDS
+
+
+# ----- storage ---------------------------------------------------------------------------------------
 
 def connection():
     db=sqlite3.connect(DB, timeout=5)
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
        agent_id TEXT PRIMARY KEY, host TEXT NOT NULL, last_seen TEXT NOT NULL,
        status_json TEXT NOT NULL)""")
+    columns={row[1] for row in db.execute("PRAGMA table_info(agent_commands)")}
+    if columns and "status" not in columns:
+        # Pre-production schema without a lifecycle: nothing in it is worth keeping.
+        db.execute("DROP TABLE agent_commands")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_commands (
-        command_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, kind TEXT NOT NULL,
-        payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        command_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, agent_id TEXT NOT NULL, kind TEXT NOT NULL,
+        lane TEXT NOT NULL, payload TEXT NOT NULL, context TEXT, status TEXT NOT NULL,
+        retryable INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, claim_tokens TEXT NOT NULL DEFAULT '[]',
+        lease_until TEXT, idempotency_key TEXT, session_id INTEGER, result TEXT, error TEXT,
+        late_ack INTEGER NOT NULL DEFAULT 0, applied_status TEXT, created_at TEXT NOT NULL, started_at TEXT,
+        completed_at TEXT, expires_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+    db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_commands_idempotency
+        ON agent_commands(agent_id, idempotency_key) WHERE idempotency_key IS NOT NULL""")
+    db.execute("CREATE INDEX IF NOT EXISTS ix_agent_commands_queue ON agent_commands(agent_id, status, created_at)")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_events (
         agent_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
         created_at TEXT NOT NULL, processed INTEGER NOT NULL DEFAULT 0,
@@ -55,6 +109,7 @@ def connection():
 def _db():
     """Like ``with connection()`` (commit/rollback) but also closes the handle."""
     db=connection()
+    db.row_factory=sqlite3.Row
     try:
         with db:
             yield db
@@ -63,6 +118,9 @@ def _db():
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+def _at(seconds:float)->str:
+    return (datetime.now(timezone.utc)+timedelta(seconds=seconds)).isoformat()
 
 def authorized(actual, expected):
     return bool(expected) and hmac.compare_digest(actual or "",expected)
@@ -99,7 +157,7 @@ class Heartbeat(BaseModel):
 
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
-    verify_agent(body.agent_id, x_sarae_agent_key)
+    agent=verify_agent(body.agent_id, x_sarae_agent_key)
     at=_now()
     sanitized={"verification":body.verification,"obs":body.obs,"local_playback":body.local_playback,
                "playback":body.playback}
@@ -108,6 +166,9 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
                       VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
                       host=excluded.host,last_seen=excluded.last_seen,status_json=excluded.status_json""",
                       (body.agent_id,body.hostname,at,json.dumps(sanitized,ensure_ascii=False)))
+    # Compare what the Agent really plays with the Cloud's LIVE sessions (e.g. after a reconnect or restart).
+    from app.live_sessions import reconcile_playback
+    reconcile_playback(agent["owner_id"],body.agent_id,body.playback or {})
     return {"ok":True,"server_time":at}
 
 @router.get("/status")
@@ -137,7 +198,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "playback_resume","playback_next","playback_previous","playback_stop","media_rescan"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs"}
-# Payload fields that must not stay in the command log once the Agent has fetched them.
+# Payload fields that must not stay in the command log once the command is final.
 SECRET_FIELDS={"password"}
 
 class CommandBody(BaseModel):
@@ -148,6 +209,7 @@ class CommandBody(BaseModel):
 class AckBody(BaseModel):
     agent_id:str=Field(min_length=1,max_length=80)
     command_id:str=Field(min_length=1,max_length=80)
+    claim_token:str=Field(default="",max_length=80)
     success:bool
     # Results carry JSON (e.g. playback status, OBS input list), so allow more than a log line.
     result:str=Field(default="",max_length=65000)
@@ -192,9 +254,10 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         text=payload.get("text","")
         if not isinstance(text,str) or not 1<=len(text)<=450:
             raise HTTPException(422,"Nội dung TTS từ 1 đến 450 ký tự")
-        if payload.get("voice","vi-VN-HoaiMyNeural") not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
+        voice=payload.get("voice","vi-VN-HoaiMyNeural")
+        if voice not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
             raise HTTPException(422,"Giọng không được hỗ trợ")
-        return payload
+        return {"text":text,"voice":voice}
     if kind=="local_playlist_start":
         return {"media_ids":_media_ids(payload.get("media_ids")),"loop":_bool(payload.get("loop",True),"loop")}
     if kind=="local_media_play":
@@ -230,7 +293,7 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         raise HTTPException(422,"Lệnh này không nhận tham số")
     return {}
 
-# ----- queueing ------------------------------------------------------------------------------------
+# ----- lifecycle -------------------------------------------------------------------------------------
 
 def _owner_row(agent_id:str):
     with db_open() as registry:
@@ -242,96 +305,151 @@ def _owner_row(agent_id:str):
         raise HTTPException(403,"License đã hết hạn hoặc bị khóa")
     return row
 
-def _enqueue(agent_id:str,kind:str,payload:dict)->str:
-    with _db() as db:
-        row=db.execute("SELECT last_seen FROM agent_status WHERE agent_id=?",(agent_id,)).fetchone()
-        if not row:raise HTTPException(409,"Agent đang offline")
-        age=(datetime.now(timezone.utc)-datetime.fromisoformat(row[0])).total_seconds()
-        if age>ONLINE_SECONDS:raise HTTPException(409,"Agent đang offline")
-        command_id=str(uuid.uuid4())
-        now=_now()
-        db.execute("INSERT INTO agent_commands VALUES(?,?,?,?,?,?,?,?)",
-                   (command_id,agent_id,kind,json.dumps(payload),"pending",None,now,now))
-    _notify(agent_id)
-    return command_id
+def _mask(payload_text:str)->str:
+    payload=json.loads(payload_text)
+    return json.dumps({k:("***" if k in SECRET_FIELDS and v else v) for k,v in payload.items()},ensure_ascii=False)
 
-def create_command(agent_id:str, owner_id:str, kind:str, payload:dict|None=None)->dict:
-    """Queue a validated command for an Agent the caller already checked belongs to `owner_id`."""
-    if _owner_row(agent_id)["owner_id"]!=owner_id:raise HTTPException(404,"Không tìm thấy Agent")
-    command_id=_enqueue(agent_id,kind,validate_payload(kind,payload))
-    return {"command_id":command_id,"status":"PENDING"}
+def _sweep(db,agent_id:str):
+    """Apply time-based transitions for one Agent (call inside a write transaction)."""
+    now=_now()
+    db.execute("""UPDATE agent_commands SET status='TIMEOUT',error='Agent không nhận lệnh trước khi hết hạn',
+        completed_at=?,updated_at=? WHERE agent_id=? AND status='PENDING' AND expires_at<?""",(now,now,agent_id,now))
+    for row in db.execute("""SELECT command_id,retryable,attempts,expires_at FROM agent_commands
+            WHERE agent_id=? AND status='RUNNING' AND lease_until<?""",(agent_id,now)).fetchall():
+        if row["retryable"] and row["attempts"]<MAX_ATTEMPTS and row["expires_at"]>now:
+            db.execute("""UPDATE agent_commands SET status='PENDING',lease_until=NULL,updated_at=?
+                WHERE command_id=?""",(now,row["command_id"]))
+        else:
+            db.execute("""UPDATE agent_commands SET status='TIMEOUT',updated_at=?,completed_at=?,
+                error='Không nhận được xác nhận từ Agent; lệnh không được gửi lại tự động' WHERE command_id=?""",
+                       (now,now,row["command_id"]))
+    # Never keep secrets in final commands.
+    for row in db.execute("""SELECT command_id,payload FROM agent_commands WHERE agent_id=? AND status IN
+            ('SUCCESS','FAILED','TIMEOUT','CANCELLED') AND payload LIKE '%password%'""",(agent_id,)).fetchall():
+        db.execute("UPDATE agent_commands SET payload=? WHERE command_id=?",(_mask(row["payload"]),row["command_id"]))
 
-@router.post("/commands")
-def queue_command(body:CommandBody, authorization:str|None=Header(None)):
-    row=_owner_row(body.agent_id)
-    actor=allow_owner(authorization,row["owner_id"])
-    # Global administrators manage licenses/devices, but cannot silently
-    # intervene in a customer's active stream.
-    if actor["role"]=="SUPER_ADMIN":
-        raise HTTPException(403,"SUPER_ADMIN không trực tiếp điều khiển LIVE khách hàng")
-    payload=validate_payload(body.kind,body.payload)
-    command_id=_enqueue(body.agent_id,body.kind,payload)
-    return {"command_id":command_id,"state":"pending"}
+def command_view(row)->dict:
+    result=row["result"]
+    try:result=json.loads(result) if result else None
+    except ValueError:pass
+    return {"command_id":row["command_id"],"agent_id":row["agent_id"],"kind":row["kind"],"status":row["status"],
+            "attempts":row["attempts"],"result":result,"error":row["error"],"late_ack":bool(row["late_ack"]),
+            "session_id":row["session_id"],"created_at":row["created_at"],"started_at":row["started_at"],
+            "completed_at":row["completed_at"],"expires_at":row["expires_at"]}
 
-def _result_value(text:str|None):
-    if not text:return None
-    try:return json.loads(text)
-    except ValueError:return text
-
-def rpc(agent_id:str, owner_id:str, kind:str, payload:dict|None=None, timeout:float=10):
-    """Queue ``kind`` for the Agent owned by ``owner_id`` and wait for its ack.
-
-    Returns the Agent's JSON result. Raises HTTPException: 404/403 unknown agent, wrong owner or
-    license, 422 invalid payload, 409 Agent offline, 504 no ack within ``timeout`` seconds (a
-    command still pending is cancelled so it never runs late), 502 Agent failure (detail = message).
-    """
-    row=_owner_row(agent_id)
-    if row["owner_id"]!=owner_id:raise HTTPException(403,"Không có quyền với Agent này")
-    command_id=_enqueue(agent_id,kind,validate_payload(kind,payload))
-    entry=_signal(agent_id)
-    deadline=time.monotonic()+max(0.1,timeout)
-    while True:
-        timed_out=False
-        with _db() as db:
-            state,result=db.execute("SELECT state,result FROM agent_commands WHERE command_id=?",
-                                    (command_id,)).fetchone()
-            if state in ("pending","running") and time.monotonic()>=deadline:
-                timed_out=True
-                db.execute("""UPDATE agent_commands SET state='failed',result=?,updated_at=?
-                              WHERE command_id=? AND state='pending'""",
-                           ("Hết thời gian chờ Agent nhận lệnh",_now(),command_id))
-        if timed_out:raise HTTPException(504,"Agent không phản hồi kịp thời")
-        if state=="completed":return _result_value(result)
-        if state=="failed":raise HTTPException(502,result or "Agent báo lỗi khi thực thi lệnh")
-        with entry[0]:
-            seen=entry[1]
-            # Wake on ack (same process) or re-check the DB every 0.5 s (other workers).
-            entry[0].wait_for(lambda:entry[1]!=seen,timeout=min(0.5,max(0.0,deadline-time.monotonic())))
-
-def _claim(agent_id:str):
+def get_command(command_id:str,agent_id:str|None=None)->dict:
     with _db() as db:
         db.execute("BEGIN IMMEDIATE")
-        # Mark abandoned commands failed rather than re-running potentially
-        # non-idempotent OBS/TTS actions after a worker disconnect.
-        cutoff=(datetime.now(timezone.utc)-timedelta(seconds=90)).isoformat()
-        db.execute("""UPDATE agent_commands SET state='failed',
-                       result='Agent mất kết nối hoặc không xác nhận sau 90 giây',
-                       updated_at=?
-                       WHERE agent_id=? AND state='running' AND updated_at<?""",
-                   (_now(),agent_id,cutoff))
-        row=db.execute("""SELECT command_id,kind,payload FROM agent_commands
-             WHERE agent_id=? AND state='pending' ORDER BY created_at LIMIT 1""",(agent_id,)).fetchone()
-        if not row:return None
-        payload=json.loads(row[2])
-        stored=json.dumps({k:("***" if k in SECRET_FIELDS and v else v) for k,v in payload.items()})
-        db.execute("UPDATE agent_commands SET state='running',payload=?,updated_at=? WHERE command_id=?",
-                   (stored,_now(),row[0]))
-    return {"command_id":row[0],"kind":row[1],"payload":payload}
+        row=db.execute("SELECT * FROM agent_commands WHERE command_id=?",(command_id,)).fetchone()
+        if row is None or (agent_id is not None and row["agent_id"]!=agent_id):
+            raise HTTPException(404,"Không tìm thấy lệnh")
+        _sweep(db,row["agent_id"])
+        row=db.execute("SELECT * FROM agent_commands WHERE command_id=?",(command_id,)).fetchone()
+        return command_view(row)
+
+def create_command(agent_id:str,owner_id:str,kind:str,payload:dict|None=None,*,idempotency_key:str|None=None,
+                   context:dict|None=None,session_id:int|None=None,require_online:bool=True)->dict:
+    """Create a command for an Agent owned by `owner_id` (the caller has checked the owner) and return its view.
+
+    With `idempotency_key`, a second call for the same Agent and key returns the first command unchanged.
+    `context` is kept server-side (never sent to the Agent) for whoever applies the outcome.
+    """
+    if _owner_row(agent_id)["owner_id"]!=owner_id:raise HTTPException(404,"Không tìm thấy Agent")
+    payload=validate_payload(kind,payload)
+    if idempotency_key is not None and not 1<=len(idempotency_key)<=120:
+        raise HTTPException(422,"Idempotency-Key dài 1-120 ký tự")
+    now=_now()
+    with _db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if idempotency_key:
+            existing=db.execute("SELECT * FROM agent_commands WHERE agent_id=? AND idempotency_key=?",
+                                (agent_id,idempotency_key)).fetchone()
+            if existing is not None:
+                if existing["kind"]!=kind:raise HTTPException(409,"Idempotency-Key đã dùng cho lệnh khác")
+                return command_view(existing)
+        if require_online:
+            seen=db.execute("SELECT last_seen FROM agent_status WHERE agent_id=?",(agent_id,)).fetchone()
+            if not seen or (datetime.now(timezone.utc)-datetime.fromisoformat(seen["last_seen"])).total_seconds()>ONLINE_SECONDS:
+                raise HTTPException(409,"Agent đang offline")
+        command_id=str(uuid.uuid4())
+        db.execute("""INSERT INTO agent_commands(command_id,owner_id,agent_id,kind,lane,payload,context,status,retryable,
+            idempotency_key,session_id,created_at,expires_at,updated_at) VALUES(?,?,?,?,?,?,?,'PENDING',?,?,?,?,?,?)""",
+            (command_id,owner_id,agent_id,kind,lane(kind),json.dumps(payload,ensure_ascii=False),
+             json.dumps(context,ensure_ascii=False) if context else None,int(kind in RETRYABLE_KINDS),
+             idempotency_key,session_id,now,_at(ttl_seconds(kind)),now))
+        row=db.execute("SELECT * FROM agent_commands WHERE command_id=?",(command_id,)).fetchone()
+    _notify(agent_id)
+    return command_view(row)
+
+def wait_command(command_id:str,agent_id:str,seconds:float)->dict:
+    """Wait up to `seconds` for the command to become final; returns its view either way (never raises on timeout)."""
+    entry=_signal(agent_id)
+    deadline=time.monotonic()+max(0.0,seconds)
+    while True:
+        view=get_command(command_id,agent_id)
+        if view["status"] in FINAL or time.monotonic()>=deadline:
+            apply_outcomes(agent_id)
+            return get_command(command_id,agent_id) if view["status"] in FINAL else view
+        with entry[0]:
+            seen=entry[1]
+            entry[0].wait_for(lambda:entry[1]!=seen,timeout=min(0.5,max(0.0,deadline-time.monotonic())))
+
+def run_command(agent_id:str,owner_id:str,kind:str,payload:dict|None=None,wait:float=8,**options)->dict:
+    """Create a command and wait briefly for its outcome; the caller decides what a non-final status means."""
+    view=create_command(agent_id,owner_id,kind,payload,**options)
+    return view if view["status"] in FINAL else wait_command(view["command_id"],agent_id,wait)
+
+def rpc(agent_id:str, owner_id:str, kind:str, payload:dict|None=None, timeout:float=10, **options):
+    """For calls whose answer is needed now (OBS input list, status): the Agent's result, or HTTPException —
+    502 Agent failure (detail = its message), 504 not done in `timeout` (the command keeps its own lifecycle)."""
+    view=run_command(agent_id,owner_id,kind,payload,wait=timeout,**options)
+    if view["status"]=="SUCCESS":return view["result"]
+    if view["status"]=="FAILED":raise HTTPException(502,view["error"] or "Agent báo lỗi khi thực thi lệnh")
+    if view["status"]=="CANCELLED":raise HTTPException(409,"Lệnh đã bị hủy")
+    raise HTTPException(504,f"Agent chưa phản hồi kịp (lệnh {view['command_id']}: {view['status']})")
+
+def respond(view:dict,**extra):
+    """HTTP answer for a command-backed action: 200 when final, 202 while it is still on its way (poll the command)."""
+    if view["status"]=="FAILED":raise HTTPException(502,view["error"] or "Agent báo lỗi khi thực thi lệnh")
+    if view["status"]=="TIMEOUT":raise HTTPException(504,view["error"] or "Agent không phản hồi")
+    if view["status"]=="CANCELLED":raise HTTPException(409,"Lệnh đã bị hủy")
+    body={"command":view,**extra}
+    return body if view["status"]=="SUCCESS" else JSONResponse(status_code=202,content=json.loads(json.dumps(body,default=str)))
+
+def cancel_commands(agent_id:str,session_id:int|None=None,command_id:str|None=None)->int:
+    """Cancel commands not yet delivered (PENDING) — e.g. when a LIVE session ends, its queued commands are stale."""
+    query="UPDATE agent_commands SET status='CANCELLED',completed_at=?,updated_at=? WHERE agent_id=? AND status='PENDING'"
+    params=[_now(),_now(),agent_id]
+    if session_id is not None:query+=" AND session_id=?";params.append(session_id)
+    if command_id is not None:query+=" AND command_id=?";params.append(command_id)
+    with _db() as db:
+        return db.execute(query,params).rowcount
+
+def _claim(agent_id:str):
+    """Atomically hand the oldest deliverable command to the Agent (one RUNNING per lane)."""
+    with _db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        _sweep(db,agent_id)
+        busy={r["lane"] for r in db.execute("SELECT DISTINCT lane FROM agent_commands WHERE agent_id=? AND status='RUNNING'",(agent_id,))}
+        row=None
+        for candidate in db.execute("""SELECT * FROM agent_commands WHERE agent_id=? AND status='PENDING'
+                ORDER BY created_at""",(agent_id,)).fetchall():
+            if candidate["lane"] not in busy:
+                row=candidate;break
+        if row is None:return None
+        token=uuid.uuid4().hex
+        tokens=json.loads(row["claim_tokens"])+[token]
+        now=_now()
+        db.execute("""UPDATE agent_commands SET status='RUNNING',attempts=attempts+1,claim_tokens=?,lease_until=?,
+            started_at=COALESCE(started_at,?),updated_at=? WHERE command_id=?""",
+            (json.dumps(tokens),_at(lease_seconds(row["kind"])),now,now,row["command_id"]))
+    return {"command_id":row["command_id"],"kind":row["kind"],"payload":json.loads(row["payload"]),
+            "claim_token":token,"attempt":row["attempts"]+1,"expires_at":row["expires_at"]}
 
 @router.get("/commands/{agent_id}/next")
 async def next_command(agent_id:str,wait:int=Query(0,ge=0,le=MAX_WAIT_SECONDS),
                        x_sarae_agent_key:str|None=Header(None)):
-    """Return the oldest pending command; with ``wait`` > 0, hold the request up to that many
+    """Return the next deliverable command; with ``wait`` > 0, hold the request up to that many
     seconds until one is queued. Waiting costs no worker thread (async sleep on a counter)."""
     await run_in_threadpool(verify_agent,agent_id,x_sarae_agent_key)
     entry=_signal(agent_id)
@@ -349,24 +467,114 @@ async def next_command(agent_id:str,wait:int=Query(0,ge=0,le=MAX_WAIT_SECONDS),
 def ack_command(body:AckBody,x_sarae_agent_key:str|None=Header(None)):
     verify_agent(body.agent_id,x_sarae_agent_key)
     with _db() as db:
-        count=db.execute("""UPDATE agent_commands SET state=?,result=?,updated_at=?
-           WHERE agent_id=? AND command_id=? AND state='running'""",
-           ("completed" if body.success else "failed",body.result,
-            _now(),body.agent_id,body.command_id)).rowcount
-    if not count:raise HTTPException(404,"Lệnh không còn ở trạng thái đang chạy")
+        db.execute("BEGIN IMMEDIATE")
+        row=db.execute("SELECT * FROM agent_commands WHERE command_id=? AND agent_id=?",
+                       (body.command_id,body.agent_id)).fetchone()
+        if row is None:raise HTTPException(404,"Không tìm thấy lệnh của Agent này")
+        if body.claim_token not in json.loads(row["claim_tokens"]):
+            raise HTTPException(409,"Claim token không hợp lệ cho lệnh này")
+        status="SUCCESS" if body.success else "FAILED"
+        if row["status"] in ("SUCCESS","FAILED"):
+            # Duplicate ack (network retry): the first outcome stands.
+            return {"ok":True,"status":row["status"],"duplicate":True}
+        if row["status"]=="CANCELLED":raise HTTPException(409,"Lệnh đã bị hủy")
+        current=json.loads(row["claim_tokens"])[-1]==body.claim_token
+        late=row["status"]=="TIMEOUT" or (row["status"] in ("PENDING","RUNNING") and not current)
+        now=_now()
+        db.execute("""UPDATE agent_commands SET status=?,result=?,error=?,late_ack=?,lease_until=NULL,completed_at=?,
+            updated_at=? WHERE command_id=?""",
+            (status,body.result if body.success else None,None if body.success else (body.result or "Agent báo lỗi")[:1900],
+             int(late),now,now,body.command_id))
+        _sweep(db,body.agent_id)
+        final=db.execute("SELECT * FROM agent_commands WHERE command_id=?",(body.command_id,)).fetchone()
+    del final
     _notify(body.agent_id)
-    return {"ok":True}
+    apply_outcomes(body.agent_id)
+    return {"ok":True,"status":status,"late":late}
+
+def apply_outcomes(agent_id:str)->int:
+    """Let the module that created a command apply its final outcome (e.g. a LIVE session becomes RUNNING) — exactly
+    once per final status, including TIMEOUTs found by the sweep and late acks that turn a TIMEOUT into SUCCESS."""
+    from app.live_sessions import apply_command_outcome
+    applied=0
+    with _db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        _sweep(db,agent_id)
+        rows=db.execute("""SELECT * FROM agent_commands WHERE agent_id=? AND context IS NOT NULL AND status IN
+            ('SUCCESS','FAILED','TIMEOUT','CANCELLED') AND (applied_status IS NULL OR applied_status!=status)
+            ORDER BY completed_at""",(agent_id,)).fetchall()
+        for row in rows:
+            db.execute("UPDATE agent_commands SET applied_status=? WHERE command_id=?",(row["status"],row["command_id"]))
+    for row in rows:
+        apply_command_outcome(command_view(row),json.loads(row["context"]))
+        applied+=1
+    return applied
+
+# ----- OWNER-facing command API --------------------------------------------------------------------
+
+class OwnerCommandBody(BaseModel):
+    kind:str=Field(pattern=r"^("+"|".join(sorted(COMMAND_KINDS))+r")$")
+    payload:dict=Field(default_factory=dict)
+    idempotency_key:str|None=Field(default=None,min_length=1,max_length=120)
+    wait:float=Field(default=0,ge=0,le=10)
+
+def _owner_agent(authorization:str|None,agent_id:str)->dict:
+    user=auth(authorization)
+    if user["role"]=="SUPER_ADMIN":
+        raise HTTPException(403,"SUPER_ADMIN không trực tiếp điều khiển LIVE khách hàng")
+    from app.owner_agents import owned_agent
+    owned_agent(user,agent_id)
+    return user
+
+@router.post("/{agent_id}/commands")
+def owner_create_command(agent_id:str,body:OwnerCommandBody,authorization:str|None=Header(None),
+                         idempotency_key:str|None=Header(None,alias="Idempotency-Key")):
+    user=_owner_agent(authorization,agent_id)
+    view=run_command(agent_id,user["id"],body.kind,body.payload,wait=body.wait,
+                     idempotency_key=body.idempotency_key or idempotency_key)
+    return view if view["status"] in FINAL else JSONResponse(status_code=202,content=view)
+
+@router.get("/{agent_id}/commands/{command_id}")
+def owner_get_command(agent_id:str,command_id:str,authorization:str|None=Header(None)):
+    _owner_agent(authorization,agent_id)
+    return get_command(command_id,agent_id)
+
+@router.post("/{agent_id}/commands/{command_id}/cancel")
+def owner_cancel_command(agent_id:str,command_id:str,authorization:str|None=Header(None)):
+    _owner_agent(authorization,agent_id)
+    if not cancel_commands(agent_id,command_id=command_id):
+        raise HTTPException(409,"Chỉ hủy được lệnh chưa được Agent nhận")
+    return get_command(command_id,agent_id)
+
+@router.get("/{agent_id}/commands")
+def owner_list_commands(agent_id:str,authorization:str|None=Header(None)):
+    _owner_agent(authorization,agent_id)
+    with _db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        _sweep(db,agent_id)
+        rows=db.execute("SELECT * FROM agent_commands WHERE agent_id=? ORDER BY created_at DESC LIMIT 30",(agent_id,)).fetchall()
+    return {"commands":[command_view(r) for r in rows]}
+
+# Older Agent page endpoints (AgentCloudStatus.tsx), kept on top of the lifecycle API.
+@router.post("/commands")
+def queue_command(body:CommandBody, authorization:str|None=Header(None)):
+    user=_owner_agent(authorization,body.agent_id)
+    view=create_command(body.agent_id,user["id"],body.kind,body.payload)
+    return {"command_id":view["command_id"],"state":view["status"].lower(),"status":view["status"]}
 
 @router.get("/commands")
 def list_commands(agent_id:str,authorization:str|None=Header(None)):
+    user=auth(authorization)
     with db_open() as registry:
         row=registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1",(agent_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
     allow_owner(authorization,row["owner_id"])
+    del user
     with _db() as db:
-        rows=db.execute("""SELECT command_id,kind,state,result,created_at,updated_at FROM agent_commands
-           WHERE agent_id=? ORDER BY created_at DESC LIMIT 30""",(agent_id,)).fetchall()
-    return {"commands":[dict(zip(("command_id","kind","state","result","created_at","updated_at"),row)) for row in rows]}
+        db.execute("BEGIN IMMEDIATE")
+        _sweep(db,agent_id)
+        rows=db.execute("SELECT * FROM agent_commands WHERE agent_id=? ORDER BY created_at DESC LIMIT 30",(agent_id,)).fetchall()
+    return {"commands":[{**command_view(r),"state":r["status"].lower(),"updated_at":r["updated_at"]} for r in rows]}
 
 # ----- Agent events --------------------------------------------------------------------------------
 
@@ -402,5 +610,5 @@ def pop_events(agent_id:str,limit:int=500)->list[dict]:
             WHERE agent_id=? AND processed=0 ORDER BY seq LIMIT ?""",(agent_id,limit)).fetchall()
         if rows:
             db.executemany("UPDATE agent_events SET processed=1 WHERE agent_id=? AND seq=?",
-                           [(agent_id,seq) for seq,_,_ in rows])
-    return [{**json.loads(payload),"seq":seq,"created_at":created} for seq,payload,created in rows]
+                           [(agent_id,r["seq"]) for r in rows])
+    return [{**json.loads(r["payload"]),"seq":r["seq"],"created_at":r["created_at"]} for r in rows]

@@ -1,4 +1,4 @@
-"""Agent command channel: long-poll, rpc(), events, payload validation, library thumbnails.
+"""Agent command channel: lifecycle (claim, lease, ack, timeout, idempotency, lanes), long-poll, events, validation.
 
 Run: python -m unittest discover -s tests -p test_*.py
 """
@@ -60,10 +60,24 @@ class AgentChannelBase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["command"]
 
-    def ack(self, command, success, result):
+    def ack(self, command, success, result, token=None, expect=200):
         response = self.client.post("/api/agents/commands/ack", headers=self.headers, json={
-            "agent_id": self.agent_id, "command_id": command["command_id"], "success": success, "result": result})
-        self.assertEqual(response.status_code, 200, response.text)
+            "agent_id": self.agent_id, "command_id": command["command_id"], "success": success, "result": result,
+            "claim_token": command.get("claim_token", "") if token is None else token})
+        self.assertEqual(response.status_code, expect, response.text)
+        return response.json()
+
+    def create(self, kind, payload=None, **options):
+        return cloud_agents.create_command(self.agent_id, self.owner_id, kind, payload, **options)
+
+    def expire(self, column, command_id):
+        """Move a command's lease or deadline into the past."""
+        past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        with cloud_agents._db() as db:
+            db.execute(f"UPDATE agent_commands SET {column}=? WHERE command_id=?", (past, command_id))
+
+    def status_of(self, command_id):
+        return cloud_agents.get_command(command_id, self.agent_id)
 
     def fake_agent(self, reply):
         """Background Agent: long-poll once, then ack with reply(command) -> (success, result)."""
@@ -78,7 +92,7 @@ class AgentChannelBase(unittest.TestCase):
                 success, result = reply(command)
                 client.post("/api/agents/commands/ack", headers=self.headers, json={
                     "agent_id": self.agent_id, "command_id": command["command_id"],
-                    "success": success, "result": result})
+                    "claim_token": command["claim_token"], "success": success, "result": result})
             client.close()
 
         thread = threading.Thread(target=run, daemon=True)
@@ -86,7 +100,7 @@ class AgentChannelBase(unittest.TestCase):
         return thread, seen
 
 
-class LongPollAndRpcTests(AgentChannelBase):
+class LongPollTests(AgentChannelBase):
     def test_long_poll_wakes_when_command_is_queued(self):
         self.heartbeat()
         self.assertIsNone(self.poll(0))
@@ -100,9 +114,10 @@ class LongPollAndRpcTests(AgentChannelBase):
         thread = threading.Thread(target=wait)
         thread.start()
         time.sleep(0.4)
-        cloud_agents._enqueue(self.agent_id, "playback_pause", {})
+        self.create("playback_pause")
         thread.join(5)
         self.assertEqual(result["command"]["kind"], "playback_pause")
+        self.assertTrue(result["command"]["claim_token"])
         self.assertLess(result["elapsed"], 3)
         response = self.client.get(f"/api/agents/commands/{self.agent_id}/next?wait=26", headers=self.headers)
         self.assertEqual(response.status_code, 422)
@@ -114,19 +129,35 @@ class LongPollAndRpcTests(AgentChannelBase):
         self.assertIsNone(self.poll(1))
         self.assertGreaterEqual(time.monotonic() - started, 0.9)
 
-    def test_rpc_success_returns_agent_result(self):
+
+class LifecycleTests(AgentChannelBase):
+    def test_success_records_timestamps_and_result(self):
+        self.heartbeat()
+        view = self.create("playback_select", {"index": 2})
+        self.assertEqual((view["status"], view["attempts"]), ("PENDING", 0))
+        command = self.poll(0)
+        self.assertEqual(self.status_of(view["command_id"])["status"], "RUNNING")
+        self.ack(command, True, json.dumps({"index": 2}))
+        done = self.status_of(view["command_id"])
+        self.assertEqual((done["status"], done["result"], done["attempts"]), ("SUCCESS", {"index": 2}, 1))
+        self.assertTrue(done["started_at"] and done["completed_at"])
+
+    def test_rpc_success_failure_offline_and_checks(self):
         self.heartbeat()
         thread, seen = self.fake_agent(lambda c: (True, json.dumps({"ok": True, "index": c["payload"]["index"]})))
-        result = cloud_agents.rpc(self.agent_id, self.owner_id, "playback_select", {"index": 2}, timeout=5)
+        self.assertEqual(cloud_agents.rpc(self.agent_id, self.owner_id, "playback_select", {"index": 2}, timeout=5), {"ok": True, "index": 2})
         thread.join(5)
-        self.assertEqual(result, {"ok": True, "index": 2})
-        self.assertEqual(seen["command"]["payload"], {"index": 2})
-
-    def test_rpc_offline_409(self):
+        thread, _ = self.fake_agent(lambda c: (False, "Chưa phát playlist"))
         with self.assertRaises(HTTPException) as ctx:
-            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_stop", {})
-        self.assertEqual(ctx.exception.status_code, 409)
-        self.heartbeat()
+            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_pause", {}, timeout=5)
+        thread.join(5)
+        self.assertEqual((ctx.exception.status_code, ctx.exception.detail), (502, "Chưa phát playlist"))
+        with self.assertRaises(HTTPException) as ctx:
+            cloud_agents.rpc(self.agent_id, "someone-else", "playback_stop", {})
+        self.assertEqual(ctx.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as ctx:
+            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_seek", {"ms": -1})
+        self.assertEqual(ctx.exception.status_code, 422)
         old = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
         with cloud_agents._db() as db:
             db.execute("UPDATE agent_status SET last_seen=?", (old,))
@@ -134,35 +165,122 @@ class LongPollAndRpcTests(AgentChannelBase):
             cloud_agents.rpc(self.agent_id, self.owner_id, "playback_stop", {})
         self.assertEqual(ctx.exception.status_code, 409)
 
-    def test_rpc_timeout_504_cancels_pending_command(self):
+    def test_web_wait_ends_but_command_keeps_its_lifecycle_then_expires_undelivered(self):
         self.heartbeat()
-        started = time.monotonic()
         with self.assertRaises(HTTPException) as ctx:
-            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_next", {}, timeout=0.6)
+            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_next", {}, timeout=0.3)
         self.assertEqual(ctx.exception.status_code, 504)
-        self.assertLess(time.monotonic() - started, 2)
-        # The late Agent must not run a command the caller already gave up on.
+        command_id = cloud_agents.owner_list_commands(self.agent_id, authorization=self.owner_token)["commands"][0]["command_id"]
+        self.assertEqual(self.status_of(command_id)["status"], "PENDING", "a slow Agent may still take it")
+        self.expire("expires_at", command_id)
+        self.assertEqual(self.status_of(command_id)["status"], "TIMEOUT")
+        self.assertIsNone(self.poll(0), "an expired LIVE control is never played late")
+
+    def test_lost_ack_of_non_retryable_command_times_out_and_late_ack_is_recorded(self):
+        self.heartbeat()
+        view = self.create("playback_next")
+        command = self.poll(0)
+        self.expire("lease_until", view["command_id"])
+        self.assertEqual(self.status_of(view["command_id"])["status"], "TIMEOUT")
+        self.assertIsNone(self.poll(0), "never re-delivered: the Agent may already have skipped the video")
+        reply = self.ack(command, True, json.dumps({"index": 1}))
+        self.assertTrue(reply["late"])
+        done = self.status_of(view["command_id"])
+        self.assertEqual((done["status"], done["late_ack"]), ("SUCCESS", True))
+
+    def test_lost_ack_of_retryable_command_is_redelivered_once_done(self):
+        self.heartbeat()
+        view = self.create("playback_pause")
+        first = self.poll(0)
+        self.expire("lease_until", view["command_id"])
+        second = self.poll(0)
+        self.assertEqual((second["command_id"], second["attempt"]), (view["command_id"], 2))
+        self.assertNotEqual(first["claim_token"], second["claim_token"])
+        # The first delivery's ack arrives late: the action happened, so the command is done.
+        self.assertTrue(self.ack(first, True, "{}")["late"])
+        self.assertEqual(self.ack(second, True, "{}")["duplicate"], True)
+        self.assertEqual(self.status_of(view["command_id"])["status"], "SUCCESS")
+
+    def test_retryable_command_gives_up_after_max_attempts(self):
+        self.heartbeat()
+        view = self.create("playback_stop")
+        for _ in range(cloud_agents.MAX_ATTEMPTS):
+            self.assertIsNotNone(self.poll(0))
+            self.expire("lease_until", view["command_id"])
+        self.assertEqual(self.status_of(view["command_id"])["status"], "TIMEOUT")
+
+    def test_ack_must_match_agent_command_and_token(self):
+        self.heartbeat()
+        view = self.create("playback_pause")
+        command = self.poll(0)
+        self.ack(command, True, "{}", token="forged", expect=409)
+        other = self.client.post("/api/agents/commands/ack", headers=self.headers, json={
+            "agent_id": self.agent_id, "command_id": "nope", "claim_token": command["claim_token"], "success": True})
+        self.assertEqual(other.status_code, 404)
+        self.ack(command, True, "{}")
+        self.assertTrue(self.ack(command, False, "again")["duplicate"], "first outcome stands")
+        self.assertEqual(self.status_of(view["command_id"])["status"], "SUCCESS")
+
+    def test_idempotency_key_returns_the_same_command(self):
+        self.heartbeat()
+        first = self.create("playback_next", idempotency_key="click-1")
+        again = self.create("playback_next", idempotency_key="click-1")
+        self.assertEqual(first["command_id"], again["command_id"])
+        with self.assertRaises(HTTPException) as ctx:
+            self.create("playback_previous", idempotency_key="click-1")
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIsNotNone(self.poll(0))
+        self.assertIsNone(self.poll(0), "only one command exists")
+
+    def test_one_running_command_per_lane(self):
+        self.heartbeat()
+        first = self.create("playback_next")
+        second = self.create("playback_previous")
+        speech = self.create("tts_speak", {"text": "Xin chào"})
+        live = self.poll(0)
+        self.assertEqual(live["command_id"], first["command_id"])
+        background = self.poll(0)
+        self.assertEqual(background["command_id"], speech["command_id"], "TTS does not wait for the LIVE lane")
+        self.assertIsNone(self.poll(0), "the next LIVE command waits for the running one")
+        self.ack(live, True, "{}")
+        self.assertEqual(self.poll(0)["command_id"], second["command_id"])
+
+    def test_two_workers_never_claim_the_same_command(self):
+        self.heartbeat()
+        for _ in range(4):
+            self.create("tts_speak", {"text": "a"})
+        claimed, errors = [], []
+
+        def worker():
+            try:
+                for _ in range(4):
+                    command = cloud_agents._claim(self.agent_id)
+                    if command:
+                        claimed.append(command["command_id"])
+                        cloud_agents.ack_command(cloud_agents.AckBody(agent_id=self.agent_id, command_id=command["command_id"],
+                                                                      claim_token=command["claim_token"], success=True), self.key)
+            except Exception as exc:  # pragma: no cover - surfaced by the assertion below
+                errors.append(exc)
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(claimed), len(set(claimed)), "no command handed out twice")
+
+    def test_cancel_only_undelivered_commands(self):
+        self.heartbeat()
+        view = self.create("playback_next", session_id=7)
+        self.assertEqual(cloud_agents.cancel_commands(self.agent_id, session_id=7), 1)
+        self.assertEqual(self.status_of(view["command_id"])["status"], "CANCELLED")
         self.assertIsNone(self.poll(0))
+        running = self.create("playback_pause", session_id=7)
+        self.poll(0)
+        self.assertEqual(cloud_agents.cancel_commands(self.agent_id, session_id=7), 0, "a delivered command is not cancelled")
+        self.assertEqual(self.status_of(running["command_id"])["status"], "RUNNING")
 
-    def test_rpc_failure_502_carries_agent_message(self):
-        self.heartbeat()
-        thread, _ = self.fake_agent(lambda c: (False, "Chưa phát playlist"))
-        with self.assertRaises(HTTPException) as ctx:
-            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_pause", {}, timeout=5)
-        thread.join(5)
-        self.assertEqual(ctx.exception.status_code, 502)
-        self.assertEqual(ctx.exception.detail, "Chưa phát playlist")
-
-    def test_rpc_checks_owner_and_payload(self):
-        self.heartbeat()
-        with self.assertRaises(HTTPException) as ctx:
-            cloud_agents.rpc(self.agent_id, "someone-else", "playback_stop", {})
-        self.assertEqual(ctx.exception.status_code, 403)
-        with self.assertRaises(HTTPException) as ctx:
-            cloud_agents.rpc(self.agent_id, self.owner_id, "playback_seek", {"ms": -1})
-        self.assertEqual(ctx.exception.status_code, 422)
-
-    def test_queue_endpoint_and_password_redaction(self):
+    def test_password_kept_until_final_then_masked(self):
         self.heartbeat()
         response = self.client.post("/api/agents/commands", headers={"Authorization": self.owner_token}, json={
             "agent_id": self.agent_id, "kind": "obs_configure",
@@ -171,15 +289,41 @@ class LongPollAndRpcTests(AgentChannelBase):
         self.assertEqual(response.status_code, 200, response.text)
         command = self.poll(0)
         self.assertEqual(command["payload"]["password"], "s3cret")
+        self.ack(command, True, json.dumps({"connected": True}))
         with cloud_agents._db() as db:
             stored = json.loads(db.execute("SELECT payload FROM agent_commands").fetchone()[0])
         self.assertEqual(stored["password"], "***")
-        self.ack(command, True, json.dumps({"connected": True}))
-        listed = self.client.get(f"/api/agents/commands?agent_id={self.agent_id}",
-                                 headers={"Authorization": self.owner_token}).json()["commands"]
-        self.assertEqual(listed[0]["state"], "completed")
-        status = self.client.get("/api/agents/status", headers={"Authorization": self.owner_token}).json()
-        self.assertEqual(status["agents"][0]["playback"], {"running": False})
+        listed = self.client.get(f"/api/agents/commands?agent_id={self.agent_id}", headers={"Authorization": self.owner_token}).json()["commands"]
+        self.assertEqual((listed[0]["status"], listed[0]["state"]), ("SUCCESS", "success"))
+
+    def test_owner_command_api(self):
+        self.heartbeat()
+        auth = {"Authorization": self.owner_token}
+        created = self.client.post(f"/api/agents/{self.agent_id}/commands", headers={**auth, "Idempotency-Key": "k1"},
+                                   json={"kind": "playback_pause"})
+        self.assertEqual(created.status_code, 202)
+        again = self.client.post(f"/api/agents/{self.agent_id}/commands", headers={**auth, "Idempotency-Key": "k1"},
+                                 json={"kind": "playback_pause"})
+        self.assertEqual(again.json()["command_id"], created.json()["command_id"])
+        command_id = created.json()["command_id"]
+        self.assertEqual(self.client.get(f"/api/agents/{self.agent_id}/commands/{command_id}", headers=auth).json()["status"], "PENDING")
+        cancelled = self.client.post(f"/api/agents/{self.agent_id}/commands/{command_id}/cancel", headers=auth)
+        self.assertEqual(cancelled.json()["status"], "CANCELLED")
+        self.assertEqual(self.client.get(f"/api/agents/{self.agent_id}/commands/{command_id}").status_code, 401)
+
+    def test_outcome_applied_exactly_once_per_final_status(self):
+        from unittest import mock
+        self.heartbeat()
+        applied = []
+        with mock.patch("app.live_sessions.apply_command_outcome", side_effect=lambda view, ctx: applied.append(view["status"])):
+            view = self.create("playback_next", context={"module": "test"})
+            command = self.poll(0)
+            self.expire("lease_until", view["command_id"])
+            cloud_agents.apply_outcomes(self.agent_id)
+            cloud_agents.apply_outcomes(self.agent_id)
+            self.ack(command, True, "{}")  # late ack turns TIMEOUT into SUCCESS
+            cloud_agents.apply_outcomes(self.agent_id)
+        self.assertEqual(applied, ["TIMEOUT", "SUCCESS"])
 
 
 class EventTests(AgentChannelBase):
