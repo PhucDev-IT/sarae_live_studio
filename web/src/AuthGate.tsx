@@ -46,7 +46,7 @@ export function AuthGate({children}:{children:(user:SaraeUser,logout:()=>void)=>
    <div style={{fontSize:13,color:'#6553d7',fontWeight:800,letterSpacing:2}}>SARAE LIVE STUDIO</div>
    <h1 style={{fontSize:27,margin:'6px 0'}}>Đăng nhập</h1>
    <p style={{fontSize:13,color:'#64748b',margin:0}}>Đăng nhập để quản lý tài khoản và Windows Agent của bạn.</p>
-   <label style={{display:'grid',gap:7,fontSize:13}}>Email<input autoComplete="username" type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{border:'1px solid #d7dce7',padding:12,borderRadius:9,color:'#111827',background:'white'}}/></label>
+   <label style={{display:'grid',gap:7,fontSize:13}}>Tên đăng nhập hoặc email<input autoComplete="username" type="text" required value={email} onChange={e=>setEmail(e.target.value)} style={{border:'1px solid #d7dce7',padding:12,borderRadius:9,color:'#111827',background:'white'}}/></label>
    <label style={{display:'grid',gap:7,fontSize:13}}>Mật khẩu<input autoComplete="current-password" type="password" required value={password} onChange={e=>setPassword(e.target.value)} style={{border:'1px solid #d7dce7',padding:12,borderRadius:9,color:'#111827',background:'white'}}/></label>
    {error&&<p role="alert" style={{color:'#b91c1c',fontSize:13,margin:0}}>{error}</p>}
    <button type="submit" disabled={busy} style={{border:0,borderRadius:9,padding:13,color:'white',background:'#6553d7',fontWeight:700,cursor:'pointer'}}>{busy?'Đang đăng nhập...':'Đăng nhập'}</button>
