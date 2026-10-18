@@ -27,6 +27,7 @@ function toCoreError(raw: unknown): CoreError {
 // Long-running work (scans) is async on the Core side and reported by events, so the
 // default timeout stays short; network-bound calls get more time.
 const SLOW_METHODS: Partial<Record<MethodName, number>> = {
+  'autopin.open': 60_000,
   'activation.activate': 45_000,
   'obs.connect': 20_000,
   'voice.speak': 60_000,
