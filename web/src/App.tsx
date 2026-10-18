@@ -1,3 +1,4 @@
+import PlatformAdmin from './PlatformAdmin'
 import { AuthGate, type SaraeUser } from './AuthGate'
 import { useEffect, useState } from 'react'
 import { Button, Input, ThemeProvider, ToastProvider } from './ui/core'
@@ -77,7 +78,7 @@ function getInitialPage(): Page {
 }
 
 function App() {
-  return <AuthGate>{(user, logout) => <AuthenticatedApp user={user} logout={logout}/>}</AuthGate>
+  return <AuthGate>{(user, logout) => user.role === 'SUPER_ADMIN' ? <PlatformAdmin email={user.email} logout={logout}/> : <AuthenticatedApp user={user} logout={logout}/>}</AuthGate>
 }
 
 function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
