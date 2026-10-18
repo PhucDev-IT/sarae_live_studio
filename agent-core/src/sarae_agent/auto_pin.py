@@ -13,7 +13,7 @@ from concurrent.futures import Future
 from pathlib import Path
 
 log=logging.getLogger("sarae.autopin")
-LIVE_ORIGINS={"livecenter.tiktok.com","seller-vn.tiktok.com","seller.tiktokglobalshop.com","seller-us.tiktok.com"}
+LIVE_ORIGINS={"shop.tiktok.com","livecenter.tiktok.com","seller-vn.tiktok.com","seller.tiktokglobalshop.com","seller-us.tiktok.com"}
 class AutoPinService:
     def __init__(self, profile_dir:Path):
         self.profile_dir=profile_dir
@@ -59,8 +59,20 @@ class AutoPinService:
 
     def _open_on_worker(self,url):
         if self._context is not None:
-            self._page.goto(url,wait_until="domcontentloaded",timeout=30000)
-            return self.status()
+            try:
+                if self._page is None or self._page.is_closed():
+                    pages=[p for p in self._context.pages if not p.is_closed()]
+                    self._page=pages[0] if pages else self._context.new_page()
+                self._page.goto(url,wait_until="domcontentloaded",timeout=30000)
+                return self.status()
+            except Exception:
+                # A closed Chrome context cannot be reused.
+                try:self._context.close()
+                except Exception:pass
+                try:self._playwright.stop()
+                except Exception:pass
+                self._context=None;self._playwright=None;self._page=None
+                raise RuntimeError("Chrome đã đóng hoặc trang bị ngắt khi điều hướng; hãy mở lại Chrome từ Sarae Agent")
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -74,11 +86,14 @@ class AutoPinService:
             self._page=self._context.pages[0] if self._context.pages else self._context.new_page()
             self._page.goto(url,wait_until="domcontentloaded",timeout=30000)
             self._state="ready"
-        except Exception:
+        except Exception as exc:
             if self._context:
-                self._context.close()
-            self._playwright.stop()
+                try:self._context.close()
+                except Exception:pass
+            try:self._playwright.stop()
+            except Exception:pass
             self._playwright=None;self._context=None;self._page=None
+            self._last_error=str(exc)[:300]
             raise
         return self.status()
 
