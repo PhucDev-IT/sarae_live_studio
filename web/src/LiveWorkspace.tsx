@@ -1,18 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, Select } from './ui/core'
 import { RefreshCw, Trash2, Pencil } from 'lucide-react'
+import { apiRequest } from './mediaApi'
 import './live.css'
 
 type Video = {id:number;filename:string;duration_seconds:number|null}
 type Playlist = {id:number;name:string;media_ids:number[]}
 /** Only the fields this page needs: a playlist that is playing cannot be edited. */
 type Status = {running:boolean;playlist_id:number|null}
-const apiRoot=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\/$/,'')
-async function call<T>(path:string,init?:RequestInit):Promise<T>{
-  const r=await fetch(apiRoot+'/api'+path,init)
-  if(!r.ok){const body=await r.json().catch(()=>({}));throw new Error(typeof body.detail==='string'?body.detail:'HTTP '+r.status)}
-  return r.status===204?undefined as T:r.json() as Promise<T>
-}
+const call = apiRequest
 const json=(body:unknown):RequestInit=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
 /** Playlist editor for manual OBS test playback; the LIVE console lives in LiveControl. */
 export default function LiveWorkspace(){

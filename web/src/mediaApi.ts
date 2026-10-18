@@ -4,6 +4,8 @@ export type CatalogItem = { id:number; name:string }
 export type Product = CatalogItem & { sku?:string; image_url?:string }
 export type Presenter = CatalogItem & { description?:string; avatar_url?:string }
 
+import { authHeaders, clearAuth } from './authToken'
+
 export const api = ((import.meta.env.VITE_API_URL as string|undefined) || 'http://127.0.0.1:8000').replace(/\/$/, '')
 export const fileUrl = (id:number) => `${api}/api/media/${id}/file`
 
@@ -11,8 +13,12 @@ export const sizeLabel = (bytes:number) => bytes >= 1024 ** 3 ? (bytes / 1024 **
 export const durationLabel = (seconds?:number|null) => seconds == null || !Number.isFinite(seconds) ? null : `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 export const errorText = (e:unknown, fallback:string) => e instanceof Error && e.message ? e.message : fallback
 
+/** Calls the Backend as the logged-in user; a 401 (expired/revoked session) signs the tab out. */
 export async function apiRequest<T>(url:string, options?:RequestInit):Promise<T>{
-  const response = await fetch(api + '/api' + url, options)
+  const headers = new Headers(options?.headers)
+  for (const [key, value] of Object.entries(authHeaders())) headers.set(key, value)
+  const response = await fetch(api + '/api' + url, {...options, headers})
+  if (response.status === 401) clearAuth()
   if (!response.ok) {
     const result = await response.json().catch(()=>({}))
     throw new Error(typeof result.detail === 'string' ? result.detail : 'HTTP ' + response.status)

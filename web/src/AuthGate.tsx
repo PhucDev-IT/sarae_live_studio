@@ -2,10 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from './mediaApi'
 
 export type SaraeUser = { id:string; email:string; role:'SUPER_ADMIN'|'OWNER' }
-const storage='sarae-auth-token'
-export const getAuthToken=()=>sessionStorage.getItem(storage)||''
-export function clearAuth(){sessionStorage.removeItem(storage);window.dispatchEvent(new Event('sarae-auth-changed'))}
-export function setAuth(token:string){sessionStorage.setItem(storage,token);window.dispatchEvent(new Event('sarae-auth-changed'))}
+import { clearAuth, getAuthToken, setAuth } from './authToken'
+export { clearAuth, getAuthToken, setAuth }
 export async function authFetch(path:string,init:RequestInit={}){
  const token=getAuthToken()
  const response=await fetch(api+'/api/identity'+path,{...init,headers:{...init.headers,Authorization:'Bearer '+token}})
@@ -27,7 +25,7 @@ export function AuthGate({children}:{children:(user:SaraeUser,logout:()=>void)=>
    if(!res.ok)throw new Error('Phiên đăng nhập không hợp lệ')
    const data=await res.json() as SaraeUser
    setUser(data);setState('ready')
-  }catch{sessionStorage.removeItem(storage);setUser(null);setState('login')}
+  }catch{clearAuth();setUser(null);setState('login')}
  },[])
  useEffect(()=>{void check();const fn=()=>void check();window.addEventListener('sarae-auth-changed',fn);return()=>window.removeEventListener('sarae-auth-changed',fn)},[check])
  const logout=()=>{const token=getAuthToken();clearAuth();void fetch(api+'/api/identity/logout',{method:'POST',headers:{Authorization:'Bearer '+token}}).catch(()=>{})}

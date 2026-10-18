@@ -82,7 +82,7 @@ function App() {
 }
 
 function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
-  const [page, setPage] = useState<Page>(() => { const initial=getInitialPage(); return initial==='account'||initial==='agents'?initial:'account' })
+  const [page, setPage] = useState<Page>(getInitialPage)
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [dark, setDark] = useState(() => localStorage.getItem('sarae-theme') === 'dark')
@@ -92,13 +92,11 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
     localStorage.setItem('sarae-theme', dark ? 'dark' : 'light')
   }, [dark])
   useEffect(() => {
-    const sync = () => {const p=getInitialPage();setPage(p==='account'||p==='agents'?p:'account')}
+    const sync = () => setPage(getInitialPage())
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
-  useEffect(()=>{if(user.role==='SUPER_ADMIN'&&page!=='account'){setPage('account');window.location.hash='/account'}},[user.role,page])
   const navigate = (next: Page) => {
-    if((next!=='agents'&&next!=='account')||(user.role==='SUPER_ADMIN'&&next!=='account'))return
     setPage(next)
     window.location.hash = `/${next}`
     setDrawerOpen(false)
@@ -111,9 +109,9 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
         <button className="sidebar-toggle desktop-only" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}>{collapsed ? <ChevronRight size={17}/> : <ChevronLeft size={17}/>}</button>
       </div>
       <div className="nav-scroller">
-        {navigation.filter(group=>group.title==='SYSTEM').map(group => <div className="nav-group" key={group.title}>
+        {navigation.map(group => <div className="nav-group" key={group.title}>
           {!collapsed && <div className="nav-heading">{group.title}</div>}
-          {group.items.filter(item=>item.id==='account'||(item.id==='agents'&&user.role==='OWNER')).map(item => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)} title={collapsed ? item.title : undefined}>
+          {group.items.map(item => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)} title={collapsed ? item.title : undefined}>
             <item.icon size={19} strokeWidth={1.85}/>
             {!collapsed && <span>{item.title}</span>}
             {!collapsed && page === item.id && <span className="active-indicator"/>}
@@ -151,7 +149,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {false && page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {user.role==='SUPER_ADMIN' && page==='agents' ? <div className="panel" style={{padding:24}}>SUPER_ADMIN chỉ được xem và quản lý thiết bị trong trang Tài khoản, không được điều khiển LIVE từ xa.</div> : page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>

@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react'
 import {Bot,Play,Save,AlertCircle,Volume2,VolumeX} from 'lucide-react'
-import {apiRequest,errorText} from './mediaApi'
+import {api,apiRequest,errorText} from './mediaApi'
+import {authHeaders} from './authToken'
 import './ai-settings.css'
 type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean}
 type Usage={requests:number;input_tokens:number;output_tokens:number}
@@ -34,8 +35,7 @@ export default function AISettings(){
   stopVoice()
   setTtsLoading(true)
   try{
-   const base=((import.meta.env.VITE_API_URL as string|undefined)||'http://127.0.0.1:8000').replace(/\/$/,'')
-   const response=await fetch(base+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,voice:ttsVoice})})
+   const response=await fetch(api+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({text,voice:ttsVoice})})
    if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'TTS HTTP '+response.status)}
    const blob=await response.blob()
    if(urlRef.current)URL.revokeObjectURL(urlRef.current)
