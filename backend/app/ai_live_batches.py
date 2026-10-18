@@ -6,7 +6,9 @@ from threading import RLock, Timer
 from time import monotonic
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.identity import current_owner
 from pydantic import BaseModel, Field
 
 from app.catalog import Product
@@ -15,7 +17,8 @@ from app.live import state
 from app.comment_processing import monitor, normalize
 from app import ai_service
 
-router = APIRouter(prefix="/api/ai/live", tags=["AI LIVE Batching"])
+router = APIRouter(prefix="/api/ai/live", tags=["AI LIVE Batching"], dependencies=[Depends(current_owner)])
+
 
 class BatchOptions(BaseModel):
     enabled: bool = False

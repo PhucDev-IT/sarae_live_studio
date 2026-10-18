@@ -5,14 +5,18 @@ from threading import RLock
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
 from pydantic import BaseModel, Field
 
 from app.database import DATA_DIR
 from app.config import settings
 from app.comment_processing import monitor
 
-router = APIRouter(prefix="/api/ai", tags=["AI / Comment Analysis"])
+router = APIRouter(prefix="/api/ai", tags=["AI / Comment Analysis"], dependencies=[Depends(current_owner)])
+
+
 CONFIG_PATH = DATA_DIR / "ai_config.json"
 LOCK = RLock()
 DEFAULT = {"provider": "gemini", "model": "gemini-3.5-flash-lite",

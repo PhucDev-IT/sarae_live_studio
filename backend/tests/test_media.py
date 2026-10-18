@@ -1,47 +1,27 @@
 import io
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-from tempfile import TemporaryDirectory
-from pathlib import Path
-
-from app.database import Base
-from app.catalog import Product, db_session as catalog_db_session
-from app.media import get_db as media_db, router
-from app.main import app
-
-engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+from app.catalog import Product
+from support import SaasTestCase
 
 
-def override_db():
-    with TestingSession() as db:
-        yield db
-
-
-class MediaTests(unittest.TestCase):
+class MediaTests(SaasTestCase):
     def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        app.dependency_overrides[media_db] = override_db
-        app.dependency_overrides[catalog_db_session] = override_db
+        super().setUp()
         self.temp = TemporaryDirectory()
         self.storage = patch("app.media.MEDIA_DIR", Path(self.temp.name))
         self.ffprobe = patch("app.media.shutil.which", return_value=None)
         self.storage.start()
         self.ffprobe.start()
-        self.client = TestClient(app)
 
     def tearDown(self):
-        self.client.close()
-        app.dependency_overrides.clear()
         self.storage.stop()
         self.ffprobe.stop()
         self.temp.cleanup()
+        super().tearDown()
 
     def test_upload_metadata_edit_preview_and_delete(self):
         result = self.client.post("/api/media/upload", files={"file": ("demo.mp4", io.BytesIO(b"fake mp4 test data"), "video/mp4")})
@@ -64,19 +44,19 @@ class MediaTests(unittest.TestCase):
 
     def test_media_products_many_to_many(self):
         from app.product_videos import ProductLiveVideo
-        with TestingSession() as db:
-            db.add_all([Product(sku="A", name="Áo"), Product(sku="B", name="Váy")])
+        with self.Session() as db:
+            db.add_all([Product(sku="A", name="Áo", owner_id=self.owner_a["id"]), Product(sku="B", name="Váy", owner_id=self.owner_a["id"])])
             db.commit()
         first = self.client.post("/api/media/upload", files={"file": ("a.mp4", io.BytesIO(b"fake a"), "video/mp4")}).json()["id"]
         second = self.client.post("/api/media/upload", files={"file": ("b.mp4", io.BytesIO(b"fake b"), "video/mp4")}).json()["id"]
-        with TestingSession() as db:
-            db.add(ProductLiveVideo(product_id=1, media_id=second, sort_order=0))
+        with self.Session() as db:
+            db.add(ProductLiveVideo(product_id=1, media_id=second, sort_order=0, owner_id=self.owner_a["id"]))
             db.commit()
 
         linked = self.client.put(f"/api/media/{first}/products", json={"product_ids": [1, 2]})
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["product_ids"], [1, 2])
-        with TestingSession() as db:
+        with self.Session() as db:
             order = [row.media_id for row in db.query(ProductLiveVideo).filter_by(product_id=1).order_by(ProductLiveVideo.sort_order)]
         self.assertEqual(order, [second, first], "new link is appended after existing playlist entries")
 
@@ -85,13 +65,13 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(self.client.put(f"/api/media/{first}/products", json={"product_ids": [999]}).status_code, 422)
 
         self.assertEqual(self.client.delete(f"/api/media/{first}").status_code, 204)
-        with TestingSession() as db:
+        with self.Session() as db:
             self.assertEqual(db.query(ProductLiveVideo).filter_by(media_id=first).count(), 0)
 
     def test_media_presenters_many_to_many(self):
         from app.catalog import Presenter
-        with TestingSession() as db:
-            db.add_all([Presenter(name="Lan"), Presenter(name="Mai")])
+        with self.Session() as db:
+            db.add_all([Presenter(name="Lan", owner_id=self.owner_a["id"]), Presenter(name="Mai", owner_id=self.owner_a["id"])])
             db.commit()
         video = self.client.post("/api/media/upload", files={"file": ("p.mp4", io.BytesIO(b"fake p"), "video/mp4")}).json()["id"]
         both = self.client.put(f"/api/media/{video}/presenters", json={"presenter_ids": [2, 1, 2]})

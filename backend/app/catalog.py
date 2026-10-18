@@ -5,9 +5,12 @@ from uuid import uuid4
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+
+from app.identity import current_owner
+from app.ownership import Owner, owned
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.database import Base, SessionLocal, DATA_DIR
@@ -18,9 +21,11 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
 IMAGE_NAME = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp|gif)$")
 
-router = APIRouter(prefix="/api", tags=["Catalog"])
+router = APIRouter(prefix="/api", tags=["Catalog"], dependencies=[Depends(current_owner)])
 
 
+# Photos are fetched by <img> tags, which cannot send a token; their 128-bit random names are the capability.
+public_router = APIRouter(prefix="/api", tags=["Catalog"])
 def db_session():
     with SessionLocal() as session:
         yield session
@@ -31,8 +36,11 @@ DB = Annotated[Session, Depends(db_session)]
 
 class Product(Base):
     __tablename__ = "products"
+    # SKUs are unique per shop, not across the platform.
+    __table_args__ = (UniqueConstraint("owner_id", "sku", name="uq_products_owner_sku"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    sku: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    sku: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(200), index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -44,6 +52,7 @@ class Product(Base):
 class Presenter(Base):
     __tablename__ = "presenters"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(200), index=True)
     description: Mapped[str] = mapped_column(Text, default="")
     avatar_url: Mapped[str] = mapped_column(Text, default="")
@@ -140,35 +149,35 @@ def serve_image(folder, name: str):
     return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
-def get_entity(db: Session, model, entity_id: int):
-    entity = db.get(model, entity_id)
-    if entity is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu")
-    return entity
+def sku_taken(db: Session, owner: dict, sku: str, exclude_id: int | None = None) -> bool:
+    stmt = select(Product.id).where(Product.owner_id == owner["id"], Product.sku == sku)
+    if exclude_id is not None:
+        stmt = stmt.where(Product.id != exclude_id)
+    return db.scalar(stmt) is not None
 
 
 @router.get("/products", response_model=list[ProductOut])
-def list_products(db: DB, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    stmt = select(Product).order_by(Product.id.desc()).offset(offset).limit(limit)
+def list_products(db: DB, owner: Owner, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    stmt = select(Product).where(Product.owner_id == owner["id"])
     if q.strip():
         term = f"%{q.strip()}%"
-        stmt = select(Product).where((Product.name.ilike(term)) | (Product.sku.ilike(term))).order_by(Product.id.desc()).offset(offset).limit(limit)
-    return db.scalars(stmt).all()
+        stmt = stmt.where((Product.name.ilike(term)) | (Product.sku.ilike(term)))
+    return db.scalars(stmt.order_by(Product.id.desc()).offset(offset).limit(limit)).all()
 
 
-def new_sku(db: Session) -> str:
-    """Short unique code for products saved without one (SKU is unique, so blank cannot be stored twice)."""
+def new_sku(db: Session, owner: dict) -> str:
+    """Short code for products saved without one (SKU is unique per owner, so blank cannot be stored twice)."""
     while True:
         sku = "SP-" + uuid4().hex[:6].upper()
-        if not db.scalar(select(Product.id).where(Product.sku == sku)):
+        if not sku_taken(db, owner, sku):
             return sku
 
 
 @router.post("/products", response_model=ProductOut, status_code=201)
-def create_product(body: ProductInput, db: DB):
-    if body.sku and db.scalar(select(Product.id).where(Product.sku == body.sku)):
+def create_product(body: ProductInput, db: DB, owner: Owner):
+    if body.sku and sku_taken(db, owner, body.sku):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db)})
+    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db, owner), "owner_id": owner["id"]})
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -181,20 +190,20 @@ def upload_product_image(request: Request, file: UploadFile = File(...)):
     return {"url": str(request.url_for("product_image", name=save_image(PRODUCT_IMAGE_DIR, file)))}
 
 
-@router.get("/products/images/{name}", name="product_image")
+@public_router.get("/products/images/{name}", name="product_image")
 def product_image(name: str):
     return serve_image(PRODUCT_IMAGE_DIR, name)
 
 
 @router.get("/products/{entity_id}", response_model=ProductOut)
-def get_product(entity_id: int, db: DB):
-    return get_entity(db, Product, entity_id)
+def get_product(entity_id: int, db: DB, owner: Owner):
+    return owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
 
 
 @router.put("/products/{entity_id}", response_model=ProductOut)
-def update_product(entity_id: int, body: ProductInput, db: DB):
-    item = get_entity(db, Product, entity_id)
-    if body.sku and db.scalar(select(Product.id).where(Product.sku == body.sku, Product.id != entity_id)):
+def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
+    item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
+    if body.sku and sku_taken(db, owner, body.sku, exclude_id=entity_id):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
     for key, value in body.model_dump(exclude={"sku"}).items():
         setattr(item, key, value)
@@ -206,17 +215,17 @@ def update_product(entity_id: int, body: ProductInput, db: DB):
 
 
 @router.delete("/products/{entity_id}", status_code=204)
-def delete_product(entity_id: int, db: DB):
+def delete_product(entity_id: int, db: DB, owner: Owner):
     from app.product_videos import ProductLiveVideo
     from app.live import state
     from app.live_sessions import LiveSession, SessionProduct
-    item = get_entity(db, Product, entity_id)
+    item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
     if state.active and item.id in (state.product_id, state.pending_product_id):
         raise HTTPException(status_code=409, detail="Sản phẩm đang phát trên LIVE, hãy chuyển sản phẩm khác trước khi xóa")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
     db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.product_id == item.id))
     # Upcoming and running lineups lose the product; ended sessions keep it as history.
-    open_sessions = select(LiveSession.id).where(LiveSession.status != "ENDED")
+    open_sessions = select(LiveSession.id).where(LiveSession.owner_id == owner["id"], LiveSession.status != "ENDED")
     db.execute(delete(SessionProduct).where(SessionProduct.product_id == item.id, SessionProduct.session_id.in_(open_sessions)))
     db.delete(item)
     db.commit()
@@ -224,16 +233,16 @@ def delete_product(entity_id: int, db: DB):
 
 
 @router.get("/presenters", response_model=list[PresenterOut])
-def list_presenters(db: DB, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    stmt = select(Presenter).order_by(Presenter.id.desc()).offset(offset).limit(limit)
+def list_presenters(db: DB, owner: Owner, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    stmt = select(Presenter).where(Presenter.owner_id == owner["id"])
     if q.strip():
-        stmt = select(Presenter).where(Presenter.name.ilike(f"%{q.strip()}%")).order_by(Presenter.id.desc()).offset(offset).limit(limit)
-    return db.scalars(stmt).all()
+        stmt = stmt.where(Presenter.name.ilike(f"%{q.strip()}%"))
+    return db.scalars(stmt.order_by(Presenter.id.desc()).offset(offset).limit(limit)).all()
 
 
 @router.post("/presenters", response_model=PresenterOut, status_code=201)
-def create_presenter(body: PresenterInput, db: DB):
-    item = Presenter(**body.model_dump())
+def create_presenter(body: PresenterInput, db: DB, owner: Owner):
+    item = Presenter(**body.model_dump(), owner_id=owner["id"])
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -246,19 +255,19 @@ def upload_presenter_image(request: Request, file: UploadFile = File(...)):
     return {"url": str(request.url_for("presenter_image", name=save_image(PRESENTER_IMAGE_DIR, file)))}
 
 
-@router.get("/presenters/images/{name}", name="presenter_image")
+@public_router.get("/presenters/images/{name}", name="presenter_image")
 def presenter_image(name: str):
     return serve_image(PRESENTER_IMAGE_DIR, name)
 
 
 @router.get("/presenters/{entity_id}", response_model=PresenterOut)
-def get_presenter(entity_id: int, db: DB):
-    return get_entity(db, Presenter, entity_id)
+def get_presenter(entity_id: int, db: DB, owner: Owner):
+    return owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
 
 
 @router.put("/presenters/{entity_id}", response_model=PresenterOut)
-def update_presenter(entity_id: int, body: PresenterInput, db: DB):
-    item = get_entity(db, Presenter, entity_id)
+def update_presenter(entity_id: int, body: PresenterInput, db: DB, owner: Owner):
+    item = owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
     for key, value in body.model_dump().items():
         setattr(item, key, value)
     db.commit()
@@ -267,9 +276,9 @@ def update_presenter(entity_id: int, body: PresenterInput, db: DB):
 
 
 @router.delete("/presenters/{entity_id}", status_code=204)
-def delete_presenter(entity_id: int, db: DB):
+def delete_presenter(entity_id: int, db: DB, owner: Owner):
     from app.media_presenters import MediaPresenter
-    item = get_entity(db, Presenter, entity_id)
+    item = owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
     db.execute(delete(MediaPresenter).where(MediaPresenter.presenter_id == item.id))
     db.delete(item)

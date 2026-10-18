@@ -1,36 +1,20 @@
 import unittest
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.database import Base
 from app.catalog import Product
 from app.live import state
-from app.main import app
-
-engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+from support import SaasTestCase
 
 
-class LiveSessionTests(unittest.TestCase):
+class LiveSessionTests(SaasTestCase):
     def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        self.db_patch = patch("app.live_sessions.SessionLocal", TestingSession)
-        self.db_patch.start()
-        with TestingSession() as db:
-            db.add_all([Product(name="Áo", sku="A1"), Product(name="Quần", sku="Q1")])
+        super().setUp()
+        with self.Session() as db:
+            db.add_all([Product(name="Áo", sku="A1", owner_id=self.owner_a["id"]),
+                        Product(name="Quần", sku="Q1", owner_id=self.owner_a["id"])])
             db.commit()
         state.active = False
         state.session_id = None
-        self.client = TestClient(app)
-
-    def tearDown(self):
-        self.client.close()
-        self.db_patch.stop()
 
     def test_draft_can_start_empty_but_cannot_start(self):
         created = self.client.post("/api/live/sessions", json={"name": "Tối nay"})
@@ -52,8 +36,8 @@ class LiveSessionTests(unittest.TestCase):
 
     def test_stale_running_session_can_be_closed_without_obs(self):
         from app.live_sessions import LiveSession
-        with TestingSession() as db:
-            db.add(LiveSession(name="Treo", status="RUNNING"))
+        with self.Session() as db:
+            db.add(LiveSession(name="Treo", status="RUNNING", owner_id=self.owner_a["id"]))
             db.commit()
         self.assertEqual(self.client.delete("/api/live/sessions/1").status_code, 409)
         closed = self.client.post("/api/live/sessions/1/finish")
@@ -65,7 +49,7 @@ class LiveSessionTests(unittest.TestCase):
     def test_switch_to_product_outside_lineup_adds_it(self):
         from app.live_sessions import LiveSession
         sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [1]}).json()["id"]
-        with TestingSession() as db:
+        with self.Session() as db:
             db.get(LiveSession, sid).status = "RUNNING"
             db.commit()
         state.active, state.session_mode, state.session_id, state.product_id = True, "product", sid, 1
@@ -80,7 +64,7 @@ class LiveSessionTests(unittest.TestCase):
     def test_resume_session_interrupted_by_restart(self):
         from app.live_sessions import LiveSession
         sid = self.client.post("/api/live/sessions", json={"name": "S", "product_ids": [1, 2]}).json()["id"]
-        with TestingSession() as db:
+        with self.Session() as db:
             item = db.get(LiveSession, sid)
             item.status, item.current_product_id = "RUNNING", 2
             db.commit()
@@ -100,8 +84,8 @@ class LiveSessionTests(unittest.TestCase):
 
     def test_ended_session_is_read_only(self):
         from app.live_sessions import LiveSession
-        with TestingSession() as db:
-            db.add(LiveSession(name="Xong", status="ENDED"))
+        with self.Session() as db:
+            db.add(LiveSession(name="Xong", status="ENDED", owner_id=self.owner_a["id"]))
             db.commit()
         self.assertEqual(self.client.patch("/api/live/sessions/1", json={"name": "X"}).status_code, 409)
         self.assertEqual(self.client.put("/api/live/sessions/1/products", json={"product_ids": [1]}).status_code, 409)

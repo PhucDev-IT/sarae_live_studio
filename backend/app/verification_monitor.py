@@ -10,12 +10,16 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request, parse
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
 from app.config import settings
 
-router=APIRouter(prefix="/api/verification-monitor",tags=["Verification Monitor"])
+router=APIRouter(prefix="/api/verification-monitor",tags=["Verification Monitor"], dependencies=[Depends(current_owner)])
+
+
 ROOT=DATA_DIR/"verification_monitor"
 ROOT.mkdir(parents=True,exist_ok=True)
 events=deque(maxlen=100)

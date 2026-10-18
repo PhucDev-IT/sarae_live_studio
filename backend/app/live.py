@@ -10,7 +10,10 @@ import time
 from pathlib import Path
 
 import obsws_python as obs
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
+from app.ownership import Owner, owned, owned_ids
 from pydantic import BaseModel, Field
 from sqlalchemy import Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,12 +24,13 @@ from app.catalog import Product
 from app.product_videos import ProductLiveVideo
 from app.config import settings
 
-router = APIRouter(prefix="/api/live", tags=["LIVE / OBS"])
+router = APIRouter(prefix="/api/live", tags=["LIVE / OBS"], dependencies=[Depends(current_owner)])
 
 
 class Playlist(Base):
     __tablename__ = "live_playlists"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(150))
     media_ids: Mapped[str] = mapped_column(Text, default="[]")
 
@@ -59,10 +63,6 @@ class SeekPayload(BaseModel):
 
 class SelectPayload(BaseModel):
     index: int = Field(ge=0)
-
-
-class ProductStartPayload(BaseModel):
-    product_id: int = Field(gt=0)
 
 
 class ProductSwitchPayload(BaseModel):
@@ -505,21 +505,20 @@ def list_obs_inputs(body: ObsConnection):
 
 
 @router.get("/playlists")
-def playlists():
+def playlists(owner: Owner):
     import json
     with SessionLocal() as db:
         return [{"id": p.id, "name": p.name, "media_ids": json.loads(p.media_ids)}
-                for p in db.scalars(select(Playlist).order_by(Playlist.id.desc())).all()]
+                for p in db.scalars(select(Playlist).where(Playlist.owner_id == owner["id"]).order_by(Playlist.id.desc())).all()]
 
 
 @router.post("/playlists", status_code=201)
-def create_playlist(body: PlaylistPayload):
+def create_playlist(body: PlaylistPayload, owner: Owner):
     import json
     with SessionLocal() as db:
-        existing = set(db.scalars(select(Media.id).where(Media.id.in_(body.media_ids))).all())
-        if len(existing) != len(set(body.media_ids)):
+        if owned_ids(db, Media, body.media_ids, owner) != set(body.media_ids):
             raise HTTPException(422, "Playlist chứa video không tồn tại")
-        playlist = Playlist(name=body.name.strip(), media_ids=json.dumps(body.media_ids))
+        playlist = Playlist(name=body.name.strip(), media_ids=json.dumps(body.media_ids), owner_id=owner["id"])
         db.add(playlist)
         db.commit()
         db.refresh(playlist)
@@ -527,11 +526,9 @@ def create_playlist(body: PlaylistPayload):
 
 
 @router.delete("/playlists/{playlist_id}", status_code=204)
-def delete_playlist(playlist_id: int):
+def delete_playlist(playlist_id: int, owner: Owner):
     with SessionLocal() as db:
-        item = db.get(Playlist, playlist_id)
-        if item is None:
-            raise HTTPException(404, "Không tìm thấy playlist")
+        item = owned(db, Playlist, playlist_id, owner, "Không tìm thấy playlist")
         with state.lock:
             if state.active and state.playlist_id == playlist_id:
                 raise HTTPException(409, "Hãy dừng phát trước khi xóa playlist")
@@ -540,12 +537,10 @@ def delete_playlist(playlist_id: int):
 
 
 @router.post("/start")
-def start(body: StartPayload):
+def start(body: StartPayload, owner: Owner):
     import json
     with SessionLocal() as db:
-        playlist = db.get(Playlist, body.playlist_id)
-        if playlist is None:
-            raise HTTPException(404, "Không tìm thấy playlist")
+        playlist = owned(db, Playlist, body.playlist_id, owner, "Không tìm thấy playlist")
         ids = json.loads(playlist.media_ids)
     with state.lock:
         if state.active:
@@ -580,26 +575,23 @@ def next_video():
 
 
 @router.post("/stop")
-def stop_video():
+def stop_video(owner: Owner):
     with state.lock:
         if state.session_id is not None and state.active:
             from app.live_sessions import finish_session
-            return finish_session(state.session_id)
+            return finish_session(state.session_id, owner)
         return state.stop()
 
 
 @router.put("/playlists/{playlist_id}")
-def edit_playlist(playlist_id: int, body: PlaylistPayload):
+def edit_playlist(playlist_id: int, body: PlaylistPayload, owner: Owner):
     import json
     with state.lock:
         if state.active and state.playlist_id == playlist_id:
             raise HTTPException(409, "Hãy Stop playlist đang phát trước khi chỉnh sửa")
         with SessionLocal() as db:
-            item = db.get(Playlist, playlist_id)
-            if item is None:
-                raise HTTPException(404, "Không tìm thấy playlist")
-            existing = set(db.scalars(select(Media.id).where(Media.id.in_(body.media_ids))).all())
-            if len(existing) != len(set(body.media_ids)):
+            item = owned(db, Playlist, playlist_id, owner, "Không tìm thấy playlist")
+            if owned_ids(db, Media, body.media_ids, owner) != set(body.media_ids):
                 raise HTTPException(422, "Playlist chứa video không tồn tại")
             item.name = body.name.strip()
             item.media_ids = json.dumps(body.media_ids)
@@ -691,54 +683,23 @@ def seek_video(body: SeekPayload):
 
 
 @router.get("/products")
-def available_products():
+def available_products(owner: Owner):
     with SessionLocal() as db:
-        products = db.scalars(select(Product).order_by(Product.id)).all()
+        products = db.scalars(select(Product).where(Product.owner_id == owner["id"]).order_by(Product.id)).all()
         counts = {}
-        for row in db.scalars(select(ProductLiveVideo)).all():
+        for row in db.scalars(select(ProductLiveVideo).where(ProductLiveVideo.owner_id == owner["id"])).all():
             counts[row.product_id] = counts.get(row.product_id, 0) + 1
         return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": p.image_url, "status": p.status,
                  "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 
 
-@router.post("/product-session/start")
-def start_product_session(body: ProductStartPayload):
-    """Legacy ad-hoc start without a managed session (no lineup, no history). The web console starts
-    sessions through /api/live/sessions/{id}/start instead."""
-    with state.lock:
-        if state.active:
-            raise HTTPException(409, "Hãy Stop phiên phát hiện tại trước")
-        ids = state.product_queue(body.product_id)
-        state.ids = ids
-        state.loop = True
-        state.playlist_id = None
-        state.pending_product_id = None
-        state.session_mode = "product"
-        state.session_id = None
-        state.session_started_at = time.time()
-        state.transition_count = state.recovery_count = state.error_count = 0
-        state.product_id = body.product_id
-        result = state.play(0)
-        return result
-
-
 @router.post("/product-session/switch")
-def switch_product_session(body: ProductSwitchPayload):
+def switch_product_session(body: ProductSwitchPayload, owner: Owner):
     with state.lock:
-        if state.session_id is not None:
-            from app.live_sessions import switch_session_product, SwitchInput
-            return switch_session_product(state.session_id, SwitchInput(product_id=body.product_id, mode=body.mode))
-        if not state.active or state.session_mode != "product":
-            raise HTTPException(409, "Chưa có phiên LIVE theo sản phẩm")
-        state.product_queue(body.product_id)
-        if body.mode == "immediate":
-            return state.switch_product(body.product_id)
-        if body.product_id == state.product_id:
-            state.pending_product_id = None
-            return {"ok": True, "pending_product_id": None}
-        state.pending_product_id = body.product_id
-        state.last_status = f"Đã xếp sản phẩm #{body.product_id} sau video hiện tại"
-        return {"ok": True, "pending_product_id": body.product_id}
+        if state.session_id is None:
+            raise HTTPException(409, "Chưa có phiên LIVE đang chạy")
+        from app.live_sessions import switch_session_product, SwitchInput
+        return switch_session_product(state.session_id, SwitchInput(product_id=body.product_id, mode=body.mode), owner)
 
 
 @router.post("/product-session/cancel-switch")

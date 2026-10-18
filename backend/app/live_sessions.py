@@ -2,7 +2,10 @@
 from datetime import datetime, timezone
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
+from app.ownership import Owner, owned_ids
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, delete, select
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,7 +14,8 @@ from app.catalog import Product
 from app.database import Base, SessionLocal
 from app.live import state
 
-router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"])
+router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"], dependencies=[Depends(current_owner)])
+
 
 def now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -19,6 +23,9 @@ def now():
 class LiveSession(Base):
     __tablename__ = "live_sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Windows Agent that plays this session; set when it starts.
+    agent_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     current_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -61,16 +68,19 @@ class SwitchInput(BaseModel):
     product_id: int
     mode: str = Field(default="immediate", pattern="^(immediate|after_current)$")
 
-def ensure_products(db, ids):
+def ensure_products(db, ids, owner):
     if len(ids) != len(set(ids)):
         raise HTTPException(422, "Danh sách chứa sản phẩm trùng nhau")
-    found = set(db.scalars(select(Product.id).where(Product.id.in_(ids))).all())
-    if found != set(ids):
+    if owned_ids(db, Product, ids, owner) != set(ids):
         raise HTTPException(422, "Có sản phẩm không tồn tại")
 
-def get_session(db, session_id):
+def get_session(db, session_id, owner=None):
+    """Session by id; with `owner`, only that owner's (another owner's session is a 404).
+
+    Internal callers driven by playback (events, Stop) pass no owner.
+    """
     item = db.get(LiveSession, session_id)
-    if item is None:
+    if item is None or (owner is not None and item.owner_id != owner["id"]):
         raise HTTPException(404, "Không tìm thấy phiên LIVE")
     return item
 
@@ -133,15 +143,16 @@ def require_running_owner(item):
         raise HTTPException(409, "Phiên này không phải phiên đang phát trong Backend hiện tại")
 
 @router.get("")
-def list_sessions():
+def list_sessions(owner: Owner):
     with SessionLocal() as db:
-        return [serialize(db, x) for x in db.scalars(select(LiveSession).order_by(LiveSession.id.desc())).all()]
+        rows = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner["id"]).order_by(LiveSession.id.desc())).all()
+        return [serialize(db, x) for x in rows]
 
 @router.post("", status_code=201)
-def create_session(body: SessionInput):
+def create_session(body: SessionInput, owner: Owner):
     with SessionLocal() as db:
-        ensure_products(db, body.product_ids)
-        item = LiveSession(name=body.name.strip(), status="DRAFT")
+        ensure_products(db, body.product_ids, owner)
+        item = LiveSession(name=body.name.strip(), status="DRAFT", owner_id=owner["id"])
         db.add(item)
         db.flush()
         replace_products(db, item.id, body.product_ids)
@@ -150,18 +161,18 @@ def create_session(body: SessionInput):
         return serialize(db, item)
 
 @router.get("/{session_id}")
-def session_detail(session_id: int):
+def session_detail(session_id: int, owner: Owner):
     with SessionLocal() as db:
-        return serialize(db, get_session(db, session_id))
+        return serialize(db, get_session(db, session_id, owner))
 
 @router.put("/{session_id}/products")
-def update_products(session_id: int, body: SessionProducts):
+def update_products(session_id: int, body: SessionProducts, owner: Owner):
     with state.lock:
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             if item.status == "ENDED":
                 raise HTTPException(409, "Không thể chỉnh sửa phiên đã kết thúc")
-            ensure_products(db, body.product_ids)
+            ensure_products(db, body.product_ids, owner)
             if item.status == "RUNNING":
                 require_running_owner(item)
                 if not body.product_ids:
@@ -176,12 +187,12 @@ def update_products(session_id: int, body: SessionProducts):
             return serialize(db, item)
 
 @router.post("/{session_id}/start")
-def start_session(session_id: int, body: StartInput):
+def start_session(session_id: int, body: StartInput, owner: Owner):
     with state.lock:
         if state.active:
             raise HTTPException(409, "OBS đang phát một phiên khác; hãy Stop trước")
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             if item.status != "DRAFT":
                 raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
             ids = ids_for(db, session_id)
@@ -200,7 +211,7 @@ def start_session(session_id: int, body: StartInput):
             return {"session": serialize(db, item), "playback": result}
 
 @router.post("/{session_id}/resume")
-def resume_session(session_id: int, body: StartInput):
+def resume_session(session_id: int, body: StartInput, owner: Owner):
     """Re-attach OBS playback to a RUNNING session whose playback was lost (Backend restart or crash).
 
     Plays `product_id` (any catalog product, added to the session if missing) or the product that was live.
@@ -209,14 +220,14 @@ def resume_session(session_id: int, body: StartInput):
         if state.active:
             raise HTTPException(409, "OBS đang phát một phiên khác; hãy Stop trước")
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             if item.status != "RUNNING":
                 raise HTTPException(409, "Chỉ tiếp tục được phiên đang LIVE bị ngắt")
             ids = ids_for(db, session_id)
             pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
             if pid is None:
                 raise HTTPException(409, "Phiên chưa có sản phẩm nào")
-            ensure_products(db, [pid])
+            ensure_products(db, [pid], owner)
             started = item.started_at.replace(tzinfo=timezone.utc).timestamp() if item.started_at else time.time()
             result = begin_playback(session_id, pid, started)
             if pid not in ids:
@@ -227,14 +238,15 @@ def resume_session(session_id: int, body: StartInput):
             return {"session": serialize(db, item), "playback": result}
 
 @router.post("/{session_id}/switch")
-def switch_session_product(session_id: int, body: SwitchInput):
+def switch_session_product(session_id: int, body: SwitchInput, owner: Owner):
     with state.lock:
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             require_running_owner(item)
             # The lineup is a prepared pool, not a fixed order: any catalog product with videos can go live.
             # Validate its videos first, then add it so the session's history and list stay complete.
             ids = ids_for(db, session_id)
+            ensure_products(db, [body.product_id], owner)
             state.product_queue(body.product_id)
             if body.product_id not in ids:
                 db.add(SessionProduct(session_id=session_id, product_id=body.product_id, sort_order=len(ids)))
@@ -253,9 +265,9 @@ def switch_session_product(session_id: int, body: SwitchInput):
             return {"ok": True, "playback": result, "session": serialize(db, item)}
 
 @router.patch("/{session_id}")
-def rename_session(session_id: int, body: SessionRename):
+def rename_session(session_id: int, body: SessionRename, owner: Owner):
     with SessionLocal() as db:
-        item = get_session(db, session_id)
+        item = get_session(db, session_id, owner)
         if item.status == "ENDED":
             raise HTTPException(409, "Không thể đổi tên phiên đã kết thúc")
         item.name = body.name.strip()
@@ -263,10 +275,10 @@ def rename_session(session_id: int, body: SessionRename):
         return serialize(db, item)
 
 @router.delete("/{session_id}", status_code=204)
-def delete_session(session_id: int):
+def delete_session(session_id: int, owner: Owner):
     with state.lock:
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             if item.status == "RUNNING":
                 raise HTTPException(409, "Hãy kết thúc phiên trước khi xóa")
             # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
@@ -276,13 +288,13 @@ def delete_session(session_id: int):
             db.commit()
 
 @router.post("/{session_id}/duplicate", status_code=201)
-def duplicate_session(session_id: int):
+def duplicate_session(session_id: int, owner: Owner):
     """New DRAFT with the same lineup, e.g. to rerun an ended LIVE."""
     with SessionLocal() as db:
-        source = get_session(db, session_id)
-        existing = set(db.scalars(select(Product.id)).all())
+        source = get_session(db, session_id, owner)
+        existing = set(db.scalars(select(Product.id).where(Product.owner_id == owner["id"])).all())
         ids = [pid for pid in ids_for(db, session_id) if pid in existing]
-        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT")
+        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT", owner_id=owner["id"])
         db.add(item)
         db.flush()
         replace_products(db, item.id, ids)
@@ -291,10 +303,10 @@ def duplicate_session(session_id: int):
         return serialize(db, item)
 
 @router.post("/{session_id}/finish")
-def finish_session(session_id: int):
+def finish_session(session_id: int, owner: Owner = None):
     with state.lock:
         with SessionLocal() as db:
-            item = get_session(db, session_id)
+            item = get_session(db, session_id, owner)
             if item.status == "RUNNING" and not is_running_owner(item):
                 # Left RUNNING by a Backend restart: playback is gone, so just close the record.
                 item.status = "ENDED"
@@ -314,9 +326,9 @@ def finish_session(session_id: int):
             return serialize(db, item)
 
 @router.get("/{session_id}/events")
-def list_events(session_id: int):
+def list_events(session_id: int, owner: Owner):
     with SessionLocal() as db:
-        get_session(db, session_id)
+        get_session(db, session_id, owner)
         rows = db.scalars(select(SessionEvent).where(
             SessionEvent.session_id == session_id).order_by(SessionEvent.id)).all()
         return [{"id": row.id, "event_type": row.event_type, "product_id": row.product_id,

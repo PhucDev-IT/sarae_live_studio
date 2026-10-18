@@ -6,13 +6,15 @@ import re
 import threading
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
 from pydantic import BaseModel
 
 from app.comment_processing import monitor
 from app.ai_live_batches import enqueue
 
-router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"])
+router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"], dependencies=[Depends(current_owner)])
 
 
 class ConnectPayload(BaseModel):

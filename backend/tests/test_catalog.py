@@ -1,34 +1,9 @@
 import unittest
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.catalog import db_session
-from app.database import Base
-from app.main import app
-
-engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+from support import SaasTestCase
 
 
-def test_db():
-    with TestSession() as session:
-        yield session
-
-
-class CatalogTests(unittest.TestCase):
-    def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        app.dependency_overrides[db_session] = test_db
-        self.client = TestClient(app)
-
-    def tearDown(self):
-        app.dependency_overrides.clear()
-        self.client.close()
-
+class CatalogTests(SaasTestCase):
     def test_products_crud_and_duplicate_sku(self):
         payload = {"sku": "SARAE-001", "name": "Áo trễ vai", "price": 155000}
         result = self.client.post("/api/products", json=payload)

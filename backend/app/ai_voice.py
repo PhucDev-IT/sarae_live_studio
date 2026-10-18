@@ -7,7 +7,9 @@ import asyncio
 from uuid import uuid4
 from threading import RLock
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.identity import current_owner
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -15,7 +17,9 @@ from app.database import DATA_DIR
 from app.live import state
 from app.comment_processing import monitor
 
-router = APIRouter(prefix="/api/ai/voice", tags=["AI LIVE Voice"])
+router = APIRouter(prefix="/api/ai/voice", tags=["AI LIVE Voice"], dependencies=[Depends(current_owner)])
+
+
 VOICE_DIR = DATA_DIR / "voice"
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_SOURCE = "Sarae Voice"

@@ -7,6 +7,7 @@ import hmac
 import secrets
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -33,8 +34,17 @@ def secret_hash(value:str):
 def pass_hash(password:str,salt:str):
     return hashlib.pbkdf2_hmac("sha256",password.encode(),bytes.fromhex(salt),310000).hex()
 
+@contextmanager
 def db_open():
+    """Connection that commits (or rolls back) and is always closed; sqlite3's own `with` never closes."""
     db=sqlite3.connect(DB,timeout=10)
+    try:
+        with db:
+            yield _prepare(db)
+    finally:
+        db.close()
+
+def _prepare(db):
     db.row_factory=sqlite3.Row
     db.execute("""CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
@@ -65,6 +75,16 @@ def auth(token:str|None):
           (secret_hash(token[7:]),now())).fetchone()
     if row is None:raise HTTPException(401,"Phiên đăng nhập hết hạn")
     return dict(row)
+
+def current_owner(authorization:str|None=Header(None))->dict:
+    """FastAPI dependency for customer data (products, videos, LIVE…): the logged-in OWNER.
+
+    SUPER_ADMIN manages accounts, licenses and Agents only; it never reads or changes an OWNER's content.
+    Every query on customer tables must filter by the returned user's "id".
+    """
+    user=auth(authorization)
+    if user["role"]!="OWNER":raise HTTPException(403,"Chức năng này dành cho tài khoản OWNER")
+    return user
 
 def allow_owner(token:str|None,owner_id:str):
     user=auth(token)
