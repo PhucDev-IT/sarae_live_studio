@@ -1,51 +1,30 @@
-"""Local media ingestion, metadata and catalog relationships."""
-import json
-import shutil
-import subprocess
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+"""An OWNER's video library: the MP4 files on their active Windows Agent.
+
+The Agent syncs metadata (and a small thumbnail) to `agent_library`; video bytes never leave the PC. The server keeps
+what the OWNER adds on top — tags and links to products / presenters — keyed by (agent_id, media_id), where media_id is
+the Agent's 64-hex id of the file.
+"""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-
-from app.identity import current_owner
-from app.ownership import Owner, owned, owned_ids
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func, select
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import String, Text, delete, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.catalog import Product, Presenter
-from app.database import Base, DATA_DIR, SessionLocal
+from app.catalog import Presenter, Product
+from app.database import Base, SessionLocal
+from app.identity import current_owner
+from app.ownership import Owner, owned_ids
 
 router = APIRouter(prefix="/api/media", tags=["Media"], dependencies=[Depends(current_owner)])
 
 
-MEDIA_DIR = DATA_DIR / "media"
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024
-CHUNK_SIZE = 1024 * 1024
-
-
-class Media(Base):
-    __tablename__ = "media"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+class VideoTag(Base):
+    __tablename__ = "video_tags"
+    agent_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    media_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
-    filename: Mapped[str] = mapped_column(String(255))
-    stored_name: Mapped[str] = mapped_column(String(255), unique=True)
-    local_path: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
-    size_bytes: Mapped[int] = mapped_column(Integer)
-    duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
-    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fps: Mapped[float | None] = mapped_column(nullable=True)
-    video_codec: Mapped[str] = mapped_column(String(40), default="")
-    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
-    # Deprecated: presenters are many-to-many via media_presenters (copied there by migration 0007).
-    presenter_id: Mapped[int | None] = mapped_column(ForeignKey("presenters.id", ondelete="SET NULL"), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class MediaUpdate(BaseModel):
@@ -60,23 +39,6 @@ class MediaPresenters(BaseModel):
     presenter_ids: list[int] = Field(default_factory=list, max_length=200)
 
 
-class MediaOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    filename: str
-    local_path: str | None = None
-    size_bytes: int
-    duration_seconds: float | None
-    width: int | None
-    height: int | None
-    fps: float | None
-    video_codec: str
-    product_ids: list[int] = Field(default_factory=list)
-    presenter_ids: list[int] = Field(default_factory=list)
-    tags: str
-    created_at: datetime
-
-
 def get_db():
     with SessionLocal() as db:
         yield db
@@ -85,183 +47,141 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 
 
-def output_media(db: Session, item: Media) -> MediaOut:
-    """Return product (LIVE setup) and presenter assignments, both many-to-many.
+def library(agent_id: str) -> dict[str, dict]:
+    """Videos the Agent reported, by media_id (unavailable ones included, flagged)."""
+    from app.agent_library import connection
+    db = connection()
+    try:
+        rows = db.execute("""SELECT media_id,filename,size_bytes,modified_ns,available,duration_seconds,thumb_name
+            FROM agent_media WHERE agent_id=? ORDER BY filename LIMIT 10000""", (agent_id,)).fetchall()
+    finally:
+        db.close()
+    return {r["media_id"]: dict(r) for r in rows}
 
-    The joins skip links to catalog rows deleted while SQLite was not enforcing ON DELETE CASCADE.
-    """
+
+def library_agent(owner: dict, required: bool = False) -> dict | None:
+    """The owner's active Agent, whose library the pages show. With `required`, 409 when there is none."""
+    from app.owner_agents import active_agent
+    agent = active_agent(owner["id"])
+    if agent is None and required:
+        raise HTTPException(409, "Chưa có Windows Agent nào được kích hoạt; video nằm trên máy chạy Agent")
+    return agent
+
+
+def video_or_404(owner: dict, media_id: str) -> tuple[dict, dict]:
+    agent = library_agent(owner, required=True)
+    row = library(agent["id"]).get(media_id)
+    if row is None:
+        raise HTTPException(404, "Không tìm thấy video trên Agent đang dùng")
+    return agent, row
+
+
+def product_media(db: Session, owner_id: str, agent_id: str, product_id: int, available_only: bool = True) -> list[str]:
+    """Ordered LIVE videos of a product on one Agent (those still present on the PC by default)."""
+    from app.product_videos import ProductLiveVideo
+    ids = list(db.scalars(select(ProductLiveVideo.media_id).where(
+        ProductLiveVideo.owner_id == owner_id, ProductLiveVideo.agent_id == agent_id,
+        ProductLiveVideo.product_id == product_id).order_by(ProductLiveVideo.sort_order)).all())
+    if not available_only:
+        return ids
+    present = {mid for mid, row in library(agent_id).items() if row["available"]}
+    return [mid for mid in ids if mid in present]
+
+
+def output(db: Session, owner_id: str, agent_id: str, row: dict, tags: str | None = None) -> dict:
     from app.media_presenters import MediaPresenter
     from app.product_videos import ProductLiveVideo
-    product_ids = list(db.scalars(
-        select(ProductLiveVideo.product_id)
-        .join(Product, Product.id == ProductLiveVideo.product_id)
-        .where(ProductLiveVideo.media_id == item.id)
-        .order_by(ProductLiveVideo.product_id)
-    ).all())
-    presenter_ids = list(db.scalars(
-        select(MediaPresenter.presenter_id)
-        .join(Presenter, Presenter.id == MediaPresenter.presenter_id)
-        .where(MediaPresenter.media_id == item.id)
-        .order_by(MediaPresenter.presenter_id)
-    ).all())
-    return MediaOut.model_validate(item).model_copy(update={"product_ids": product_ids, "presenter_ids": presenter_ids})
+    if tags is None:
+        tag = db.get(VideoTag, (agent_id, row["media_id"]))
+        tags = tag.tags if tag and tag.owner_id == owner_id else ""
+
+    def linked(model, column):
+        return sorted(db.scalars(select(column).where(model.owner_id == owner_id, model.agent_id == agent_id,
+                                                      model.media_id == row["media_id"])).all())
+    return {"id": row["media_id"], "agent_id": agent_id, "filename": row["filename"], "size_bytes": row["size_bytes"],
+            "duration_seconds": row["duration_seconds"], "available": bool(row["available"]),
+            "thumb_url": f"/api/agent-library/thumbs/{row['thumb_name']}" if row["thumb_name"] else None,
+            "tags": tags, "product_ids": linked(ProductLiveVideo, ProductLiveVideo.product_id),
+            "presenter_ids": linked(MediaPresenter, MediaPresenter.presenter_id)}
 
 
-def media_or_404(db: Session, media_id: int, owner: dict) -> Media:
-    return owned(db, Media, media_id, owner, "Không tìm thấy video")
+@router.get("")
+def list_media(db: DB, owner: Owner, q: str = ""):
+    agent = library_agent(owner)
+    if agent is None:
+        return []
+    tags = {t.media_id: t.tags for t in db.scalars(select(VideoTag).where(
+        VideoTag.owner_id == owner["id"], VideoTag.agent_id == agent["id"])).all()}
+    term = q.strip().lower()
+    return [output(db, owner["id"], agent["id"], row, tags.get(mid, "")) for mid, row in library(agent["id"]).items()
+            if not term or term in row["filename"].lower() or term in tags.get(mid, "").lower()]
 
 
-def probe(path: Path) -> dict:
-    if shutil.which("ffprobe") is None:
-        return {}
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries",
-             "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=30, check=True
-        )
-        data = json.loads(result.stdout)
-        video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), {})
-        duration = data.get("format", {}).get("duration")
-        rate = video.get("avg_frame_rate", "0/0")
-        numerator, denominator = (rate.split("/") + ["1"])[:2] if "/" in rate else (rate, "1")
-        return dict(
-            duration_seconds=float(duration) if duration is not None else None,
-            width=video.get("width"), height=video.get("height"),
-            fps=float(numerator) / float(denominator) if float(denominator) else None,
-            video_codec=str(video.get("codec_name", ""))[:40]
-        )
-    except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
-        return {}
+@router.post("/rescan")
+def rescan(owner: Owner):
+    """Ask the Agent to rescan its media folders and sync now (otherwise it syncs about once a minute)."""
+    from app.cloud_agents import rpc
+    from app.owner_agents import require_online_agent
+    agent = require_online_agent(owner["id"])
+    return rpc(agent["id"], owner["id"], "media_rescan", timeout=90)
 
 
-@router.get("", response_model=list[MediaOut])
-def list_media(db: DB, owner: Owner, q: str = "", limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    stmt = select(Media).where(Media.owner_id == owner["id"])
-    if q.strip():
-        stmt = stmt.where(Media.filename.ilike(f"%{q.strip()}%"))
-    items = db.scalars(stmt.order_by(Media.id.desc()).offset(offset).limit(limit)).all()
-    return [output_media(db, item) for item in items]
+@router.get("/{media_id}")
+def get_media(media_id: str, db: DB, owner: Owner):
+    agent, row = video_or_404(owner, media_id)
+    return output(db, owner["id"], agent["id"], row)
 
 
-@router.post("/upload", response_model=MediaOut, status_code=201)
-def upload_media(
-    db: DB, owner: Owner, file: UploadFile = File(...),
-    tags: str = Form("")
-):
-    name = Path((file.filename or "").replace("\\", "/")).name
-    if not name.lower().endswith(".mp4"):
-        raise HTTPException(415, "Hiện chỉ hỗ trợ file MP4")
-    if len(tags) > 1000:
-        raise HTTPException(422, "Tags vượt quá giới hạn")
-    stored_name = f"{uuid.uuid4().hex}.mp4"
-    path = MEDIA_DIR / stored_name
-    size = 0
-    try:
-        with path.open("xb") as out:
-            while chunk := file.file.read(CHUNK_SIZE):
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, "File vượt quá 500 MB")
-                out.write(chunk)
-        if size == 0:
-            raise HTTPException(422, "File rỗng")
-        properties = probe(path)
-        # When ffprobe is present, reject inputs that do not contain a video stream.
-        if shutil.which("ffprobe") and not properties.get("video_codec"):
-            raise HTTPException(422, "MP4 không chứa video hợp lệ")
-        item = Media(filename=name[:255], stored_name=stored_name, size_bytes=size,
-                     tags=tags, owner_id=owner["id"], **properties)
-        db.add(item)
-        db.commit()
-        db.refresh(item)
-        return output_media(db, item)
-    except Exception:
-        db.rollback()
-        path.unlink(missing_ok=True)
-        raise
-    finally:
-        file.file.close()
-
-
-@router.get("/{media_id}", response_model=MediaOut)
-def get_media(media_id: int, db: DB, owner: Owner):
-    return output_media(db, media_or_404(db, media_id, owner))
-
-
-@router.get("/{media_id}/file")
-def stream_media(media_id: int, db: DB, owner: Owner):
-    media = media_or_404(db, media_id, owner)
-    path = Path(media.local_path) if media.local_path else MEDIA_DIR / media.stored_name
-    if not path.is_file():
-        raise HTTPException(404, "File video không còn trên ổ đĩa")
-    return FileResponse(path, media_type="video/mp4", filename=media.filename, content_disposition_type="inline")
-
-
-@router.patch("/{media_id}", response_model=MediaOut)
-def update_media(media_id: int, body: MediaUpdate, db: DB, owner: Owner):
-    item = media_or_404(db, media_id, owner)
-    for key, value in body.model_dump().items():
-        setattr(item, key, value)
+@router.patch("/{media_id}")
+def update_media(media_id: str, body: MediaUpdate, db: DB, owner: Owner):
+    agent, row = video_or_404(owner, media_id)
+    tag = db.get(VideoTag, (agent["id"], media_id))
+    if tag is None:
+        tag = VideoTag(agent_id=agent["id"], media_id=media_id, owner_id=owner["id"])
+        db.add(tag)
+    tag.tags = body.tags
     db.commit()
-    db.refresh(item)
-    return output_media(db, item)
+    return output(db, owner["id"], agent["id"], row)
 
 
-@router.put("/{media_id}/products", response_model=MediaOut)
-def set_media_products(media_id: int, body: MediaProducts, db: DB, owner: Owner):
+@router.put("/{media_id}/products")
+def set_media_products(media_id: str, body: MediaProducts, db: DB, owner: Owner):
     """Replace the products whose LIVE playlist contains this video, in one transaction.
 
     Newly linked products get the video appended to the end of their playlist; the order of
     existing entries is kept. Reordering within a product stays on PUT /api/product-videos/{id}.
     """
     from app.product_videos import ProductLiveVideo
-    item = media_or_404(db, media_id, owner)
+    agent, row = video_or_404(owner, media_id)
     wanted = list(dict.fromkeys(body.product_ids))
-    if wanted:
-        if owned_ids(db, Product, wanted, owner) != set(wanted):
-            raise HTTPException(422, "Danh sách chứa sản phẩm không tồn tại")
-    current = set(db.scalars(select(ProductLiveVideo.product_id).where(ProductLiveVideo.media_id == media_id)).all())
-    db.execute(delete(ProductLiveVideo).where(
-        ProductLiveVideo.media_id == media_id, ProductLiveVideo.product_id.not_in(wanted)))
+    if owned_ids(db, Product, wanted, owner) != set(wanted):
+        raise HTTPException(422, "Danh sách chứa sản phẩm không tồn tại")
+    scope = (ProductLiveVideo.owner_id == owner["id"], ProductLiveVideo.agent_id == agent["id"])
+    current = set(db.scalars(select(ProductLiveVideo.product_id).where(*scope, ProductLiveVideo.media_id == media_id)).all())
+    db.execute(delete(ProductLiveVideo).where(*scope, ProductLiveVideo.media_id == media_id,
+                                              ProductLiveVideo.product_id.not_in(wanted)))
     for product_id in wanted:
         if product_id in current:
             continue
-        last = db.scalar(select(func.max(ProductLiveVideo.sort_order)).where(ProductLiveVideo.product_id == product_id))
-        db.add(ProductLiveVideo(product_id=product_id, media_id=media_id, owner_id=owner["id"],
+        last = db.scalar(select(func.max(ProductLiveVideo.sort_order)).where(*scope, ProductLiveVideo.product_id == product_id))
+        db.add(ProductLiveVideo(owner_id=owner["id"], agent_id=agent["id"], product_id=product_id, media_id=media_id,
                                 sort_order=0 if last is None else last + 1))
     db.commit()
-    return output_media(db, item)
+    return output(db, owner["id"], agent["id"], row)
 
 
-@router.put("/{media_id}/presenters", response_model=MediaOut)
-def set_media_presenters(media_id: int, body: MediaPresenters, db: DB, owner: Owner):
+@router.put("/{media_id}/presenters")
+def set_media_presenters(media_id: str, body: MediaPresenters, db: DB, owner: Owner):
     """Replace the people who appear in this video (many-to-many, unordered)."""
     from app.media_presenters import MediaPresenter
-    item = media_or_404(db, media_id, owner)
+    agent, row = video_or_404(owner, media_id)
     wanted = list(dict.fromkeys(body.presenter_ids))
-    if wanted:
-        if owned_ids(db, Presenter, wanted, owner) != set(wanted):
-            raise HTTPException(422, "Danh sách chứa người giới thiệu không tồn tại")
-    current = set(db.scalars(select(MediaPresenter.presenter_id).where(MediaPresenter.media_id == media_id)).all())
-    db.execute(delete(MediaPresenter).where(
-        MediaPresenter.media_id == media_id, MediaPresenter.presenter_id.not_in(wanted)))
-    db.add_all([MediaPresenter(media_id=media_id, presenter_id=pid, owner_id=owner["id"]) for pid in wanted if pid not in current])
+    if owned_ids(db, Presenter, wanted, owner) != set(wanted):
+        raise HTTPException(422, "Danh sách chứa người giới thiệu không tồn tại")
+    scope = (MediaPresenter.owner_id == owner["id"], MediaPresenter.agent_id == agent["id"], MediaPresenter.media_id == media_id)
+    current = set(db.scalars(select(MediaPresenter.presenter_id).where(*scope)).all())
+    db.execute(delete(MediaPresenter).where(*scope, MediaPresenter.presenter_id.not_in(wanted)))
+    db.add_all([MediaPresenter(owner_id=owner["id"], agent_id=agent["id"], media_id=media_id, presenter_id=pid)
+                for pid in wanted if pid not in current])
     db.commit()
-    return output_media(db, item)
-
-
-@router.delete("/{media_id}", status_code=204)
-def delete_media(media_id: int, db: DB, owner: Owner):
-    from app.media_presenters import MediaPresenter
-    from app.product_videos import ProductLiveVideo
-    item = media_or_404(db, media_id, owner)
-    path = MEDIA_DIR / item.stored_name if not item.local_path else None
-    # SQLite does not enforce ON DELETE CASCADE without PRAGMA foreign_keys, so unlink explicitly.
-    db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.media_id == item.id))
-    db.execute(delete(MediaPresenter).where(MediaPresenter.media_id == item.id))
-    db.delete(item)
-    db.commit()
-    if path is not None:
-        path.unlink(missing_ok=True)
+    return output(db, owner["id"], agent["id"], row)

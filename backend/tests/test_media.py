@@ -1,90 +1,70 @@
-import io
+"""The video library is the OWNER's active Agent library; tags and links are per (agent, video)."""
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from app.catalog import Product
+from app.catalog import Presenter, Product
 from support import SaasTestCase
 
 
 class MediaTests(SaasTestCase):
     def setUp(self):
         super().setUp()
-        self.temp = TemporaryDirectory()
-        self.storage = patch("app.media.MEDIA_DIR", Path(self.temp.name))
-        self.ffprobe = patch("app.media.shutil.which", return_value=None)
-        self.storage.start()
-        self.ffprobe.start()
-
-    def tearDown(self):
-        self.storage.stop()
-        self.ffprobe.stop()
-        self.temp.cleanup()
-        super().tearDown()
-
-    def test_upload_metadata_edit_preview_and_delete(self):
-        result = self.client.post("/api/media/upload", files={"file": ("demo.mp4", io.BytesIO(b"fake mp4 test data"), "video/mp4")})
-        self.assertEqual(result.status_code, 201, result.text)
-        item_id = result.json()["id"]
-        self.assertEqual(result.json()["filename"], "demo.mp4")
-        self.assertEqual(len(self.client.get("/api/media").json()), 1)
-        self.assertEqual(self.client.get(f"/api/media/{item_id}/file").status_code, 200)
-        changed = self.client.patch(f"/api/media/{item_id}", json={"tags": "demo"})
-        self.assertEqual(changed.status_code, 200)
-        self.assertEqual(changed.json()["tags"], "demo")
-        self.assertEqual(self.client.delete(f"/api/media/{item_id}").status_code, 204)
-        self.assertEqual(self.client.get(f"/api/media/{item_id}").status_code, 404)
-
-    def test_rejected_files_and_missing_catalog_links(self):
-        self.assertEqual(self.client.post("/api/media/upload", files={"file": ("test.txt", b"abc")}).status_code, 415)
-        item_id = self.client.post("/api/media/upload", files={"file": ("test.mp4", b"abc")}).json()["id"]
-        self.assertEqual(self.client.put(f"/api/media/{item_id}/products", json={"product_ids": [12345]}).status_code, 422)
-        self.assertEqual(self.client.put(f"/api/media/{item_id}/presenters", json={"presenter_ids": [12345]}).status_code, 422)
-
-    def test_media_products_many_to_many(self):
-        from app.product_videos import ProductLiveVideo
         with self.Session() as db:
-            db.add_all([Product(sku="A", name="Áo", owner_id=self.owner_a["id"]), Product(sku="B", name="Váy", owner_id=self.owner_a["id"])])
-            db.commit()
-        first = self.client.post("/api/media/upload", files={"file": ("a.mp4", io.BytesIO(b"fake a"), "video/mp4")}).json()["id"]
-        second = self.client.post("/api/media/upload", files={"file": ("b.mp4", io.BytesIO(b"fake b"), "video/mp4")}).json()["id"]
-        with self.Session() as db:
-            db.add(ProductLiveVideo(product_id=1, media_id=second, sort_order=0, owner_id=self.owner_a["id"]))
+            db.add_all([Product(sku="A", name="Áo", owner_id=self.owner_a["id"]),
+                        Product(sku="B", name="Váy", owner_id=self.owner_a["id"]),
+                        Presenter(name="Lan", owner_id=self.owner_a["id"]),
+                        Presenter(name="Mai", owner_id=self.owner_a["id"])])
             db.commit()
 
+    def test_without_an_agent_the_library_is_empty(self):
+        self.assertEqual(self.client.get("/api/media").json(), [])
+        self.assertEqual(self.client.put("/api/product-videos/1", json={"media_ids": []}).status_code, 409)
+
+    def test_library_tags_and_metadata_come_from_the_agent(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        first, second = self.sync_videos(agent, "ao-1.mp4", "vay-1.mp4")
+        videos = {v["id"]: v for v in self.client.get("/api/media").json()}
+        self.assertEqual(set(videos), {first, second})
+        self.assertEqual((videos[first]["filename"], videos[first]["duration_seconds"], videos[first]["available"]), ("ao-1.mp4", 12.5, True))
+        tagged = self.client.patch(f"/api/media/{first}", json={"tags": "mặt trước"})
+        self.assertEqual(tagged.json()["tags"], "mặt trước")
+        self.assertEqual(self.client.get("/api/media?q=trước").json()[0]["id"], first)
+        self.assertEqual(self.client.get("/api/media/" + "0" * 64).status_code, 404)
+
+    def test_products_many_to_many_and_order(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        first, second = self.sync_videos(agent, "a.mp4", "b.mp4")
+        self.assertEqual(self.client.put("/api/product-videos/1", json={"media_ids": [second]}).status_code, 200)
         linked = self.client.put(f"/api/media/{first}/products", json={"product_ids": [1, 2]})
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["product_ids"], [1, 2])
-        with self.Session() as db:
-            order = [row.media_id for row in db.query(ProductLiveVideo).filter_by(product_id=1).order_by(ProductLiveVideo.sort_order)]
-        self.assertEqual(order, [second, first], "new link is appended after existing playlist entries")
-
-        unlinked = self.client.put(f"/api/media/{first}/products", json={"product_ids": [2]})
-        self.assertEqual(unlinked.json()["product_ids"], [2])
+        self.assertEqual(self.client.get("/api/product-videos/1").json()["media_ids"], [second, first], "new link is appended")
+        self.assertEqual(self.client.put(f"/api/media/{first}/products", json={"product_ids": [2]}).json()["product_ids"], [2])
         self.assertEqual(self.client.put(f"/api/media/{first}/products", json={"product_ids": [999]}).status_code, 422)
+        self.assertEqual(self.client.put("/api/product-videos/1", json={"media_ids": ["f" * 64]}).status_code, 422)
+        counts = {p["id"]: p["video_count"] for p in self.client.get("/api/live/products").json()}
+        self.assertEqual(counts, {1: 1, 2: 1})
 
-        self.assertEqual(self.client.delete(f"/api/media/{first}").status_code, 204)
-        with self.Session() as db:
-            self.assertEqual(db.query(ProductLiveVideo).filter_by(media_id=first).count(), 0)
-
-    def test_media_presenters_many_to_many(self):
-        from app.catalog import Presenter
-        with self.Session() as db:
-            db.add_all([Presenter(name="Lan", owner_id=self.owner_a["id"]), Presenter(name="Mai", owner_id=self.owner_a["id"])])
-            db.commit()
-        video = self.client.post("/api/media/upload", files={"file": ("p.mp4", io.BytesIO(b"fake p"), "video/mp4")}).json()["id"]
+    def test_presenters_many_to_many(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        (video,) = self.sync_videos(agent, "p.mp4")
         both = self.client.put(f"/api/media/{video}/presenters", json={"presenter_ids": [2, 1, 2]})
-        self.assertEqual(both.status_code, 200, both.text)
         self.assertEqual(both.json()["presenter_ids"], [1, 2])
-
         self.assertEqual(self.client.put("/api/presenter-videos/1", json={"media_ids": []}).status_code, 200)
         self.assertEqual(self.client.get(f"/api/media/{video}").json()["presenter_ids"], [2])
         self.assertEqual(self.client.get("/api/presenter-videos/2").json()["media_ids"], [video])
-        self.assertEqual(self.client.get("/api/presenter-videos/99").status_code, 404)
-
+        self.assertEqual(self.client.get("/api/presenter-videos").json(), [{"presenter_id": 2, "video_count": 1}])
         self.assertEqual(self.client.delete("/api/presenters/2").status_code, 204)
         self.assertEqual(self.client.get(f"/api/media/{video}").json()["presenter_ids"], [])
+
+    def test_videos_are_private_and_rescan_goes_to_the_agent(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        (video,) = self.sync_videos(agent, "a.mp4")
+        self.assertEqual(self.client.get("/api/media", headers=self.B).json(), [])
+        self.assertEqual(self.client.patch(f"/api/media/{video}", json={"tags": "x"}, headers=self.B).status_code, 409)
+        with patch("app.cloud_agents.rpc", return_value={"synced": 1}) as rpc:
+            self.assertEqual(self.client.post("/api/media/rescan").json(), {"synced": 1})
+        self.assertEqual(rpc.call_args.args[:3], (agent["agent_id"], self.owner_a["id"], "media_rescan"))
 
 
 if __name__ == "__main__":

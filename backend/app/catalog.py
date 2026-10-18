@@ -217,10 +217,11 @@ def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
 @router.delete("/products/{entity_id}", status_code=204)
 def delete_product(entity_id: int, db: DB, owner: Owner):
     from app.product_videos import ProductLiveVideo
-    from app.live import state
     from app.live_sessions import LiveSession, SessionProduct
     item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
-    if state.active and item.id in (state.product_id, state.pending_product_id):
+    on_air = db.scalar(select(LiveSession.id).where(LiveSession.owner_id == owner["id"], LiveSession.status == "RUNNING",
+                                                     LiveSession.current_product_id == item.id))
+    if on_air is not None:
         raise HTTPException(status_code=409, detail="Sản phẩm đang phát trên LIVE, hãy chuyển sản phẩm khác trước khi xóa")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
     db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.product_id == item.id))

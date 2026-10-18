@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.catalog import public_router as catalog_public_router, router as catalog_router
 from app.media import router as media_router
-from app.local_media import router as local_media_router
 from app.live import router as live_router
 from app.product_videos import router as product_videos_router
 from app.media_presenters import router as media_presenters_router
@@ -15,7 +14,6 @@ from app.ai_live_batches import router as ai_live_router
 from app.ai_voice import router as ai_voice_router
 from app.verification_monitor import router as verification_monitor_router
 from app.cloud_agents import router as cloud_agents_router
-from app.agent_media import router as agent_media_router
 from app.identity import router as identity_router
 from app.agent_library import router as agent_library_router
 from app.agent_playlists import router as agent_playlists_router
@@ -53,7 +51,6 @@ app.add_middleware(
 app.include_router(catalog_public_router)
 app.include_router(catalog_router)
 app.include_router(media_router)
-app.include_router(local_media_router)
 app.include_router(live_router)
 app.include_router(product_videos_router)
 app.include_router(media_presenters_router)
@@ -64,8 +61,6 @@ app.include_router(ai_live_router)
 app.include_router(ai_voice_router)
 app.include_router(verification_monitor_router)
 app.include_router(cloud_agents_router)
-## Cloud MP4 relay disabled in local-first multi-tenant phase.
-# app.include_router(agent_media_router)
 app.include_router(identity_router)
 app.include_router(agent_library_router)
 app.include_router(agent_playlists_router)

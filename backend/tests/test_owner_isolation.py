@@ -8,7 +8,7 @@ from app.main import app
 from support import SaasTestCase
 
 # Modules holding customer data or controlling a customer's LIVE; all their routes must require an OWNER.
-CUSTOMER_MODULES = {"app.catalog", "app.media", "app.local_media", "app.live", "app.product_videos", "app.media_presenters",
+CUSTOMER_MODULES = {"app.catalog", "app.media", "app.owner_agents", "app.live", "app.product_videos", "app.media_presenters",
                     "app.live_sessions", "app.tiktok_chat", "app.ai_service", "app.ai_live_batches", "app.ai_voice",
                     "app.verification_monitor"}
 # <img> cannot send a token; these serve files under unguessable random names.

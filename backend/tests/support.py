@@ -22,7 +22,7 @@ from app.media import get_db
 
 PASSWORD = "OwnerSecretPassword123!"
 # Modules that open sessions with SessionLocal() directly instead of the FastAPI dependency.
-SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.local_media"]
+SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.ai_live_batches"]
 
 
 class SaasTestCase(unittest.TestCase):
@@ -83,3 +83,21 @@ class SaasTestCase(unittest.TestCase):
                            datetime.now(timezone.utc).isoformat(), json.dumps({"verification": {"state": {"running": False, "status": "idle"}}})))
                 db.commit()
         return agent
+
+    def heartbeat(self, agent, playback=None, hostname="PC"):
+        """The Agent reporting in (online), optionally with its PlaybackEngine status."""
+        body = {"agent_id": agent["agent_id"], "hostname": hostname, "playback": playback}
+        response = self.client.post("/api/agents/heartbeat", json=body, headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def sync_videos(self, agent, *filenames):
+        """The Agent syncing its library; returns the media ids (64-hex) in the given order."""
+        import hashlib
+        ids = [hashlib.sha256(name.encode()).hexdigest() for name in filenames]
+        videos = [{"media_id": mid, "filename": name, "size_bytes": 1000, "modified_ns": 1, "duration_seconds": 12.5}
+                  for mid, name in zip(ids, filenames)]
+        response = self.client.post("/api/agent-library/sync", json={"agent_id": agent["agent_id"], "videos": videos},
+                                    headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        return ids
+

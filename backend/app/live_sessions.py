@@ -1,6 +1,5 @@
 """Operator-managed LIVE sessions, product queues and history (Phase 1)."""
 from datetime import datetime, timezone
-import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -12,7 +11,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.catalog import Product
 from app.database import Base, SessionLocal
-from app.live import state
 
 router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"], dependencies=[Depends(current_owner)])
 
@@ -106,44 +104,92 @@ def record_event(session_id: int, kind: str, product_id: int | None = None, deta
         event(db, session_id, kind, product_id, detail)
         db.commit()
 
-def record_product_switch(session_id: int, product_id: int):
-    """Called only after OBS has successfully switched, including deferred transitions."""
+def record_product_switch(session_id: int, product_id: int, detail: str = ""):
+    """Record a product change the Agent has actually made (right away, or later at a video boundary)."""
     with SessionLocal() as db:
         item = db.get(LiveSession, session_id)
         if item is not None and item.status == "RUNNING":
             item.current_product_id = product_id
-            event(db, session_id, "PRODUCT_SWITCHED", product_id)
+            event(db, session_id, "PRODUCT_SWITCHED", product_id, detail)
             db.commit()
 
 
-def is_running_owner(item):
-    return item.status == "RUNNING" and state.active and state.session_mode == "product" and state.session_id == item.id
+# ----- playback on the OWNER's Windows Agent ----------------------------------------------------------
 
-def begin_playback(session_id, product_id, started_at):
-    """Point OBS at a product's videos and attach the managed session; the caller holds state.lock."""
-    state.ids = state.product_queue(product_id)
-    state.session_started_at = started_at
-    state.transition_count = state.error_count = state.recovery_count = 0
-    state.loop = True
-    state.playlist_id = None
-    state.pending_product_id = None
-    state.session_mode = "product"
-    state.session_id = None
-    state.product_id = product_id
-    try:
-        result = state.play(0)
-    except Exception:
-        state.active = False
-        raise
-    state.session_id = session_id
-    return result
+def agent_by_id(owner_id: str, agent_id: str | None):
+    from app.owner_agents import agents_of
+    return next((a for a in agents_of(owner_id) if a["id"] == agent_id), None) if agent_id else None
 
-def require_running_owner(item):
-    if not is_running_owner(item):
-        raise HTTPException(409, "Phiên này không phải phiên đang phát trong Backend hiện tại")
+
+def is_running_owner(item) -> bool:
+    """True when the session's Agent is online and reports that it is playing this session."""
+    from app.live import playback_of
+    if item.status != "RUNNING":
+        return False
+    agent = agent_by_id(item.owner_id, item.agent_id)
+    playback = playback_of(agent)
+    return bool(agent and agent["online"] and playback.get("running") and playback.get("session_id") == item.id)
+
+
+def playing_session(owner_id: str) -> int | None:
+    """Id of the owner's RUNNING session that its Agent is actually playing, if any."""
+    with SessionLocal() as db:
+        running = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner_id, LiveSession.status == "RUNNING")
+                             .order_by(LiveSession.started_at.desc())).all()
+    return next((item.id for item in running if is_running_owner(item)), None)
+
+
+def free_agent(owner_id: str, session_id: int, agent=None):
+    """An online Agent (the session's, else the active one) that is not busy with other playback."""
+    from app.live import playback_of
+    from app.owner_agents import require_online_agent
+    agent = agent if agent and agent["online"] else require_online_agent(owner_id)
+    playback = playback_of(agent)
+    if playback.get("running") and playback.get("session_id") != session_id:
+        raise HTTPException(409, f"Agent “{agent['hostname']}” đang phát nội dung khác; hãy dừng trước")
+    return agent
+
+
+def live_agent(item):
+    agent = agent_by_id(item.owner_id, item.agent_id)
+    if agent is None or not agent["online"]:
+        raise HTTPException(409, "Windows Agent của phiên đang offline")
+    return agent
+
+
+def play_product(db, owner, agent, session_id: int, product_id: int, mode: str = "immediate"):
+    """Send the product's videos on that Agent; the Agent starts the session or switches within it."""
+    from app.cloud_agents import rpc
+    from app.media import product_media
+    media_ids = product_media(db, owner["id"], agent["id"], product_id)
+    if not media_ids:
+        raise HTTPException(409, f"Sản phẩm chưa có video trên máy “{agent['hostname']}”")
+    return rpc(agent["id"], owner["id"], "product_play",
+               {"session_id": session_id, "product_id": product_id, "media_ids": media_ids, "mode": mode}, timeout=15)
+
+
+def sync_agent_events(owner_id: str):
+    """Apply what the owner's Agents did on their own (pending switch applied, playback ended, errors) to sessions."""
+    from app.cloud_agents import pop_events
+    from app.owner_agents import agents_of
+    for agent in agents_of(owner_id):
+        for ev in pop_events(agent["id"]):
+            with SessionLocal() as db:
+                item = db.get(LiveSession, ev.get("session_id") or 0)
+                if item is None or item.owner_id != owner_id or item.agent_id != agent["id"]:
+                    continue
+                detail = ";".join(f"{k}={v}" for k, v in (ev.get("detail") or {}).items() if v is not None)
+                if ev["type"] == "PRODUCT_SWITCHED" and ev.get("product_id") is not None and item.status == "RUNNING":
+                    item.current_product_id = ev["product_id"]
+                    event(db, item.id, "PRODUCT_SWITCHED", ev["product_id"], detail)
+                elif ev["type"] in ("PLAYBACK_ENDED", "ERROR"):
+                    event(db, item.id, ev["type"], ev.get("product_id"), detail[:500])
+                db.commit()
+
 
 @router.get("")
 def list_sessions(owner: Owner):
+    sync_agent_events(owner["id"])
     with SessionLocal() as db:
         rows = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner["id"]).order_by(LiveSession.id.desc())).all()
         return [serialize(db, x) for x in rows]
@@ -162,107 +208,103 @@ def create_session(body: SessionInput, owner: Owner):
 
 @router.get("/{session_id}")
 def session_detail(session_id: int, owner: Owner):
+    sync_agent_events(owner["id"])
     with SessionLocal() as db:
         return serialize(db, get_session(db, session_id, owner))
 
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
-    with state.lock:
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            if item.status == "ENDED":
-                raise HTTPException(409, "Không thể chỉnh sửa phiên đã kết thúc")
-            ensure_products(db, body.product_ids, owner)
-            if item.status == "RUNNING":
-                require_running_owner(item)
-                if not body.product_ids:
-                    raise HTTPException(422, "Phiên đang LIVE phải còn ít nhất một sản phẩm")
-                if state.product_id not in body.product_ids:
-                    raise HTTPException(409, "Không thể gỡ sản phẩm đang phát")
-                if state.pending_product_id is not None and state.pending_product_id not in body.product_ids:
-                    state.pending_product_id = None
-            replace_products(db, session_id, body.product_ids)
-            event(db, session_id, "QUEUE_UPDATED")
-            db.commit()
-            return serialize(db, item)
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status == "ENDED":
+            raise HTTPException(409, "Không thể chỉnh sửa phiên đã kết thúc")
+        ensure_products(db, body.product_ids, owner)
+        if item.status == "RUNNING":
+            if not body.product_ids:
+                raise HTTPException(422, "Phiên đang LIVE phải còn ít nhất một sản phẩm")
+            if item.current_product_id is not None and item.current_product_id not in body.product_ids:
+                raise HTTPException(409, "Không thể gỡ sản phẩm đang phát")
+        replace_products(db, session_id, body.product_ids)
+        event(db, session_id, "QUEUE_UPDATED")
+        db.commit()
+        return serialize(db, item)
 
 @router.post("/{session_id}/start")
 def start_session(session_id: int, body: StartInput, owner: Owner):
-    with state.lock:
-        if state.active:
-            raise HTTPException(409, "OBS đang phát một phiên khác; hãy Stop trước")
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            if item.status != "DRAFT":
-                raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
-            ids = ids_for(db, session_id)
-            if not ids:
-                raise HTTPException(409, "Phiên chưa có sản phẩm nào")
-            pid = body.product_id or ids[0]
-            if pid not in ids:
-                raise HTTPException(422, "Sản phẩm không nằm trong phiên")
-            # Validate queue and OBS playback before marking the database session RUNNING.
-            result = begin_playback(session_id, pid, time.time())
-            item.status = "RUNNING"
-            item.current_product_id = pid
-            item.started_at = now()
-            event(db, session_id, "STARTED", pid)
-            db.commit()
-            return {"session": serialize(db, item), "playback": result}
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status != "DRAFT":
+            raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
+        ids = ids_for(db, session_id)
+        if not ids:
+            raise HTTPException(409, "Phiên chưa có sản phẩm nào")
+        pid = body.product_id or ids[0]
+        if pid not in ids:
+            raise HTTPException(422, "Sản phẩm không nằm trong phiên")
+        agent = free_agent(owner["id"], session_id)
+        # The Agent validates the files and starts OBS before the session is marked RUNNING.
+        result = play_product(db, owner, agent, session_id, pid)
+        item.status = "RUNNING"
+        item.agent_id = agent["id"]
+        item.current_product_id = pid
+        item.started_at = now()
+        event(db, session_id, "STARTED", pid, f"agent={agent['hostname']}")
+        db.commit()
+        return {"session": serialize(db, item), "playback": result}
 
 @router.post("/{session_id}/resume")
 def resume_session(session_id: int, body: StartInput, owner: Owner):
-    """Re-attach OBS playback to a RUNNING session whose playback was lost (Backend restart or crash).
+    """Play a RUNNING session again after its playback was lost (Agent restart, PC sleep, OBS crash…).
 
-    Plays `product_id` (any catalog product, added to the session if missing) or the product that was live.
+    Plays `product_id` (added to the session if missing) or the product that was live, on the session's
+    Agent if it is online, else on the owner's active Agent.
     """
-    with state.lock:
-        if state.active:
-            raise HTTPException(409, "OBS đang phát một phiên khác; hãy Stop trước")
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            if item.status != "RUNNING":
-                raise HTTPException(409, "Chỉ tiếp tục được phiên đang LIVE bị ngắt")
-            ids = ids_for(db, session_id)
-            pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
-            if pid is None:
-                raise HTTPException(409, "Phiên chưa có sản phẩm nào")
-            ensure_products(db, [pid], owner)
-            started = item.started_at.replace(tzinfo=timezone.utc).timestamp() if item.started_at else time.time()
-            result = begin_playback(session_id, pid, started)
-            if pid not in ids:
-                db.add(SessionProduct(session_id=session_id, product_id=pid, sort_order=len(ids)))
-            item.current_product_id = pid
-            event(db, session_id, "RESUMED", pid)
-            db.commit()
-            return {"session": serialize(db, item), "playback": result}
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status != "RUNNING":
+            raise HTTPException(409, "Chỉ tiếp tục được phiên đang LIVE bị ngắt")
+        if is_running_owner(item):
+            raise HTTPException(409, "Phiên đang phát bình thường")
+        ids = ids_for(db, session_id)
+        pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
+        if pid is None:
+            raise HTTPException(409, "Phiên chưa có sản phẩm nào")
+        ensure_products(db, [pid], owner)
+        agent = free_agent(owner["id"], session_id, agent_by_id(owner["id"], item.agent_id))
+        result = play_product(db, owner, agent, session_id, pid)
+        if pid not in ids:
+            db.add(SessionProduct(session_id=session_id, product_id=pid, sort_order=len(ids)))
+        item.agent_id = agent["id"]
+        item.current_product_id = pid
+        event(db, session_id, "RESUMED", pid, f"agent={agent['hostname']}")
+        db.commit()
+        return {"session": serialize(db, item), "playback": result}
 
 @router.post("/{session_id}/switch")
 def switch_session_product(session_id: int, body: SwitchInput, owner: Owner):
-    with state.lock:
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            require_running_owner(item)
-            # The lineup is a prepared pool, not a fixed order: any catalog product with videos can go live.
-            # Validate its videos first, then add it so the session's history and list stay complete.
-            ids = ids_for(db, session_id)
-            ensure_products(db, [body.product_id], owner)
-            state.product_queue(body.product_id)
-            if body.product_id not in ids:
-                db.add(SessionProduct(session_id=session_id, product_id=body.product_id, sort_order=len(ids)))
-                event(db, session_id, "PRODUCT_ADDED", body.product_id, "during_live=true")
-                db.commit()
-            if body.mode == "after_current" and body.product_id != state.product_id:
-                state.pending_product_id = body.product_id
-                event(db, session_id, "SWITCH_QUEUED", body.product_id)
-                db.commit()
-                return {"ok": True, "pending_product_id": body.product_id}
-            if state.product_id == body.product_id:
-                state.pending_product_id = None
-                return {"ok": True, "unchanged": True}
-            result = state.switch_product(body.product_id)
-            db.refresh(item)
-            return {"ok": True, "playback": result, "session": serialize(db, item)}
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status != "RUNNING":
+            raise HTTPException(409, "Phiên chưa bắt đầu hoặc đã kết thúc")
+        agent = live_agent(item)
+        # The lineup is a prepared pool, not a fixed order: any of the owner's products with videos can go live.
+        ensure_products(db, [body.product_id], owner)
+        if body.product_id == item.current_product_id and body.mode == "immediate":
+            return {"ok": True, "unchanged": True}
+        result = play_product(db, owner, agent, session_id, body.product_id, body.mode)
+        ids = ids_for(db, session_id)
+        if body.product_id not in ids:
+            db.add(SessionProduct(session_id=session_id, product_id=body.product_id, sort_order=len(ids)))
+            event(db, session_id, "PRODUCT_ADDED", body.product_id, "during_live=true")
+        if body.mode == "after_current" and body.product_id != item.current_product_id:
+            event(db, session_id, "SWITCH_QUEUED", body.product_id)
+            db.commit()
+            return {"ok": True, "pending_product_id": body.product_id}
+        db.commit()
+    # Immediate switches are recorded here; the Agent reports deferred ones as events.
+    record_product_switch(session_id, body.product_id)
+    with SessionLocal() as db:
+        return {"ok": True, "playback": result, "session": serialize(db, get_session(db, session_id, owner))}
 
 @router.patch("/{session_id}")
 def rename_session(session_id: int, body: SessionRename, owner: Owner):
@@ -276,16 +318,15 @@ def rename_session(session_id: int, body: SessionRename, owner: Owner):
 
 @router.delete("/{session_id}", status_code=204)
 def delete_session(session_id: int, owner: Owner):
-    with state.lock:
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            if item.status == "RUNNING":
-                raise HTTPException(409, "Hãy kết thúc phiên trước khi xóa")
-            # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
-            db.execute(delete(SessionEvent).where(SessionEvent.session_id == session_id))
-            db.execute(delete(SessionProduct).where(SessionProduct.session_id == session_id))
-            db.delete(item)
-            db.commit()
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status == "RUNNING":
+            raise HTTPException(409, "Hãy kết thúc phiên trước khi xóa")
+        # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
+        db.execute(delete(SessionEvent).where(SessionEvent.session_id == session_id))
+        db.execute(delete(SessionProduct).where(SessionProduct.session_id == session_id))
+        db.delete(item)
+        db.commit()
 
 @router.post("/{session_id}/duplicate", status_code=201)
 def duplicate_session(session_id: int, owner: Owner):
@@ -303,30 +344,35 @@ def duplicate_session(session_id: int, owner: Owner):
         return serialize(db, item)
 
 @router.post("/{session_id}/finish")
-def finish_session(session_id: int, owner: Owner = None):
-    with state.lock:
-        with SessionLocal() as db:
-            item = get_session(db, session_id, owner)
-            if item.status == "RUNNING" and not is_running_owner(item):
-                # Left RUNNING by a Backend restart: playback is gone, so just close the record.
-                item.status = "ENDED"
-                item.ended_at = now()
-                event(db, session_id, "ENDED", item.current_product_id, "stale=true")
-                db.commit()
-                return serialize(db, item)
-            require_running_owner(item)
-            state.stop()
-            state.session_id = None
+def finish_session(session_id: int, owner: Owner):
+    from app.cloud_agents import rpc
+    from app.live import playback_of
+    sync_agent_events(owner["id"])
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status != "RUNNING":
+            raise HTTPException(409, "Phiên chưa bắt đầu hoặc đã kết thúc")
+        if not is_running_owner(item):
+            # Its Agent no longer plays it (Agent restarted, offline…): nothing to stop, just close the record.
             item.status = "ENDED"
             item.ended_at = now()
-            item.current_product_id = state.product_id
-            event(db, session_id, "ENDED", item.current_product_id,
-                  f"transitions={state.transition_count};errors={state.error_count};recoveries={state.recovery_count}")
+            event(db, session_id, "ENDED", item.current_product_id, "stale=true")
             db.commit()
             return serialize(db, item)
+        agent = live_agent(item)
+        counters = playback_of(agent)
+        rpc(agent["id"], owner["id"], "playback_stop")
+        item.status = "ENDED"
+        item.ended_at = now()
+        event(db, session_id, "ENDED", item.current_product_id,
+              f"transitions={counters.get('transition_count', 0)};errors={counters.get('error_count', 0)};"
+              f"recoveries={counters.get('recovery_count', 0)}")
+        db.commit()
+        return serialize(db, item)
 
 @router.get("/{session_id}/events")
 def list_events(session_id: int, owner: Owner):
+    sync_agent_events(owner["id"])
     with SessionLocal() as db:
         get_session(db, session_id, owner)
         rows = db.scalars(select(SessionEvent).where(
