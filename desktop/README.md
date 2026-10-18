@@ -1,6 +1,6 @@
 # Sarae Windows Agent GUI — Tauri + React + Python Core
 
-**New direction (Oct 2026):** Tauri 2 + React GUI and Python sidecar. Existing Flutter Windows sources in `desktop/lib` and `desktop/windows` are kept for reference; new Tauri app uses `desktop/src`, `desktop/src-tauri` and `desktop/package.json`. Previous Flutter instructions are no longer the primary Agent GUI.
+**New direction (Oct 2026):** Tauri 2 + React GUI and Python sidecar. Legacy Flutter Windows sources are being removed; the Tauri app uses `desktop/src`, `desktop/src-tauri` and `desktop/package.json`. Previous Flutter instructions are no longer the primary Agent GUI.
 
 ## Architecture
 
@@ -44,6 +44,10 @@ Packaged Agent writes settings and DPAPI-encrypted credential to `%LOCALAPPDATA%
 
 This source implementation **has not been built or tested on a real Windows machine here**. Complete a Tauri/NSIS/sidecar/OBS smoke test before commercial distribution. No signed installer, system tray, automatic Windows login startup or updater is implemented yet.
 
-The PySide6 prototype remains in `backend/agent/gui.py` for historical reference, and `backend/requirements-gui.txt` is **not required** for new Tauri desktop builds or Cloud VPS.
+The deprecated PySide6 GUI launcher, PySide6 requirements and old build script have been removed. Neither PySide6 nor Flutter is required for the Tauri desktop or Cloud VPS.
 
 The shared single-tenant modules remain blocked under `SARAE_SAAS_MODE=true` until migrated by OWNER.
+
+## Cleaning legacy Flutter files
+
+`git pull origin dev` updates your local checkout. To inspect remaining tracked Flutter files, run `powershell -ExecutionPolicy Bypass -File scripts/remove-legacy-flutter.ps1` from the repository root. To remove them after review, run the same script with `-Apply`, then review `git diff --cached --stat` and commit the removal. Do not remove the `desktop/src` or `desktop/src-tauri` folders, or the local Python Agent Core.
