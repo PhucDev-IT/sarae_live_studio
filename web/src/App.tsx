@@ -1,3 +1,4 @@
+import { AuthGate, type SaraeUser } from './AuthGate'
 import { useEffect, useState } from 'react'
 import { Button, Input, ThemeProvider, ToastProvider } from './ui/core'
 import PresentersPage from './PresentersPage'
@@ -76,7 +77,11 @@ function getInitialPage(): Page {
 }
 
 function App() {
-  const [page, setPage] = useState<Page>(getInitialPage)
+  return <AuthGate>{(user, logout) => <AuthenticatedApp user={user} logout={logout}/>}</AuthGate>
+}
+
+function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
+  const [page, setPage] = useState<Page>(() => { const initial=getInitialPage(); return initial==='account'||initial==='agents'?initial:'agents' })
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [dark, setDark] = useState(() => localStorage.getItem('sarae-theme') === 'dark')
@@ -86,11 +91,12 @@ function App() {
     localStorage.setItem('sarae-theme', dark ? 'dark' : 'light')
   }, [dark])
   useEffect(() => {
-    const sync = () => setPage(getInitialPage())
+    const sync = () => {const p=getInitialPage();setPage(p==='account'||p==='agents'?p:'agents')}
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
   const navigate = (next: Page) => {
+    if(next!=='agents'&&next!=='account')return
     setPage(next)
     window.location.hash = `/${next}`
     setDrawerOpen(false)
@@ -103,9 +109,9 @@ function App() {
         <button className="sidebar-toggle desktop-only" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}>{collapsed ? <ChevronRight size={17}/> : <ChevronLeft size={17}/>}</button>
       </div>
       <div className="nav-scroller">
-        {navigation.map(group => <div className="nav-group" key={group.title}>
+        {navigation.filter(group=>group.title==='SYSTEM').map(group => <div className="nav-group" key={group.title}>
           {!collapsed && <div className="nav-heading">{group.title}</div>}
-          {group.items.map(item => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)} title={collapsed ? item.title : undefined}>
+          {group.items.filter(item=>item.id==='account'||(item.id==='agents'&&user.role==='OWNER')).map(item => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)} title={collapsed ? item.title : undefined}>
             <item.icon size={19} strokeWidth={1.85}/>
             {!collapsed && <span>{item.title}</span>}
             {!collapsed && page === item.id && <span className="active-indicator"/>}
@@ -114,7 +120,7 @@ function App() {
       </div>
       <div className="sidebar-footer">
         <div className="sidebar-divider"/>
-        <button className="nav-item footer-help" onClick={() => navigate('settings')} title="Trạng thái hệ thống"><CircleHelp size={19}/>{!collapsed && <span>Hướng dẫn & kết nối</span>}</button>
+        <button className="nav-item footer-help" onClick={logout} title="Đăng xuất"><CircleHelp size={19}/>{!collapsed && <span>Đăng xuất</span>}</button>
         {!collapsed && <div className="sidebar-version">INTERNAL WORKSPACE · V0.1</div>}
       </div>
     </>
@@ -134,16 +140,16 @@ function App() {
             <span className="topbar-separator"/>
             <button className="icon-button" onClick={() => setDark(!dark)} aria-label={dark ? 'Chế độ sáng' : 'Chế độ tối'}>{dark ? <Sun size={19}/> : <Moon size={19}/>}</button>
             <button className="icon-button notification-button" onClick={() => navigate('settings')} aria-label="Trạng thái"><Bell size={19}/></button>
-            <span className="avatar" title="Workspace nội bộ">S</span>
+            <span className="avatar" title={user.email}>{user.email.slice(0,1).toUpperCase()}</span><button className="icon-button" onClick={logout} title="Đăng xuất">Thoát</button>
           </div>
         </header>
         <main className="main">
           <div className="page-content">
             <div className="page-heading">
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
-              {page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
+              {false && page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
+            {user.role==='SUPER_ADMIN' && page==='agents' ? <div className="panel" style={{padding:24}}>SUPER_ADMIN chỉ được xem và quản lý thiết bị trong trang Tài khoản, không được điều khiển LIVE từ xa.</div> : page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
