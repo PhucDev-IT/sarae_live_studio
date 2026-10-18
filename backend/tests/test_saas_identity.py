@@ -49,6 +49,13 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             identity.verify_agent(device["agent_id"],device["agent_credential"])
 
+    def test_logout_revokes_session(self):
+        self.assertEqual(identity.me(authorization=self.admin_header)["role"], "SUPER_ADMIN")
+        self.assertEqual(identity.logout(authorization=self.admin_header), {"ok": True})
+        with self.assertRaises(HTTPException) as context:
+            identity.me(authorization=self.admin_header)
+        self.assertEqual(context.exception.status_code, 401)
+
     def test_license_agent_limit(self):
         owner=self.create_owner("a@example.test")
         first=identity.issue_key(owner["id"],authorization=self.admin_header)["activation_key"]
