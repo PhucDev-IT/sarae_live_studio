@@ -81,7 +81,7 @@ function App() {
 }
 
 function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
-  const [page, setPage] = useState<Page>(() => { const initial=getInitialPage(); return initial==='account'||initial==='agents'?initial:'agents' })
+  const [page, setPage] = useState<Page>(() => { const initial=getInitialPage(); return initial==='account'||initial==='agents'?initial:'account' })
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [dark, setDark] = useState(() => localStorage.getItem('sarae-theme') === 'dark')
@@ -91,12 +91,13 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
     localStorage.setItem('sarae-theme', dark ? 'dark' : 'light')
   }, [dark])
   useEffect(() => {
-    const sync = () => {const p=getInitialPage();setPage(p==='account'||p==='agents'?p:'agents')}
+    const sync = () => {const p=getInitialPage();setPage(p==='account'||p==='agents'?p:'account')}
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
+  useEffect(()=>{if(user.role==='SUPER_ADMIN'&&page!=='account'){setPage('account');window.location.hash='/account'}},[user.role,page])
   const navigate = (next: Page) => {
-    if(next!=='agents'&&next!=='account')return
+    if((next!=='agents'&&next!=='account')||(user.role==='SUPER_ADMIN'&&next!=='account'))return
     setPage(next)
     window.location.hash = `/${next}`
     setDrawerOpen(false)
