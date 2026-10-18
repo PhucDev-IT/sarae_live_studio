@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sarae-agent-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Sarae Windows Agent Core: local OBS, media, CAPTCHA monitor and Cloud transport (no UI)"
 requires-python = ">=3.11,<3.14"
 # Agent-only runtime dependencies. The Cloud server (backend/) never installs these.

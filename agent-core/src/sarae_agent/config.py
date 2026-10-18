@@ -61,6 +61,26 @@ class Paths:
         return self.root / "playback_state.json"
 
     @property
+    def media_meta(self) -> Path:
+        """Duration/thumbnail cache per media_id, keyed by (size, mtime)."""
+        return self.root / "media_meta.json"
+
+    @property
+    def thumbs(self) -> Path:
+        return self._dir("thumbs")
+
+    @property
+    def command_journal(self) -> Path:
+        return self.root / "command_journal.json"
+
+    @property
+    def command_lock(self) -> Path:
+        """Same file the retired backend/agent locked, so it and this Core never both take Cloud commands."""
+        path = self.legacy_data
+        path.mkdir(parents=True, exist_ok=True)
+        return path / "agent_commands.lock"
+
+    @property
     def logs(self) -> Path:
         return self._dir("logs")
 
@@ -95,17 +115,23 @@ paths = Paths()
 
 class CloudConfig(BaseModel):
     api_url: str = ""
-    heartbeat_seconds: float = Field(default=10.0, ge=3, le=30)
-    poll_seconds: float = Field(default=2.0, ge=1, le=15)
+    # Idle heartbeat; while a video plays the worker reports every 2 s (Cloud marks an Agent offline after 35 s).
+    heartbeat_seconds: float = Field(default=5.0, ge=3, le=30)
+    # Long-poll window of GET /agents/commands/{agent_id}/next (Cloud maximum 25 s).
+    poll_seconds: float = Field(default=25.0, ge=1, le=25)
     request_timeout_seconds: float = Field(default=12.0, ge=3, le=60)
 
 
 class ObsConfig(BaseModel):
     host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
     port: int = Field(default=4455, ge=1, le=65535)
-    media_input: str = Field(default="Sarae Video", min_length=1, max_length=100)
+    media_input: str = Field(default="Sarae Video", min_length=1, max_length=200)
     voice_input: str = Field(default="Sarae Voice", min_length=1, max_length=100)
     auto_connect: bool = True
+    # Dual A/B Media Sources (Cloud `obs_configure`); empty names fall back to "<media_input> A/B".
+    dual_mode: bool = False
+    source_a: str = Field(default="", max_length=200)
+    source_b: str = Field(default="", max_length=200)
 
 
 class MediaConfig(BaseModel):

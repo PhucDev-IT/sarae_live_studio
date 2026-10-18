@@ -1,12 +1,22 @@
-"""HTTPS client for the Sarae Cloud Agent API.
+"""HTTPS client for the Sarae Cloud Agent API (backend/app/cloud_agents.py, identity.py, agent_library.py).
 
 Outbound only: the Agent never opens an inbound port. Every failure is mapped to a stable
 error code so the worker can decide between retry (transient) and stop (requires the user).
+
+    POST /identity/activate                         {activation_key, hostname} -> {agent_id, agent_credential}
+    POST /agents/heartbeat                          {agent_id, hostname, verification, obs, local_playback, playback}
+    GET  /agents/commands/{agent_id}/next?wait=N    long-poll -> {"command": {command_id, kind, payload, claim_token,
+                                                    attempt, expires_at} | null}
+    POST /agents/commands/ack                       {agent_id, command_id, claim_token, success, result}
+    POST /agents/events                             {agent_id, events: [{seq, type, session_id, product_id, detail}]}
+    POST /agent-library/sync                        {agent_id, videos: [...]} -> {synced, thumbs_missing}
+Agent endpoints authenticate with the X-Sarae-Agent-Key header.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -17,6 +27,8 @@ log = logging.getLogger("sarae.cloud")
 
 # Codes that cannot be fixed by retrying; the worker stops and the GUI asks the user to act.
 FATAL_CODES = {"AGENT_REVOKED", "LICENSE_EXPIRED", "AGENT_UNAUTHORIZED", "AGENT_NOT_ACTIVATED"}
+MAX_WAIT_SECONDS = 25  # Cloud cap for the long-poll
+RESULT_MAX_CHARS = 65000  # AckBody.result
 
 
 class CloudError(AgentError):
@@ -39,19 +51,21 @@ def _detail(response: httpx.Response) -> str:
 def classify(response: httpx.Response, context: str) -> CloudError:
     status = response.status_code
     message = _detail(response)
+    # A Cloud build that sends a machine code wins; otherwise derive it from status + endpoint.
     code = response.headers.get("X-Sarae-Error", "").strip().upper()
     if not code:
-        # Older Cloud builds do not send X-Sarae-Error; fall back to status + context.
         if status == 401:
             code = "AGENT_UNAUTHORIZED"
         elif status == 403 and context == "activate":
             code = "LICENSE_EXPIRED" if "license" in message.lower() else "ACTIVATION_KEY_INVALID"
         elif status == 403:
+            # verify_agent: unknown/revoked Agent or OWNER/license not valid; the user must act either way.
             code = "LICENSE_EXPIRED"
         elif status == 409 and context == "activate":
             code = "AGENT_LIMIT_REACHED"
-        elif status == 404 and context == "ack":
-            code = "COMMAND_NOT_RUNNING"
+        elif status in (404, 409) and context == "ack":
+            # Unknown command, claim token not issued for it, or cancelled: the Cloud will not take this ack.
+            code = "ACK_REJECTED"
         elif status == 422:
             code = "CLOUD_VALIDATION_ERROR"
         elif status >= 500:
@@ -67,6 +81,8 @@ class CloudClient:
         if not api_url:
             raise AgentError("CLOUD_URL_MISSING", "Chưa cấu hình Cloud API URL")
         self.api_url = api_url.rstrip("/")
+        self._timeout = timeout
+        # Thread-safe: the command long-poll and heartbeats run concurrently on one connection pool.
         self._http = httpx.Client(
             base_url=self.api_url,
             timeout=httpx.Timeout(timeout, connect=min(6.0, timeout)),
@@ -85,16 +101,19 @@ class CloudClient:
         self.close()
 
     def _request(self, method: str, path: str, context: str, *, key: str | None = None,
-                 json: Any = None) -> dict:
+                 json: Any = None, params: dict | None = None, timeout: float | None = None) -> dict:
         headers = {"X-Sarae-Agent-Key": key} if key else None
+        extra = {} if timeout is None else {"timeout": httpx.Timeout(timeout, connect=min(6.0, timeout))}
         try:
-            response = self._http.request(method, path, json=json, headers=headers)
+            response = self._http.request(method, path, json=json, params=params, headers=headers, **extra)
         except httpx.TimeoutException as exc:
             raise CloudError("CLOUD_TIMEOUT", f"Cloud không phản hồi ({type(exc).__name__})",
                              retryable=True) from exc
         except httpx.TransportError as exc:
             raise CloudError("CLOUD_UNREACHABLE", f"Không kết nối được Cloud: {str(exc)[:160]}",
                              retryable=True) from exc
+        except RuntimeError as exc:  # client closed while a long-poll was waiting (worker stopping)
+            raise CloudError("CLOUD_CLIENT_CLOSED", str(exc)[:160], retryable=True) from exc
         if response.status_code >= 400:
             raise classify(response, context)
         try:
@@ -118,19 +137,25 @@ class CloudClient:
     def heartbeat(self, key: str, report: dict) -> dict:
         return self._request("POST", "/agents/heartbeat", "heartbeat", key=key, json=report)
 
-    def next_command(self, key: str, agent_id: str) -> dict | None:
-        body = self._request("GET", f"/agents/commands/{agent_id}/next", "poll", key=key)
+    def next_command(self, key: str, agent_id: str, wait: float = 0) -> dict | None:
+        """Claim the next command; with ``wait`` the Cloud holds the request until one is queued."""
+        wait = max(0, min(MAX_WAIT_SECONDS, int(wait)))
+        body = self._request("GET", f"/agents/commands/{quote(agent_id, safe='')}/next", "poll", key=key,
+                             params={"wait": wait}, timeout=wait + self._timeout)
         command = body.get("command")
         return command if isinstance(command, dict) else None
 
-    def ack(self, key: str, agent_id: str, command_id: str, status: str, result: str) -> dict:
-        """status: accepted | running | succeeded | failed. `success` kept for older Cloud builds."""
-        payload = {"agent_id": agent_id, "command_id": command_id, "status": status,
-                   "result": result[:1900]}
-        if status in ("succeeded", "failed"):
-            payload["success"] = status == "succeeded"
-        return self._request("POST", "/agents/commands/ack", "ack", key=key, json=payload)
+    def ack(self, key: str, agent_id: str, command: dict, success: bool, result: str) -> dict:
+        """Final outcome of a claimed command. ``claim_token`` proves this Agent received that delivery."""
+        return self._request("POST", "/agents/commands/ack", "ack", key=key, json={
+            "agent_id": agent_id, "command_id": command["command_id"],
+            "claim_token": str(command.get("claim_token") or ""), "success": bool(success),
+            "result": result[:RESULT_MAX_CHARS]})
+
+    def post_events(self, key: str, agent_id: str, events: list[dict]) -> dict:
+        return self._request("POST", "/agents/events", "events", key=key,
+                             json={"agent_id": agent_id, "events": events[:200]})
 
     def sync_library(self, key: str, agent_id: str, videos: list[dict]) -> dict:
         return self._request("POST", "/agent-library/sync", "sync", key=key,
-                             json={"agent_id": agent_id, "videos": videos})
+                             json={"agent_id": agent_id, "videos": videos}, timeout=max(60.0, self._timeout))

@@ -1,41 +1,87 @@
 """Cloud command kinds -> local actions. Payloads are re-validated locally (never trust the wire).
 
-Kinds mirror backend/app/cloud_agents.py CommandBody.kind.
+Kinds and payload limits mirror backend/app/cloud_agents.py (COMMAND_KINDS, validate_payload); the lanes
+mirror its BACKGROUND_KINDS so the Agent runs each lane in order, like the Cloud hands them out.
 """
 from __future__ import annotations
 
 from typing import Callable, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from sarae_agent.errors import AgentError
 
 MediaId = Field(pattern=r"^[a-f0-9]{64}$")
+MediaIds = Field(min_length=1, max_length=300)
+
+# Cloud lane "background"; everything else is the "live" lane (OBS playback).
+BACKGROUND_KINDS = {"tts_speak", "media_rescan", "monitor_config", "monitor_start", "monitor_stop"}
 
 
-class NoPayload(BaseModel):
+def lane(kind: str) -> str:
+    return "background" if kind in BACKGROUND_KINDS else "live"
+
+
+class Payload(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class PlayPayload(BaseModel):
+class NoPayload(Payload):
+    pass
+
+
+class PlayPayload(Payload):
     media_id: str = MediaId
 
 
-class PlaylistPayload(BaseModel):
-    media_ids: list[str] = Field(min_length=1, max_length=300)
+class MediaIdsPayload(Payload):
+    media_ids: list[str] = MediaIds
+
+    @field_validator("media_ids")
+    @classmethod
+    def _ids(cls, value: list[str]) -> list[str]:
+        if any(not (len(m) == 64 and all(c in "0123456789abcdef" for c in m)) for m in value):
+            raise ValueError("Danh sách media_ids không hợp lệ")
+        return value
+
+
+class PlaylistPayload(MediaIdsPayload):
     loop: bool = True
 
 
-class LoopPayload(BaseModel):
-    loop: bool
+class ProductPlayPayload(MediaIdsPayload):
+    session_id: int = Field(ge=1)
+    product_id: int = Field(ge=1)
+    mode: Literal["immediate", "after_current"] = "immediate"
 
 
-class TtsPayload(BaseModel):
+class SelectPayload(Payload):
+    index: int = Field(ge=0, le=9999)
+
+
+class SeekPayload(Payload):
+    ms: int = Field(ge=0, le=24 * 3600 * 1000)
+
+
+class ObsConnectionPayload(Payload):
+    host: str = Field(default="127.0.0.1", min_length=1, max_length=255)
+    port: int = Field(default=4455, ge=1, le=65535)
+    password: str | None = Field(default="", max_length=200)
+
+
+class ObsConfigurePayload(ObsConnectionPayload):
+    input_name: str = Field(default="Sarae Video", min_length=1, max_length=200)
+    dual_mode: bool = False
+    source_a: str | None = Field(default="", max_length=200)
+    source_b: str | None = Field(default="", max_length=200)
+
+
+class TtsPayload(Payload):
     text: str = Field(min_length=1, max_length=450)
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
 
 
-class MonitorConfigPayload(BaseModel):
+class MonitorConfigPayload(Payload):
     interval_seconds: float = Field(default=2.0, ge=0.5, le=15)
     threshold: float = Field(default=0.82, ge=0.65, le=0.99)
     telegram_enabled: bool = False
@@ -43,32 +89,49 @@ class MonitorConfigPayload(BaseModel):
 
 
 class CommandRouter:
-    def __init__(self, *, playback, monitor, voice, obs, library):
+    def __init__(self, *, playback, monitor, voice, rescan: Callable[[], dict] | None = None):
+        """``playback`` is playback.engine.PlaybackEngine; ``rescan`` runs scan + Cloud library sync."""
         self.playback = playback
         self.monitor = monitor
         self.voice = voice
-        self.obs = obs
-        self.library = library
+        self.rescan = rescan
         p = playback
+
+        def obs_configure(b: ObsConfigurePayload) -> dict:
+            p.configure(host=b.host.strip(), port=b.port, password=b.password or "", input_name=b.input_name.strip(),
+                        dual_mode=b.dual_mode, source_a=(b.source_a or "").strip(), source_b=(b.source_b or "").strip())
+            # Status carries has_password only; the password itself is never echoed back.
+            return p.status()
+
         self._table: dict[str, tuple[type[BaseModel], Callable[[BaseModel], object]]] = {
-            "monitor_start": (NoPayload, lambda _: monitor.start()["state"]),
-            "monitor_stop": (NoPayload, lambda _: monitor.stop()["state"]),
+            "monitor_start": (NoPayload, lambda _: monitor.start()),
+            "monitor_stop": (NoPayload, lambda _: monitor.stop()),
             "monitor_config": (MonitorConfigPayload, lambda b: monitor.configure(b.model_dump())),
-            "obs_status": (NoPayload, lambda _: {"obs": obs.inspect(), "local": p.status()}),
-            "obs_pause": (NoPayload, lambda _: p.pause()),
-            "obs_resume": (NoPayload, lambda _: p.resume()),
-            "obs_next": (NoPayload, lambda _: p.next()),
-            "obs_previous": (NoPayload, lambda _: p.previous()),
-            "obs_stop": (NoPayload, lambda _: p.stop(reason="Lệnh Cloud")),
-            "local_media_play": (PlayPayload, lambda b: p.play(b.media_id)),
-            "local_media_next": (NoPayload, lambda _: p.next()),
-            "local_media_previous": (NoPayload, lambda _: p.previous()),
-            "local_media_stop": (NoPayload, lambda _: p.stop(reason="Lệnh Cloud")),
-            "local_playlist_start": (PlaylistPayload, lambda b: p.play_playlist(b.media_ids, b.loop)),
-            "local_playback_loop": (LoopPayload, lambda b: p.set_loop(b.loop)),
+            "obs_status": (NoPayload, lambda _: p.status()),
+            "obs_configure": (ObsConfigurePayload, obs_configure),
+            "obs_inputs": (ObsConnectionPayload, lambda b: p.list_inputs(b.host.strip(), b.port, b.password or "")),
+            "local_media_play": (PlayPayload, lambda b: p.start_playlist([b.media_id], loop=False)),
+            "local_playlist_start": (PlaylistPayload, lambda b: p.start_playlist(b.media_ids, loop=b.loop)),
+            "product_play": (ProductPlayPayload,
+                             lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
+            "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
+            "playback_select": (SelectPayload, lambda b: p.select(b.index)),
+            "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
+            "media_rescan": (NoPayload, lambda _: self._rescan()),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
-            "media_sync": (NoPayload, lambda _: library.scan_blocking()),
         }
+        for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
+                              (("local_media_stop", "obs_stop", "playback_stop"), p.stop),
+                              (("obs_pause", "playback_pause"), p.pause),
+                              (("obs_resume", "playback_resume"), p.resume),
+                              (("obs_previous", "playback_previous"), p.previous)):
+            for kind in kinds:
+                self._table[kind] = (NoPayload, lambda _, act=action: act())
+
+    def _rescan(self) -> dict:
+        if self.rescan is None:
+            raise AgentError("AGENT_NOT_CONNECTED", "Agent chưa kết nối Cloud")
+        return self.rescan()
 
     @property
     def kinds(self) -> list[str]:
@@ -85,9 +148,4 @@ class CommandRouter:
             first = exc.errors()[0]
             raise AgentError("INVALID_COMMAND_PAYLOAD",
                              f"{'.'.join(str(x) for x in first.get('loc', ())) or 'payload'}: {first.get('msg')}") from exc
-        result = action(body)
-        if isinstance(result, dict) and result.get("state") == "failed":
-            # media_sync returns a job summary; a failed scan must not be ACKed as succeeded.
-            error = result.get("error") or {}
-            raise AgentError(error.get("code", "COMMAND_FAILED"), error.get("message", "Thực thi thất bại"))
-        return result
+        return action(body)

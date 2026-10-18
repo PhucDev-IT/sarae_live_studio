@@ -3,12 +3,15 @@
 * One lock serialises every request (the websocket client is not thread-safe).
 * Any transport failure drops the client; the next call reconnects (rate-limited).
 * Success is only reported after OBS answers the request; settings changes are read back.
+* PlaybackEngine talks to OBS through ObsRequests (obsws-python ReqClient-style calls) on this
+  same connection, and keeps its settings in config.json + the DPAPI secret via ObsSettingsStore.
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from sarae_agent.activation.secrets import obs_secret_file
@@ -42,6 +45,7 @@ class ObsController:
         self._factory = client_factory
         self._status: dict = {"connected": False, "state": "disconnected", "error": None,
                               "obs_version": None, "websocket_version": None}
+        self._password_cache: str | None = None
         self.wanted = config.get().obs.auto_connect  # keep reconnecting in the background
 
     # --- secrets -------------------------------------------------------------------------
@@ -49,20 +53,22 @@ class ObsController:
     def password_set() -> bool:
         return obs_secret_file.exists()
 
-    @staticmethod
-    def _password() -> str:
-        try:
-            data = obs_secret_file.load() or {}
-        except AgentError:
-            return ""
-        return str(data.get("password") or "")
+    def _password(self) -> str:
+        # Cached: the playback watchdog asks for a client every second; DPAPI decrypts only after a change.
+        if self._password_cache is None:
+            try:
+                data = obs_secret_file.load() or {}
+            except AgentError:
+                data = {}
+            self._password_cache = str(data.get("password") or "")
+        return self._password_cache
 
-    @staticmethod
-    def set_password(password: str | None) -> None:
+    def set_password(self, password: str | None) -> None:
         if password:
             obs_secret_file.save({"password": password})
         else:
             obs_secret_file.delete()
+        self._password_cache = None
 
     # --- connection ----------------------------------------------------------------------
     def _set_status(self, **changes: Any) -> None:
@@ -218,7 +224,109 @@ class ObsController:
         self._call("TriggerMediaInputAction", {"inputName": input_name, "mediaAction": MEDIA_ACTIONS[action]})
         return self.media_status(input_name)
 
+    def requests_for(self, config) -> "ObsRequests":
+        """Client for PlaybackEngine. The saved connection reuses the shared websocket; another
+        host/port/password (obs_inputs with values not saved yet) gets a temporary one."""
+        cfg = self._config.get().obs
+        if (config.host, config.port) == (cfg.host, cfg.port) and (config.password or "") == self._password():
+            return ObsRequests(self._call)
+        if self._factory:
+            client = self._factory(config, config.password or "")
+        else:
+            import obsws_python as obs
+            client = obs.ReqClient(host=config.host, port=config.port, password=config.password or "", timeout=4)
+        return ObsRequests(lambda request, data=None: client.send(request, data, raw=True) or {}, client.disconnect)
+
+    def reconnect_later(self) -> None:
+        """Connection settings changed: drop the socket; the next request connects with the new ones."""
+        with self._lock:
+            if self._client is not None:
+                self._drop(None)
+
     def close(self) -> None:
         with self._lock:
             self.wanted = False
             self._drop(None)
+
+
+def _ns(**values: Any) -> SimpleNamespace:
+    return SimpleNamespace(**values)
+
+
+class ObsRequests:
+    """The obsws-python ReqClient calls PlaybackEngine makes, over a raw ``send(request, data) -> dict``."""
+
+    def __init__(self, send: Callable[..., dict], close: Callable[[], None] | None = None):
+        self._send = send
+        self._close = close
+
+    def close(self) -> None:
+        if self._close is not None:
+            self._close()
+
+    def get_version(self):
+        data = self._send("GetVersion")
+        return _ns(obs_version=data.get("obsVersion"), obs_web_socket_version=data.get("obsWebSocketVersion"))
+
+    def get_current_program_scene(self):
+        data = self._send("GetCurrentProgramScene")
+        return _ns(current_program_scene_name=data.get("currentProgramSceneName") or data.get("sceneName"))
+
+    def get_scene_item_id(self, scene: str, name: str):
+        data = self._send("GetSceneItemId", {"sceneName": scene, "sourceName": name})
+        return _ns(scene_item_id=data["sceneItemId"])
+
+    def get_scene_item_list(self, scene: str):
+        return _ns(scene_items=self._send("GetSceneItemList", {"sceneName": scene}).get("sceneItems") or [])
+
+    def get_input_list(self):
+        return _ns(inputs=self._send("GetInputList").get("inputs") or [])
+
+    def get_input_settings(self, name: str):
+        return _ns(input_settings=self._send("GetInputSettings", {"inputName": name}).get("inputSettings") or {})
+
+    def set_input_settings(self, name: str, settings: dict, overlay: bool = True):
+        self._send("SetInputSettings", {"inputName": name, "inputSettings": settings, "overlay": overlay})
+
+    def set_input_mute(self, name: str, muted: bool):
+        self._send("SetInputMute", {"inputName": name, "inputMuted": muted})
+
+    def set_scene_item_enabled(self, scene: str, item_id: int, enabled: bool):
+        self._send("SetSceneItemEnabled", {"sceneName": scene, "sceneItemId": item_id, "sceneItemEnabled": enabled})
+
+    def trigger_media_input_action(self, name: str, action: str):
+        self._send("TriggerMediaInputAction", {"inputName": name, "mediaAction": action})
+
+    def get_media_input_status(self, name: str):
+        data = self._send("GetMediaInputStatus", {"inputName": name})
+        return _ns(media_state=data.get("mediaState"), media_cursor=data.get("mediaCursor"),
+                   media_duration=data.get("mediaDuration"))
+
+    def set_media_input_cursor(self, name: str, ms: int):
+        self._send("SetMediaInputCursor", {"inputName": name, "mediaCursor": ms})
+
+
+class ObsSettingsStore:
+    """PlaybackEngine settings kept in config.json (obs section) with the password in the DPAPI secret."""
+
+    def __init__(self, config: ConfigStore, obs: ObsController):
+        self._config = config
+        self._obs = obs
+
+    def load(self):
+        from sarae_agent.playback.engine import ObsConfig as EngineObsConfig
+        cfg = self._config.get().obs
+        return EngineObsConfig(host=cfg.host, port=cfg.port, password=self._obs._password(),
+                               input_name=cfg.media_input, dual_mode=cfg.dual_mode,
+                               source_a=cfg.source_a, source_b=cfg.source_b)
+
+    def save(self, engine_config) -> None:
+        before = self._config.get().obs
+        self._config.update({"obs": {"host": engine_config.host, "port": engine_config.port,
+                                     "media_input": engine_config.input_name, "dual_mode": engine_config.dual_mode,
+                                     "source_a": engine_config.source_a, "source_b": engine_config.source_b}})
+        password_changed = (engine_config.password or "") != self._obs._password()
+        if password_changed:
+            self._obs.set_password(engine_config.password or None)
+        if password_changed or (before.host, before.port) != (engine_config.host, engine_config.port):
+            self._obs.reconnect_later()

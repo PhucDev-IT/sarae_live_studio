@@ -54,6 +54,20 @@ def self_check() -> int:
     return 0 if ok else 1
 
 
+def _preload_native_libraries() -> None:
+    """Load numpy/OpenCV on the main thread before it blocks reading stdin.
+
+    On Windows a DLL whose CRT start-up queries the std handles (numpy's OpenBLAS) waits, under the
+    loader lock, for a pending synchronous read on the stdin pipe to finish. Imported later from a
+    worker thread (media thumbnails, CAPTCHA monitor) it would hang until the GUI's next request.
+    """
+    for name in ("numpy", "cv2"):
+        try:
+            __import__(name)
+        except Exception as exc:  # noqa: BLE001 - optional features report the missing library themselves
+            logging.getLogger("sarae.main").warning("Không nạp được thư viện %s: %s", name, exc)
+
+
 def _watch_parents(pids: set[int], on_exit) -> None:
     from sarae_agent.windows.win32 import is_process_alive
 
@@ -136,6 +150,7 @@ def run_ipc(parent_pid: int | None) -> int:
                                "methods": server.methods, "status": runtime.system_status()})
     event_handler.sink = lambda entry: server.emit("log.entry", entry)
     log.info("Agent Core %s sẵn sàng (pid %s, IPC v%s)", __version__, os.getpid(), IPC_PROTOCOL_VERSION)
+    _preload_native_libraries()  # before serve(): requests wait in the pipe meanwhile
     runtime.boot()
     reason = server.serve(lambda: True)
     stop_everything(reason)

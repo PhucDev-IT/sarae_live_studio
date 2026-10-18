@@ -3,9 +3,13 @@
 media_id = sha256(casefold(resolved absolute path)), identical to the previous Agent so
 playlists already stored in the Cloud keep pointing at the same files.
 Removing a folder or an index entry never touches the real video file.
+
+Each video also gets a duration and a small JPEG thumbnail (OpenCV, ported from the retired
+backend/agent/local_library.py), cached per (size, mtime) so only new or changed files are probed.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -24,6 +28,10 @@ log = logging.getLogger("sarae.media")
 MAX_VIDEOS = 10_000  # Cloud /agent-library/sync limit
 VIDEO_SUFFIXES = (".mp4",)
 INDEX_VERSION = 1
+THUMB_WIDTH = 320
+THUMB_MAX_BYTES = 40 * 1024  # Cloud limit for thumb_jpeg_base64
+# Probing videos is slow; spread a large first scan over several syncs.
+PROBE_BUDGET_SECONDS = 20.0
 
 Emit = Callable[[str, dict], None]
 
@@ -50,6 +58,47 @@ def _within(path: Path, roots: list[Path]) -> bool:
     return any(path == root or path.is_relative_to(root) for root in roots)
 
 
+def _is_media_id(value) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def probe(path: Path) -> tuple[float | None, bytes | None]:
+    """Return (duration_seconds | None, jpeg_bytes | None) using OpenCV; never raises."""
+    try:
+        import cv2
+    except ImportError:
+        return None, None
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            return None, None
+        fps = capture.get(cv2.CAP_PROP_FPS) or 0
+        frames = capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        duration = round(frames / fps, 3) if fps > 0 and frames > 0 else None
+        # A frame ~10% in (max 5 s) avoids black intro frames.
+        if duration:
+            capture.set(cv2.CAP_PROP_POS_MSEC, min(duration * 100, 5000))
+        ok, frame = capture.read()
+        if not ok:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = capture.read()
+        if not ok or frame is None:
+            return duration, None
+        height, width = frame.shape[:2]
+        if width > THUMB_WIDTH:
+            frame = cv2.resize(frame, (THUMB_WIDTH, max(1, round(height * THUMB_WIDTH / width))),
+                               interpolation=cv2.INTER_AREA)
+        for quality in (75, 60, 45, 30):
+            ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if ok and len(encoded) <= THUMB_MAX_BYTES:
+                return duration, encoded.tobytes()
+        return duration, None
+    except Exception:  # noqa: BLE001
+        return None, None
+    finally:
+        capture.release()
+
+
 class MediaLibrary:
     def __init__(self, config: ConfigStore, emit: Emit):
         self._config = config
@@ -59,6 +108,8 @@ class MediaLibrary:
         self._cancel = threading.Event()
         self._job: dict | None = None
         self._index: dict = self._load_index()
+        self._meta: dict = read_json(paths.media_meta, None) or {}
+        self._probe_lock = threading.Lock()
         self.dirty = True  # Cloud inventory must be (re)sent after start
 
     # --- persistence ---------------------------------------------------------------------
@@ -142,7 +193,7 @@ class MediaLibrary:
         return {"cancelling": self._job is not None and self._job.get("state") == "running"}
 
     def scan_blocking(self) -> dict:
-        """Synchronous scan used by the Cloud `media_sync` command and periodic rescans."""
+        """Synchronous scan used by the Cloud `media_rescan` command."""
         if not self._scan_lock.acquire(timeout=120):
             raise AgentError("SCAN_IN_PROGRESS", "Đang quét thư viện")
         job_id = "scan_" + uuid.uuid4().hex[:12]
@@ -257,14 +308,71 @@ class MediaLibrary:
         return {"total": len(items), "offset": offset, "items": page}
 
     def cloud_inventory(self) -> list[dict]:
-        """Metadata only: no absolute path leaves the PC."""
+        """Metadata only: no absolute path leaves the PC. duration_seconds once the file was probed."""
         with self._lock:
-            return [{"media_id": mid, "filename": item["filename"][:255], "size_bytes": int(item["size_bytes"]),
-                     "modified_ns": int(item["modified_ns"])}
-                    for mid, item in self._index["items"].items()]
+            videos = []
+            for mid, item in self._index["items"].items():
+                video = {"media_id": mid, "filename": item["filename"][:255], "size_bytes": int(item["size_bytes"]),
+                         "modified_ns": int(item["modified_ns"])}
+                meta = self._fresh_meta(mid, item)
+                if meta and meta.get("duration_seconds") is not None:
+                    video["duration_seconds"] = meta["duration_seconds"]
+                videos.append(video)
+            return videos
+
+    # --- duration / thumbnails -----------------------------------------------------------
+    def _fresh_meta(self, media_id: str, item: dict) -> dict | None:
+        meta = self._meta.get(media_id)
+        if meta and meta.get("size") == item.get("size_bytes") and meta.get("mtime") == item.get("modified_ns"):
+            return meta
+        return None
+
+    def probe_pending(self, budget_seconds: float = PROBE_BUDGET_SECONDS) -> int:
+        """Probe new or changed videos for duration + thumbnail until the budget runs out.
+        Returns how many still wait for a later call. Runs on the Cloud media thread, not under the index lock."""
+        with self._probe_lock:
+            with self._lock:
+                items = dict(self._index["items"])
+                pending = [(mid, item) for mid, item in items.items() if self._fresh_meta(mid, item) is None]
+            deadline = time.monotonic() + budget_seconds
+            probed: dict[str, dict] = {}
+            for mid, item in pending:
+                if time.monotonic() >= deadline:
+                    break
+                duration, jpeg = probe(Path(item["path"]))
+                if jpeg:
+                    (paths.thumbs / f"{mid}.jpg").write_bytes(jpeg)
+                probed[mid] = {"size": item.get("size_bytes"), "mtime": item.get("modified_ns"),
+                               "duration_seconds": duration, "thumb": bool(jpeg)}
+            with self._lock:
+                stale = set(self._meta) - set(self._index["items"])
+                for mid in stale:
+                    self._meta.pop(mid, None)
+                    try:
+                        (paths.thumbs / f"{mid}.jpg").unlink()
+                    except OSError:
+                        pass
+                self._meta.update(probed)
+                if probed or stale:
+                    write_json(paths.media_meta, self._meta)
+            return len(pending) - len(probed)
+
+    def thumb_base64(self, media_id: str) -> str | None:
+        """Cached JPEG thumbnail of an indexed, unchanged video as base64, or None."""
+        if not _is_media_id(media_id):
+            return None
+        with self._lock:
+            item = self._index["items"].get(media_id)
+            meta = self._fresh_meta(media_id, item) if item else None
+        if not meta or not meta.get("thumb"):
+            return None
+        try:
+            return base64.b64encode((paths.thumbs / f"{media_id}.jpg").read_bytes()).decode("ascii")
+        except OSError:
+            return None
 
     def resolve(self, media_id: str) -> Path:
-        if not (isinstance(media_id, str) and len(media_id) == 64 and all(c in "0123456789abcdef" for c in media_id)):
+        if not _is_media_id(media_id):
             raise AgentError("INVALID_MEDIA_ID", "media_id không hợp lệ")
         with self._lock:
             item = self._index["items"].get(media_id)

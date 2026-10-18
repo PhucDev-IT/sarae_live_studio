@@ -115,7 +115,8 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
     try:
         other.wait_event("core.ready", 30)
         reused = other.request("activation.activate", {"activation_key": key, "cloud_url": cloud.url}, timeout=30)
-        assert reused["error"]["code"] == "ACTIVATION_KEY_USED"
+        # ACTIVATION_KEY_USED once the Cloud sends X-Sarae-Error; the same 403 detail otherwise.
+        assert reused["error"]["code"] in ("ACTIVATION_KEY_USED", "ACTIVATION_KEY_INVALID")
     finally:
         other.close()
 
@@ -133,31 +134,33 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
         library = httpx.get(f"{cloud.url}/agent-library/{agent_id}", headers=owner_auth).json()["videos"]
         assert {v["filename"] for v in library} == {"intro.mp4", "product.mp4"}
         status = httpx.get(cloud.url + "/agents/status", headers=owner_auth).json()["agents"][0]
-        assert status["online"] and status["agent"]["media"]["video_count"] == 2
+        assert status["online"] and status["playback"]["running"] is False
+        assert status["playback"]["queue_ids"] == [] and "obs" in status["playback"]
 
-        def queue(kind, payload=None):
-            res = httpx.post(cloud.url + "/agents/commands", headers=owner_auth,
-                             json={"agent_id": agent_id, "kind": kind, "payload": payload or {}})
-            assert res.status_code == 200, res.text
+        # OWNER command API + lifecycle of backend/app/cloud_agents.py.
+        def queue(kind, payload=None, key=None):
+            res = httpx.post(f"{cloud.url}/agents/{agent_id}/commands", headers=owner_auth,
+                             json={"kind": kind, "payload": payload or {}, "idempotency_key": key})
+            assert res.status_code in (200, 202), res.text
             return res.json()["command_id"]
 
         def cloud_state(command_id):
-            jobs = httpx.get(cloud.url + "/agents/commands", params={"agent_id": agent_id},
-                             headers=owner_auth).json()["commands"]
-            return next(j for j in jobs if j["command_id"] == command_id)
+            return httpx.get(f"{cloud.url}/agents/{agent_id}/commands/{command_id}", headers=owner_auth).json()
 
-        ok_id = queue("local_playback_loop", {"loop": False})
+        ok_id = queue("playback_cancel_pending", key="cancel-1")
+        assert queue("playback_cancel_pending", key="cancel-1") == ok_id  # Idempotency-Key: same command
         done = core.wait_event("command.finished", 30, lambda d: d["command_id"] == ok_id)
         assert done["data"]["status"] == "succeeded"
-        assert wait_for(lambda: cloud_state(ok_id)["state"] == "completed")
+        job = wait_for(lambda: (j := cloud_state(ok_id))["status"] == "SUCCESS" and j)
+        assert job["result"] == {"ok": True, "cancelled_product_id": None}
 
         media_id = library[0]["media_id"]
-        fail_id = queue("local_media_play", {"media_id": media_id})
+        fail_id = queue("product_play", {"session_id": 1, "product_id": 1, "media_ids": [media_id]})
         failed = core.wait_event("command.finished", 30, lambda d: d["command_id"] == fail_id)
         assert failed["data"]["status"] == "failed"
-        assert failed["data"]["error"]["code"].startswith("OBS_")  # OBS not running: no fake success
-        job = wait_for(lambda: (j := cloud_state(fail_id))["state"] == "failed" and j)
-        assert "OBS_" in job["result"]
+        assert failed["data"]["error"]["code"] == "OBS_UNAVAILABLE"  # OBS not running: no fake success
+        job = wait_for(lambda: (j := cloud_state(fail_id))["status"] == "FAILED" and j)
+        assert "OBS" in job["error"]
 
         # Cloud outage -> disconnected with backoff -> automatic recovery.
         mark = core.mark()
@@ -184,7 +187,8 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
         mark = core.mark()
         assert httpx.delete(f"{cloud.url}/identity/agents/{agent_id}", headers=owner_auth).status_code == 200
         revoked = core.wait_event("agent.status_changed", 40, lambda d: d["state"] == "error", since=mark)
-        assert revoked["data"]["error"]["code"] == "AGENT_REVOKED"
+        # verify_agent answers 403 for a revoked Agent too; AGENT_REVOKED needs X-Sarae-Error on the Cloud.
+        assert revoked["data"]["error"]["code"] in ("AGENT_REVOKED", "LICENSE_EXPIRED")
         assert core.request("agent.stop")["result"]["state"] == "stopped"
     finally:
         assert core.close() == 0

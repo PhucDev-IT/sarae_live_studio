@@ -111,6 +111,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
             rt.obs.set_password(None)
         elif p.obs_password:
             rt.obs.set_password(p.obs_password)
+        if "obs" in patch or p.clear_obs_password or p.obs_password:
+            rt.reload_obs_settings()
         return rt.config_view()
 
     reg("config.get", lambda _: rt.config_view())
@@ -160,6 +162,7 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
             rt.config.update({"obs": patch})
         if p.password is not None:
             rt.obs.set_password(p.password or None)
+        rt.reload_obs_settings()
         return rt.obs.connect()
 
     reg("obs.status", lambda _: rt.obs.inspect())
@@ -172,7 +175,7 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("playback.playlist", lambda p: rt.playback.play_playlist(p.media_ids, p.loop), PlaylistParams)
     reg("playback.pause", lambda _: rt.playback.pause())
     reg("playback.resume", lambda _: rt.playback.resume())
-    reg("playback.stop", lambda _: rt.playback.stop(reason="Người vận hành dừng"))
+    reg("playback.stop", lambda _: rt.playback.stop())
     reg("playback.next", lambda _: rt.playback.next())
     reg("playback.previous", lambda _: rt.playback.previous())
     reg("playback.loop", lambda p: rt.playback.set_loop(p.loop), LoopParams)
