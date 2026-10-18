@@ -45,7 +45,7 @@ export default function AccountPortal(){
    const v=await request<{access_token:string}>('/login',{email,password})
    sessionStorage.setItem('sarae-auth-token',v.access_token);window.dispatchEvent(new Event('sarae-auth-changed'));setToken(v.access_token);setPassword('')
   })}}>
-   <label>Email<input required type="email" value={email} onChange={e=>setEmail(e.target.value)}/></label>
+   <label>Tên đăng nhập hoặc email<input required type="text" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)}/></label>
    <label>Mật khẩu<input required type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label>
    <button disabled={busy} type="submit">Đăng nhập</button>
   </form>{error&&<p role="alert">{error}</p>}
