@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {api,errorText} from './mediaApi'
-import {getAuthToken} from './AccountPortal'
+import {getAuthToken} from './AuthGate'
 type Agent={agent_id:string;hostname:string;last_seen:string;online:boolean;seconds_ago:number;obs?:{connected?:boolean;running?:boolean;media_state?:string;error?:string};cloud_playback?:{active:boolean;product_id:number|null;index:number;count:number};local_playback?:{active:boolean;count:number;index:number;loop:boolean;needs_manual_resume?:boolean};verification?:{state?:{status?:string;running?:boolean;window_found?:boolean;window_info?:{pid:number;hwnd:number;exe_name:string;exe_path:string;title:string;minimized:boolean}|null;monitors_detected?:number};config?:{interval_seconds:number;threshold:number;telegram_enabled:boolean;telegram_chat_id:string};events?:{at:string;kind:string;detail:string}[]}}
 type AgentPlaylist={id:string;agent_id:string;name:string;media_ids:string[];loop:boolean}
 type Job={command_id:string;kind:string;state:string;result:string|null;created_at:string}
