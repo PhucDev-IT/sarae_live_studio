@@ -189,6 +189,17 @@ export interface CoreInfo {
   hostname: string
 }
 
+export interface AutoPinStatus {
+  state: string
+  enabled: boolean
+  interval_seconds: number
+  products: string[]
+  current_index: number
+  last_pin: string
+  last_error: string
+  browser_open: boolean
+}
+
 export interface SystemStatus {
   core: CoreInfo
   agent: AgentStatus
@@ -243,6 +254,11 @@ type NoParams = Record<never, never>
 /** method -> [params, result] */
 export interface CoreMethods {
   'system.status': [NoParams, SystemStatus]
+  'autopin.status': [NoParams, AutoPinStatus]
+  'autopin.open': [{url:string}, AutoPinStatus]
+  'autopin.configure': [{products:string[];interval_seconds:number}, AutoPinStatus]
+  'autopin.start': [NoParams, AutoPinStatus]
+  'autopin.stop': [NoParams, AutoPinStatus]
   'system.ping': [NoParams, { pong: boolean }]
   'system.methods': [NoParams, { methods: string[]; cloud_command_kinds: string[] }]
   'system.shutdown': [NoParams, { accepted: boolean }]
