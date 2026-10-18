@@ -1,11 +1,10 @@
+import {clearAuth, getAuthToken} from './AuthGate'
 import {useEffect,useState} from 'react'
 import {api} from './mediaApi'
 
 type User={id:string;email:string;role:'SUPER_ADMIN'|'OWNER'}
 type Owner={id:string;email:string;active:number;enabled:number;max_agents:number;expires_at:string|null}
 type Agent={id:string;owner_id:string;hostname:string;enabled:number}
-const storage='sarae-auth-token'
-export function getAuthToken(){return sessionStorage.getItem(storage)||''}
 export default function AccountPortal(){
  const [token,setToken]=useState(getAuthToken)
  const [email,setEmail]=useState('')
@@ -35,7 +34,7 @@ export default function AccountPortal(){
   setAgents(await request<Agent[]>('/agents',undefined,value))
   if(me.role==='SUPER_ADMIN')setOwners(await request<Owner[]>('/owners',undefined,value))
  }
- useEffect(()=>{if(token)void refresh().catch(()=>{sessionStorage.removeItem(storage);setToken('');setUser(null)})},[token])
+ useEffect(()=>{if(token)void refresh().catch(()=>{clearAuth();setToken('');setUser(null)})},[token])
  const perform=async(fn:()=>Promise<void>)=>{
   setBusy(true);setError('')
   try{await fn()}catch(e){setError(e instanceof Error?e.message:'Có lỗi xảy ra')}finally{setBusy(false)}
@@ -44,7 +43,7 @@ export default function AccountPortal(){
   <h2>Đăng nhập Sarae</h2><p>SUPER_ADMIN quản lý khách hàng và license; OWNER quản lý thiết bị của mình.</p>
   <form onSubmit={e=>{e.preventDefault();void perform(async()=>{
    const v=await request<{access_token:string}>('/login',{email,password})
-   sessionStorage.setItem(storage,v.access_token);setToken(v.access_token);setPassword('')
+   sessionStorage.setItem('sarae-auth-token',v.access_token);window.dispatchEvent(new Event('sarae-auth-changed'));setToken(v.access_token);setPassword('')
   })}}>
    <label>Email<input required type="email" value={email} onChange={e=>setEmail(e.target.value)}/></label>
    <label>Mật khẩu<input required type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label>
