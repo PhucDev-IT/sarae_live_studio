@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     sarae_saas_mode: bool = False
     # HMAC key for signed image URLs; set the same value on every server behind a load balancer.
     sarae_url_signing_secret: str = ""
+    # Fernet key for OWNER AI credentials at rest (else backend/data/credential.key is generated).
+    sarae_credential_key: str = ""
     sarae_cloud_api_url: str = ""
     sarae_agent_id: str = ""
     sarae_agent_autostart_monitor: bool = False

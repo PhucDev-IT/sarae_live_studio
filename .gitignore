@@ -22,5 +22,6 @@ backend/data/presenter_images/
 # Runtime credentials, local media metadata, session checkpoints and SaaS SQLite data
 backend/data/
 backend/data/url_signing.key
+backend/data/credential.key
 backend/data/agent_command_journal.json
 backend/data/agent_commands.lock

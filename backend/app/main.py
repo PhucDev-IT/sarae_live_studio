@@ -21,6 +21,13 @@ from app.owner_agents import router as owner_agents_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
+
+@app.on_event("startup")
+def start_runtime_janitor():
+    from app.runtime import start_janitor
+    start_janitor()
+
+
 @app.middleware("http")
 async def saas_legacy_guard(request, call_next):
     """Fail closed in shared VPS deployments for APIs not yet partitioned by OWNER.

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.identity import current_owner
+from app.identity import current_owner, owner_settings, update_owner_settings
 from app.ownership import Owner
 from app.owner_agents import AgentId, owned_agent
 from app.per_owner import PerOwner, live_key
@@ -43,8 +43,11 @@ class BatchState:
 
 
 states = PerOwner(BatchState)
-# Batching options are an OWNER preference shared by all their Agents.
-owner_options = PerOwner(lambda _owner_id: {"value": BatchOptions(), "lock": RLock()})
+
+
+def batch_options(owner_id: str) -> BatchOptions:
+    """Batching options are an OWNER setting (persisted, shared by all their Agents)."""
+    return BatchOptions.model_validate(owner_settings(owner_id).get("ai_batch") or {})
 executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sarae-ai-live")
 
 
@@ -139,7 +142,7 @@ def run_batch(st: BatchState, batch_id, items):
 
 def enqueue(owner_id: str, agent_id: str, message):
     st = states(live_key(owner_id, agent_id))
-    options = owner_options(owner_id)["value"]
+    options = batch_options(owner_id)
     if not options.enabled:
         return
     ctx = context(owner_id, agent_id)
@@ -167,17 +170,13 @@ def enqueue(owner_id: str, agent_id: str, message):
 
 @router.get("/config")
 def get_config(owner: Owner):
-    opts = owner_options(owner["id"])
-    with opts["lock"]:
-        return opts["value"].model_dump()
+    return batch_options(owner["id"]).model_dump()
 
 
 @router.put("/config")
 def set_config(body: BatchOptions, owner: Owner):
-    opts = owner_options(owner["id"])
-    with opts["lock"]:
-        opts["value"] = body
-        return body.model_dump()
+    update_owner_settings(owner["id"], ai_batch=body.model_dump())
+    return body.model_dump()
 
 
 @router.get("/status")

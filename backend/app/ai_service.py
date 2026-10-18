@@ -1,5 +1,6 @@
 """Provider-swappable, operator-triggered AI comment analysis. No automatic TikTok action."""
 import json
+import re
 import time
 from threading import RLock
 from pathlib import Path
@@ -12,13 +13,17 @@ from app.ownership import Owner
 from app.per_owner import PerOwner
 from pydantic import BaseModel, Field
 
+from app import credentials
 from app.config import settings
 from app.comment_processing import monitors
 
 router = APIRouter(prefix="/api/ai", tags=["AI / Comment Analysis"], dependencies=[Depends(current_owner)])
 
 
-# Each OWNER configures their own AI (stored in owner_settings["ai"]); provider API keys stay on the server.
+# Each OWNER configures their own AI. Three separate things:
+# - settings (owner_settings["ai"]): provider, model, limits; nothing secret, returned as is;
+# - credentials (app/credentials.py): the owner's provider API keys, encrypted, write-only;
+# - runtime (COUNTS, monitors, batch queues): in memory, see app/runtime.py for lifecycle and limits.
 DEFAULT = {"provider": "gemini", "model": "gemini-3.5-flash-lite",
            "enabled": False, "max_output_tokens": 220, "max_requests_per_session": 100}
 
@@ -38,9 +43,30 @@ class AnalyzeBody(BaseModel):
 def load_config(owner_id: str) -> AIConfig:
     return AIConfig.model_validate(owner_settings(owner_id).get("ai") or DEFAULT)
 
+class CredentialBody(BaseModel):
+    provider: str = Field(pattern="^(gemini|openai)$")
+    api_key: str = Field(min_length=8, max_length=400)
+
+def api_key(owner_id: str, provider: str) -> tuple[str | None, str | None]:
+    """(key, source): the owner's own key first, else the platform key from the Backend environment."""
+    own = credentials.secret(owner_id, provider)
+    if own:
+        return own, "owner"
+    platform = settings.gemini_api_key if provider == "gemini" else settings.openai_api_key
+    return (platform, "platform") if platform else (None, None)
+
 def public_config(owner_id: str):
     c = load_config(owner_id)
-    return {**c.model_dump(), "has_api_key": bool(settings.gemini_api_key if c.provider=="gemini" else settings.openai_api_key)}
+    _key, source = api_key(owner_id, c.provider)
+    return {**c.model_dump(), "has_api_key": source is not None, "key_source": source}
+
+SECRET_PATTERN = re.compile(r"(sk-[A-Za-z0-9_*-]{6,}|AIza[0-9A-Za-z_-]{10,})")
+
+def redact(text: str, key: str | None) -> str:
+    """Provider error messages may quote the key: never pass it on to responses or logs."""
+    if key:
+        text = text.replace(key, "***")
+    return SECRET_PATTERN.sub("***", text)
 
 @router.get("/config")
 def read_config(owner: Owner):
@@ -50,6 +76,22 @@ def read_config(owner: Owner):
 def save_config(body: AIConfig, owner: Owner):
     update_owner_settings(owner["id"], ai=body.model_dump())
     return public_config(owner["id"])
+
+@router.get("/credentials")
+def list_credentials(owner: Owner):
+    return {"credentials": credentials.describe(owner["id"])}
+
+@router.put("/credentials")
+def save_credential(body: CredentialBody, owner: Owner):
+    """Write-only: the key is stored encrypted and never returned (only its last 4 characters)."""
+    credentials.save(owner["id"], body.provider, body.api_key)
+    return {"credentials": credentials.describe(owner["id"])}
+
+@router.delete("/credentials/{provider}")
+def delete_credential(provider: str, owner: Owner):
+    if not credentials.delete(owner["id"], provider):
+        raise HTTPException(404, "Chưa có API key cho nhà cung cấp này")
+    return {"credentials": credentials.describe(owner["id"])}
 
 # Per-OWNER counters for this Backend process. They never imply provider quota; the API provider enforces real limits.
 COUNTS = PerOwner(lambda _owner_id: {"requests": 0, "input_tokens": 0, "output_tokens": 0})
@@ -114,9 +156,9 @@ def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
     monitor = monitors(log_key or owner_id)
     if not config.enabled:
         raise HTTPException(409, "AI chưa được bật trong cấu hình")
-    key = settings.gemini_api_key if config.provider=="gemini" else settings.openai_api_key
+    key, _source = api_key(owner_id, config.provider)
     if not key:
-        raise HTTPException(503, "Thiếu API key trong biến môi trường Backend")
+        raise HTTPException(503, "Chưa có API key: nhập key trong Cài đặt AI hoặc cấu hình key nền tảng")
     with COUNT_LOCK:
         if count["requests"] >= config.max_requests_per_session:
             raise HTTPException(429, "Đã đạt giới hạn lượt gọi AI cho lần chạy Backend này")
@@ -146,5 +188,6 @@ def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
                 "usage": {"input_tokens": inp, "output_tokens": out, "latency_ms": elapsed},
                 "action_executed": False}
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        monitor.record("AI_ERROR", type(exc).__name__, str(exc)[:300], username=body.username)
-        raise HTTPException(502, f"Lỗi AI provider: {type(exc).__name__}: {str(exc)[:240]}") from exc
+        message = redact(str(exc), key)
+        monitor.record("AI_ERROR", type(exc).__name__, message[:300], username=body.username)
+        raise HTTPException(502, f"Lỗi AI provider: {type(exc).__name__}: {message[:240]}") from None

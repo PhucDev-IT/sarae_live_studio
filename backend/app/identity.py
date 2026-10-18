@@ -313,4 +313,6 @@ def revoke_agent(agent_id:str,authorization:str|None=Header(None)):
         if row is None:raise HTTPException(404,"Không tìm thấy Agent")
         allow_owner(authorization,row["owner_id"])
         db.execute("UPDATE registered_agents SET enabled=0 WHERE id=?",(agent_id,))
+    from app.runtime import release_agent
+    release_agent(row["owner_id"],agent_id)
     return {"revoked":agent_id}
