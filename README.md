@@ -2,14 +2,15 @@
 
 Monorepo for an internal live-commerce production workspace.
 
-- `web/` — React, TypeScript, Vite and Tailwind CSS 4. Admin UI for content and operations.
-- `backend/` — Python FastAPI, SQLite/SQLAlchemy, Alembic. Owns future business data.
-- `desktop/` — existing Flutter Windows application, reserved for local machine and OBS control.
-- `docs/` — development documents.
+- `web/` — React, TypeScript, Vite and Tailwind CSS 4. SaaS Web for OWNER / SUPER_ADMIN.
+- `backend/` — Sarae Cloud API (FastAPI). Cloud-only dependencies; no Windows runtime.
+- `agent-core/` — Windows Agent Core (Python, no UI): activation/DPAPI, Cloud transport, MP4 library, OBS playlist, CAPTCHA monitor, TTS.
+- `desktop/` — Windows Agent desktop app (Tauri 2 + React) hosting `agent-core` as a sidecar.
+- `docs/` — development documents. Windows Agent: `WINDOWS_AGENT_ARCHITECTURE.md`, `WINDOWS_AGENT_IPC.md`, `WINDOWS_AGENT_BUILD.md`.
 
 ## Local prerequisites
 
-Node.js (compatible with Vite 8), Python 3.12 and an existing Flutter Windows toolchain.
+Node.js (compatible with Vite 8) and Python 3.12. The Windows Agent build also needs Rust (MSVC) — see `docs/WINDOWS_AGENT_BUILD.md`.
 
 ## Start Backend (Windows CMD)
 

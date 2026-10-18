@@ -2,8 +2,14 @@ node_modules/
 dist/
 backend/build/
 desktop/src-tauri/target/
-desktop/src-tauri/binaries/
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/README.md
 desktop/src-tauri/gen/
+desktop/release/
+agent-core/build/dist/
+agent-core/build/work/
+agent-core/src/*.egg-info/
+.pytest_cache/
 *.tsbuildinfo
 .venv/
 __pycache__/
