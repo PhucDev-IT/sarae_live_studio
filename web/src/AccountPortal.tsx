@@ -1,82 +1,154 @@
-import {clearAuth, getAuthToken} from './AuthGate'
-import {useEffect,useState} from 'react'
-import {api} from './mediaApi'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Alert, Badge, Button, Card, ConfirmModal, PasswordInput, SkeletonCard, useToast } from './ui/core'
+import { CalendarClock, KeyRound, LogOut, MonitorPlay, ShieldCheck, ShieldAlert, UserRound } from 'lucide-react'
+import { apiRequest, errorText } from './mediaApi'
+import { agentState, useAgent } from './agentContext'
+import { dateTime } from './liveSessionsApi'
+import './account.css'
 
-type User={id:string;email:string;role:'SUPER_ADMIN'|'OWNER'}
-type Owner={id:string;email:string;active:number;enabled:number;max_agents:number;expires_at:string|null}
-type Agent={id:string;owner_id:string;hostname:string;enabled:number}
+type Account = {
+  id:string; email:string; role:'OWNER'|'SUPER_ADMIN'
+  license:{max_agents:number; expires_at:string|null; enabled:boolean; valid:boolean}|null
+  agents_used:number; sessions:number; session_expires_at:string|null
+}
+
+const DAY = 24 * 3600 * 1000
+const daysLeft = (iso:string|null) => iso ? Math.ceil((new Date(iso).getTime() - Date.now()) / DAY) : null
+
+/** The OWNER's own account: license and device slots (set by the platform admin), Windows PCs, password and sign-ins. */
 export default function AccountPortal(){
- const [token,setToken]=useState(getAuthToken)
- const [email,setEmail]=useState('')
- const [password,setPassword]=useState('')
- const [user,setUser]=useState<User|null>(null)
- const [owners,setOwners]=useState<Owner[]>([])
- const [agents,setAgents]=useState<Agent[]>([])
- const [newEmail,setNewEmail]=useState('')
- const [newPassword,setNewPassword]=useState('')
- const [maxAgents,setMaxAgents]=useState(1)
- const [licenseEnd,setLicenseEnd]=useState('')
- const [activation,setActivation]=useState('')
- const [error,setError]=useState('')
- const [busy,setBusy]=useState(false)
- const [renames,setRenames]=useState<Record<string,string>>({})
- const request=async<T,>(path:string,body?:unknown,provided?:string,method?:string):Promise<T>=>{
-  const res=await fetch(api+'/api/identity'+path,{method:method||(body?'POST':'GET'),
-   headers:{'Content-Type':'application/json',Authorization:'Bearer '+(provided||token)},
-   body:body?JSON.stringify(body):undefined})
-  const data=await res.json().catch(()=>({}))
-  if(!res.ok)throw new Error(data.detail||'HTTP '+res.status)
-  return data as T
- }
- const refresh=async(value?:string)=>{
-  const me=await request<User>('/me',undefined,value)
-  setUser(me)
-  setAgents(await request<Agent[]>('/agents',undefined,value))
-  if(me.role==='SUPER_ADMIN')setOwners(await request<Owner[]>('/owners',undefined,value))
- }
- useEffect(()=>{if(token)void refresh().catch(()=>{clearAuth();setToken('');setUser(null)})},[token])
- const perform=async(fn:()=>Promise<void>)=>{
-  setBusy(true);setError('')
-  try{await fn()}catch(e){setError(e instanceof Error?e.message:'Có lỗi xảy ra')}finally{setBusy(false)}
- }
- if(!user)return <section className="panel" style={{padding:24,maxWidth:460}}>
-  <h2>Đăng nhập Sarae</h2><p>SUPER_ADMIN quản lý khách hàng và license; OWNER quản lý thiết bị của mình.</p>
-  <form onSubmit={e=>{e.preventDefault();void perform(async()=>{
-   const v=await request<{access_token:string}>('/login',{email,password})
-   sessionStorage.setItem('sarae-auth-token',v.access_token);window.dispatchEvent(new Event('sarae-auth-changed'));setToken(v.access_token);setPassword('')
-  })}}>
-   <label>Tên đăng nhập hoặc email<input required type="text" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)}/></label>
-   <label>Mật khẩu<input required type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label>
-   <button disabled={busy} type="submit">Đăng nhập</button>
-  </form>{error&&<p role="alert">{error}</p>}
- </section>
- return <section className="panel" style={{padding:24,display:'grid',gap:16}}>
-  <header><h2>Quản lý tài khoản và Agent</h2><p>{user.email} — {user.role}</p>
-   <button onClick={()=>{clearAuth();setToken('');setUser(null)}}>Đăng xuất</button>
-   <button disabled={busy} onClick={()=>void perform(()=>refresh())}>Làm mới</button></header>
-  {user.role==='SUPER_ADMIN'&&<section><h3>Khách hàng OWNER</h3><form onSubmit={e=>{e.preventDefault();void perform(async()=>{await request('/owners',{email:newEmail,password:newPassword,max_agents:maxAgents,expires_at:licenseEnd?new Date(licenseEnd).toISOString():null});setNewEmail('');setNewPassword('');await refresh()})}}>
-    <label>Email OWNER<input required type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)}/></label>
-    <label>Mật khẩu OWNER (tối thiểu 6 ký tự)<input required type="password" minLength={6} value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>
-    <label>Giới hạn Agent<input type="number" min={1} max={100} value={maxAgents} onChange={e=>setMaxAgents(+e.target.value)}/></label>
-    <label>License hết hạn (tùy chọn)<input type="datetime-local" value={licenseEnd} onChange={e=>setLicenseEnd(e.target.value)}/></label>
-    <button disabled={busy}>Tạo OWNER</button>
-   </form>{owners.map(o=><div key={o.id} style={{borderTop:'1px solid #8884',padding:'12px 0'}}>
-    <strong>{o.email}</strong> · Giới hạn {o.max_agents} máy · {o.enabled?'Đang hoạt động':'Đã khóa'}
-    <button disabled={busy} onClick={()=>void perform(async()=>{
-     const result=await request<{activation_key:string}>(`/owners/${o.id}/activation-keys`,{})
-     setActivation(result.activation_key)
-    })}>Cấp mã kích hoạt</button>
-    <div style={{display:'grid',gap:6,maxWidth:340,marginTop:8}}>
-     <label>Giới hạn máy<input type="number" min={1} max={100} value={o.max_agents} onChange={e=>setOwners(all=>all.map(x=>x.id===o.id?{...x,max_agents:Number(e.target.value)}:x))}/></label>
-     <label>Hết hạn license<input type="datetime-local" value={o.expires_at?.slice(0,16)||''} onChange={e=>setOwners(all=>all.map(x=>x.id===o.id?{...x,expires_at:e.target.value?new Date(e.target.value).toISOString():null}:x))}/></label>
-     <div><button disabled={busy} onClick={()=>void perform(async()=>{await request(`/owners/${o.id}/license`,{max_agents:o.max_agents,expires_at:o.expires_at,enabled:Boolean(o.enabled)},undefined,'PUT');await refresh()})}>Lưu license</button>
-     <button disabled={busy} onClick={()=>void perform(async()=>{await request(`/owners/${o.id}/license`,{max_agents:o.max_agents,expires_at:o.expires_at,enabled:!o.enabled},undefined,'PUT');await refresh()})}>{o.enabled?'Khóa license':'Mở license'}</button></div>
+  const toast = useToast()
+  const {agents} = useAgent()
+  const [account,setAccount] = useState<Account|null>(null)
+  const [error,setError] = useState('')
+  const [current,setCurrent] = useState('')
+  const [next,setNext] = useState('')
+  const [repeat,setRepeat] = useState('')
+  const [busy,setBusy] = useState(false)
+  const [confirmRevoke,setConfirmRevoke] = useState(false)
+
+  const load = useCallback(async ()=>{
+    try{setAccount(await apiRequest<Account>('/identity/account'));setError('')}
+    catch(e){setError(errorText(e, 'Không tải được thông tin tài khoản'))}
+  },[])
+  useEffect(()=>{void load()},[load])
+
+  const mismatch = repeat !== '' && repeat !== next
+  const tooShort = next !== '' && next.length < 8
+  const changePassword = async (event:FormEvent) => {
+    event.preventDefault()
+    if (mismatch || tooShort || !current) return
+    setBusy(true)
+    try{
+      await apiRequest('/identity/password', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({current_password:current, new_password:next})})
+      setCurrent('');setNext('');setRepeat('')
+      toast.push({tone:'success', title:'Đã đổi mật khẩu', description:'Các thiết bị khác đã được đăng xuất.'})
+      await load()
+    }catch(e){toast.push({tone:'danger', title:'Không đổi được mật khẩu', description:errorText(e, '')})}
+    finally{setBusy(false)}
+  }
+  const revokeOthers = async () => {
+    setConfirmRevoke(false);setBusy(true)
+    try{
+      const {revoked} = await apiRequest<{revoked:number}>('/identity/sessions/revoke-others', {method:'POST'})
+      toast.push({tone:'success', title:revoked ? `Đã đăng xuất ${revoked} phiên khác` : 'Không có phiên nào khác'})
+      await load()
+    }catch(e){toast.push({tone:'danger', title:'Không thực hiện được', description:errorText(e, '')})}
+    finally{setBusy(false)}
+  }
+
+  if (error) return <Alert tone="danger" title="Không tải được tài khoản">{error}</Alert>
+  if (!account) return <div className="acc-grid"><SkeletonCard lines={3}/><SkeletonCard lines={3}/></div>
+
+  const lic = account.license
+  const left = daysLeft(lic?.expires_at ?? null)
+  const max = lic?.max_agents ?? 0
+  const used = account.agents_used
+  const usage = max ? Math.min(100, Math.round(used / max * 100)) : 0
+  const licenseState = !lic ? {label:'Chưa có license', tone:'danger' as const}
+    : !lic.enabled ? {label:'License bị khóa', tone:'danger' as const}
+    : !lic.valid ? {label:'License hết hạn', tone:'danger' as const}
+    : left != null && left <= 7 ? {label:`Còn ${left} ngày`, tone:'warning' as const}
+    : {label:'Đang hiệu lực', tone:'success' as const}
+
+  return <div className="acc-page">
+    <section className="acc-hero">
+      <span className="acc-avatar">{account.email.slice(0, 1).toUpperCase()}</span>
+      <div className="acc-hero-text">
+        <small>TÀI KHOẢN CHỦ SHOP</small>
+        <h2>{account.email}</h2>
+        <div className="acc-hero-tags">
+          <Badge tone="primary"><UserRound size={12}/>OWNER</Badge>
+          <Badge tone={licenseState.tone} dot>{licenseState.label}</Badge>
+        </div>
+      </div>
+    </section>
+
+    {lic && (!lic.valid || (left != null && left <= 7)) && <Alert tone={lic.valid ? 'warning' : 'danger'} title={lic.valid ? 'License sắp hết hạn' : 'License không còn hiệu lực'}>
+      {lic.valid ? `License hết hạn vào ${dateTime(lic.expires_at)}.` : 'Các máy Windows không nhận lệnh và không thể bắt đầu LIVE.'} Liên hệ quản trị nền tảng để gia hạn.
+    </Alert>}
+
+    <div className="acc-stats">
+      <div className="acc-stat">
+        <span className="acc-stat-icon violet"><MonitorPlay size={19}/></span>
+        <div><small>Máy Windows</small><strong>{used}<em> / {max}</em></strong>
+          <div className="acc-meter" role="meter" aria-valuemin={0} aria-valuemax={max} aria-valuenow={used} aria-label="Số máy đã dùng"><span style={{width:`${usage}%`}} className={usage >= 100 ? 'is-full' : ''}/></div>
+          <em>{max - used > 0 ? `Còn ${max - used} chỗ kích hoạt` : 'Đã dùng hết số máy'}</em></div>
+      </div>
+      <div className="acc-stat">
+        <span className="acc-stat-icon mint"><CalendarClock size={19}/></span>
+        <div><small>Hạn license</small><strong>{lic?.expires_at ? new Date(lic.expires_at).toLocaleDateString('vi-VN') : 'Không thời hạn'}</strong>
+          <em>{left == null ? 'Dùng không giới hạn thời gian' : left > 0 ? `Còn ${left} ngày` : 'Đã hết hạn'}</em></div>
+      </div>
+      <div className="acc-stat">
+        <span className="acc-stat-icon blue"><KeyRound size={19}/></span>
+        <div><small>Phiên đăng nhập</small><strong>{account.sessions}</strong>
+          <em>Phiên này hết hạn {dateTime(account.session_expires_at)}</em></div>
+      </div>
     </div>
-   </div>)}
-  {activation&&<p><strong>Mã kích hoạt (chỉ hiện một lần):</strong><code style={{overflowWrap:'anywhere'}}>{activation}</code></p>}
-  </section>}
-  <section><h3>Thiết bị {user.role==='OWNER'?'của tôi':'trên hệ thống'}</h3>
-  {!agents.length?<p>Chưa có Agent được kích hoạt.</p>:agents.map(a=><div key={a.id} style={{borderTop:'1px solid #8884',padding:'12px 0'}}><strong>{a.hostname}</strong> — {a.id} · {a.enabled?'Được cấp quyền':'Đã khóa'}<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}><input value={renames[a.id]??a.hostname} onChange={e=>setRenames(x=>({...x,[a.id]:e.target.value}))}/><button disabled={busy} onClick={()=>void perform(async()=>{await request(`/agents/${a.id}`,{hostname:renames[a.id]??a.hostname},undefined,'PATCH');await refresh()})}>Đổi tên</button><button disabled={busy||!a.enabled} onClick={()=>{if(window.confirm('Thu hồi quyền kết nối Agent này?'))void perform(async()=>{await request(`/agents/${a.id}`,undefined,undefined,'DELETE');await refresh()})}}>Thu hồi Agent</button></div></div>)}</section>
-  {error&&<p role="alert">{error}</p>}
- </section>
+
+    <div className="acc-grid">
+      <Card title={<span className="acc-title"><ShieldCheck size={17}/>License</span>} description="Do quản trị nền tảng cấp. Liên hệ quản trị để thêm máy hoặc gia hạn.">
+        <dl className="acc-rows">
+          <div><dt>Trạng thái</dt><dd><Badge tone={licenseState.tone}>{licenseState.label}</Badge></dd></div>
+          <div><dt>Số máy tối đa</dt><dd>{max}</dd></div>
+          <div><dt>Đã kích hoạt</dt><dd>{used} máy</dd></div>
+          <div><dt>Hết hạn</dt><dd>{lic?.expires_at ? dateTime(lic.expires_at) : 'Không thời hạn'}</dd></div>
+        </dl>
+      </Card>
+
+      <Card title={<span className="acc-title"><MonitorPlay size={17}/>Máy Windows của bạn</span>} description="Mỗi máy chạy Sarae Agent cạnh OBS; video luôn nằm trên máy."
+        actions={<a className="acc-link" href="#/agents">Quản lý →</a>}>
+        {!agents.length ? <p className="acc-muted">Chưa có máy nào. Nhập mã kích hoạt do quản trị cấp trong ứng dụng Sarae Agent.</p>
+          : <ul className="acc-agents">{agents.map(a=><li key={a.id}>
+            <span className={'agent-dot' + (a.online ? ' is-online' : '')}/>
+            <span><strong>{a.hostname}</strong><small>{agentState(a)}</small></span>
+            <small>{a.last_seen ? dateTime(a.last_seen) : 'Chưa kết nối'}</small>
+          </li>)}</ul>}
+      </Card>
+
+      <Card className="acc-security" title={<span className="acc-title"><KeyRound size={17}/>Đổi mật khẩu</span>} description="Sau khi đổi, mọi thiết bị khác sẽ bị đăng xuất.">
+        <form className="acc-form" onSubmit={e=>void changePassword(e)}>
+          <PasswordInput label="Mật khẩu hiện tại" autoComplete="current-password" required value={current} onChange={e=>setCurrent(e.target.value)}/>
+          <PasswordInput label="Mật khẩu mới" autoComplete="new-password" required value={next} onChange={e=>setNext(e.target.value)}
+            error={tooShort ? 'Tối thiểu 8 ký tự' : undefined}/>
+          <PasswordInput label="Nhập lại mật khẩu mới" autoComplete="new-password" required value={repeat} onChange={e=>setRepeat(e.target.value)}
+            error={mismatch ? 'Không khớp với mật khẩu mới' : undefined}/>
+          <Button type="submit" loading={busy} disabled={!current || !next || mismatch || tooShort}>Đổi mật khẩu</Button>
+        </form>
+      </Card>
+
+      <Card title={<span className="acc-title"><ShieldAlert size={17}/>Phiên đăng nhập</span>} description="Trình duyệt / thiết bị đang đăng nhập tài khoản này.">
+        <div className="acc-sessions">
+          <strong>{account.sessions}</strong><span>phiên đang hoạt động (gồm phiên này)</span>
+        </div>
+        <p className="acc-muted">Nghi ngờ có người khác đăng nhập? Đăng xuất các thiết bị khác rồi đổi mật khẩu.</p>
+        <Button variant="outline" leftIcon={<LogOut size={15}/>} disabled={busy || account.sessions <= 1} onClick={()=>setConfirmRevoke(true)}>Đăng xuất thiết bị khác</Button>
+      </Card>
+    </div>
+
+    <ConfirmModal open={confirmRevoke} loading={busy} title="Đăng xuất các thiết bị khác?" confirmLabel="Đăng xuất"
+      description="Mọi trình duyệt khác đang đăng nhập tài khoản này sẽ phải đăng nhập lại. Tab hiện tại vẫn giữ nguyên."
+      onClose={()=>setConfirmRevoke(false)} onConfirm={()=>void revokeOthers()}/>
+  </div>
 }

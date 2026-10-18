@@ -27,9 +27,9 @@ const navigation: { title: string; items: { id: Page; title: string; icon: Lucid
   { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'tiktok-chat', title: 'TikTok Chat', icon: Bell }, { id: 'verification-monitor', title: 'CAPTCHA Monitor', icon: Activity }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
   { title: 'SYSTEM', items: [{ id: 'account', title: 'Tài khoản & License', icon: Users }, { id: 'agents', title: 'Windows Agents', icon: MonitorPlay }, { id: 'settings', title: 'Cài đặt', icon: Settings2 }] },
 ]
-const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & Agent', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
+const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & License', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
-  account: 'Đăng nhập, quản lý license và kích hoạt thiết bị theo SUPER_ADMIN / OWNER.',
+  account: 'Thông tin tài khoản, license và số máy được dùng, đổi mật khẩu và quản lý phiên đăng nhập.',
   agents: 'Các máy Windows chạy OBS của bạn: trạng thái, chọn máy cho tab này và lịch sử lệnh.',
   'verification-monitor': 'Phát hiện yêu cầu xác minh TikTok LIVE Studio, theo dõi sự kiện và nhận cảnh báo Telegram.',
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',

@@ -10,7 +10,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
 
@@ -64,7 +64,7 @@ def _prepare(db):
     db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_super_admin ON users(role) WHERE role='SUPER_ADMIN'""")
     db.execute("""CREATE TABLE IF NOT EXISTS user_sessions (
         token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at TEXT NOT NULL)""")
-    # Per-OWNER preferences (JSON): active Windows Agent, AI configuration…
+    # Per-OWNER preferences (JSON, nothing secret): AI configuration, AI batching… (never which Agent is in use)
     db.execute("""CREATE TABLE IF NOT EXISTS owner_settings (
         owner_id TEXT PRIMARY KEY,data TEXT NOT NULL DEFAULT '{}')""")
     return db
@@ -162,6 +162,47 @@ def login(body:Login):
 @router.get("/me")
 def me(authorization:str|None=Header(None)):
     return auth(authorization)
+
+@router.get("/account")
+def my_account(owner:dict=Depends(current_owner),authorization:str|None=Header(None)):
+    """The OWNER's own account: license, device slots used and sign-in sessions (read-only; SUPER_ADMIN edits licenses)."""
+    with db_open() as db:
+        lic=db.execute("SELECT max_agents,expires_at,enabled FROM licenses WHERE owner_id=?",(owner["id"],)).fetchone()
+        used=db.execute("SELECT COUNT(*) FROM registered_agents WHERE owner_id=? AND enabled=1",(owner["id"],)).fetchone()[0]
+        sessions=db.execute("SELECT COUNT(*) FROM user_sessions WHERE user_id=? AND expires_at>?",(owner["id"],now())).fetchone()[0]
+        current=db.execute("SELECT expires_at FROM user_sessions WHERE token_hash=?",(secret_hash(authorization[7:]),)).fetchone()
+    license_={"max_agents":lic["max_agents"],"expires_at":lic["expires_at"],"enabled":bool(lic["enabled"]),
+              "valid":bool(lic["enabled"]) and license_not_expired(lic["expires_at"])} if lic else None
+    return {"id":owner["id"],"email":owner["email"],"role":owner["role"],"license":license_,"agents_used":used,
+            "sessions":sessions,"session_expires_at":current["expires_at"] if current else None}
+
+class PasswordChange(BaseModel):
+    current_password:str=Field(min_length=1,max_length=256)
+    new_password:str=Field(min_length=8,max_length=256)
+
+@router.post("/password")
+def change_password(body:PasswordChange,authorization:str|None=Header(None)):
+    """Change one's own password; every other sign-in of the account is signed out, this one stays."""
+    user=auth(authorization)
+    with db_open() as db:
+        row=db.execute("SELECT password_hash,salt FROM users WHERE id=?",(user["id"],)).fetchone()
+        if not hmac.compare_digest(row["password_hash"],pass_hash(body.current_password,row["salt"])):
+            raise HTTPException(400,"Mật khẩu hiện tại không đúng")
+        if body.new_password==body.current_password:
+            raise HTTPException(422,"Mật khẩu mới phải khác mật khẩu hiện tại")
+        salt=secrets.token_hex(16)
+        db.execute("UPDATE users SET password_hash=?,salt=? WHERE id=?",(pass_hash(body.new_password,salt),salt,user["id"]))
+        db.execute("DELETE FROM user_sessions WHERE user_id=? AND token_hash<>?",(user["id"],secret_hash(authorization[7:])))
+    return {"ok":True}
+
+@router.post("/sessions/revoke-others")
+def revoke_other_sessions(authorization:str|None=Header(None)):
+    """Sign out every other browser / device of the account (this one stays signed in)."""
+    user=auth(authorization)
+    with db_open() as db:
+        count=db.execute("DELETE FROM user_sessions WHERE user_id=? AND token_hash<>?",
+                         (user["id"],secret_hash(authorization[7:]))).rowcount
+    return {"revoked":count}
 
 @router.post("/logout")
 def logout(authorization:str|None=Header(None)):
