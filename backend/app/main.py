@@ -19,19 +19,23 @@ from app.agent_media import router as agent_media_router
 from app.identity import router as identity_router
 from app.agent_library import router as agent_library_router
 from app.agent_playlists import router as agent_playlists_router
+from app.owner_agents import router as owner_agents_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
 @app.middleware("http")
 async def saas_legacy_guard(request, call_next):
-    """Fail closed for legacy single-tenant APIs in shared VPS deployments.
+    """Fail closed in shared VPS deployments for APIs not yet partitioned by OWNER.
 
-    Until products/live sessions/media are partitioned by OWNER, they MUST NOT
-    be reachable by any SaaS user or by guessing endpoint URLs.
+    Allowed: SaaS APIs and legacy modules already scoped per owner. Still blocked: server-side OBS
+    control (/api/live/* except sessions/products) and MP4 storage on the server (/api/media), which
+    move to the Windows Agent.
     """
     from fastapi.responses import JSONResponse
     path=request.url.path
-    safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists")
+    safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists", "/api/owner",
+          "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
+          "/api/live/sessions", "/api/live/products", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor")
     if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
         if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
             return JSONResponse(status_code=403,content={
@@ -65,6 +69,7 @@ app.include_router(cloud_agents_router)
 app.include_router(identity_router)
 app.include_router(agent_library_router)
 app.include_router(agent_playlists_router)
+app.include_router(owner_agents_router)
 
 
 @app.get("/api/health", tags=["System"])

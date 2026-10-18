@@ -7,18 +7,18 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.identity import current_owner
+from app.identity import current_owner, owner_settings, update_owner_settings
+from app.ownership import Owner
+from app.per_owner import PerOwner
 from pydantic import BaseModel, Field
 
-from app.database import DATA_DIR
 from app.config import settings
-from app.comment_processing import monitor
+from app.comment_processing import monitors
 
 router = APIRouter(prefix="/api/ai", tags=["AI / Comment Analysis"], dependencies=[Depends(current_owner)])
 
 
-CONFIG_PATH = DATA_DIR / "ai_config.json"
-LOCK = RLock()
+# Each OWNER configures their own AI (stored in owner_settings["ai"]); provider API keys stay on the server.
 DEFAULT = {"provider": "gemini", "model": "gemini-3.5-flash-lite",
            "enabled": False, "max_output_tokens": 220, "max_requests_per_session": 100}
 
@@ -35,30 +35,24 @@ class AnalyzeBody(BaseModel):
     product_name: str | None = Field(default=None, max_length=200)
     product_details: str | None = Field(default=None, max_length=1200)
 
-def load_config() -> AIConfig:
-    with LOCK:
-        if CONFIG_PATH.exists():
-            return AIConfig.model_validate(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
-        return AIConfig.model_validate(DEFAULT)
+def load_config(owner_id: str) -> AIConfig:
+    return AIConfig.model_validate(owner_settings(owner_id).get("ai") or DEFAULT)
 
-def public_config():
-    c = load_config()
+def public_config(owner_id: str):
+    c = load_config(owner_id)
     return {**c.model_dump(), "has_api_key": bool(settings.gemini_api_key if c.provider=="gemini" else settings.openai_api_key)}
 
 @router.get("/config")
-def read_config():
-    return public_config()
+def read_config(owner: Owner):
+    return public_config(owner["id"])
 
 @router.put("/config")
-def save_config(body: AIConfig):
-    with LOCK:
-        temp = CONFIG_PATH.with_suffix(".tmp")
-        temp.write_text(body.model_dump_json(indent=2), encoding="utf-8")
-        temp.replace(CONFIG_PATH)
-    return public_config()
+def save_config(body: AIConfig, owner: Owner):
+    update_owner_settings(owner["id"], ai=body.model_dump())
+    return public_config(owner["id"])
 
-# Counter never implies guaranteed provider quota; API provider enforces actual limits.
-COUNT = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
+# Per-OWNER counters for this Backend process. They never imply provider quota; the API provider enforces real limits.
+COUNTS = PerOwner(lambda _owner_id: {"requests": 0, "input_tokens": 0, "output_tokens": 0})
 COUNT_LOCK = RLock()
 ALLOWED_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_MATERIAL", "ASK_SHIPPING",
                    "ASK_STOCK", "SHOW_PRODUCT", "GENERAL", "OTHER"}
@@ -105,22 +99,28 @@ def call_openai(config, text, key):
     return raw, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 @router.get("/usage")
-def usage():
+def usage(owner: Owner):
     with COUNT_LOCK:
-        return COUNT.copy()
+        return COUNTS(owner["id"]).copy()
 
 @router.post("/analyze")
-def analyze(body: AnalyzeBody):
-    config = load_config()
+def analyze_endpoint(body: AnalyzeBody, owner: Owner):
+    return analyze(owner["id"], body)
+
+def analyze(owner_id: str, body: AnalyzeBody):
+    """One AI call on behalf of an OWNER (their config, counters and processing log)."""
+    config = load_config(owner_id)
+    count = COUNTS(owner_id)
+    monitor = monitors(owner_id)
     if not config.enabled:
         raise HTTPException(409, "AI chưa được bật trong cấu hình")
     key = settings.gemini_api_key if config.provider=="gemini" else settings.openai_api_key
     if not key:
         raise HTTPException(503, "Thiếu API key trong biến môi trường Backend")
     with COUNT_LOCK:
-        if COUNT["requests"] >= config.max_requests_per_session:
+        if count["requests"] >= config.max_requests_per_session:
             raise HTTPException(429, "Đã đạt giới hạn lượt gọi AI cho lần chạy Backend này")
-        COUNT["requests"] += 1
+        count["requests"] += 1
     start = time.monotonic()
     monitor.record("AI_REQUEST", config.model, body.comment, username=body.username)
     try:
@@ -138,8 +138,8 @@ def analyze(body: AnalyzeBody):
         parsed["reason"] = str(parsed.get("reason") or "")[:300]
         parsed["needs_review"] = bool(parsed.get("needs_review", False))
         with COUNT_LOCK:
-            COUNT["input_tokens"] += int(inp or 0)
-            COUNT["output_tokens"] += int(out or 0)
+            count["input_tokens"] += int(inp or 0)
+            count["output_tokens"] += int(out or 0)
         elapsed = round((time.monotonic()-start)*1000)
         monitor.record("AI_RESPONSE", intent, f"{parsed['reply']} | {elapsed}ms | input={inp} output={out}", username=body.username)
         return {"provider": config.provider, "model": config.model, "result": parsed,

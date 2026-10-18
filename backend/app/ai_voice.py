@@ -7,15 +7,17 @@ import asyncio
 from uuid import uuid4
 from threading import RLock
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.identity import current_owner
+from app.ownership import Owner
+from app.per_owner import PerOwner
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.database import DATA_DIR
 from app.live import state
-from app.comment_processing import monitor
+from app.comment_processing import monitor, monitors
 
 router = APIRouter(prefix="/api/ai/voice", tags=["AI LIVE Voice"], dependencies=[Depends(current_owner)])
 
@@ -25,6 +27,8 @@ VOICE_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_SOURCE = "Sarae Voice"
 VOICE = "vi-VN-HoaiMyNeural"
 voice_lock = RLock()
+# Previews are generated on the shared server; one at a time per OWNER.
+preview_locks = PerOwner(lambda _owner_id: RLock())
 
 class SpeakBody(BaseModel):
     text: str = Field(min_length=1, max_length=450)
@@ -32,7 +36,17 @@ class SpeakBody(BaseModel):
     obs_source: str = Field(default=VOICE_SOURCE, min_length=1, max_length=100)
 
 @router.post("/speak")
+def speak_on_agent(body: SpeakBody, owner: Owner, authorization: str | None = Header(None)):
+    """Read the text aloud on the OBS of the OWNER's own Windows Agent (it runs `speak` there)."""
+    from app.owner_agents import send_command
+    sent = send_command(owner, authorization, "tts_speak", {"text": body.text, "voice": body.voice})
+    monitors(owner["id"]).record("TTS_QUEUED", body.voice, f"Gửi tới Agent {sent['agent']['hostname']}: {body.text}")
+    return {"status": "sent_to_agent", "agent": sent["agent"], "command_id": sent["command_id"],
+            "voice": body.voice, "text": body.text}
+
+
 def speak(body: SpeakBody):
+    """Generate the MP3 and play it on the local OBS 'Sarae Voice' source (runs on the Windows Agent)."""
     # Do not queue unlimited overlapping speech; explicit operator action only.
     if not voice_lock.acquire(blocking=False):
         raise HTTPException(409, "TTS đang xử lý một yêu cầu khác")
@@ -74,8 +88,10 @@ class PreviewBody(BaseModel):
     voice: str = Field(default=VOICE, pattern=r"^vi-VN-(HoaiMy|NamMinh)Neural$")
 
 @router.post("/preview")
-def preview(body: PreviewBody):
+def preview(body: PreviewBody, owner: Owner):
     """Generate a Vietnamese MP3 for browser playback; OBS and LIVE are not required."""
+    monitor = monitors(owner["id"])
+    voice_lock = preview_locks(owner["id"])
     if not voice_lock.acquire(blocking=False):
         raise HTTPException(409, "Một yêu cầu tạo giọng nói khác đang chạy")
     try:

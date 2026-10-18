@@ -3,6 +3,7 @@
 Separate registry from legacy local media DB so existing single-user work stays intact.
 """
 import hashlib
+import json
 import hmac
 import secrets
 import sqlite3
@@ -63,7 +64,27 @@ def _prepare(db):
     db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_super_admin ON users(role) WHERE role='SUPER_ADMIN'""")
     db.execute("""CREATE TABLE IF NOT EXISTS user_sessions (
         token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at TEXT NOT NULL)""")
+    # Per-OWNER preferences (JSON): active Windows Agent, AI configuration…
+    db.execute("""CREATE TABLE IF NOT EXISTS owner_settings (
+        owner_id TEXT PRIMARY KEY,data TEXT NOT NULL DEFAULT '{}')""")
     return db
+
+def owner_settings(owner_id:str)->dict:
+    with db_open() as db:
+        row=db.execute("SELECT data FROM owner_settings WHERE owner_id=?",(owner_id,)).fetchone()
+    return json.loads(row["data"]) if row else {}
+
+def update_owner_settings(owner_id:str,**values)->dict:
+    """Merge `values` into the owner's settings (a None value removes the key)."""
+    with db_open() as db:
+        row=db.execute("SELECT data FROM owner_settings WHERE owner_id=?",(owner_id,)).fetchone()
+        data=json.loads(row["data"]) if row else {}
+        for key,value in values.items():
+            if value is None:data.pop(key,None)
+            else:data[key]=value
+        db.execute("""INSERT INTO owner_settings(owner_id,data) VALUES(?,?)
+            ON CONFLICT(owner_id) DO UPDATE SET data=excluded.data""",(owner_id,json.dumps(data,ensure_ascii=False)))
+    return data
 
 def auth(token:str|None):
     if not token or not token.startswith("Bearer "):

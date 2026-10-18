@@ -27,9 +27,15 @@ SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.l
 
 class SaasTestCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # cloud_agents.connection() leaves SQLite handles open (closed by GC); Windows may still hold the files.
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.identity_patch = patch.object(identity, "DB", Path(self.tmp.name) / "identity.sqlite3")
         self.identity_patch.start()
+        # SaaS registries live in their own SQLite files; keep them in the temp folder too.
+        self.saas_db_patches = [patch(f"app.{module}.DB", Path(self.tmp.name) / f"{module}.sqlite3")
+                                for module in ("cloud_agents", "agent_library", "agent_playlists")]
+        for p in self.saas_db_patches:
+            p.start()
         identity.bootstrap_admin("admin@example.test", "AdminSecretPassword123!")
         admin = identity.login(identity.Login(email="admin@example.test", password="AdminSecretPassword123!"))["access_token"]
         self.ADMIN = {"Authorization": "Bearer " + admin}
@@ -58,6 +64,22 @@ class SaasTestCase(unittest.TestCase):
         app.dependency_overrides.clear()
         for p in self.session_patches:
             p.stop()
+        for p in self.saas_db_patches:
+            p.stop()
         self.identity_patch.stop()
         self.engine.dispose()
         self.tmp.cleanup()
+
+    def activate_agent(self, owner, hostname="PC", online=True):
+        """Register an Agent for `owner` (as SUPER_ADMIN would) and, if online, record a fresh heartbeat."""
+        import json
+        from datetime import datetime, timezone
+        from app.cloud_agents import connection
+        key = identity.issue_key(owner["id"], authorization=self.ADMIN["Authorization"])["activation_key"]
+        agent = identity.activate(identity.Activate(activation_key=key, hostname=hostname))
+        if online:
+            with connection() as db:
+                db.execute("INSERT INTO agent_status VALUES(?,?,?,?)", (agent["agent_id"], hostname,
+                           datetime.now(timezone.utc).isoformat(), json.dumps({"verification": {"state": {"running": False, "status": "idle"}}})))
+                db.commit()
+        return agent

@@ -6,6 +6,8 @@ import threading
 import time
 import unicodedata
 
+from app.per_owner import PerOwner
+
 
 def normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
@@ -94,4 +96,7 @@ class Monitor:
                     "logs": [x for x in self.logs if x["id"] > after]}
 
 
+# Local process log, used where the code runs on the Windows Agent (e.g. playing TTS).
 monitor = Monitor()
+# One processing log per OWNER on the shared server.
+monitors = PerOwner(lambda _owner_id: Monitor())

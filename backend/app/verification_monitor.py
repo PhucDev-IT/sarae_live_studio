@@ -10,9 +10,10 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request, parse
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.identity import current_owner
+from app.ownership import Owner
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
 from app.config import settings
@@ -194,11 +195,9 @@ def loop():
     finally:
         with guard:state["running"]=False
 
-@router.get("/status")
 def status():
     with guard:return {"state":dict(state),"config":dict(config),"events":list(reversed(events))[:30]}
 
-@router.put("/config")
 def configure(body:ConfigBody):
     with guard:
         config.update(body.model_dump())
@@ -210,6 +209,7 @@ def configure(body:ConfigBody):
 
 @router.post("/template")
 def upload_template(body:TemplateBody):
+    local_templates_only()
     try:
         raw=base64.b64decode(body.png_base64.split(",")[-1],validate=True)
         if len(raw)>3_000_000:raise ValueError("Ảnh quá lớn")
@@ -225,7 +225,6 @@ def upload_template(body:TemplateBody):
     except RuntimeError as exc:raise HTTPException(503,str(exc))
     except Exception as exc:raise HTTPException(400,str(exc))
 
-@router.post("/start")
 def start():
     global worker,last_detection,positive_count,negative_count
     with guard:
@@ -240,7 +239,6 @@ def start():
     emit("monitor_started","Đã bắt đầu giám sát")
     return {"running":True}
 
-@router.post("/stop")
 def stop():
     stop_signal.set()
     with guard:state.update(running=False,status="stopped")
@@ -249,10 +247,12 @@ def stop():
 
 @router.get("/templates")
 def list_templates():
+    local_templates_only()
     return {"templates":[{"name":p.name,"bytes":p.stat().st_size} for p in all_templates()]}
 
 @router.delete("/templates/{name}")
 def delete_template(name:str):
+    local_templates_only()
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}\.png",name):
         raise HTTPException(400,"Tên ảnh không hợp lệ")
     target=template_dir/name
@@ -260,3 +260,41 @@ def delete_template(name:str):
     target.unlink()
     with guard:config["template_loaded"]=bool(all_templates())
     return {"deleted":name}
+
+
+# ---- Web API: each OWNER's monitor runs on their own Windows Agent; these endpoints talk to it. ----
+DEFAULT_CONFIG=ConfigBody().model_dump()|{"template_loaded":False}
+
+def local_templates_only():
+    """Template files live on the Agent's PC; the server copy only works when Backend and Agent share a machine."""
+    if settings.sarae_saas_mode:
+        raise HTTPException(409,"Ảnh mẫu CAPTCHA được quản lý trên máy Windows Agent; tính năng gửi mẫu qua web sẽ có ở bản Agent mới")
+
+@router.get("/status")
+def agent_status(owner:Owner):
+    from app.owner_agents import active_agent,public
+    agent=active_agent(owner["id"])
+    verification=(agent or {}).get("status",{}).get("verification") or {}
+    if agent is None:
+        state_={"running":False,"status":"no_agent","error":None}
+    elif not agent["online"]:
+        state_={**(verification.get("state") or {}),"running":False,"status":"agent_offline"}
+    else:
+        state_=verification.get("state") or {"running":False,"status":"idle","error":None}
+    return {"state":state_,"config":verification.get("config") or DEFAULT_CONFIG,
+            "events":verification.get("events") or [],"agent":public(agent)}
+
+@router.put("/config")
+def agent_configure(body:ConfigBody,owner:Owner,authorization:str|None=Header(None)):
+    from app.owner_agents import send_command
+    return {**send_command(owner,authorization,"monitor_config",body.model_dump()),"config":body.model_dump()}
+
+@router.post("/start")
+def agent_start(owner:Owner,authorization:str|None=Header(None)):
+    from app.owner_agents import send_command
+    return send_command(owner,authorization,"monitor_start")
+
+@router.post("/stop")
+def agent_stop(owner:Owner,authorization:str|None=Header(None)):
+    from app.owner_agents import send_command
+    return send_command(owner,authorization,"monitor_stop")

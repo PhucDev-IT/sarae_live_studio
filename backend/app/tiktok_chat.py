@@ -9,9 +9,11 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.identity import current_owner
+from app.ownership import Owner
+from app.per_owner import PerOwner
 from pydantic import BaseModel
 
-from app.comment_processing import monitor
+from app.comment_processing import monitors
 from app.ai_live_batches import enqueue
 
 router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"], dependencies=[Depends(current_owner)])
@@ -35,7 +37,10 @@ def parse_username(value: str) -> str:
 
 
 class Reader:
-    def __init__(self):
+    """One OWNER's connection to a public TikTok LIVE chat."""
+
+    def __init__(self, owner_id: str):
+        self.owner_id = owner_id
         self.lock = threading.RLock()
         self.messages = deque(maxlen=300)
         self.seq = 0
@@ -74,7 +79,7 @@ class Reader:
             self.room_id = None
             self.messages.clear()
             self.seq = 0
-            monitor.reset()
+            monitors(self.owner_id).reset()
             thread = threading.Thread(target=self._worker, args=(gen, username, TikTokLiveClient), daemon=True)
             thread.start()
 
@@ -113,9 +118,9 @@ class Reader:
                 }
                 self.messages.append(message)
                 event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
-                decision = monitor.process(message, event_id=event_id or None)
+                decision = monitors(self.owner_id).process(message, event_id=event_id or None)
                 if decision == 'selected':
-                    enqueue(message)
+                    enqueue(self.owner_id, message)
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event):
@@ -155,26 +160,28 @@ class Reader:
                 pass
 
 
-reader = Reader()
+readers = PerOwner(Reader)
 
 
 @router.post("/connect")
-def connect(body: ConnectPayload):
+def connect(body: ConnectPayload, owner: Owner):
+    reader = readers(owner["id"])
     reader.start(parse_username(body.username))
     return reader.snapshot()
 
 
 @router.post("/disconnect")
-def disconnect():
+def disconnect(owner: Owner):
+    reader = readers(owner["id"])
     reader.stop()
     return reader.snapshot()
 
 
 @router.get("/status")
-def status(after: int = 0):
-    return reader.snapshot(max(0, after))
+def status(owner: Owner, after: int = 0):
+    return readers(owner["id"]).snapshot(max(0, after))
 
 
 @router.get("/processing")
-def processing(after: int = 0):
-    return monitor.snapshot(max(0, after))
+def processing(owner: Owner, after: int = 0):
+    return monitors(owner["id"]).snapshot(max(0, after))
