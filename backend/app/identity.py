@@ -129,6 +129,41 @@ def logout(authorization:str|None=Header(None)):
         db.execute("DELETE FROM user_sessions WHERE token_hash=?",(secret_hash(authorization[7:]),))
     return {"ok":True}
 
+@router.get("/platform/summary")
+def platform_summary(authorization:str|None=Header(None)):
+    require_admin(authorization)
+    with db_open() as db:
+        owners_total=db.execute("SELECT COUNT(*) FROM users WHERE role='OWNER'").fetchone()[0]
+        owners_active=db.execute("SELECT COUNT(*) FROM users WHERE role='OWNER' AND active=1").fetchone()[0]
+        licenses=db.execute("SELECT enabled,expires_at FROM licenses").fetchall()
+        agents=db.execute("SELECT id,enabled FROM registered_agents").fetchall()
+    enabled=sum(1 for license in licenses if license["enabled"] and license_not_expired(license["expires_at"]))
+    upcoming=datetime.now(timezone.utc)+timedelta(days=7)
+    expiring=0
+    for license in licenses:
+        if license["enabled"] and license_not_expired(license["expires_at"]) and license["expires_at"]:
+            expiry=datetime.fromisoformat(license["expires_at"].replace("Z","+00:00"))
+            if expiry.tzinfo is None:expiry=expiry.replace(tzinfo=timezone.utc)
+            if expiry<=upcoming:expiring+=1
+    from app.cloud_agents import connection
+    with connection() as db:
+        last_seen={row[0]:row[1] for row in db.execute("SELECT agent_id,last_seen FROM agent_status")}
+    online=0
+    for agent in agents:
+        if not agent["enabled"]:continue
+        seen=last_seen.get(agent["id"])
+        if seen:
+            try:
+                at=datetime.fromisoformat(seen.replace("Z","+00:00"))
+                if (datetime.now(timezone.utc)-at).total_seconds()<35:online+=1
+            except (ValueError,TypeError):pass
+    active_agents=sum(1 for agent in agents if agent["enabled"])
+    return {"owners_total":owners_total,"owners_active":owners_active,
+            "licenses_enabled":enabled,"licenses_expiring_7d":expiring,
+            "agents_total":active_agents,"agents_online":online,
+            "agents_offline":active_agents-online,
+            "agents_revoked":len(agents)-active_agents}
+
 @router.post("/owners")
 def create_owner(body:CreateOwner,authorization:str|None=Header(None)):
     require_admin(authorization)
