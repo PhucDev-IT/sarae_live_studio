@@ -1,4 +1,5 @@
-"""Agent command channel: lifecycle (claim, lease, ack, timeout, idempotency, lanes), long-poll, events, validation.
+"""Agent command channel: lifecycle (claim, lease, ack, timeout, idempotency, lanes), long-poll, events, validation,
+typed Agent errors (X-Sarae-Error) and the CAPTCHA Telegram alert sent from heartbeats.
 
 Run: python -m unittest discover -s tests -p test_*.py
 """
@@ -10,6 +11,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -29,12 +31,12 @@ class AgentChannelBase(unittest.TestCase):
         agent_library.DB = root / "agent_library.sqlite3"
         agent_library.THUMB_DIR = root / "media_thumbs"
         identity.bootstrap_admin("admin@example.test", "AdminSecretPassword123!")
-        admin = "Bearer " + identity.login(identity.Login(
+        self.admin = admin = "Bearer " + identity.login(identity.Login(
             email="admin@example.test", password="AdminSecretPassword123!"))["access_token"]
         owner = identity.create_owner(identity.CreateOwner(
             email="owner@example.test", password="OwnerSecretPassword123!", max_agents=2), authorization=admin)
         self.owner_id = owner["id"]
-        key = identity.issue_key(self.owner_id, authorization=admin)["activation_key"]
+        self.activation_key = key = identity.issue_key(self.owner_id, authorization=admin)["activation_key"]
         device = identity.activate(identity.Activate(activation_key=key, hostname="PC-1"))
         self.agent_id, self.key = device["agent_id"], device["agent_credential"]
         self.owner_token = "Bearer " + identity.login(identity.Login(
@@ -42,6 +44,7 @@ class AgentChannelBase(unittest.TestCase):
         app = FastAPI()
         app.include_router(cloud_agents.router)
         app.include_router(agent_library.router)
+        app.include_router(identity.router)
         self.client = TestClient(app)
         self.headers = {"X-Sarae-Agent-Key": self.key}
 
@@ -442,6 +445,186 @@ class LibraryThumbnailTests(AgentChannelBase):
         self.assertEqual(self.sync([{**base, "thumb_jpeg_base64": "%%%"}]).status_code, 422)
         self.assertEqual(self.sync([base]).json()["synced"], 1)
         self.assertEqual(self.client.get("/api/agent-library/thumbs/../../x").status_code, 404)
+
+
+class AgentErrorCodeTests(AgentChannelBase):
+    """Agent-facing errors keep their status and detail and add X-Sarae-Error (agent-core cloud/client.py)."""
+
+    def assertError(self, response, status, code, detail):
+        self.assertEqual(response.status_code, status, response.text)
+        self.assertEqual(response.headers.get("X-Sarae-Error"), code)
+        self.assertEqual(response.json()["detail"], detail)
+
+    def license(self, **changes):
+        body = {"max_agents": 2, "expires_at": None, "enabled": True, **changes}
+        identity.update_license(self.owner_id, identity.LicenseUpdate(**body), authorization=self.admin)
+
+    def beat(self, key):
+        headers = {} if key is None else {"X-Sarae-Agent-Key": key}
+        return self.client.post("/api/agents/heartbeat", headers=headers,
+                                json={"agent_id": self.agent_id, "hostname": "PC-1"})
+
+    def activate(self, key):
+        return self.client.post("/api/identity/activate", json={"activation_key": key, "hostname": "PC-2"})
+
+    def test_verify_agent_codes(self):
+        invalid = "Agent không có license hợp lệ"
+        self.assertError(self.beat(None), 401, "AGENT_NOT_ACTIVATED", "Agent chưa kích hoạt")
+        self.assertError(self.beat("wrong-key"), 403, "AGENT_UNAUTHORIZED", invalid)
+        self.license(expires_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat())
+        self.assertError(self.beat(self.key), 403, "LICENSE_EXPIRED", invalid)
+        self.license(enabled=False)
+        self.assertError(self.beat(self.key), 403, "LICENSE_EXPIRED", invalid)
+        self.license()
+        self.assertEqual(self.beat(self.key).status_code, 200)
+        identity.revoke_agent(self.agent_id, authorization=self.admin)
+        self.assertError(self.beat(self.key), 403, "AGENT_REVOKED", invalid)
+        # Long-poll and events go through the same check.
+        self.assertError(self.client.get(f"/api/agents/commands/{self.agent_id}/next", headers=self.headers),
+                         403, "AGENT_REVOKED", invalid)
+        self.assertError(self.client.post("/api/agents/events", headers=self.headers,
+                                          json={"agent_id": self.agent_id, "events": []}),
+                         403, "AGENT_REVOKED", invalid)
+        # A wrong key for a revoked Agent says nothing about that Agent.
+        self.assertError(self.beat("wrong-key"), 403, "AGENT_UNAUTHORIZED", invalid)
+
+    def test_verify_agent_success_shape_unchanged(self):
+        self.assertEqual(set(identity.verify_agent(self.agent_id, self.key)), {"id", "owner_id", "enabled", "expires_at"})
+
+    def test_activation_codes(self):
+        invalid = "Mã kích hoạt không hợp lệ hoặc đã sử dụng"
+        self.assertError(self.activate("SARAE-ACT-" + "x" * 30), 403, "ACTIVATION_KEY_INVALID", invalid)
+        self.assertError(self.activate(self.activation_key), 403, "ACTIVATION_KEY_USED", invalid)
+        second = identity.issue_key(self.owner_id, authorization=self.admin)["activation_key"]
+        self.license(expires_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat())
+        self.assertError(self.activate(second), 403, "LICENSE_EXPIRED", "License đã hết hạn hoặc bị khóa")
+        self.license()
+        self.assertEqual(self.activate(second).status_code, 200)
+        third = identity.issue_key(self.owner_id, authorization=self.admin)["activation_key"]
+        self.assertError(self.activate(third), 409, "AGENT_LIMIT_REACHED", "Đã đạt giới hạn Agent của license")
+        # The failed attempts did not use up the key.
+        self.license(max_agents=3)
+        self.assertEqual(self.activate(third).status_code, 200)
+
+
+class CaptchaAlertTests(AgentChannelBase):
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+        self.token = patch.object(cloud_agents.settings, "sarae_telegram_bot_token", "123:TEST")
+        self.token.start()
+        self.sender = patch.object(cloud_agents, "send_telegram",
+                                   side_effect=lambda chat, text: self.sent.append((chat, text)))
+        self.sender.start()
+
+    def tearDown(self):
+        self.sender.stop()
+        self.token.stop()
+        super().tearDown()
+
+    @staticmethod
+    def wait_alerts():
+        for thread in threading.enumerate():
+            if thread.name == "sarae-captcha-alert":
+                thread.join(5)
+
+    def post_beat(self, status, enabled=True, chat="-100777", running=True, events=None):
+        verification = {"state": {"running": running, "status": status, "match_score": 0.91},
+                        "config": {"telegram_enabled": enabled, "telegram_chat_id": chat},
+                        "events": events or []}
+        return self.client.post("/api/agents/heartbeat", headers=self.headers, json={
+            "agent_id": self.agent_id, "hostname": "PC-1", "verification": verification})
+
+    def beat(self, status, **options):
+        response = self.post_beat(status, **options)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.wait_alerts()
+
+    def kinds(self):
+        return [text.splitlines()[0] for _, text in self.sent]
+
+    def test_alert_once_per_change(self):
+        self.beat("watching")
+        self.assertEqual(self.sent, [])
+        self.beat("captcha_detected", events=[{"at": "t", "kind": "captcha_detected", "detail": "Khớp mẫu, điểm 0.91"}])
+        self.assertEqual(len(self.sent), 1)
+        chat, text = self.sent[0]
+        self.assertEqual(chat, "-100777")
+        self.assertIn("Sarae LIVE | captcha_detected", text)
+        self.assertIn("PC-1", text)
+        self.assertIn("Khớp mẫu, điểm 0.91", text)
+        self.beat("captcha_detected")
+        self.beat("error")                   # a transient scan error while the CAPTCHA is still up
+        self.beat("window_unavailable")
+        self.beat("captcha_detected")
+        self.assertEqual(self.kinds(), ["Sarae LIVE | captcha_detected"])
+        self.beat("watching")
+        self.beat("watching")
+        self.assertEqual(self.kinds(), ["Sarae LIVE | captcha_detected", "Sarae LIVE | captcha_cleared"])
+        self.beat("captcha_detected")
+        self.assertEqual(self.kinds()[-1], "Sarae LIVE | captcha_detected")
+        self.assertEqual(len(self.sent), 3)
+
+    def test_first_heartbeat_already_detected_alerts(self):
+        self.beat("captcha_detected")
+        self.assertEqual(self.kinds(), ["Sarae LIVE | captcha_detected"])
+
+    def test_stopped_monitor_forgets_the_alert(self):
+        self.beat("captcha_detected")
+        self.beat("stopped", running=False)
+        self.assertEqual(len(self.sent), 1)     # stopping is not "cleared"
+        self.beat("captcha_detected")
+        self.assertEqual(len(self.sent), 2)
+
+    def test_no_alert_without_owner_telegram_config_or_token(self):
+        self.beat("captcha_detected", enabled=False)
+        self.beat("watching", enabled=False)
+        self.beat("captcha_detected", chat="  ")
+        self.beat("watching", chat="  ")
+        with patch.object(cloud_agents.settings, "sarae_telegram_bot_token", ""):
+            self.beat("captcha_detected")
+        self.assertEqual(self.sent, [])
+        # The change was seen while alerts were off: a later heartbeat does not re-send it.
+        self.beat("captcha_detected")
+        self.assertEqual(self.sent, [])
+
+    def test_alert_is_non_blocking_and_best_effort(self):
+        release = threading.Event()
+        with patch.object(cloud_agents, "send_telegram", side_effect=lambda *_: release.wait(10)):
+            started = time.monotonic()
+            self.assertEqual(self.post_beat("captcha_detected").status_code, 200)
+            self.assertLess(time.monotonic() - started, 5)
+            release.set()
+            self.wait_alerts()
+        with patch.object(cloud_agents, "send_telegram", side_effect=OSError("telegram down")), \
+                self.assertLogs("app.cloud_agents", "WARNING") as logs:
+            self.beat("watching")
+        self.assertIn("telegram down", logs.output[0])
+
+    def test_send_telegram_request(self):
+        self.sender.stop()
+        try:
+            with patch.object(cloud_agents.request, "urlopen") as urlopen:
+                cloud_agents.send_telegram("-100777", "Sarae LIVE | captcha_detected")
+        finally:
+            self.sender.start()
+        req = urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "https://api.telegram.org/bot123:TEST/sendMessage")
+        self.assertIn(b"chat_id=-100777", req.data)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 8)
+
+    def test_old_agent_status_table_gets_the_alert_column(self):
+        import sqlite3
+        cloud_agents.DB = Path(self.tmp.name) / "old_agents.sqlite3"
+        old = sqlite3.connect(cloud_agents.DB)
+        old.execute("CREATE TABLE agent_status (agent_id TEXT PRIMARY KEY, host TEXT NOT NULL, "
+                    "last_seen TEXT NOT NULL, status_json TEXT NOT NULL)")
+        old.execute("INSERT INTO agent_status VALUES(?,?,?,?)",
+                    (self.agent_id, "PC-1", "2026-01-01T00:00:00+00:00", "{}"))
+        old.commit()
+        old.close()
+        self.beat("captcha_detected")
+        self.assertEqual(len(self.sent), 1)
 
 
 if __name__ == "__main__":

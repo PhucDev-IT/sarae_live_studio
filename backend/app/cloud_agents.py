@@ -30,6 +30,7 @@ Web side (OWNER):
 """
 import asyncio
 import hmac
+import logging
 import sqlite3
 import json
 import threading
@@ -38,13 +39,16 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Literal
+from urllib import parse, request
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from app.config import settings
 from app.database import DATA_DIR
 from app.identity import auth, allow_owner, verify_agent, db_open, license_not_expired
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 DB = DATA_DIR / "agents.sqlite3"
 ONLINE_SECONDS = 35
@@ -85,6 +89,8 @@ def connection():
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
        agent_id TEXT PRIMARY KEY, host TEXT NOT NULL, last_seen TEXT NOT NULL,
        status_json TEXT NOT NULL)""")
+    if "captcha_alert" not in {row[1] for row in db.execute("PRAGMA table_info(agent_status)")}:
+        db.execute("ALTER TABLE agent_status ADD COLUMN captcha_alert TEXT")
     columns={row[1] for row in db.execute("PRAGMA table_info(agent_commands)")}
     if columns and "status" not in columns:
         # Pre-production schema without a lifecycle: nothing in it is worth keeping.
@@ -163,17 +169,71 @@ def _without_paths(verification:dict)->dict:
         state["window_info"]={**info,"exe_path":str(info["exe_path"]).replace("\\","/").rsplit("/",1)[-1]}
     return {**verification,"state":state} if verification else verification
 
+# ----- CAPTCHA alert --------------------------------------------------------------------------------
+# The Agent never holds the Telegram bot token: the Cloud sends the alert when a heartbeat shows the monitor's status
+# change. agent_status.captcha_alert keeps the last alert sent ("detected"/"cleared"), so a heartbeat in between
+# (error, window_unavailable) does not send the same alert again.
+
+def captcha_transition(previous:str|None,verification:dict)->tuple[str|None,str|None]:
+    """Return (alert state to store, alert kind to send now or None) for one heartbeat."""
+    state=verification.get("state") if isinstance(verification,dict) else None
+    state=state if isinstance(state,dict) else {}
+    status=state.get("status")
+    if status=="captcha_detected":
+        return ("detected",None) if previous=="detected" else ("detected","captcha_detected")
+    if status=="watching" and previous=="detected":
+        return "cleared","captcha_cleared"
+    if not state.get("running",True) or status in ("idle","stopped","starting"):
+        return None,None    # monitor stopped: a CAPTCHA seen after the next start is a new one
+    return previous,None
+
+def captcha_message(kind:str,hostname:str,verification:dict,at:str)->str:
+    events=verification.get("events") if isinstance(verification.get("events"),list) else []
+    detail=next((e.get("detail") for e in events if isinstance(e,dict) and e.get("kind")==kind and e.get("detail")),
+                None) or ("Phát hiện CAPTCHA trên TikTok LIVE Studio" if kind=="captcha_detected"
+                          else "Không còn thấy mẫu CAPTCHA; chưa xác minh đã giải thành công.")
+    return f"Sarae LIVE | {kind}\nMáy: {hostname}\n{detail}\n{at}"
+
+def send_telegram(chat_id:str,text:str):
+    token=settings.sarae_telegram_bot_token.strip()
+    req=request.Request("https://api.telegram.org/bot"+token+"/sendMessage",
+                        data=parse.urlencode({"chat_id":chat_id,"text":text}).encode(),method="POST")
+    request.urlopen(req,timeout=8).close()
+
+def _alert(agent_id:str,chat_id:str,text:str):
+    try:
+        send_telegram(chat_id,text)
+    except Exception as exc:  # best effort: a Telegram outage must never affect the Agent channel
+        log.warning("Telegram CAPTCHA alert for %s failed: %s",agent_id,str(exc)[:160])
+
+def alert_captcha(agent_id:str,kind:str,hostname:str,verification:dict,at:str)->bool:
+    """Send the alert in the background when the OWNER enabled Telegram in the monitor config; True if started."""
+    config=verification.get("config") if isinstance(verification.get("config"),dict) else {}
+    chat_id=str(config.get("telegram_chat_id") or "").strip()
+    if config.get("telegram_enabled") is not True or not chat_id or not settings.sarae_telegram_bot_token.strip():
+        return False
+    threading.Thread(target=_alert,args=(agent_id,chat_id,captcha_message(kind,hostname,verification,at)),
+                     daemon=True,name="sarae-captcha-alert").start()
+    return True
+
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     agent=verify_agent(body.agent_id, x_sarae_agent_key)
     at=_now()
-    sanitized={"verification":_without_paths(body.verification),"obs":body.obs,"local_playback":body.local_playback,
+    verification=_without_paths(body.verification)
+    sanitized={"verification":verification,"obs":body.obs,"local_playback":body.local_playback,
                "playback":body.playback}
     with _db() as db:
-        db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json)
-                      VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
-                      host=excluded.host,last_seen=excluded.last_seen,status_json=excluded.status_json""",
-                      (body.agent_id,body.hostname,at,json.dumps(sanitized,ensure_ascii=False)))
+        db.execute("BEGIN IMMEDIATE")
+        row=db.execute("SELECT captcha_alert FROM agent_status WHERE agent_id=?",(body.agent_id,)).fetchone()
+        captcha_alert,alert_kind=captcha_transition(row["captcha_alert"] if row else None,verification)
+        db.execute("""INSERT INTO agent_status(agent_id, host, last_seen, status_json, captcha_alert)
+                      VALUES(?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
+                      host=excluded.host,last_seen=excluded.last_seen,status_json=excluded.status_json,
+                      captcha_alert=excluded.captcha_alert""",
+                      (body.agent_id,body.hostname,at,json.dumps(sanitized,ensure_ascii=False),captcha_alert))
+    if alert_kind:
+        alert_captcha(body.agent_id,alert_kind,body.hostname,verification,at)
     # Compare what the Agent really plays with the Cloud's LIVE sessions (e.g. after a reconnect or restart).
     from app.live_sessions import reconcile_playback
     reconcile_playback(agent["owner_id"],body.agent_id,body.playback or {})

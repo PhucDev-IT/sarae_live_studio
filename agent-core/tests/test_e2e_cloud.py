@@ -115,8 +115,7 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
     try:
         other.wait_event("core.ready", 30)
         reused = other.request("activation.activate", {"activation_key": key, "cloud_url": cloud.url}, timeout=30)
-        # ACTIVATION_KEY_USED once the Cloud sends X-Sarae-Error; the same 403 detail otherwise.
-        assert reused["error"]["code"] in ("ACTIVATION_KEY_USED", "ACTIVATION_KEY_INVALID")
+        assert reused["error"]["code"] == "ACTIVATION_KEY_USED"  # X-Sarae-Error tells it apart from a wrong key
     finally:
         other.close()
 
@@ -187,8 +186,7 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
         mark = core.mark()
         assert httpx.delete(f"{cloud.url}/identity/agents/{agent_id}", headers=owner_auth).status_code == 200
         revoked = core.wait_event("agent.status_changed", 40, lambda d: d["state"] == "error", since=mark)
-        # verify_agent answers 403 for a revoked Agent too; AGENT_REVOKED needs X-Sarae-Error on the Cloud.
-        assert revoked["data"]["error"]["code"] in ("AGENT_REVOKED", "LICENSE_EXPIRED")
+        assert revoked["data"]["error"]["code"] == "AGENT_REVOKED"  # same 403 as an expired license, typed header
         assert core.request("agent.stop")["result"]["state"] == "stopped"
     finally:
         assert core.close() == 0

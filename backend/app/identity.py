@@ -118,17 +118,28 @@ def require_admin(token):
     if user["role"]!="SUPER_ADMIN":raise HTTPException(403,"Chỉ SUPER_ADMIN")
     return user
 
+def agent_error(status:int,detail:str,code:str)->HTTPException:
+    """Error for Agent-facing endpoints: `detail` stays human text, X-Sarae-Error carries a stable code the Agent
+    (agent-core cloud/client.py) acts on, e.g. AGENT_REVOKED → stop and ask to re-activate."""
+    return HTTPException(status,detail,headers={"X-Sarae-Error":code})
+
 def verify_agent(agent_id:str,credential:str|None):
-    if not credential:raise HTTPException(401,"Agent chưa kích hoạt")
+    if not credential:raise agent_error(401,"Agent chưa kích hoạt","AGENT_NOT_ACTIVATED")
     with db_open() as db:
-        row=db.execute("""SELECT a.id,a.owner_id,l.enabled,l.expires_at
+        row=db.execute("""SELECT a.id,a.owner_id,a.enabled AS agent_enabled,u.active AS owner_active,
+          l.enabled,l.expires_at
           FROM registered_agents a JOIN licenses l ON l.owner_id=a.owner_id
           JOIN users u ON u.id=a.owner_id
-          WHERE a.id=? AND a.credential_hash=? AND a.enabled=1 AND u.active=1""",
+          WHERE a.id=? AND a.credential_hash=?""",
           (agent_id,secret_hash(credential))).fetchone()
-    if not row or not row["enabled"] or not license_not_expired(row["expires_at"]):
-        raise HTTPException(403,"Agent không có license hợp lệ")
-    return dict(row)
+    if not row:code="AGENT_UNAUTHORIZED"
+    elif not row["agent_enabled"]:code="AGENT_REVOKED"
+    # A locked OWNER account blocks its Agents like a locked license.
+    elif not row["owner_active"] or not row["enabled"] or not license_not_expired(row["expires_at"]):
+        code="LICENSE_EXPIRED"
+    else:
+        return {k:row[k] for k in ("id","owner_id","enabled","expires_at")}
+    raise agent_error(403,"Agent không có license hợp lệ",code)
 
 class Login(BaseModel):
     email:str
@@ -281,17 +292,19 @@ def issue_key(owner_id:str,authorization:str|None=Header(None)):
 def activate(body:Activate):
     with db_open() as db:
         db.execute("BEGIN IMMEDIATE")
-        row=db.execute("""SELECT k.owner_id,l.max_agents,l.expires_at,l.enabled
+        row=db.execute("""SELECT k.owner_id,k.used_at,l.max_agents,l.expires_at,l.enabled
           FROM activation_keys k JOIN licenses l ON l.owner_id=k.owner_id
           JOIN users u ON u.id=k.owner_id
-          WHERE k.key_hash=? AND k.used_at IS NULL AND u.active=1""",
+          WHERE k.key_hash=? AND u.active=1""",
           (secret_hash(body.activation_key),)).fetchone()
-        if row is None:raise HTTPException(403,"Mã kích hoạt không hợp lệ hoặc đã sử dụng")
+        if row is None or row["used_at"] is not None:
+            raise agent_error(403,"Mã kích hoạt không hợp lệ hoặc đã sử dụng",
+                              "ACTIVATION_KEY_INVALID" if row is None else "ACTIVATION_KEY_USED")
         if not row["enabled"] or not license_not_expired(row["expires_at"]):
-            raise HTTPException(403,"License đã hết hạn hoặc bị khóa")
+            raise agent_error(403,"License đã hết hạn hoặc bị khóa","LICENSE_EXPIRED")
         count=db.execute("SELECT COUNT(*) FROM registered_agents WHERE owner_id=? AND enabled=1",
                          (row["owner_id"],)).fetchone()[0]
-        if count>=row["max_agents"]:raise HTTPException(409,"Đã đạt giới hạn Agent của license")
+        if count>=row["max_agents"]:raise agent_error(409,"Đã đạt giới hạn Agent của license","AGENT_LIMIT_REACHED")
         aid="agt_"+uuid.uuid4().hex
         credential=secrets.token_urlsafe(40)
         db.execute("INSERT INTO registered_agents VALUES(?,?,?,?,1,?)",

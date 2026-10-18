@@ -79,7 +79,7 @@ class SaasTestCase(unittest.TestCase):
         agent = identity.activate(identity.Activate(activation_key=key, hostname=hostname))
         if online:
             with connection() as db:
-                db.execute("INSERT INTO agent_status VALUES(?,?,?,?)", (agent["agent_id"], hostname,
+                db.execute("INSERT INTO agent_status(agent_id, host, last_seen, status_json) VALUES(?,?,?,?)", (agent["agent_id"], hostname,
                            datetime.now(timezone.utc).isoformat(), json.dumps({"verification": {"state": {"running": False, "status": "idle"}}})))
                 db.commit()
         return agent
