@@ -56,9 +56,13 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | `obs.connect` | `{host?,port?,password?}` | Trạng thái OBS |
 | `obs.disconnect` | — | Trạng thái OBS |
 | `playback.status` / `.pause` / `.resume` / `.stop` / `.next` / `.previous` | — | `PlaybackStatus` |
-| `playback.play` | `{media_id}` | `PlaybackStatus` |
+| `playback.play` | `{media_id}` | `PlaybackStatus` (`PLAYBACK_CONFLICT` nếu đang phát: dừng trước) |
 | `playback.playlist` | `{media_ids[1..300], loop?}` | `PlaybackStatus` |
-| `playback.loop` | `{loop}` | `PlaybackStatus` |
+| `playback.loop` | `{loop}` | `PlaybackStatus` (phiên sản phẩm luôn lặp) |
+
+`PlaybackStatus` = `PlaybackEngine.status()` (đúng dữ liệu gửi lên Cloud: `running`, `queue_ids`, `session_mode`, `product_id`,
+`pending_product_id`, `obs{…, has_password}`…) cộng các trường cho GUI: `active`, `media_ids`, `current_media_id`,
+`current_filename`, `last_error`, `started_at`, `needs_manual_resume`, `source`.
 | `monitor.status` / `.start` / `.stop` | — | `{state, config, events, templates}` |
 | `monitor.config` | `{interval_seconds?,threshold?,telegram_enabled?,telegram_chat_id?,autostart?}` | Cấu hình monitor |
 | `monitor.templates.list` / `.add {path}` / `.remove {name}` | | Ảnh mẫu |
@@ -92,44 +96,49 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | IPC | `INVALID_JSON`, `INVALID_FRAME`, `INVALID_REQUEST_ID`, `INVALID_PARAMS`, `METHOD_NOT_FOUND`, `UNSUPPORTED_VERSION`, `FRAME_TOO_LARGE`, `INTERNAL_ERROR` |
 | Rust shell | `CORE_NOT_READY`, `CORE_TIMEOUT`, `CORE_EXITED`, `CORE_IO_ERROR`, `CORE_CRASHED`, `CORE_KILLED`, `CORE_ALREADY_RUNNING` |
 | Kích hoạt | `ACTIVATION_KEY_INVALID`, `ACTIVATION_KEY_USED`, `LICENSE_EXPIRED`, `AGENT_LIMIT_REACHED`, `ALREADY_ACTIVATED`, `ACTIVATION_IN_PROGRESS`, `DPAPI_FAILED`, `CREDENTIAL_CORRUPT` |
-| Cloud | `CLOUD_URL_MISSING`, `CLOUD_URL_MISMATCH`, `CLOUD_UNREACHABLE`, `CLOUD_TIMEOUT`, `CLOUD_SERVER_ERROR`, `CLOUD_BAD_RESPONSE`, `CLOUD_VALIDATION_ERROR`, `AGENT_UNAUTHORIZED`, `AGENT_REVOKED`, `AGENT_NOT_ACTIVATED`, `AGENT_RUNNING`, `COMMAND_NOT_RUNNING` |
+| Cloud | `CLOUD_URL_MISSING`, `CLOUD_URL_MISMATCH`, `CLOUD_UNREACHABLE`, `CLOUD_TIMEOUT`, `CLOUD_SERVER_ERROR`, `CLOUD_BAD_RESPONSE`, `CLOUD_VALIDATION_ERROR`, `AGENT_UNAUTHORIZED`, `AGENT_REVOKED`, `AGENT_NOT_ACTIVATED`, `AGENT_RUNNING`, `AGENT_ALREADY_RUNNING`, `AGENT_NOT_CONNECTED`, `ACK_REJECTED` |
 | Media | `FOLDER_NOT_FOUND`, `FOLDER_TOO_BROAD`, `FOLDER_ALREADY_ADDED`, `FOLDER_NOT_IN_LIST`, `FOLDER_LIMIT`, `SCAN_IN_PROGRESS`, `INVALID_MEDIA_ID`, `MEDIA_NOT_INDEXED`, `MEDIA_FILE_MISSING`, `MEDIA_OUTSIDE_ALLOWED`, `MEDIA_NOT_ALLOWED` |
-| OBS/Playlist | `OBS_NOT_RUNNING`, `OBS_AUTH_FAILED`, `OBS_TIMEOUT`, `OBS_CONNECT_FAILED`, `OBS_DISCONNECTED`, `OBS_INPUT_MISSING`, `OBS_REQUEST_FAILED`, `OBS_NOT_APPLIED`, `PLAYLIST_EMPTY`, `PLAYLIST_TOO_LONG`, `PLAYLIST_DUPLICATE`, `NO_PLAYABLE_MEDIA`, `PLAYBACK_NOT_ACTIVE` |
+| OBS/Phát | `OBS_NOT_RUNNING`, `OBS_AUTH_FAILED`, `OBS_TIMEOUT`, `OBS_CONNECT_FAILED`, `OBS_DISCONNECTED`, `OBS_INPUT_MISSING`, `OBS_REQUEST_FAILED`, `OBS_NOT_APPLIED`, `OBS_UNAVAILABLE` (503), `PLAYBACK_CONFLICT` (409), `INVALID_REQUEST` (422) — `PlaybackError` giữ `status_code` của engine Cloud |
 | Monitor/TTS | `MONITOR_UNSUPPORTED`, `MONITOR_DEPENDENCY_MISSING`, `TEMPLATE_MISSING`, `INVALID_TEMPLATE`, `TTS_BUSY`, `TTS_TIMEOUT`, `TTS_FAILED`, `TTS_UNAVAILABLE` |
 | Lệnh Cloud | `UNSUPPORTED_COMMAND`, `INVALID_COMMAND_PAYLOAD` |
 
 ## 5. Cloud API dùng bởi Agent
 
-Base URL người dùng nhập, chuẩn hoá về `https://<host>[/prefix]/api` (HTTP chỉ cho localhost).
-Agent xác thực bằng `X-Sarae-Agent-Key: <agent_credential>` + `agent_id` đã đăng ký. Lỗi có header **`X-Sarae-Error`**
-(mã máy đọc) bên cạnh `detail` (tiếng Việt cho Web).
+Nguồn chuẩn: `backend/app/cloud_agents.py` (+ `identity.py`, `agent_library.py`). Base URL người dùng nhập, chuẩn hoá về
+`https://<host>[/prefix]/api` (HTTP chỉ cho localhost). Agent xác thực bằng `X-Sarae-Agent-Key: <agent_credential>` +
+`agent_id` đã đăng ký. Mã lỗi Agent suy ra từ HTTP status + endpoint; nếu Cloud gửi header `X-Sarae-Error` thì dùng mã đó.
 
 | API | Actor | Ghi chú |
 |---|---|---|
-| `POST /api/identity/activate` `{activation_key, hostname}` | Agent (chưa có credential) | → `{agent_id, agent_credential, owner_id}`; lỗi `ACTIVATION_KEY_INVALID`/`_USED` 403, `LICENSE_EXPIRED` 403, `AGENT_LIMIT_REACHED` 409 |
-| `POST /api/agents/heartbeat` `{agent_id, hostname, verification, obs, local_playback, agent}` | Agent | 401 `AGENT_UNAUTHORIZED`/`AGENT_NOT_ACTIVATED`, 403 `AGENT_REVOKED`/`LICENSE_EXPIRED` |
-| `GET /api/agents/commands/{agent_id}/next` | Agent | `{command:{command_id, kind, payload, attempt} \| null}` |
-| `POST /api/agents/commands/ack` `{agent_id, command_id, status, result, success?}` | Agent | `status` ∈ accepted/running/succeeded/failed; ACK cuối lặp lại → `idempotent:true`; 404 `COMMAND_NOT_RUNNING` |
-| `POST /api/agent-library/sync` `{agent_id, videos[≤10000]}` | Agent | Chỉ `media_id, filename, size_bytes, modified_ns` |
+| `POST /api/identity/activate` `{activation_key, hostname}` | Agent (chưa có credential) | → `{agent_id, agent_credential, owner_id}`; 403 → `ACTIVATION_KEY_INVALID` (hoặc `LICENSE_EXPIRED`), 409 → `AGENT_LIMIT_REACHED` |
+| `POST /api/agents/heartbeat` `{agent_id, hostname, verification, obs, local_playback, playback}` | Agent | `playback` = `PlaybackEngine.status()`; Cloud đối chiếu phiên LIVE với nó. 401 → `AGENT_UNAUTHORIZED`, 403 → `LICENSE_EXPIRED` (cả Agent bị thu hồi) — đều dừng worker |
+| `GET /api/agents/commands/{agent_id}/next?wait=0..25` | Agent | Long-poll; `{command:{command_id, kind, payload, claim_token, attempt, expires_at} \| null}` |
+| `POST /api/agents/commands/ack` `{agent_id, command_id, claim_token, success, result}` | Agent | `result` ≤ 65000 ký tự (JSON khi thành công, thông điệp lỗi khi thất bại); ACK lặp → `duplicate:true`; ACK trễ → `late:true`; 404/409 → `ACK_REJECTED` |
+| `POST /api/agents/events` `{agent_id, events[≤200]:{seq, type, session_id, product_id, detail}}` | Agent | `type` ∈ `PRODUCT_SWITCHED`/`PLAYBACK_ENDED`/`ERROR`; `seq` trùng bị bỏ qua |
+| `POST /api/agent-library/sync` `{agent_id, videos[≤10000]}` | Agent | `media_id, filename, size_bytes, modified_ns`, tuỳ chọn `duration_seconds`, `thumb_jpeg_base64` (JPEG ≤ 40 KB); trả `thumbs_missing` |
 | `GET /api/agents/status` | OWNER/SUPER_ADMIN (Bearer) | Chỉ Agent thuộc quyền |
-| `POST /api/agents/commands` `{agent_id, kind, payload}` | **Chỉ OWNER sở hữu** | 409 `AGENT_OFFLINE` nếu heartbeat > 35 s |
-| `GET /api/agents/commands?agent_id=` | OWNER/SUPER_ADMIN | 30 lệnh gần nhất + `attempts` |
-| `GET /api/agent-library/{agent_id}` | OWNER/SUPER_ADMIN | Danh sách video |
-| `GET/POST/PUT/DELETE /api/agent-playlists`, `POST /api/agent-playlists/{id}/play` | OWNER (ghi), SUPER_ADMIN chỉ đọc | `media_ids` phải đang `available` trên Agent đó |
+| `POST /api/agents/{agent_id}/commands` `{kind, payload, idempotency_key?, wait?}` | **Chỉ OWNER sở hữu** | `Idempotency-Key` trùng → cùng lệnh; 409 nếu Agent offline |
+| `GET /api/agents/{agent_id}/commands[/{command_id}]`, `POST …/{command_id}/cancel` | OWNER | Trạng thái `PENDING/RUNNING/SUCCESS/FAILED/TIMEOUT/CANCELLED` |
+| `GET /api/agent-library/{agent_id}` | OWNER/SUPER_ADMIN | Danh sách video + `duration_seconds`, `thumb_url` |
 
 ### Kiểu lệnh (`kind`) và payload
 
-| kind | payload | Hành động trên Agent |
-|---|---|---|
-| `local_playlist_start` | `{media_ids[1..300] (hex64, không trùng), loop}` | Thay playlist hiện tại, phát từ đầu |
-| `local_media_play` | `{media_id}` | Phát 1 video, không lặp |
-| `local_media_next` / `local_media_previous` / `local_media_stop` | `{}` | Điều khiển playlist |
-| `obs_pause` / `obs_resume` / `obs_next` / `obs_previous` / `obs_stop` | `{}` | Như trên (tên cũ, giữ tương thích Web) |
-| `local_playback_loop` | `{loop: bool}` | Bật/tắt lặp |
-| `obs_status` | `{}` | Trả về trạng thái OBS + playlist |
-| `tts_speak` | `{text 1..450, voice ∈ vi-VN-HoaiMyNeural/NamMinhNeural}` | Đọc qua nguồn OBS giọng nói |
-| `monitor_start` / `monitor_stop` | `{}` | Bật/tắt CAPTCHA Monitor |
-| `monitor_config` | `{interval_seconds 0.5..15, threshold 0.65..0.99, telegram_enabled, telegram_chat_id}` | Lưu cấu hình monitor |
-| `media_sync` | `{}` | Quét lại thư mục và đồng bộ metadata |
+Lane `background`: `tts_speak`, `media_rescan`, `monitor_*`; còn lại lane `live`. Cloud chỉ giao lại (khi mất ACK) các kind
+idempotent (`obs_status`, `obs_inputs`, `obs_configure`, `media_rescan`, `monitor_*`, pause/resume/stop/cancel_pending).
 
-Payload được kiểm tra **hai lần**: Cloud (`agent_contract.py`, 422) và Agent (`cloud/commands.py`, `INVALID_COMMAND_PAYLOAD`).
+| kind | payload | Hành động trên Agent (`PlaybackEngine` trừ khi ghi khác) |
+|---|---|---|
+| `product_play` | `{session_id ≥1, product_id ≥1, media_ids[1..300], mode ∈ immediate/after_current}` | Bắt đầu phiên sản phẩm hoặc chuyển sản phẩm (ngay / sau video hiện tại → `PRODUCT_SWITCHED`) |
+| `playback_cancel_pending` | `{}` | Bỏ sản phẩm đang chờ |
+| `playback_pause` / `_resume` / `_next` / `_previous` / `_stop` | `{}` | Điều khiển phát |
+| `playback_select` / `playback_seek` | `{index 0..9999}` / `{ms 0..86400000}` | Chọn video / tua (422 nếu quá thời lượng) |
+| `local_playlist_start` / `local_media_play` | `{media_ids, loop}` / `{media_id}` | Phát playlist / 1 video (409 nếu đang phát) |
+| `local_media_next` / `local_media_stop`, `obs_pause` / `obs_resume` / `obs_next` / `obs_previous` / `obs_stop` | `{}` | Tên cũ, giữ tương thích Web |
+| `obs_status` | `{}` | `PlaybackEngine.status()` |
+| `obs_configure` | `{host (localhost), port, password, input_name, dual_mode, source_a, source_b}` | Lưu vào `config.json` + mật khẩu DPAPI (rỗng = giữ); trả status, không bao giờ trả mật khẩu |
+| `obs_inputs` | `{host, port, password}` | Danh sách input OBS + `in_scene` |
+| `media_rescan` | `{}` | Quét lại thư mục + đồng bộ ngay → `{count, thumbs_sent, thumbs_pending}` |
+| `tts_speak` | `{text 1..450, voice ∈ vi-VN-HoaiMyNeural/NamMinhNeural}` | Đọc qua nguồn OBS giọng nói |
+| `monitor_start` / `monitor_stop` / `monitor_config` | `{}` / `{interval_seconds, threshold, telegram_enabled, telegram_chat_id}` | CAPTCHA Monitor |
+
+Payload được kiểm tra **hai lần**: Cloud (`validate_payload`, 422) và Agent (`cloud/commands.py`, `INVALID_COMMAND_PAYLOAD`).

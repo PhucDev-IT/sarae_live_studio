@@ -44,13 +44,14 @@ Target triple lấy từ `rustc -vV` (dòng `host:`), mặc định `x86_64-pc-w
 
 | File | Dùng cho | Có Win32/OpenCV/OBS? |
 |---|---|---|
-| `backend/requirements.txt` | VPS Cloud (Linux/Windows) | **Không** — FastAPI, uvicorn, SQLAlchemy, Alembic, pydantic-settings, multipart, httpx |
+| `backend/requirements.txt` | VPS Cloud (Linux/Windows) | **Không** — FastAPI, uvicorn, SQLAlchemy, Alembic, pydantic-settings, multipart, httpx, cryptography |
 | `backend/requirements-legacy-local.txt` | (Tuỳ chọn) studio local cũ một người dùng | Có — không cài trên VPS |
 | `agent-core/pyproject.toml` | Agent Windows | httpx, pydantic, obsws-python, psutil, mss, numpy, opencv-python-headless, edge-tts (Win32 qua ctypes, không pywin32) |
 | `desktop/package.json` | GUI | React 19, Vite 8, TS 6, `@tauri-apps/*`, lucide-react |
 
-Trong SaaS mode (`SARAE_SAAS_MODE=true`) Backend chỉ mount 4 router Cloud; router cũ không được import.
-Ngoài SaaS mode, router cũ chỉ nạp nếu dependency tuỳ chọn có mặt (không làm hỏng khởi động).
+Router cũ chỉ nạp OpenCV/mss/pywin32/edge-tts khi được gọi, nên `app.main` khởi động với riêng `requirements.txt`;
+trong SaaS mode (`SARAE_SAAS_MODE=true`) middleware chặn các API cũ chưa tách tenant. `backend/app/playback_engine.py` (cần
+obsws-python) chỉ còn làm bản gốc cho `agent-core/src/sarae_agent/playback/engine.py`; test của nó tự bỏ qua trên VPS.
 
 ## 5. Đường dẫn khi chạy bản cài đặt
 
