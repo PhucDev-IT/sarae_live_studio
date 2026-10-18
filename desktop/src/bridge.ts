@@ -1,4 +1,4 @@
-import {Command, type Child} from '@tauri-apps/plugin-shell';
+import {Child, Command} from '@tauri-apps/plugin-shell';
 type Packet={id?:number;ok?:boolean;data?:unknown;error?:string;event?:string;message?:string};
 type Listener=(packet:Packet)=>void;
 let child:Child|undefined;
@@ -8,16 +8,25 @@ const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>vo
 const subscribers=new Set<Listener>();
 function publish(packet:Packet){for(const listener of subscribers)listener(packet)}
 export function subscribe(listener:Listener){subscribers.add(listener);return()=>{subscribers.delete(listener)}}
+// The Rust side keeps the sidecar alive across WebView reloads (dev HMR, F5); remember its pid so a
+// reloaded page stops it instead of leaving a second Agent Core running.
+const PID_KEY='sarae-agent-core-pid';
+function rememberPid(pid?:number){try{pid?sessionStorage.setItem(PID_KEY,String(pid)):sessionStorage.removeItem(PID_KEY)}catch{/* storage unavailable */}}
+async function killOrphan(){
+ let pid:number|undefined;
+ try{pid=Number(sessionStorage.getItem(PID_KEY))||undefined}catch{/* storage unavailable */}
+ if(pid){try{await new Child(pid).kill()}catch{/* already exited */}rememberPid()}
+}
 export async function connect(){
  if(child)return;
  if(starting)return starting;
  starting=(async()=>{
+  await killOrphan();
   const cmd=Command.sidecar('binaries/sarae-agent-core');
-  let buffer='';
+  // Shell plugin emits stdout line by line (with or without the line ending, depending on version).
   cmd.stdout.on('data',chunk=>{
-   buffer+=chunk;
-   const lines=buffer.split(/\r?\n/);buffer=lines.pop()||'';
-   for(const line of lines){
+   for(const line of String(chunk).split(/\r?\n/)){
+    if(!line)continue;
     if(!line.startsWith('SARAE_IPC:')){if(line.trim())publish({event:'log',message:line});continue}
     try{const packet=JSON.parse(line.slice('SARAE_IPC:'.length)) as Packet;
       if(typeof packet.id==='number'&&pending.has(packet.id)){
@@ -27,14 +36,15 @@ export async function connect(){
     }catch{publish({event:'log',message:line})}
    }
   });
-  cmd.stderr.on('data',chunk=>publish({event:'log',message:String(chunk)}));
+  cmd.stderr.on('data',chunk=>{const message=String(chunk).trimEnd();if(message)publish({event:'log',message})});
   cmd.on('close',()=>{
-   child=undefined;starting=undefined;
+   child=undefined;starting=undefined;rememberPid();
    for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Agent Core đã dừng'))}
    pending.clear();publish({event:'stopped'});
   });
   cmd.on('error',error=>publish({event:'error',message:String(error)}));
   child=await cmd.spawn();
+  rememberPid(child.pid);
  })();
  try{await starting}finally{starting=undefined}
 }
@@ -47,4 +57,4 @@ export async function call<T=unknown>(method:string,params:Record<string,unknown
   child!.write(JSON.stringify({id,method,params})+'\n').catch(error=>{clearTimeout(timer);pending.delete(id);reject(error)})
  })
 }
-export async function shutdown(){try{if(child)await call('shutdown',{},22000)}catch{/* close below */}try{await child?.kill()}catch{/* already stopped */}child=undefined}
+export async function shutdown(){try{if(child)await call('shutdown',{},22000)}catch{/* close below */}try{await child?.kill()}catch{/* already stopped */}child=undefined;rememberPid()}

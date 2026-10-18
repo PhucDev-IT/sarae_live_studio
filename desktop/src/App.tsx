@@ -24,14 +24,15 @@ export default function App(){
   else if(packet.event==='started'){setStatus('Đang chạy');setState(old=>({...old,running:true}));log('Agent đã khởi động')}
   else if(packet.event==='stopped'){setStatus('Đã dừng');setState(old=>({...old,running:false}));log('Agent đã dừng')}
   else if(packet.event==='log'||packet.event==='error')log(packet.message||'Lỗi không xác định');
- });void connect().then(()=>sync()).catch(e=>{setStatus('Không thể khởi động Agent Core');log(String(e))});return()=>{unsubscribe();unlisten?.()}},[]);
+ });void connect().then(()=>sync()).then(info=>setStatus(info.running?'Đang chạy':'Sẵn sàng')).catch(e=>{setStatus('Không thể khởi động Agent Core');log(String(e))});return()=>{unsubscribe();unlisten?.()}},[]);
  const action=async<T,>(label:string,fn:()=>Promise<T>)=>{setBusy(true);try{return await fn()}catch(e){log('Lỗi '+label+': '+String(e));return undefined}finally{setBusy(false)}};
  const configure=()=>action('Cloud',async()=>{const result=await call<State>('configure_cloud',{url});setState(result);log('Đã lưu Cloud URL')});
  const activate=()=>action('kích hoạt',async()=>{if(state.running)throw new Error('Hãy dừng Agent trước khi kích hoạt');await call('configure_cloud',{url});const result=await call<State>('activate',{key});setState(result);setKey('');log('Kích hoạt thành công · '+result.agent_id)});
  const choose=()=>action('thêm thư mục',async()=>{const selected=await open({directory:true,multiple:false,title:'Chọn thư mục chứa video MP4'});if(typeof selected==='string'){const result=await call<State>('add_folder',{path:selected});setState(result);log('Đã thêm '+selected)}});
  const remove=(path:string)=>action('xóa thư mục',async()=>{setState(await call<State>('remove_folder',{path}))});
  const scan=()=>action('quét video',async()=>{const result=await call<{count:number}>('scan',{},120000);setCount(result.count);log('Đã quét '+result.count+' video MP4')});
- const toggle=()=>action('Agent',async()=>{const next=await call<State>(state.running?'stop':'start');setState(next);setStatus(state.running?'Đang dừng...':'Đang chạy');log(state.running?'Đã yêu cầu dừng':'Đã yêu cầu chạy')});
+ // The worker's 'stopped' event can arrive before this reply, so derive the label from the reply itself.
+ const toggle=()=>action('Agent',async()=>{const wasRunning=state.running;const next=await call<State>(wasRunning?'stop':'start');setState(next);setStatus(next.running?(wasRunning?'Đang dừng...':'Đang chạy'):'Đã dừng');log(wasRunning?'Đã yêu cầu dừng':'Đã yêu cầu chạy')});
  return <div className="app">
   <aside className="sidebar"><div className="logo"><div className="logo-mark">S</div><div><strong>SARAE</strong><small>WINDOWS AGENT</small></div></div>
    <div className="sidebar-label">THIẾT BỊ</div><div className="nav active"><MonitorPlay size={18}/> Tổng quan</div>
