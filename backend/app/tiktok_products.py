@@ -1,7 +1,6 @@
 """TikTok LIVE Console product snapshots, scoped to OWNER and Windows Agent."""
 import json
 import sqlite3
-import unicodedata
 from datetime import datetime,timezone
 
 from fastapi import APIRouter, Header, HTTPException, Depends
@@ -43,31 +42,31 @@ class Snapshot(BaseModel):
     complete:bool=False
 
 def comparison(owner_id,items):
+    """Show whether imported source products belong to the OWNER's persisted catalog.
+
+    Match by TikTok seller and product IDs only, never by mutable display names.
+    Legacy DOM-only snapshots are reported as unresolved, not silently merged.
+    """
+    from sqlalchemy import text
     with SessionLocal() as db:
-        own=list(db.scalars(select(Product).where(Product.owner_id==owner_id)).all())
-    by_name={}
-    for product in own:by_name.setdefault(norm(product.name),[]).append(product)
-    seen=set()
-    tiktok_counts={}
-    for item in items:
-        key=norm(item["name"])
-        tiktok_counts[key]=tiktok_counts.get(key,0)+1
-    result=[]
-    for item in items:
-        key=norm(item["name"])
-        candidates=by_name.get(key,[])
-        seen.add(key)
-        unique=len(candidates)==1 and tiktok_counts[key]==1
-        state="matched" if unique else "ambiguous" if len(candidates)>1 or tiktok_counts[key]>1 else "missing_in_sarae"
-        result.append({**item,"match_status":state,
-                       "sarae_product_id":candidates[0].id if unique else None})
-    unmatched=[{"id":p.id,"name":p.name} for p in own if norm(p.name) not in seen]
+        shop_rows=db.execute(text("SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:o"),
+                             {"o":owner_id}).all()
+        shops={str(seller):sid for sid,seller in shop_rows}
+        catalog=list(db.scalars(select(Product).where(Product.owner_id==owner_id)).all())
+    existing={(p.shop_id,str(p.tiktok_product_id)):p for p in catalog if p.shop_id and p.tiktok_product_id}
+    result=[];seen=set()
+    for row in items:
+        key=(shops.get(str(row.get("seller_id") or "")),str(row.get("product_id") or ""))
+        target=existing.get(key)
+        if target:seen.add(target.id)
+        result.append({**row,"match_status":"matched" if target else "missing_in_sarae",
+                       "sarae_product_id":target.id if target else None})
+    unmatched=[{"id":p.id,"name":p.name} for p in catalog if p.id not in seen]
     return {"products":result,"missing_in_tiktok":unmatched,
-            "summary":{"tiktok":len(items),"sarae":len(own),
+            "summary":{"tiktok":len(items),"sarae":len(catalog),
                        "matched":sum(x["match_status"]=="matched" for x in result),
                        "unmatched_tiktok":sum(x["match_status"]=="missing_in_sarae" for x in result),
-                       "ambiguous":sum(x["match_status"]=="ambiguous" for x in result),
-                       "missing_in_tiktok":len(unmatched)}}
+                       "ambiguous":0,"missing_in_tiktok":len(unmatched)}}
 
 @router.post("/sync")
 def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
