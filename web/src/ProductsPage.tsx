@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useMemo,useState} from 'react'
-import {Badge,Button,EmptyState,SearchInput,Select,Sheet,Table,Textarea,useToast,type TableColumn} from './ui/core'
+import {Button,EmptyState,SearchInput,Select,Sheet,Table,Textarea,useToast,type TableColumn} from './ui/core'
 import {CircleAlert,Eye,Package,Radio,RefreshCw} from 'lucide-react'
 import {apiRequest,errorText,onAgent} from './mediaApi'
 import {useAgent} from './agentContext'
