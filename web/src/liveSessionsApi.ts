@@ -4,7 +4,7 @@ import { agentAction, apiRequest, onAgent, type AgentCommand } from './mediaApi'
 export type SessionStatus = 'DRAFT' | 'RUNNING' | 'ENDED'
 /** A LIVE session is bound to the Windows Agent it was created on; every action goes to that Agent, never another. */
 export type LiveSession = {
-  id:number; name:string; status:SessionStatus; agent_id:string; product_ids:number[]; current_product_id:number|null
+  id:number; name:string; status:SessionStatus; agent_id:string; shop_id:number|null; product_ids:number[]; current_product_id:number|null
   created_at:string; started_at:string|null; ended_at:string|null
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
@@ -70,7 +70,7 @@ export type SessionAction = { command?:AgentCommand; session?:LiveSession; uncha
 export const sessionsApi = {
   list:() => apiRequest<LiveSession[]>('/live/sessions'),
   events:(id:number) => apiRequest<SessionEvent[]>(`/live/sessions/${id}/events`),
-  create:(name:string, agentId:string) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], agent_id:agentId})),
+  create:(name:string, agentId:string, shopId:number) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], agent_id:agentId, shop_id:shopId})),
   rename:(id:number, name:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({name}, 'PATCH')),
   /** Only while DRAFT: a session never moves to another Agent once it has started. */
   moveToAgent:(id:number, agentId:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({agent_id:agentId}, 'PATCH')),
