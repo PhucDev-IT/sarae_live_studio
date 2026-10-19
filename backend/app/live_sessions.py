@@ -383,6 +383,8 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if item.status != "DRAFT" and not idempotency_key:
             raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
         ids = ids_for(db, session_id)
+        if item.shop_id is None:
+            raise HTTPException(409,"Phiên cũ chưa được gắn TikTok Shop; hãy tạo phiên mới")
         if not ids:
             raise HTTPException(409, "Phiên chưa có sản phẩm nào")
         pid = body.product_id or ids[0]
@@ -416,7 +418,7 @@ def resume_session(session_id: int, body: StartInput, owner: Owner,
         if pid is None:
             raise HTTPException(409, "Phiên chưa có sản phẩm nào")
         ensure_products(db, [pid], owner)
-        if db.get(Product,pid).shop_id!=item.shop_id:
+        if item.shop_id is not None and db.get(Product,pid).shop_id!=item.shop_id:
             raise HTTPException(422,"Sản phẩm không thuộc TikTok Shop của phiên")
         agent = session_agent(owner, item, free=True)
         view = play_product(db, owner, agent, item, pid, "immediate", "resume", idempotency_key)
@@ -432,7 +434,7 @@ def switch_session_product(session_id: int, body: SwitchInput, owner: Owner,
         agent = session_agent(owner, item)
         # The lineup is a prepared pool, not a fixed order: any of the owner's products with videos can go live.
         ensure_products(db, [body.product_id], owner)
-        if db.get(Product,body.product_id).shop_id!=item.shop_id:
+        if item.shop_id is not None and db.get(Product,body.product_id).shop_id!=item.shop_id:
             raise HTTPException(422,"Sản phẩm không thuộc TikTok Shop của phiên")
         if body.product_id == item.current_product_id and body.mode == "immediate" and not idempotency_key:
             return {"ok": True, "unchanged": True}
