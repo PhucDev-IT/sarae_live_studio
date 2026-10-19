@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime,timezone
-from sqlalchemy import select
+from sqlalchemy import select,text
 from app.catalog import Product
 from app.product_videos import ProductLiveVideo
 from app.agent_library import connection as library_connection
-from app.tiktok_products import connection as snapshot_connection,norm
+from app.tiktok_products import connection as snapshot_connection
 
 def assess(db,owner_id:str,agent_id:str,product_ids:list[int])->dict:
     products={p.id:p for p in db.scalars(select(Product).where(Product.owner_id==owner_id,
@@ -53,21 +53,24 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int])->dict:
         return {**readiness,"snapshot_at":None,"snapshot_state":"UNKNOWN",
                 "missing_on_tiktok":[],"unselected_on_sarae":[],"ambiguous":[]}
     source=json.loads(snap["products_json"])
-    seen={}
-    for row in source:seen.setdefault(norm(row["name"]),[]).append(row)
     selected_products={p.id:p for p in db.scalars(select(Product).where(
         Product.owner_id==owner_id,Product.id.in_(selected))).all()} if selected else {}
+    shop_ids={p.shop_id for p in selected_products.values() if p.shop_id is not None}
+    sellers={r[0] for r in db.execute(text("SELECT seller_id FROM tiktok_shops WHERE owner_id=:o AND id IN ("+
+            ",".join(str(int(x)) for x in shop_ids)+")"),{"o":owner_id})} if shop_ids else set()
+    source=[row for row in source if str(row.get("seller_id") or "") in sellers]
+    by_id={str(row.get("product_id")):row for row in source if row.get("product_id")}
+    chosen_ids={str(p.tiktok_product_id) for p in selected_products.values() if p.tiktok_product_id}
     missing=[];ambiguous=[]
-    chosen_names=set()
     for pid in selected:
         p=selected_products.get(pid)
         if not p:continue
-        key=norm(p.name);chosen_names.add(key)
-        matches=seen.get(key,[])
-        if not matches:missing.append({"product_id":pid,"name":p.name})
-        elif len(matches)>1:ambiguous.append({"product_id":pid,"name":p.name,"reason":"DUPLICATE_TIKTOK_NAME"})
+        if not p.tiktok_product_id:
+            ambiguous.append({"product_id":pid,"name":p.name,"reason":"TIKTOK_ID_NOT_LINKED"})
+        elif str(p.tiktok_product_id) not in by_id:
+            missing.append({"product_id":pid,"name":p.name})
     unselected=[{"name":row["name"],"product_id":row.get("product_id")}
-                for row in source if norm(row["name"]) not in chosen_names]
+                for row in source if str(row.get("product_id")) not in chosen_ids]
     try:
         ts=datetime.fromisoformat(snap["scanned_at"].replace("Z","+00:00"))
         if ts.tzinfo is None:ts=ts.replace(tzinfo=timezone.utc)
@@ -76,5 +79,5 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int])->dict:
         recent=False
     return {**readiness,"snapshot_at":snap["scanned_at"],
             "snapshot_state":"FRESH" if recent else "STALE",
-            "matching_basis":"NAME_ONLY_UNTIL_TIKTOK_ID_LINKED",
+            "matching_basis":"SELLER_ID_AND_PRODUCT_ID",
             "missing_on_tiktok":missing,"unselected_on_sarae":unselected,"ambiguous":ambiguous}
