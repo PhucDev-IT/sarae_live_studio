@@ -6,11 +6,9 @@ the LIVE lineup when the browser list changes. No writes or network calls in thi
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime,timezone
 from sqlalchemy import select
 from app.catalog import Product
-from app.database import DATA_DIR
 from app.product_videos import ProductLiveVideo
 from app.agent_library import connection as library_connection
 from app.tiktok_products import connection as snapshot_connection,norm
@@ -68,8 +66,6 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int])->dict:
         matches=seen.get(key,[])
         if not matches:missing.append({"product_id":pid,"name":p.name})
         elif len(matches)>1:ambiguous.append({"product_id":pid,"name":p.name,"reason":"DUPLICATE_TIKTOK_NAME"})
-    for key, rows in seen.items():
-        if len(rows)>1 and key in chosen_names:continue
     unselected=[{"name":row["name"],"product_id":row.get("product_id")}
                 for row in source if norm(row["name"]) not in chosen_names]
     try:
