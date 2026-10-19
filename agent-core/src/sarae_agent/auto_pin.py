@@ -146,6 +146,7 @@ class AutoPinService:
         self._context = None
         self._playwright = None
         self._page = None
+        self._observed_pages.clear()
         self._login_proc = None
         self._url = DEFAULT_URL
         self._items: list[str] = []
@@ -158,6 +159,7 @@ class AutoPinService:
         self._state = "idle"
         self._product_snapshot = None
         self._network_products = None
+        self._observed_pages = set()
 
     # --- status --------------------------------------------------------------------------
     def login_open(self) -> bool:
@@ -300,12 +302,15 @@ class AutoPinService:
             log.warning("Không đọc được TikTok products response: %s",exc)
 
     def _attach_response_listener(self,page):
-        page.on("response",self._capture_product_response)
+        if id(page) not in self._observed_pages:
+            page.on("response",self._capture_product_response)
+            self._observed_pages.add(id(page))
 
     def _open_on_worker(self, url):
         if self.login_open() or self._profile_locked():
             raise RuntimeError(LOGIN_CHROME_OPEN)
         self._url = url
+        self._network_products = None
         if self._context is not None:
             try:
                 if self._page is None or self._page.is_closed():
@@ -354,6 +359,24 @@ class AutoPinService:
             raise RuntimeError("Trang hiện tại không phải TikTok LIVE Console")
         if not page.url.startswith(DEFAULT_URL):
             raise RuntimeError("Hãy mở đúng trang TikTok LIVE Product Dashboard")
+        # A fresh scan must not reuse a prior shop's response. Refresh once to trigger
+        # the console's own authenticated XHR; never reconstruct its signed URL.
+        self._network_products = None
+        page.reload(wait_until="domcontentloaded", timeout=30000)
+        for _ in range(25):
+            if self._network_products is not None:
+                break
+            page.wait_for_timeout(200)
+        if self._network_products is not None:
+            rows=list(self._network_products)
+            with self._lock:
+                self._found=[{"name":x["name"],"pinned":False} for x in rows]
+                self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
+                self._product_snapshot={"complete":True,"products":rows}
+            return {**self.status(),"products_found":self._found,
+                    "product_snapshot":self._product_snapshot}
+        # Old console revisions: retain read-only DOM diagnostics. The Cloud import
+        # refuses DOM-only rows because they have no trustworthy TikTok IDs.
         found={}
         complete=False
         last=None
@@ -367,34 +390,18 @@ class AutoPinService:
                 if not name:continue
                 key=name.casefold()
                 if key not in found:found[key]=row
-            if not rows:
-                break
+            if not rows:break
             if not scroll:
                 complete=True
                 break
             signature=(round(scroll["top"]),len(found))
-            if signature==last:stagnant+=1
-            else:stagnant=0
+            stagnant=stagnant+1 if signature==last else 0
             last=signature
             if scroll["top"]+scroll["client"] >= scroll["height"]-5:
                 complete=True
                 break
             if stagnant>=4:break
             page.wait_for_timeout(120)
-        if self._network_products is None:
-            # A new request triggered by the page refresh may supply IDs.
-            try:
-                page.reload(wait_until="domcontentloaded",timeout=30000)
-                page.wait_for_timeout(700)
-            except Exception:
-                pass
-        if self._network_products is not None:
-            rows=list(self._network_products)
-            with self._lock:
-                self._found=[{"name":x["name"],"pinned":False} for x in rows]
-                self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
-                self._product_snapshot={"complete":True,"products":rows}
-            return {**self.status(),"products_found":self._found,"product_snapshot":self._product_snapshot}
         rows=sorted(found.values(),key=lambda x:x.get("position") or 999999)
         if not rows:
             raise RuntimeError("Không tìm thấy ô thứ tự sản phẩm (.pc_order_input) trên trang TikTok")
