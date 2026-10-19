@@ -1,3 +1,4 @@
+type SessionReadiness = {snapshot_at:string|null;snapshot_state:string;matching_basis?:string;ready:boolean;products:Array<{product_id:number;name:string|null;ready:boolean;reasons:string[];available_video_count:number}>;missing_on_tiktok:Array<{product_id:number;name:string}>;unselected_on_sarae:Array<{name:string}>;ambiguous:Array<{product_id:number;name:string}>}
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
@@ -35,6 +36,7 @@ export default function LiveSessions(){
   const [events,setEvents] = useState<SessionEvent[]>([])
   const [loaded,setLoaded] = useState(false)
   const [selected,setSelected] = useState<number|null>(sessionIdFromHash)
+  const [readiness,setReadiness] = useState<SessionReadiness|null>(null)
   /** Unsaved lineup of the selected session; null when it matches the server. */
   const [draft,setDraft] = useState<number[]|null>(null)
   const [filter,setFilter] = useState<Filter>('ALL')
@@ -72,6 +74,16 @@ export default function LiveSessions(){
     if (selected != null && sessions.some(s=>s.id === selected)) return
     if (sessions.length) setSelected((sessions.find(s=>s.status === 'RUNNING') ?? sessions[0]).id)
   },[sessions,selected])
+
+  useEffect(()=>{
+    let alive=true
+    setReadiness(null)
+    if(selected==null)return
+    const load=()=>apiRequest<SessionReadiness>('/live/sessions/'+selected+'/readiness').then(v=>{if(alive)setReadiness(v)}).catch(()=>{if(alive)setReadiness(null)})
+    void load()
+    const timer=window.setInterval(()=>void load(),15000)
+    return ()=>{alive=false;window.clearInterval(timer)}
+  },[selected,sessions.map(s=>s.id+':'+s.product_ids.join(',')).join('|')])
 
   const chosen = sessions.find(s=>s.id === selected)
   const chosenKey = chosen ? `${chosen.id}:${chosen.status}:${chosen.current_product_id}:${chosen.product_ids.join(',')}` : ''
@@ -261,6 +273,30 @@ export default function LiveSessions(){
               </li>
             })}
           </ol>
+        </Card>
+
+        <Card padding={false}>
+          <div style={{padding:'14px 18px',display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+            <div>
+              <strong>Đối chiếu TikTok LIVE Console</strong>
+              <div style={{fontSize:12,opacity:.8,marginTop:4}}>
+                {!readiness ? 'Đang kiểm tra danh sách và video trên Agent…'
+                  : !readiness.snapshot_at ? 'Agent chưa đồng bộ danh sách TikTok'
+                  : 'Snapshot: '+new Date(readiness.snapshot_at).toLocaleString('vi-VN')+' · '+(readiness.snapshot_state==='FRESH'?'Mới':'Cần đồng bộ lại')}
+              </div>
+            </div>
+            <Button size="sm" variant="outline" onClick={()=>window.location.hash='/products'}>Quản lý sản phẩm</Button>
+          </div>
+          {readiness && <div style={{padding:'0 18px 14px',fontSize:13}}>
+            <div>{readiness.ready?'Video và thông tin của sản phẩm đã chọn: đạt':'Có sản phẩm chưa sẵn sàng phát trên Agent'}</div>
+            {readiness.products.filter(x=>!x.ready).map(x=><div key={x.product_id} style={{marginTop:5}}>• {x.name||'#'+x.product_id}: {x.reasons.join(', ')}</div>)}
+            {readiness.snapshot_state==='FRESH' && <>
+              {readiness.missing_on_tiktok.map(x=><div key={'m'+x.product_id} style={{marginTop:5}}>• Thiếu trên TikTok: {x.name}</div>)}
+              {readiness.unselected_on_sarae.map((x,i)=><div key={'u'+i} style={{marginTop:5}}>• TikTok có, phiên chưa chọn: {x.name}</div>)}
+              {readiness.ambiguous.map(x=><div key={'a'+x.product_id} style={{marginTop:5}}>• Trùng tên, cần xác minh: {x.name}</div>)}
+            </>}
+            {readiness.snapshot_state!=='FRESH' && <div style={{marginTop:5}}>Danh sách TikTok chưa được xác minh mới nhất; mở Windows Agent để đồng bộ rồi xem lại.</div>}
+          </div>}
         </Card>
 
         <div className="ls-detail-grid">
