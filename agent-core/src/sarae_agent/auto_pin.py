@@ -312,8 +312,7 @@ class AutoPinService:
                     pages = [p for p in self._context.pages if not p.is_closed()]
                     self._page = pages[0] if pages else self._context.new_page()
                 self._attach_response_listener(self._page)
-                self._attach_response_listener(self._page)
-            self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 # A closed Chrome context cannot be reused.
                 self._drop_context()
@@ -331,6 +330,7 @@ class AutoPinService:
                 user_data_dir=str(self.profile_dir), channel="chrome", headless=False,
                 accept_downloads=False, viewport=None)
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            self._attach_response_listener(self._page)
             self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
             self._drop_context()
