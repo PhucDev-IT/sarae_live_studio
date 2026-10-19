@@ -73,6 +73,10 @@ class SpeakParams(Strict):
 class AutoPinOpenParams(Strict):
     url: str = Field(min_length=12, max_length=1000)
 
+
+class AutoPinLoginParams(Strict):
+    url: str = Field(default="https://shop.tiktok.com/streamer/live/product/dashboard", min_length=12, max_length=1000)
+
 class AutoPinConfigureParams(Strict):
     products: list[str] = Field(min_length=1, max_length=100)
     interval_seconds: int = Field(ge=5, le=3600)
@@ -192,6 +196,9 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
 
     # Auto Pin: controlled Chrome profile, local-only IPC (no Cloud command support).
     reg("autopin.status", lambda _: rt.auto_pin.status())
+    # Step 1: plain Chrome for a manual TikTok sign-in; step 2 (open/start) lets Playwright use that profile.
+    reg("autopin.login", lambda p: rt.auto_pin.login_browser(p.url), AutoPinLoginParams)
+    reg("autopin.login_done", lambda _: rt.auto_pin.finish_login())
     reg("autopin.open", lambda p: rt.auto_pin.open_browser(p.url), AutoPinOpenParams)
     reg("autopin.configure", lambda p: rt.auto_pin.configure(p.products, p.interval_seconds), AutoPinConfigureParams)
     reg("autopin.start", lambda _: rt.auto_pin.start())

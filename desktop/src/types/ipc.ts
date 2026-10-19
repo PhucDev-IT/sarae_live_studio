@@ -197,7 +197,10 @@ export interface AutoPinStatus {
   current_index: number
   last_pin: string
   last_error: string
+  /** The Playwright-controlled Chrome (step 2) is open. */
   browser_open: boolean
+  /** The plain Chrome of step 1 (manual sign-in) is still running on the shared profile. */
+  login_open: boolean
 }
 
 export interface SystemStatus {
@@ -257,6 +260,8 @@ export interface CoreMethods {
   'system.status': [NoParams, SystemStatus]
   'autopin.status': [NoParams, AutoPinStatus]
   'autopin.open': [{url:string}, AutoPinStatus]
+  'autopin.login': [{url?:string}, AutoPinStatus]
+  'autopin.login_done': [NoParams, AutoPinStatus]
   'autopin.configure': [{products:string[];interval_seconds:number}, AutoPinStatus]
   'autopin.start': [NoParams, AutoPinStatus]
   'autopin.stop': [NoParams, AutoPinStatus]

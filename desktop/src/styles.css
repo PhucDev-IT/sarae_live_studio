@@ -224,3 +224,11 @@ p { margin: 0; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Auto Pin steps */
+.step { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elev); }
+.step > strong { font-size: 12.5px; color: var(--text-2); }
+.step.is-current { border-color: var(--accent); }
+.step.is-current > strong { color: var(--text); }
+.step .btn { align-self: flex-start; }
+.step small { font-size: 12px; }

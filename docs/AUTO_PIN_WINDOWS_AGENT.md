@@ -2,22 +2,36 @@
 
 ## Scope
 
-The Tauri GUI has a **Tự động ghim** row (switch + ⌄ for Chrome, product list and interval). The Python Agent Core uses
-Playwright to launch a *dedicated, visible Chrome profile* under
-`%LOCALAPPDATA%\\SaraeAgent\\chrome-auto-pin-profile`, not a Chrome extension.
+The Tauri GUI has a **Tự động ghim** row (switch + ⌄ with two steps). Both steps use one
+*dedicated Chrome profile* under `%LOCALAPPDATA%\\SaraeAgent\\chrome-auto-pin-profile` (not a Chrome extension):
+
+1. **Đăng nhập TikTok (Chrome thường)** — `autopin.login` starts the installed `chrome.exe` as an ordinary
+   process (`--user-data-dir=<profile> --no-first-run <LIVE Console URL>`, found through the App Paths registry key
+   or the standard install folders). No Playwright, no automation flags: the operator signs in by hand, as in a
+   normal browser. Signing in through a Playwright-launched Chrome made TikTok see a new, automated device, ask
+   for e-mail codes and lock the account ("Maximum number of attempts").
+2. **Bắt đầu Auto Pin** — after "Đã đăng nhập xong" (`autopin.login_done` closes that Chrome gracefully with
+   `taskkill` without `/F`, so the session is saved) or after the operator closes it, Playwright opens the *same*
+   profile and reuses its cookies. It refuses to start while the login Chrome (or its profile `lockfile`) is
+   still open, because Chrome cannot run twice on one profile.
+
+If the controlled page lands on a login / verify URL, Auto Pin stops (`state: login_required`) and asks for
+step 1 again. The Agent never types credentials, never touches CAPTCHA or verification dialogs and adds no
+stealth / fingerprint changes. If TikTok answers "Maximum number of attempts", wait a few hours before signing in.
 
 Supported local IPC methods:
 
 | Method | Parameters | Result |
 |---|---|---|
-| `autopin.open` | `{url}` | Auto Pin status |
+| `autopin.login` | `{url?}` | Status (`state: login`, `login_open: true`) |
+| `autopin.login_done` | `{}` | Status (`state: ready`, `browser_open: true`) |
+| `autopin.open` | `{url}` | Status; Playwright on the profile (refused while the login Chrome is open) |
 | `autopin.configure` | `{products: string[], interval_seconds: number}` | Status |
-| `autopin.start` | `{}` | Status |
+| `autopin.start` | `{}` | Status (opens Playwright first if needed) |
 | `autopin.stop` | `{}` | Status |
 | `autopin.status` | `{}` | Status |
 
-Only allowlisted HTTPS TikTok seller/LIVE Console hosts are accepted. The user
-signs in directly in the opened Chrome. The Agent does not capture passwords,
+Only allowlisted HTTPS TikTok seller/LIVE Console hosts are accepted. The Agent does not capture passwords,
 read browser cookies or bypass CAPTCHA.
 
 Every interval, the service locates the next *exactly named* product in the

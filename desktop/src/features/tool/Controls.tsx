@@ -127,6 +127,7 @@ function CaptchaRow() {
 
 const LIVE_CONSOLE_URL = 'https://shop.tiktok.com/streamer/live/product/dashboard'
 
+/** Two steps on one Chrome profile: 1. sign in by hand in plain Chrome, 2. let the Agent pin (Playwright). */
 function AutoPinRow() {
   const { run } = useApp()
   const [pin, setPin] = useState<AutoPinStatus | null>(null)
@@ -156,48 +157,78 @@ function AutoPinRow() {
     setIntervalSeconds(pin.interval_seconds)
   }, [loaded])
 
+  // Open the steps whenever the operator has something to do in them.
+  const needsOperator = pin?.state === 'login' || pin?.state === 'login_required'
+  useEffect(() => {
+    if (needsOperator) setExpanded(true)
+  }, [needsOperator])
+
   const act = async (fn: () => Promise<AutoPinStatus>, message?: string) => {
     const next = await run(fn, message)
     if (next) setPin(next)
   }
   if (!pin) return null
-  const ready = pin.browser_open && pin.products.length > 0
+  const signedIn = pin.browser_open || pin.state === 'logged_in'
+  const canStart = pin.products.length > 0 && !pin.login_open && signedIn
+  const step = pin.login_open || !signedIn || pin.state === 'login_required' ? 1 : 2
   let status: string
   let tone: Tone = 'muted'
-  if (pin.last_error) {
-    status = pin.last_error
-    tone = 'danger'
-  } else if (pin.enabled) {
+  if (pin.enabled) {
     status = `Đang ghim ${pin.products.length} sản phẩm mỗi ${pin.interval_seconds} s${pin.last_pin ? ` · vừa ghim: ${pin.last_pin}` : ''}`
     tone = 'ok'
-  } else if (!pin.browser_open) {
-    status = 'Tắt · cần mở Chrome và đăng nhập LIVE Console'
+  } else if (pin.state === 'login_required') {
+    status = 'Tắt · TikTok yêu cầu đăng nhập lại (bước 1)'
+    tone = 'warn'
+  } else if (pin.last_error) {
+    status = pin.last_error
+    tone = 'danger'
+  } else if (pin.login_open) {
+    status = 'Bước 1 · đang đăng nhập trong Chrome thường'
+    tone = 'info'
+  } else if (!signedIn) {
+    status = 'Tắt · bước 1: đăng nhập TikTok'
   } else if (!pin.products.length) {
-    status = 'Tắt · chưa có danh sách sản phẩm'
+    status = 'Bước 2 · chưa có danh sách sản phẩm'
   } else {
-    status = `Tắt · ${pin.products.length} sản phẩm, mỗi ${pin.interval_seconds} s`
+    status = `Bước 2 · sẵn sàng: ${pin.products.length} sản phẩm, mỗi ${pin.interval_seconds} s`
   }
   return (
     <Row icon={<Pin size={16} />} title="Tự động ghim" status={status} tone={tone}
       control={<>
-        <button className={`icon-btn ${expanded ? 'is-open' : ''}`} onClick={() => setExpanded(!expanded)} aria-label="Cấu hình tự động ghim"><ChevronDown size={16} /></button>
-        <Switch checked={pin.enabled} disabled={!pin.enabled && !ready} label="Tự động ghim"
+        <button className={`icon-btn ${expanded ? 'is-open' : ''}`} onClick={() => setExpanded(!expanded)} aria-label="Các bước tự động ghim"><ChevronDown size={16} /></button>
+        <Switch checked={pin.enabled} disabled={!pin.enabled && !canStart} label="Tự động ghim"
           onToggle={(value) => act(() => call(value ? 'autopin.start' : 'autopin.stop'))} />
       </>}>
       {expanded && (
         <div className="row-extra">
-          <ActionButton onAction={() => act(() => call('autopin.open', { url: LIVE_CONSOLE_URL }), 'Đã mở Chrome LIVE Console')}>
-            {pin.browser_open ? 'Mở lại Chrome LIVE Console' : 'Mở Chrome LIVE Console'}
-          </ActionButton>
-          <textarea className="input textarea" rows={4} value={products} onChange={(e) => setProducts(e.target.value)}
-            placeholder={'Tên hoặc mã sản phẩm, mỗi dòng một sản phẩm'} spellCheck={false} />
-          <div className="inline">
-            <span className="muted small">Mỗi</span>
-            <Input type="number" min={5} max={3600} value={interval} onChange={(e) => setIntervalSeconds(Number(e.target.value))} className="input input-num" />
-            <span className="muted small">giây</span>
-            <ActionButton variant="primary" disabled={!products.trim()} onAction={() => act(() => call('autopin.configure', {
-              products: products.split('\n').map((s) => s.trim()).filter(Boolean), interval_seconds: interval,
-            }), 'Đã lưu danh sách ghim')}>Lưu</ActionButton>
+          <div className={`step ${step === 1 ? 'is-current' : 'is-done'}`}>
+            <strong>1. Đăng nhập TikTok (Chrome thường)</strong>
+            {pin.login_open ? <>
+              <small className="muted">Đăng nhập trong cửa sổ Chrome vừa mở, như trình duyệt bình thường. Xong thì bấm nút dưới (Chrome đó sẽ tự đóng).</small>
+              <ActionButton variant="primary" onAction={() => act(() => call('autopin.login_done'), 'Đã nhận phiên đăng nhập')}>Đã đăng nhập xong</ActionButton>
+            </> : <>
+              <small className="muted">{signedIn && pin.state !== 'login_required' ? 'Đã đăng nhập. Chỉ mở lại khi TikTok yêu cầu đăng nhập lại.' : 'Mở Chrome thường (không tự động hoá) để bạn tự đăng nhập.'}</small>
+              <ActionButton variant={step === 1 ? 'primary' : 'secondary'} onAction={() => act(() => call('autopin.login', { url: LIVE_CONSOLE_URL }), 'Đã mở Chrome để đăng nhập')}>
+                Mở Chrome đăng nhập
+              </ActionButton>
+            </>}
+            <small className="warn-text">Nếu TikTok hỏi mã xác minh, chỉ nhập một lần, đừng thử lại liên tục. Nếu báo "Maximum number of attempts", hãy đợi vài tiếng rồi mới đăng nhập lại.</small>
+          </div>
+          <div className={`step ${step === 2 ? 'is-current' : ''}`}>
+            <strong>2. Bắt đầu Auto Pin</strong>
+            <textarea className="input textarea" rows={4} value={products} onChange={(e) => setProducts(e.target.value)}
+              placeholder={'Tên hoặc mã sản phẩm, mỗi dòng một sản phẩm'} spellCheck={false} />
+            <div className="inline">
+              <span className="muted small">Mỗi</span>
+              <Input type="number" min={5} max={3600} value={interval} onChange={(e) => setIntervalSeconds(Number(e.target.value))} className="input input-num" />
+              <span className="muted small">giây</span>
+              <ActionButton disabled={!products.trim()} onAction={() => act(() => call('autopin.configure', {
+                products: products.split('\n').map((s) => s.trim()).filter(Boolean), interval_seconds: interval,
+              }), 'Đã lưu danh sách ghim')}>Lưu</ActionButton>
+            </div>
+            {pin.enabled
+              ? <ActionButton variant="danger" onAction={() => act(() => call('autopin.stop'), 'Đã dừng Auto Pin')}>Dừng Auto Pin</ActionButton>
+              : <ActionButton variant="primary" disabled={!canStart} onAction={() => act(() => call('autopin.start'), 'Auto Pin đã bắt đầu')}>Bắt đầu Auto Pin</ActionButton>}
           </div>
         </div>
       )}
