@@ -1,6 +1,5 @@
 """TikTok LIVE Console product snapshots, scoped to OWNER and Windows Agent."""
 import json
-import re
 import sqlite3
 import unicodedata
 from datetime import datetime,timezone
@@ -44,13 +43,19 @@ def comparison(owner_id,items):
     by_name={}
     for product in own:by_name.setdefault(norm(product.name),[]).append(product)
     seen=set()
+    tiktok_counts={}
+    for item in items:
+        key=norm(item["name"])
+        tiktok_counts[key]=tiktok_counts.get(key,0)+1
     result=[]
     for item in items:
         key=norm(item["name"])
         candidates=by_name.get(key,[])
         seen.add(key)
-        result.append({**item,"match_status":"matched" if len(candidates)==1 else "ambiguous" if len(candidates)>1 else "missing_in_sarae",
-                       "sarae_product_id":candidates[0].id if len(candidates)==1 else None})
+        unique=len(candidates)==1 and tiktok_counts[key]==1
+        state="matched" if unique else "ambiguous" if len(candidates)>1 or tiktok_counts[key]>1 else "missing_in_sarae"
+        result.append({**item,"match_status":state,
+                       "sarae_product_id":candidates[0].id if unique else None})
     unmatched=[{"id":p.id,"name":p.name} for p in own if norm(p.name) not in seen]
     return {"products":result,"missing_in_tiktok":unmatched,
             "summary":{"tiktok":len(items),"sarae":len(own),
@@ -64,9 +69,6 @@ def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
     agent=verify_agent(body.agent_id,x_sarae_agent_key)
     if not body.complete:
         raise HTTPException(422,"Danh sách chưa quét đầy đủ; không ghi đè snapshot")
-    names=[norm(x.name) for x in body.products]
-    if len(set(names))!=len(names):
-        raise HTTPException(422,"Tên sản phẩm TikTok trùng nhau, không thể định danh an toàn")
     data=[x.model_dump() for x in body.products]
     now=datetime.now(timezone.utc).isoformat()
     with connection() as db:
