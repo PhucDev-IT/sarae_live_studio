@@ -24,6 +24,7 @@ class LiveSession(Base):
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
     # Windows Agent that plays this session; set when it starts.
     agent_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    shop_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     current_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -52,6 +53,7 @@ class SessionInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     # The Windows Agent (PC) this LIVE runs on: fixed when the session is created; every later action uses it.
     agent_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
+    shop_id: int = Field(gt=0)
     # A DRAFT may start empty; the lineup is built afterwards and checked when the session starts.
     product_ids: list[int] = Field(default_factory=list, max_length=300)
 
@@ -96,7 +98,7 @@ def ids_for(db, session_id):
         SessionProduct.session_id == session_id).order_by(SessionProduct.sort_order)).all())
 
 def serialize(db, item):
-    return {"id": item.id, "name": item.name, "status": item.status, "agent_id": item.agent_id,
+    return {"id": item.id, "name": item.name, "status": item.status, "agent_id": item.agent_id, "shop_id": item.shop_id,
             "product_ids": ids_for(db, item.id), "current_product_id": item.current_product_id,
             "created_at": item.created_at, "started_at": item.started_at, "ended_at": item.ended_at}
 
@@ -313,8 +315,15 @@ def create_session(body: SessionInput, owner: Owner):
     from app.owner_agents import owned_agent
     agent = owned_agent(owner, body.agent_id)
     with SessionLocal() as db:
+        from sqlalchemy import text
+        ok=db.execute(text("SELECT 1 FROM tiktok_shops WHERE id=:s AND owner_id=:o"),
+                      {"s":body.shop_id,"o":owner["id"]}).scalar()
+        if not ok:raise HTTPException(422,"TikTok Shop không thuộc OWNER")
         ensure_products(db, body.product_ids, owner)
-        item = LiveSession(name=body.name.strip(), status="DRAFT", owner_id=owner["id"], agent_id=agent["id"])
+        for pid in body.product_ids:
+            if db.get(Product,pid).shop_id!=body.shop_id:
+                raise HTTPException(422,"Sản phẩm không thuộc TikTok Shop của phiên")
+        item = LiveSession(name=body.name.strip(), status="DRAFT", owner_id=owner["id"], agent_id=agent["id"], shop_id=body.shop_id)
         db.add(item)
         db.flush()
         replace_products(db, item.id, body.product_ids)
@@ -344,6 +353,9 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         if item.status == "ENDED":
             raise HTTPException(409, "Không thể chỉnh sửa phiên đã kết thúc")
         ensure_products(db, body.product_ids, owner)
+        for pid in body.product_ids:
+            if db.get(Product,pid).shop_id!=item.shop_id:
+                raise HTTPException(422,"Sản phẩm không thuộc TikTok Shop của phiên")
         if item.status == "RUNNING":
             if not body.product_ids:
                 raise HTTPException(422, "Phiên đang LIVE phải còn ít nhất một sản phẩm")
