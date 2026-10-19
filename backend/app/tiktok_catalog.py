@@ -3,7 +3,6 @@
 Do not alter Sarae AI description or product-video/session relationships.
 """
 from __future__ import annotations
-from decimal import Decimal, InvalidOperation
 from sqlalchemy import text,select
 from fastapi import APIRouter,Depends,HTTPException
 from pydantic import BaseModel,Field
@@ -42,7 +41,7 @@ def import_snapshot(owner_id,products):
             if product is None:
                 # Existing handmade products are never guessed/merged by name.
                 product=Product(owner_id=owner_id,shop_id=shop,tiktok_product_id=external,
-                                sku="TK-"+external,name=name,description="")
+                                sku="TK-"+str(shop)+"-"+external,name=name,description="")
                 db.add(product);count+=1
             else:updated+=1
             product.name=name
