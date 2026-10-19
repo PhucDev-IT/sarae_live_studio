@@ -41,6 +41,11 @@ class Product(Base):
     __table_args__ = (UniqueConstraint("owner_id", "sku", name="uq_products_owner_sku"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    shop_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    tiktok_product_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    stock_num: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    origin_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tiktok_category: Mapped[str | None] = mapped_column(String(250), nullable=True)
     sku: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(200), index=True)
     description: Mapped[str] = mapped_column(Text, default="")
@@ -116,6 +121,11 @@ class PresenterInput(BaseModel):
 
 
 class ProductOut(ProductInput):
+    shop_id: int | None = None
+    tiktok_product_id: str | None = None
+    stock_num: int | None = None
+    origin_price: float | None = None
+    tiktok_category: str | None = None
     model_config = ConfigDict(from_attributes=True)
     id: int
     created_at: datetime
