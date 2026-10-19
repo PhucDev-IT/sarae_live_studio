@@ -272,6 +272,21 @@ class AgentRuntime:
             "playback": play,
         }
 
+    def sync_tiktok_products(self) -> dict:
+        """Scan browser on its worker, then send the verified complete snapshot to Cloud."""
+        snapshot=self.auto_pin.scan_products().get("product_snapshot") or {}
+        if not snapshot.get("complete"):
+            raise AgentError("TIKTOK_SCAN_PARTIAL",
+                             "Danh sách TikTok chưa quét đủ; chưa đồng bộ Cloud")
+        identity=self.activation.require()
+        from sarae_agent.cloud.client import CloudClient
+        with CloudClient(identity.cloud_url or self.config.get().cloud.api_url) as client:
+            result=client.sync_tiktok_products(identity.credential,identity.agent_id,
+                                               snapshot["products"])
+        log.info("Đồng bộ TikTok: %s sản phẩm, khớp Sarae: %s",
+                 result.get("summary",{}).get("tiktok"),result.get("summary",{}).get("matched"))
+        return result
+
     def diagnostics(self) -> dict:
         return export_bundle(self.system_status(), self.config_view(), list(event_handler.recent))
 
