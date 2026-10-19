@@ -26,6 +26,8 @@ app = FastAPI(title=settings.app_name, version=settings.app_version)
 
 @app.on_event("startup")
 def start_runtime_janitor():
+    from app.shop_schema import upgrade
+    upgrade()
     from app.runtime import start_janitor
     start_janitor()
 
