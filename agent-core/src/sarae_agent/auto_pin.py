@@ -146,7 +146,6 @@ class AutoPinService:
         self._context = None
         self._playwright = None
         self._page = None
-        self._observed_pages.clear()
         self._login_proc = None
         self._url = DEFAULT_URL
         self._items: list[str] = []
@@ -261,6 +260,7 @@ class AutoPinService:
         self._context = None
         self._playwright = None
         self._page = None
+        self._observed_pages.clear()
 
     def _landed(self) -> None:
         if self._page is not None and needs_login(self._page.url):
