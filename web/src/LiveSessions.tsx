@@ -1,4 +1,3 @@
-type SessionReadiness = {snapshot_at:string|null;snapshot_state:string;matching_basis?:string;ready:boolean;products:Array<{product_id:number;name:string|null;ready:boolean;reasons:string[];available_video_count:number}>;missing_on_tiktok:Array<{product_id:number;name:string}>;unselected_on_sarae:Array<{name:string}>;ambiguous:Array<{product_id:number;name:string}>}
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
@@ -31,6 +30,7 @@ export default function LiveSessions(){
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
   const [createAgent,setCreateAgent] = useState('')
   const [createShop,setCreateShop] = useState('')
+  const [legacyShop,setLegacyShop] = useState('')
   const [shops,setShops] = useState<Array<{id:number;seller_id:string;display_name:string}>>([])
   useEffect(()=>{void apiRequest<Array<{id:number;seller_id:string;display_name:string}>>('/tiktok-catalog/shops').then(setShops).catch(()=>setShops([]))},[])
   const [sessions,setSessions] = useState<LiveSession[]>([])
@@ -39,7 +39,6 @@ export default function LiveSessions(){
   const [events,setEvents] = useState<SessionEvent[]>([])
   const [loaded,setLoaded] = useState(false)
   const [selected,setSelected] = useState<number|null>(sessionIdFromHash)
-  const [readiness,setReadiness] = useState<SessionReadiness|null>(null)
   /** Unsaved lineup of the selected session; null when it matches the server. */
   const [draft,setDraft] = useState<number[]|null>(null)
   const [filter,setFilter] = useState<Filter>('ALL')
@@ -77,16 +76,6 @@ export default function LiveSessions(){
     if (selected != null && sessions.some(s=>s.id === selected)) return
     if (sessions.length) setSelected((sessions.find(s=>s.status === 'RUNNING') ?? sessions[0]).id)
   },[sessions,selected])
-
-  useEffect(()=>{
-    let alive=true
-    setReadiness(null)
-    if(selected==null)return
-    const load=()=>apiRequest<SessionReadiness>('/live/sessions/'+selected+'/readiness').then(v=>{if(alive)setReadiness(v)}).catch(()=>{if(alive)setReadiness(null)})
-    void load()
-    const timer=window.setInterval(()=>void load(),15000)
-    return ()=>{alive=false;window.clearInterval(timer)}
-  },[selected,sessions.map(s=>s.id+':'+s.product_ids.join(',')).join('|')])
 
   const chosen = sessions.find(s=>s.id === selected)
   const chosenKey = chosen ? `${chosen.id}:${chosen.status}:${chosen.current_product_id}:${chosen.product_ids.join(',')}` : ''
@@ -136,7 +125,7 @@ export default function LiveSessions(){
   }
   const onDrop = (event:DragEvent, to:number) => {event.preventDefault();if (dragIndex != null) move(dragIndex, to);setDragIndex(null)}
 
-  const openCreate = () => {setNameInput('');setCreateAgent(tabAgentId ?? agents[0]?.id ?? '');setCreateOpen(true)}
+  const openCreate = () => {setNameInput('');setCreateShop(shops.length===1?String(shops[0].id):'');setCreateAgent(tabAgentId ?? agents[0]?.id ?? '');setCreateOpen(true)}
   const create = (event:FormEvent) => {
     event.preventDefault()
     const name = nameInput.trim()
@@ -278,38 +267,26 @@ export default function LiveSessions(){
           </ol>
         </Card>
 
-        <Card padding={false}>
-          <div style={{padding:'14px 18px',display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
-            <div>
-              <strong>Đối chiếu TikTok LIVE Console</strong>
-              <div style={{fontSize:12,opacity:.8,marginTop:4}}>
-                {!readiness ? 'Đang kiểm tra danh sách và video trên Agent…'
-                  : !readiness.snapshot_at ? 'Agent chưa đồng bộ danh sách TikTok'
-                  : 'Snapshot: '+new Date(readiness.snapshot_at).toLocaleString('vi-VN')+' · '+(readiness.snapshot_state==='FRESH'?'Mới':'Cần đồng bộ lại')}
-              </div>
-            </div>
-            <Button size="sm" variant="outline" onClick={()=>window.location.hash='/products'}>Quản lý sản phẩm</Button>
+        {chosen.shop_id == null && chosen.status==='DRAFT' && <Card>
+          <strong>Phiên cũ chưa chọn TikTok Shop</strong>
+          <p className="ls-muted">Chọn Shop trước khi thêm sản phẩm. Chỉ áp dụng cho phiên đang chuẩn bị và chưa có sản phẩm.</p>
+          <div style={{display:'flex',gap:12,alignItems:'end',flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:200}}><Select label="TikTok Shop" value={legacyShop} onChange={setLegacyShop}
+              options={shops.map(sh=>({value:String(sh.id),label:sh.display_name||'Shop '+sh.seller_id}))}/></div>
+            <Button disabled={!legacyShop||busy||chosen.product_ids.length>0} onClick={()=>void run(async()=>{
+              await apiRequest('/live/sessions/'+chosen.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({shop_id:Number(legacyShop)})})
+            },'Đã liên kết TikTok Shop')}>Lưu Shop cho phiên</Button>
           </div>
-          {readiness && <div style={{padding:'0 18px 14px',fontSize:13}}>
-            <div>{readiness.ready?'Video và thông tin của sản phẩm đã chọn: đạt':'Có sản phẩm chưa sẵn sàng phát trên Agent'}</div>
-            {readiness.products.filter(x=>!x.ready).map(x=><div key={x.product_id} style={{marginTop:5}}>• {x.name||'#'+x.product_id}: {x.reasons.join(', ')}</div>)}
-            {readiness.snapshot_state==='FRESH' && <>
-              {readiness.missing_on_tiktok.map(x=><div key={'m'+x.product_id} style={{marginTop:5}}>• Thiếu trên TikTok: {x.name}</div>)}
-              {readiness.unselected_on_sarae.map((x,i)=><div key={'u'+i} style={{marginTop:5}}>• TikTok có, phiên chưa chọn: {x.name}</div>)}
-              {readiness.ambiguous.map(x=><div key={'a'+x.product_id} style={{marginTop:5}}>• Trùng tên, cần xác minh: {x.name}</div>)}
-            </>}
-            {readiness.snapshot_state!=='FRESH' && <div style={{marginTop:5}}>Danh sách TikTok chưa được xác minh mới nhất; mở Windows Agent để đồng bộ rồi xem lại.</div>}
-          </div>}
-        </Card>
-
+        </Card>}
         <div className="ls-detail-grid">
           {/* Product lineup */}
           <Card className="ls-lineup" padding={false} title={<span className="ls-card-title"><Package size={17}/>Danh sách sản phẩm</span>}
             description={chosen.status === 'ENDED' ? `${lineup.length} sản phẩm đã dùng trong phiên` : 'Sản phẩm chuẩn bị sẵn cho phiên · khi LIVE có thể đưa bất kỳ sản phẩm nào lên, không theo thứ tự'}
-            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
+            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy} disabled={chosen.shop_id==null} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
             {!lineup.length
               ? <div className="ls-lineup-empty"><EmptyState icon={<Package size={28}/>} title="Chưa có sản phẩm" description="Thêm những sản phẩm dự định bán trong phiên này, theo thứ tự sẽ giới thiệu."
-                actionLabel={editable ? 'Thêm sản phẩm' : undefined} onAction={()=>setPickerOpen(true)}/></div>
+                actionLabel={editable&&chosen.shop_id!=null ? 'Thêm sản phẩm' : undefined} onAction={()=>{if(chosen.shop_id!=null)setPickerOpen(true)}}/></div>
               : <ol className="ls-rows">{lineup.map((pid,i)=>{
                 const p = productById.get(pid)
                 const isLive = chosen.status === 'RUNNING' && pid === (owner ? status?.product_id : chosen.current_product_id)
@@ -399,7 +376,7 @@ export default function LiveSessions(){
       <form id="ls-rename-form" onSubmit={rename}><Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)}/></form>
     </Modal>
 
-    {pickerOpen && chosen && <ProductPicker products={products.filter(p=>p.shop_id===chosen.shop_id && p.video_count>0 && p.status==='ACTIVE')} exclude={lineup} onClose={()=>setPickerOpen(false)}
+    {pickerOpen && chosen && <ProductPicker products={products.filter(p=>p.shop_id===chosen.shop_id)} exclude={lineup} onClose={()=>setPickerOpen(false)}
       onAdd={ids=>{edit([...lineup, ...ids]);setPickerOpen(false)}}/>}
 
     <ConfirmModal open={!!confirm} loading={busy} onClose={()=>setConfirm(null)} onConfirm={confirmAction}
@@ -447,7 +424,7 @@ function ProductPicker({products,exclude,onClose,onAdd}:{products:LiveProduct[];
   const [query,setQuery] = useState('')
   const [picked,setPicked] = useState<number[]>([])
   const q = query.trim().toLocaleLowerCase('vi')
-  const options = products.filter(p=>!exclude.includes(p.id) && p.status !== 'INACTIVE' && (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q))
+  const options = products.filter(p=>!exclude.includes(p.id) && (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q))
   const toggle = (id:number) => setPicked(prev=>prev.includes(id) ? prev.filter(x=>x !== id) : [...prev, id])
   return <Modal open title="Thêm sản phẩm vào phiên" size="md" onClose={onClose} footer={<>
     <span className="ls-picker-count">Đã chọn {picked.length}</span>
@@ -458,14 +435,14 @@ function ProductPicker({products,exclude,onClose,onAdd}:{products:LiveProduct[];
       <SearchInput autoFocus value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm theo tên hoặc SKU…" aria-label="Tìm sản phẩm"/>
       <ul className="ls-picker-list">{options.map(p=>{
         const order = picked.indexOf(p.id)
-        return <li key={p.id}><button type="button" className={order >= 0 ? 'is-picked' : ''} onClick={()=>toggle(p.id)} aria-pressed={order >= 0}>
+        return <li key={p.id}><button type="button" className={order >= 0 ? 'is-picked' : ''} disabled={!p.video_count || p.status==='INACTIVE'} onClick={()=>toggle(p.id)} aria-pressed={order >= 0}>
           <span className="ls-check">{order >= 0 ? order + 1 : ''}</span>
           <ProductImage product={p}/>
           <span className="ls-row-text"><strong>{p.name}</strong><small>{p.sku || '—'}</small></span>
           {p.video_count ? <Badge tone="success">{p.video_count} video</Badge> : <Badge tone="warning">Chưa có video</Badge>}
         </button></li>
-      })}{!options.length && <li className="ls-list-empty">{products.length === exclude.length ? 'Tất cả sản phẩm đã có trong phiên.' : 'Không có sản phẩm khớp.'}</li>}</ul>
-      <p className="ls-muted">Số trên mỗi ô là thứ tự sẽ thêm vào cuối danh sách. Sản phẩm chưa có video vẫn thêm được nhưng không phát được cho tới khi gán video.</p>
+      })}{!options.length && <li className="ls-list-empty">{!products.length?'Shop này chưa có sản phẩm đồng bộ trên Sarae.':products.every(p=>exclude.includes(p.id))?'Tất cả sản phẩm đã có trong phiên.':'Không có sản phẩm khớp.'}</li>}</ul>
+      <p className="ls-muted">Số trên mỗi ô là thứ tự sẽ thêm vào cuối danh sách. Sản phẩm chưa có video hoặc đang tạm ẩn vẫn hiển thị để kiểm tra, nhưng chưa thể chọn. Hãy gắn video trên Agent tại trang Video theo sản phẩm.</p>
     </div>
   </Modal>
 }
