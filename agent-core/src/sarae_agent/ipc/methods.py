@@ -201,6 +201,7 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("autopin.login_done", lambda _: rt.auto_pin.finish_login())
     reg("autopin.open", lambda p: rt.auto_pin.open_browser(p.url), AutoPinOpenParams)
     reg("autopin.scan", lambda _: rt.auto_pin.scan_products())
+    reg("tiktok.products.sync", lambda _: rt.sync_tiktok_products())
     reg("autopin.configure", lambda p: rt.auto_pin.configure(p.products, p.interval_seconds), AutoPinConfigureParams)
     reg("autopin.start", lambda _: rt.auto_pin.start())
     reg("autopin.stop", lambda _: rt.auto_pin.stop())
