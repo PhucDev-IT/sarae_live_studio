@@ -26,13 +26,19 @@ Supported local IPC methods:
 | `autopin.login` | `{url?}` | Status (`state: login`, `login_open: true`) |
 | `autopin.login_done` | `{}` | Status (`state: ready`, `browser_open: true`) |
 | `autopin.open` | `{url}` | Status; Playwright on the profile (refused while the login Chrome is open) |
-| `autopin.configure` | `{products: string[], interval_seconds: number}` | Status |
-| `autopin.start` | `{}` | Status (opens Playwright first if needed) |
+| `autopin.scan` | `{}` | Status + `products_found [{name, pinned}]`; the page's products become the pin list |
+| `autopin.configure` | `{products: string[], interval_seconds: number}` | Status | (fallback: names typed by hand) |
+| `autopin.start` | `{}` | Status (opens Playwright first if needed; with no list, scans the page first) |
 | `autopin.stop` | `{}` | Status |
 | `autopin.status` | `{}` | Status |
 
 Only allowlisted HTTPS TikTok seller/LIVE Console hosts are accepted. The Agent does not capture passwords,
 read browser cookies or bypass CAPTCHA.
+
+Products are read from the console, not typed: a product row is the largest element around a Ghim/Pin
+button that holds no other such button, and its name is the longest text line that is not a button label,
+price or count (`SCAN_PRODUCTS_JS`, read only). The first connection after login scans automatically; the
+operator unticks products not to pin. The generic rule must be checked on the real console once.
 
 Every interval, the service locates the next *exactly named* product in the
 currently opened page, looks for a unique Ghim/Pin button within that row,

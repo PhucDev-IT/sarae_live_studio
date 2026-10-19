@@ -201,6 +201,13 @@ export interface AutoPinStatus {
   browser_open: boolean
   /** The plain Chrome of step 1 (manual sign-in) is still running on the shared profile. */
   login_open: boolean
+  /** Products read from the LIVE Console by the last scan. */
+  found: number
+}
+
+export interface AutoPinProduct {
+  name: string
+  pinned: boolean
 }
 
 export interface SystemStatus {
@@ -262,6 +269,7 @@ export interface CoreMethods {
   'autopin.open': [{url:string}, AutoPinStatus]
   'autopin.login': [{url?:string}, AutoPinStatus]
   'autopin.login_done': [NoParams, AutoPinStatus]
+  'autopin.scan': [NoParams, AutoPinStatus & { products_found: AutoPinProduct[] }]
   'autopin.configure': [{products:string[];interval_seconds:number}, AutoPinStatus]
   'autopin.start': [NoParams, AutoPinStatus]
   'autopin.stop': [NoParams, AutoPinStatus]

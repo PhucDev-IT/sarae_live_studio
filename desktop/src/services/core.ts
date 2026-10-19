@@ -30,6 +30,7 @@ const SLOW_METHODS: Partial<Record<MethodName, number>> = {
   'autopin.open': 60_000,
   'autopin.login_done': 75_000,
   'autopin.start': 75_000,
+  'autopin.scan': 60_000,
   'activation.activate': 45_000,
   'obs.connect': 20_000,
   'voice.speak': 60_000,

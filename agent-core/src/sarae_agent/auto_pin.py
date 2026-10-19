@@ -6,6 +6,9 @@
    opens the same profile, so cookies and session are reused, and pins products on the LIVE Console.
 
 Chrome cannot run twice on one profile, so step 2 refuses to start while the login Chrome still holds it.
+The product list is read from the console itself (scan_products): every row with a Ghim/Pin button is a
+product, named by its longest text line. The operator only removes the ones not to pin.
+
 If the console redirects to a login / verification page, auto-pin stops and asks for step 1 again. This
 module never types credentials, never touches CAPTCHA or verification dialogs, and adds no fingerprint or
 stealth tricks. DOM selectors may need updates when the console UI changes.
@@ -32,6 +35,32 @@ LOGIN_HOSTS = {"www.tiktok.com", "tiktok.com", "m.tiktok.com"}
 LOGIN_MARKERS = ("login", "signin", "sign_in", "sign-in", "verify", "verification", "passport", "captcha")
 RELOGIN = "TikTok yêu cầu đăng nhập lại: dùng bước 1 (Đăng nhập TikTok bằng Chrome thường)"
 LOGIN_CHROME_OPEN = "Chrome đăng nhập vẫn đang mở: bấm \"Đã đăng nhập xong\" hoặc đóng cửa sổ Chrome đó trước"
+MAX_PRODUCTS = 100
+
+# Runs in the LIVE Console page (read only). A product row is the largest ancestor of a Ghim/Pin button that
+# contains no other such button; its name is the longest text line that is not a button label, price or count.
+SCAN_PRODUCTS_JS = r"""
+() => {
+  const PIN = /^(pin|ghim|unpin|bỏ ghim|bỏ ghim sản phẩm)$/i;
+  const PINNED = /^(unpin|bỏ ghim|bỏ ghim sản phẩm)$/i;
+  const NUMERIC = /^[\d\s.,:%+\-xX×₫$]+(đ|vnd)?$|^(₫|\$|đ|vnd)\s*\d/i;  // prices, counts, "x2"
+  const label = (el) => (el.innerText || el.textContent || '').trim();
+  const buttons = [...document.querySelectorAll('button,[role="button"]')].filter((b) => PIN.test(label(b)));
+  const rows = [];
+  for (const button of buttons) {
+    let row = button;
+    while (row.parentElement && row.parentElement !== document.body &&
+           buttons.filter((b) => row.parentElement.contains(b)).length === 1) {
+      row = row.parentElement;
+    }
+    const lines = (row.innerText || '').split('\n').map((t) => t.trim())
+      .filter((t) => t && !PIN.test(t) && !NUMERIC.test(t));
+    const name = lines.sort((a, b) => b.length - a.length)[0] || '';
+    if (name) rows.push({ name: name.slice(0, 200), pinned: PINNED.test(label(button)) });
+  }
+  return rows;
+}
+"""
 
 
 class LoginRequired(RuntimeError):
@@ -104,6 +133,7 @@ class AutoPinService:
         self._login_proc = None
         self._url = DEFAULT_URL
         self._items: list[str] = []
+        self._found: list[dict] = []
         self._index = 0
         self._seconds = 30
         self._enabled = False
@@ -124,7 +154,8 @@ class AutoPinService:
             return {"state": self._state, "enabled": self._enabled, "interval_seconds": self._seconds,
                     "products": list(self._items), "current_index": self._index,
                     "last_pin": self._last_pin, "last_error": self._last_error,
-                    "browser_open": self._context is not None, "login_open": login_open}
+                    "browser_open": self._context is not None, "login_open": login_open,
+                    "found": len(self._found)}
 
     # --- step 1: login in plain Chrome ---------------------------------------------------
     def _profile_locked(self) -> bool:
@@ -254,11 +285,42 @@ class AutoPinService:
         self._landed()
         return self.status()
 
+    def scan_products(self):
+        """Read the products of the open LIVE Console and make them the pin list (all of them)."""
+        return self._request("scan")
+
+    def _scan_on_worker(self) -> dict:
+        page = self._page
+        if self._context is None or page is None:
+            raise RuntimeError("Chưa mở Chrome điều khiển: đăng nhập (bước 1) rồi bấm Lấy sản phẩm")
+        if needs_login(page.url):
+            self._state = "login_required"
+            self._last_error = RELOGIN
+            raise LoginRequired(RELOGIN)
+        if urlsplit(page.url).hostname not in LIVE_ORIGINS:
+            raise RuntimeError("Trang hiện tại không phải TikTok LIVE Console")
+        rows = page.evaluate(SCAN_PRODUCTS_JS) or []
+        names: list[str] = []
+        found: list[dict] = []
+        for row in rows:
+            name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
+            if name and name not in names:
+                names.append(name)
+                found.append({"name": name, "pinned": bool(row.get("pinned"))})
+        if not names:
+            raise RuntimeError("Không thấy sản phẩm nào có nút Ghim trên trang; hãy mở danh sách sản phẩm của phiên LIVE")
+        with self._lock:
+            self._found = found[:MAX_PRODUCTS]
+            self._items = names[:MAX_PRODUCTS]
+            self._index = 0
+        log.info("Đã đọc %s sản phẩm từ LIVE Console", len(self._items))
+        return {**self.status(), "products_found": self._found}
+
     def configure(self, products: list[str], interval_seconds: int):
         if not 5 <= interval_seconds <= 3600:
             raise ValueError("Chu kỳ phải từ 5 đến 3600 giây")
         cleaned = [v.strip() for v in products if v.strip()]
-        if not cleaned or len(cleaned) > 100:
+        if not cleaned or len(cleaned) > MAX_PRODUCTS:
             raise ValueError("Cần 1–100 mã hoặc tên sản phẩm")
         if len(set(cleaned)) != len(cleaned):
             raise ValueError("Danh sách sản phẩm trùng nhau")
@@ -304,11 +366,19 @@ class AutoPinService:
             try:
                 if method == "open":
                     result = self._open_on_worker(*args)
-                elif method == "start":
                     if not self._items:
-                        raise RuntimeError("Chưa có danh sách sản phẩm")
+                        try:
+                            self._scan_on_worker()  # first connection: take the products from the page
+                            result = self.status()
+                        except Exception as exc:  # noqa: BLE001 - the operator can scan again later
+                            log.info("Chưa đọc được sản phẩm từ LIVE Console: %s", exc)
+                elif method == "scan":
+                    result = self._scan_on_worker()
+                elif method == "start":
                     if self._context is None:
                         self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
+                    if not self._items:
+                        self._scan_on_worker()  # no list yet: pin every product of the page
                     self._enabled = True
                     self._state = "running"
                     next_pin = time.monotonic()

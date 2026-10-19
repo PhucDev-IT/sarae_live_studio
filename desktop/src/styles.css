@@ -232,3 +232,10 @@ p { margin: 0; }
 .step.is-current > strong { color: var(--text); }
 .step .btn { align-self: flex-start; }
 .step small { font-size: 12px; }
+.pick-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.pick { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+.pick:hover { background: var(--surface-2); }
+.pick input { accent-color: var(--accent); }
+.pick span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.manual summary { cursor: pointer; }
+.manual[open] { display: flex; flex-direction: column; gap: 6px; }

@@ -27,11 +27,17 @@ class FakeProc:
 
 
 class FakePage:
-    def __init__(self, url):
+    def __init__(self, url, rows=None):
         self.url = url
+        self.rows = rows or []
+        self.scripts = []
 
     def is_closed(self):
         return False
+
+    def evaluate(self, script):
+        self.scripts.append(script)
+        return self.rows
 
 
 class AutoPinTests(unittest.TestCase):
@@ -160,6 +166,40 @@ class LoginFlowTests(unittest.TestCase):
         self.assertEqual((status["enabled"], status["state"]), (False, "login_required"))
         self.assertIn("đăng nhập lại", status["last_error"])
         self.pin._context = None
+
+    def test_scan_reads_products_from_the_console(self):
+        rows = [{"name": "Son môi Đỏ", "pinned": False}, {"name": "Đồng hồ S9", "pinned": True},
+                {"name": "Son môi Đỏ", "pinned": False}, {"name": " ", "pinned": False}, "junk"]
+        self.pin._context = object()
+        self.pin._page = FakePage(CONSOLE, rows)
+        result = self.pin.scan_products()
+        self.assertEqual(result["products"], ["Son môi Đỏ", "Đồng hồ S9"])  # deduplicated, blanks dropped
+        self.assertEqual(result["products_found"][1], {"name": "Đồng hồ S9", "pinned": True})
+        self.assertEqual(result["found"], 2)
+        self.assertIs(self.pin._page.scripts[0], auto_pin.SCAN_PRODUCTS_JS)  # read-only page script
+        self.pin._page = FakePage(CONSOLE, [])
+        with self.assertRaises(RuntimeError):
+            self.pin.scan_products()  # no product row with a Ghim button: never an empty list
+        self.assertEqual(self.pin.status()["products"], ["Son môi Đỏ", "Đồng hồ S9"])
+        self.pin._page = FakePage("https://www.tiktok.com/login")
+        with self.assertRaises(RuntimeError):
+            self.pin.scan_products()
+        self.assertEqual(self.pin.status()["state"], "login_required")
+        self.pin._context = None
+
+    def test_start_without_a_list_pins_every_product_of_the_page(self):
+        self.pin._context = object()
+        self.pin._page = FakePage(CONSOLE, [{"name": "A", "pinned": False}, {"name": "B", "pinned": False}])
+        with mock.patch.object(AutoPinService, "_pin", side_effect=lambda term: term):
+            status = self.pin.start()
+            self.assertEqual((status["enabled"], status["products"]), (True, ["A", "B"]))
+            self.pin.stop()
+        self.pin._context = None
+
+    def test_scan_needs_the_controlled_chrome(self):
+        with self.assertRaises(RuntimeError) as exc:
+            self.pin.scan_products()
+        self.assertIn("Chưa mở Chrome điều khiển", str(exc.exception))
 
     def test_login_and_verify_urls(self):
         for url in ("https://www.tiktok.com/login", "https://seller-vn.tiktok.com/account/login?x=1",
