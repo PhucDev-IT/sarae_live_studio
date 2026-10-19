@@ -20,6 +20,7 @@ from app.agent_playlists import router as agent_playlists_router
 from app.owner_agents import router as owner_agents_router
 from app.captcha_templates import router as captcha_templates_router
 from app.tiktok_products import router as tiktok_products_router
+from app.tiktok_catalog import router as tiktok_catalog_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
@@ -45,7 +46,7 @@ async def saas_legacy_guard(request, call_next):
     safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists", "/api/owner",
           "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
           "/api/media", "/api/live", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor",
-          "/api/captcha-templates", "/api/tiktok-products")
+          "/api/captcha-templates", "/api/tiktok-products", "/api/tiktok-catalog")
     if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
         if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
             return JSONResponse(status_code=403,content={
@@ -85,3 +86,5 @@ def health() -> dict[str, str]:
     return {"status": "UP", "service": "sarae-live-studio-api", "version": settings.app_version}
 
 app.include_router(tiktok_products_router)
+
+app.include_router(tiktok_catalog_router)
