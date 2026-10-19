@@ -41,24 +41,40 @@ MAX_PRODUCTS = 100
 # contains no other such button; its name is the longest text line that is not a button label, price or count.
 SCAN_PRODUCTS_JS = r"""
 () => {
-  const PIN = /^(pin|ghim|unpin|bỏ ghim|bỏ ghim sản phẩm)$/i;
-  const PINNED = /^(unpin|bỏ ghim|bỏ ghim sản phẩm)$/i;
-  const NUMERIC = /^[\d\s.,:%+\-xX×₫$]+(đ|vnd)?$|^(₫|\$|đ|vnd)\s*\d/i;  // prices, counts, "x2"
-  const label = (el) => (el.innerText || el.textContent || '').trim();
-  const buttons = [...document.querySelectorAll('button,[role="button"]')].filter((b) => PIN.test(label(b)));
-  const rows = [];
-  for (const button of buttons) {
-    let row = button;
-    while (row.parentElement && row.parentElement !== document.body &&
-           buttons.filter((b) => row.parentElement.contains(b)).length === 1) {
-      row = row.parentElement;
+  // TikTok's pre-LIVE dashboard has sortable order inputs, NOT Pin buttons.
+  const container = [...document.querySelectorAll('input.pc_order_input, input[role="spinbutton"][data-tid="m4b_input_number"]')];
+  const result = [];
+  for (const input of container) {
+    let root = input;
+    for (let i=0; i<9 && root.parentElement; i++) {
+      root = root.parentElement;
+      if (root.querySelector('img') && root.querySelector('.text-body-m-regular span')) break;
     }
-    const lines = (row.innerText || '').split('\n').map((t) => t.trim())
-      .filter((t) => t && !PIN.test(t) && !NUMERIC.test(t));
-    const name = lines.sort((a, b) => b.length - a.length)[0] || '';
-    if (name) rows.push({ name: name.slice(0, 200), pinned: PINNED.test(label(button)) });
+    const title = root.querySelector('.text-body-m-regular span');
+    const img = root.querySelector('img');
+    const name = (title?.textContent || '').trim();
+    if (!name || !img) continue;
+    const position = parseInt(input.value, 10);
+    const text = (root.innerText || '');
+    const priceText = text.match(/[\d.,]+\s*₫/)?.[0] || null;
+    const stockText = text.match(/Còn:\s*[^\n]+/)?.[0] || null;
+    result.push({
+      name, position: Number.isFinite(position) ? position : null,
+      image_url: img.currentSrc || img.src || null,
+      price_text: priceText, stock_text: stockText
+    });
   }
-  return rows;
+  const scroller = container[0] ? (() => {
+    let p = container[0].parentElement;
+    while (p && p!==document.body) {
+      if (p.scrollHeight > p.clientHeight+30 && getComputedStyle(p).overflowY !== 'visible') return p;
+      p=p.parentElement;
+    }
+    return null;
+  })() : null;
+  const scroll = scroller ? {top:scroller.scrollTop, height:scroller.scrollHeight, client:scroller.clientHeight} : null;
+  if (scroller) scroller.scrollTop = Math.min(scroller.scrollTop + Math.max(100,scroller.clientHeight*0.85),scroller.scrollHeight);
+  return {rows:result,scroll};
 }
 """
 
@@ -140,6 +156,7 @@ class AutoPinService:
         self._last_error = ""
         self._last_pin = ""
         self._state = "idle"
+        self._product_snapshot = None
 
     # --- status --------------------------------------------------------------------------
     def login_open(self) -> bool:
@@ -290,31 +307,54 @@ class AutoPinService:
         return self._request("scan")
 
     def _scan_on_worker(self) -> dict:
-        page = self._page
+        """Read visible DOM rows while scrolling the TikTok product container (read-only)."""
+        page=self._page
         if self._context is None or page is None:
-            raise RuntimeError("Chưa mở Chrome điều khiển: đăng nhập (bước 1) rồi bấm Lấy sản phẩm")
+            raise RuntimeError("Chưa mở Chrome điều khiển: đăng nhập rồi bấm đồng bộ")
         if needs_login(page.url):
-            self._state = "login_required"
-            self._last_error = RELOGIN
             raise LoginRequired(RELOGIN)
         if urlsplit(page.url).hostname not in LIVE_ORIGINS:
             raise RuntimeError("Trang hiện tại không phải TikTok LIVE Console")
-        rows = page.evaluate(SCAN_PRODUCTS_JS) or []
-        names: list[str] = []
-        found: list[dict] = []
-        for row in rows:
-            name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
-            if name and name not in names:
-                names.append(name)
-                found.append({"name": name, "pinned": bool(row.get("pinned"))})
-        if not names:
-            raise RuntimeError("Không thấy sản phẩm nào có nút Ghim trên trang; hãy mở danh sách sản phẩm của phiên LIVE")
+        if not page.url.startswith(DEFAULT_URL):
+            raise RuntimeError("Hãy mở đúng trang TikTok LIVE Product Dashboard")
+        found={}
+        complete=False
+        last=None
+        stagnant=0
+        for _ in range(150):
+            part=page.evaluate(SCAN_PRODUCTS_JS)
+            rows=part.get("rows",[])
+            scroll=part.get("scroll")
+            for row in rows:
+                name=str(row.get("name") or "").strip()
+                if not name:continue
+                key=name.casefold()
+                if key not in found:found[key]=row
+            if not rows:
+                break
+            if not scroll:
+                complete=True
+                break
+            signature=(round(scroll["top"]),len(found))
+            if signature==last:stagnant+=1
+            else:stagnant=0
+            last=signature
+            if scroll["top"]+scroll["client"] >= scroll["height"]-5:
+                complete=True
+                break
+            if stagnant>=4:break
+            page.wait_for_timeout(120)
+        rows=sorted(found.values(),key=lambda x:x.get("position") or 999999)
+        if not rows:
+            raise RuntimeError("Không tìm thấy ô thứ tự sản phẩm (.pc_order_input) trên trang TikTok")
         with self._lock:
-            self._found = found[:MAX_PRODUCTS]
-            self._items = names[:MAX_PRODUCTS]
-            self._index = 0
-        log.info("Đã đọc %s sản phẩm từ LIVE Console", len(self._items))
-        return {**self.status(), "products_found": self._found}
+            self._found=[{"name":x["name"],"pinned":False} for x in rows]
+            self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
+            self._index=0
+            self._product_snapshot={"complete":complete and len(rows)<=1000,"products":rows}
+        log.info("TikTok DOM scan: %s sản phẩm, complete=%s",len(rows),complete)
+        return {**self.status(),"products_found":self._found,
+                "product_snapshot":self._product_snapshot}
 
     def configure(self, products: list[str], interval_seconds: int):
         if not 5 <= interval_seconds <= 3600:
