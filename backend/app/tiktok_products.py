@@ -72,8 +72,8 @@ def comparison(owner_id,items):
 @router.post("/sync")
 def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
     agent=verify_agent(body.agent_id,x_sarae_agent_key)
-    if not body.complete:
-        raise HTTPException(422,"Danh sách chưa quét đầy đủ; không ghi đè snapshot")
+    if not body.complete or not body.products:
+        raise HTTPException(422,"Danh sách chưa quét đầy đủ hoặc đang rỗng; không ghi đè snapshot")
     data=[x.model_dump() for x in body.products]
     if not all(x.get("seller_id") and x.get("product_id") for x in data):
         raise HTTPException(422,"Thiếu TikTok seller_id/product_id; vui lòng quét lại bằng Agent mới")
