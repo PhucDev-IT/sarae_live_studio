@@ -344,7 +344,7 @@ def session_readiness(session_id:int,owner:Owner):
     with SessionLocal() as db:
         item=get_session(db,session_id,owner)
         return {"session_id":session_id,"agent_id":item.agent_id,
-                **reconcile(db,owner["id"],item.agent_id,ids_for(db,session_id))}
+                **reconcile(db,owner["id"],item.agent_id,ids_for(db,session_id),item.shop_id)}
 
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
