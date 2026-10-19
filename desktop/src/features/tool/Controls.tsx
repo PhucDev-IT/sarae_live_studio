@@ -135,6 +135,7 @@ function AutoPinRow() {
   const [products, setProducts] = useState('')
   const [interval, setIntervalSeconds] = useState(30)
   const [found, setFound] = useState<AutoPinProduct[]>([])
+  const [syncInfo, setSyncInfo] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -233,6 +234,16 @@ function AutoPinRow() {
             <strong>2. Bắt đầu Auto Pin</strong>
             <small className="muted">Agent tự đọc sản phẩm trên trang LIVE Console. Bỏ chọn sản phẩm không muốn ghim.</small>
             <ActionButton disabled={!pin.browser_open} onAction={scan}>Lấy sản phẩm từ LIVE Console</ActionButton>
+            <ActionButton disabled={!pin.browser_open} onAction={async () => {
+              const result = await run(() => call('tiktok.products.sync'), 'Đã đồng bộ sản phẩm TikTok với Sarae Cloud')
+              if (result) {
+                const v = result.summary
+                setSyncInfo('TikTok: '+v.tiktok+' · Sarae: '+v.sarae+' · Khớp: '+v.matched+' · Thiếu trên TikTok: '+v.missing_in_tiktok+' · Không khớp: '+v.unmatched_tiktok+' · Trùng tên: '+v.ambiguous)
+                const latest = await call('autopin.status').catch(() => null)
+                if (latest) setPin(latest)
+              }
+            }}>Đồng bộ sản phẩm lên Sarae</ActionButton>
+            {syncInfo && <small className="muted">{syncInfo}</small>}
             {listed.length > 0 && (
               <div className="pick-list">
                 {listed.map((name) => (
