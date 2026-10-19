@@ -356,6 +356,13 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         for pid in body.product_ids:
             if db.get(Product,pid).shop_id!=item.shop_id:
                 raise HTTPException(422,"Sản phẩm không thuộc TikTok Shop của phiên")
+        from app.session_product_readiness import assess
+        previous=set(ids_for(db,session_id))
+        added=[pid for pid in body.product_ids if pid not in previous]
+        if added:
+            check=assess(db,owner["id"],item.agent_id,added)
+            if not check["ready"]:
+                raise HTTPException(409,"Sản phẩm mới phải đang bán và có video khả dụng trên Agent")
         if item.status == "RUNNING":
             if not body.product_ids:
                 raise HTTPException(422, "Phiên đang LIVE phải còn ít nhất một sản phẩm")
