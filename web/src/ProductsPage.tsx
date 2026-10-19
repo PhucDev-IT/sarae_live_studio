@@ -28,21 +28,19 @@ export default function ProductsPage(){
   const [busy,setBusy]=useState(false)
 
   const load=useCallback(async()=>{
-    const [items,available,shopList]=await Promise.all([
+    const [items,available,shopList,currentSnapshot]=await Promise.all([
       apiRequest<Product[]>('/products?limit=500'),
       agentId?apiRequest<Array<{id:number;video_count:number}>>(onAgent('/live/products',agentId)):Promise.resolve([]),
       apiRequest<Shop[]>('/tiktok-catalog/shops'),
+      agentId?apiRequest<TikTokSnapshot>('/tiktok-products/'+encodeURIComponent(agentId)).catch(()=>null):Promise.resolve(null),
     ])
     setProducts(items)
     setVideoCounts(Object.fromEntries(available.map(v=>[v.id,v.video_count])))
     setShops(shopList)
+    setSnapshot(currentSnapshot)
     setLoaded(true)
   },[agentId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được danh mục',description:errorText(e,'')})})},[load,toast])
-  useEffect(()=>{
-    if(!agentId){setSnapshot(null);return}
-    void apiRequest<TikTokSnapshot>('/tiktok-products/'+encodeURIComponent(agentId)).then(setSnapshot).catch(()=>setSnapshot(null))
-  },[agentId])
   const current=useMemo(()=>products.filter(p=>
     (shopFilter==='all'||String(p.shop_id)===shopFilter)
     &&(!query.trim()||(p.name+' '+p.sku).toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))),[products,shopFilter,query])
