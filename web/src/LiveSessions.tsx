@@ -30,6 +30,9 @@ export default function LiveSessions(){
   const {agents, agentId:tabAgentId} = useAgent()
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
   const [createAgent,setCreateAgent] = useState('')
+  const [createShop,setCreateShop] = useState('')
+  const [shops,setShops] = useState<Array<{id:number;seller_id:string;display_name:string}>>([])
+  useEffect(()=>{void apiRequest<Array<{id:number;seller_id:string;display_name:string}>>('/tiktok-catalog/shops').then(setShops).catch(()=>setShops([]))},[])
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [products,setProducts] = useState<LiveProduct[]>([])
   const [status,setStatus] = useState<LiveStatus|null>(null)
@@ -139,7 +142,7 @@ export default function LiveSessions(){
     const name = nameInput.trim()
     if (!name) return
     void run(async ()=>{
-      const created = await sessionsApi.create(name, createAgent)
+      const created = await sessionsApi.create(name, createAgent, Number(createShop))
       setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL');setPickerOpen(true)
     }, 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
   }
@@ -378,10 +381,11 @@ export default function LiveSessions(){
 
     <Modal open={createOpen} title="Tạo phiên LIVE" size="sm" onClose={()=>!busy && setCreateOpen(false)} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
-      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAgent}>Tạo & thêm sản phẩm</Button>
+      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAgent || !createShop}>Tạo & thêm sản phẩm</Button>
     </>}>
       <form id="ls-create-form" className="ls-create-form" onSubmit={create}>
         <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint="Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự."/>
+        <Select label="TikTok Shop" value={createShop} onChange={setCreateShop} options={shops.map(sh=>({value:String(sh.id),label:sh.display_name || ("Shop "+sh.seller_id)}))} hint="Chỉ sản phẩm thuộc shop này được chọn cho phiên LIVE."/>
         <Select label="Phát trên máy Windows" value={createAgent} onChange={setCreateAgent}
           options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
           hint="Phiên luôn phát trên máy này (OBS và video của máy đó). Đổi được trước khi bắt đầu."/>
