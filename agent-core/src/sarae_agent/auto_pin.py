@@ -265,8 +265,8 @@ class AutoPinService:
     def _landed(self) -> None:
         if self._page is not None and needs_login(self._page.url):
             self._state = "login_required"
-            self._last_error = RELOGIN
-            raise LoginRequired(RELOGIN)
+            self._last_error = ""
+            return
         self._state = "ready"
         self._last_error = ""
 
