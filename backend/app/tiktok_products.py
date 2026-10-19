@@ -31,6 +31,11 @@ class TikTokProduct(BaseModel):
     image_url:str|None=Field(default=None,max_length=2000)
     price_text:str|None=Field(default=None,max_length=100)
     stock_text:str|None=Field(default=None,max_length=100)
+    seller_id:str|None=None
+    product_id:str|None=None
+    stock_num:int|None=None
+    origin_price_text:str|None=None
+    category_name:str|None=None
 
 class Snapshot(BaseModel):
     agent_id:str
@@ -70,6 +75,13 @@ def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
     if not body.complete:
         raise HTTPException(422,"Danh sách chưa quét đầy đủ; không ghi đè snapshot")
     data=[x.model_dump() for x in body.products]
+    if not all(x.get("seller_id") and x.get("product_id") for x in data):
+        raise HTTPException(422,"Thiếu TikTok seller_id/product_id; vui lòng quét lại bằng Agent mới")
+    from app.tiktok_catalog import import_snapshot
+    try:
+        imported=import_snapshot(agent["owner_id"],data)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
     now=datetime.now(timezone.utc).isoformat()
     with connection() as db:
         db.execute("""INSERT INTO snapshots(agent_id,owner_id,scanned_at,complete,products_json)
@@ -77,7 +89,7 @@ def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
           owner_id=excluded.owner_id,scanned_at=excluded.scanned_at,complete=excluded.complete,
           products_json=excluded.products_json""",
           (body.agent_id,agent["owner_id"],now,1,json.dumps(data,ensure_ascii=False)))
-    return {"agent_id":body.agent_id,"scanned_at":now,**comparison(agent["owner_id"],data)}
+    return {"agent_id":body.agent_id,"scanned_at":now,"imported":imported,**comparison(agent["owner_id"],data)}
 
 @router.get("/{agent_id}")
 def get_snapshot(agent_id:str,owner=Depends(current_owner)):
