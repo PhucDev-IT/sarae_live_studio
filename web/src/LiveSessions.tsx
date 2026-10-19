@@ -399,7 +399,7 @@ export default function LiveSessions(){
       <form id="ls-rename-form" onSubmit={rename}><Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)}/></form>
     </Modal>
 
-    {pickerOpen && chosen && <ProductPicker products={products.filter(p=>p.shop_id===chosen.shop_id)} exclude={lineup} onClose={()=>setPickerOpen(false)}
+    {pickerOpen && chosen && <ProductPicker products={products.filter(p=>p.shop_id===chosen.shop_id && p.video_count>0 && p.status==='ACTIVE')} exclude={lineup} onClose={()=>setPickerOpen(false)}
       onAdd={ids=>{edit([...lineup, ...ids]);setPickerOpen(false)}}/>}
 
     <ConfirmModal open={!!confirm} loading={busy} onClose={()=>setConfirm(null)} onConfirm={confirmAction}
