@@ -202,17 +202,9 @@ def new_sku(db: Session, owner: dict) -> str:
             return sku
 
 
-@router.post("/products", response_model=ProductOut, status_code=201)
+@router.post("/products", status_code=405)
 def create_product(body: ProductInput, db: DB, owner: Owner):
     raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
-    if body.sku and sku_taken(db, owner, body.sku):
-        raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db, owner), "owner_id": owner["id"],
-                      "image_url": media_access.stored_ref(db, owner, body.image_url, "products")})
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return product_out(item)
 
 
 @router.post("/products/images", status_code=201)
@@ -239,45 +231,14 @@ def get_product(entity_id: int, db: DB, owner: Owner):
     return product_out(owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm"))
 
 
-@router.put("/products/{entity_id}", response_model=ProductOut)
+@router.put("/products/{entity_id}", status_code=405)
 def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
-    raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
-    item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
-    if body.sku and sku_taken(db, owner, body.sku, exclude_id=entity_id):
-        raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
-    previous = item.image_url
-    for key, value in body.model_dump(exclude={"sku", "image_url"}).items():
-        setattr(item, key, value)
-    item.image_url = media_access.stored_ref(db, owner, body.image_url, "products")
-    if body.sku:
-        item.sku = body.sku
-    db.commit()
-    db.refresh(item)
-    if previous != item.image_url:
-        release_photo(db, previous, PRODUCT_IMAGE_DIR)
-    return product_out(item)
+    raise HTTPException(405,"Chỉ được sửa mô tả AI qua API chuyên biệt")
 
 
-@router.delete("/products/{entity_id}", status_code=204)
+@router.delete("/products/{entity_id}", status_code=405)
 def delete_product(entity_id: int, db: DB, owner: Owner):
-    raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
-    from app.product_videos import ProductLiveVideo
-    from app.live_sessions import LiveSession, SessionProduct
-    item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
-    on_air = db.scalar(select(LiveSession.id).where(LiveSession.owner_id == owner["id"], LiveSession.status == "RUNNING",
-                                                     LiveSession.current_product_id == item.id))
-    if on_air is not None:
-        raise HTTPException(status_code=409, detail="Sản phẩm đang phát trên LIVE, hãy chuyển sản phẩm khác trước khi xóa")
-    # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
-    db.execute(delete(ProductLiveVideo).where(ProductLiveVideo.product_id == item.id))
-    # Upcoming and running lineups lose the product; ended sessions keep it as history.
-    open_sessions = select(LiveSession.id).where(LiveSession.owner_id == owner["id"], LiveSession.status != "ENDED")
-    db.execute(delete(SessionProduct).where(SessionProduct.product_id == item.id, SessionProduct.session_id.in_(open_sessions)))
-    photo = item.image_url
-    db.delete(item)
-    db.commit()
-    release_photo(db, photo, PRODUCT_IMAGE_DIR)
-    return Response(status_code=204)
+    raise HTTPException(405,"Sản phẩm TikTok được giữ lâu dài; không xóa thủ công")
 
 
 @router.get("/presenters", response_model=list[PresenterOut])
