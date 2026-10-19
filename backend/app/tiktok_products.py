@@ -75,6 +75,9 @@ def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
     if not body.complete or not body.products:
         raise HTTPException(422,"Danh sách chưa quét đầy đủ hoặc đang rỗng; không ghi đè snapshot")
     data=[x.model_dump() for x in body.products]
+    keys=[(x.get("seller_id"),x.get("product_id")) for x in data]
+    if len(set(keys))!=len(keys):
+        raise HTTPException(422,"TikTok trả về Product ID trùng trong cùng một lần quét")
     if not all(x.get("seller_id") and x.get("product_id") for x in data):
         raise HTTPException(422,"Thiếu TikTok seller_id/product_id; vui lòng quét lại bằng Agent mới")
     from app.tiktok_catalog import import_snapshot
