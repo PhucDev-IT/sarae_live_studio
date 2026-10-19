@@ -270,6 +270,7 @@ export interface CoreMethods {
   'autopin.login': [{url?:string}, AutoPinStatus]
   'autopin.login_done': [NoParams, AutoPinStatus]
   'autopin.scan': [NoParams, AutoPinStatus & { products_found: AutoPinProduct[] }]
+  'tiktok.products.sync': [NoParams, {agent_id:string;scanned_at:string;summary:{tiktok:number;sarae:number;matched:number;unmatched_tiktok:number;ambiguous:number;missing_in_tiktok:number}}]
   'autopin.configure': [{products:string[];interval_seconds:number}, AutoPinStatus]
   'autopin.start': [NoParams, AutoPinStatus]
   'autopin.stop': [NoParams, AutoPinStatus]
