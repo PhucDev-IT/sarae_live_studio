@@ -238,7 +238,7 @@ function AutoPinRow() {
               const result = await run(() => call('tiktok.products.sync'), 'Đã đồng bộ sản phẩm TikTok với Sarae Cloud')
               if (result) {
                 const v = result.summary
-                setSyncInfo('TikTok: '+v.tiktok+' · Sarae: '+v.sarae+' · Khớp: '+v.matched+' · Thiếu trên TikTok: '+v.missing_in_tiktok+' · Không khớp: '+v.unmatched_tiktok+' · Trùng tên: '+v.ambiguous)
+                setSyncInfo('Đã tạo: '+result.imported.created+' · Cập nhật: '+result.imported.updated+' · TikTok: '+v.tiktok+' · Sarae: '+v.sarae+' · Khớp: '+v.matched+' · Thiếu trên TikTok: '+v.missing_in_tiktok+' · Không khớp: '+v.unmatched_tiktok+' · Trùng tên: '+v.ambiguous)
                 const latest = await call('autopin.status').catch(() => null)
                 if (latest) setPin(latest)
               }
