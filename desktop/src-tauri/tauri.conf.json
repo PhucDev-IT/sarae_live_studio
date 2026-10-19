@@ -15,10 +15,10 @@
       {
         "label": "main",
         "title": "Sarae Windows Agent",
-        "width": 1200,
-        "height": 780,
-        "minWidth": 940,
-        "minHeight": 620,
+        "width": 460,
+        "height": 760,
+        "minWidth": 400,
+        "minHeight": 560,
         "center": true,
         "backgroundColor": "#0f1420"
       }

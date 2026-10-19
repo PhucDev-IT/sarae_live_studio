@@ -208,6 +208,7 @@ export interface SystemStatus {
   media: MediaSummary
   playback: PlaybackStatus
   monitor: MonitorStatus
+  auto_pin?: AutoPinStatus
 }
 
 export interface AgentConfigView {

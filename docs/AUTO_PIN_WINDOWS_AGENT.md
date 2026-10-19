@@ -2,7 +2,7 @@
 
 ## Scope
 
-The Tauri GUI contains a **Tự động ghim** page. The Python Agent Core uses
+The Tauri GUI has a **Tự động ghim** row (switch + ⌄ for Chrome, product list and interval). The Python Agent Core uses
 Playwright to launch a *dedicated, visible Chrome profile* under
 `%LOCALAPPDATA%\\SaraeAgent\\chrome-auto-pin-profile`, not a Chrome extension.
 
