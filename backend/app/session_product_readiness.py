@@ -39,7 +39,7 @@ def assess(db,owner_id:str,agent_id:str,product_ids:list[int])->dict:
                      "available_video_count":available,"ready":not reasons,"reasons":reasons})
     return {"products":rows,"ready":all(p["ready"] for p in rows)}
 
-def reconcile(db,owner_id:str,agent_id:str,selected:list[int])->dict:
+def reconcile(db,owner_id:str,agent_id:str,selected:list[int],shop_id:int|None=None)->dict:
     """Compare selected LIVE products against the latest TikTok browser snapshot.
 
     Legacy snapshots contain names but no TikTok IDs, so those matches are provisional.
@@ -52,10 +52,19 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int])->dict:
     if not snap:
         return {**readiness,"snapshot_at":None,"snapshot_state":"UNKNOWN",
                 "missing_on_tiktok":[],"unselected_on_sarae":[],"ambiguous":[]}
-    source=json.loads(snap["products_json"])
+    all_source=json.loads(snap["products_json"])
+    if shop_id is not None:
+        seller=db.execute(text("SELECT seller_id FROM tiktok_shops WHERE id=:s AND owner_id=:o"),
+                          {"s":shop_id,"o":owner_id}).scalar_one_or_none()
+        observed={str(row.get("seller_id") or "") for row in all_source}
+        if seller is not None and str(seller) not in observed:
+            return {**readiness,"snapshot_at":snap["scanned_at"],
+                    "snapshot_state":"SHOP_MISMATCH","missing_on_tiktok":[],
+                    "unselected_on_sarae":[],"ambiguous":[],"matching_basis":"SELLER_ID_AND_PRODUCT_ID"}
+    source=all_source
     selected_products={p.id:p for p in db.scalars(select(Product).where(
         Product.owner_id==owner_id,Product.id.in_(selected))).all()} if selected else {}
-    shop_ids={p.shop_id for p in selected_products.values() if p.shop_id is not None}
+    shop_ids={shop_id} if shop_id is not None else {p.shop_id for p in selected_products.values() if p.shop_id is not None}
     sellers={r[0] for r in db.execute(text("SELECT seller_id FROM tiktok_shops WHERE owner_id=:o AND id IN ("+
             ",".join(str(int(x)) for x in shop_ids)+")"),{"o":owner_id})} if shop_ids else set()
     source=[row for row in source if str(row.get("seller_id") or "") in sellers]
