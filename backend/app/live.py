@@ -155,7 +155,7 @@ def available_products(owner: Owner, agent_id: AgentId):
                                                              ProductLiveVideo.agent_id == agent["id"])).all():
             if row.media_id in present:
                 counts[row.product_id] = counts.get(row.product_id, 0) + 1
-        return [{"id": p.id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
+        return [{"id": p.id, "shop_id": p.shop_id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
                  "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 
 
