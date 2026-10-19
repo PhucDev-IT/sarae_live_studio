@@ -1,5 +1,6 @@
 """TikTok LIVE Console product snapshots, scoped to OWNER and Windows Agent."""
 import json
+import unicodedata
 import sqlite3
 from datetime import datetime,timezone
 
