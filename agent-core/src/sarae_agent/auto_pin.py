@@ -157,6 +157,7 @@ class AutoPinService:
         self._last_pin = ""
         self._state = "idle"
         self._product_snapshot = None
+        self._network_products = None
 
     # --- status --------------------------------------------------------------------------
     def login_open(self) -> bool:
@@ -267,6 +268,40 @@ class AutoPinService:
         self._state = "ready"
         self._last_error = ""
 
+    def _capture_product_response(self,response):
+        """Observe the page's own authenticated request; never copy cookies or signatures."""
+        from urllib.parse import urlsplit
+        if urlsplit(response.url).path!="/api/v1/streamer_desktop/live_product/list":
+            return
+        if response.status!=200:return
+        try:
+            body=response.json()
+            if body.get("code")!=0:return
+            raw=body.get("data",{}).get("products")
+            if not isinstance(raw,list):return
+            result=[]
+            for x in raw:
+                seller=str((x.get("seller_info") or {}).get("seller_id") or "")
+                pid=str(x.get("product_id") or "")
+                name=str(x.get("title") or "").strip()
+                if not seller.isdigit() or not pid.isdigit() or not name:continue
+                cover=(x.get("cover") or {}).get("url_list") or []
+                category=x.get("category_info") or {}
+                result.append({"seller_id":seller,"product_id":pid,"name":name,
+                               "image_url":cover[0] if cover else None,
+                               "price_text":x.get("format_available_price"),
+                               "origin_price_text":x.get("format_origin_price"),
+                               "stock_num":x.get("stock_num"),
+                               "category_name":category.get("name")})
+            if len(result)==len(raw):
+                self._network_products=result
+                log.info("TikTok Network captured %s products",len(result))
+        except Exception as exc:
+            log.warning("Không đọc được TikTok products response: %s",exc)
+
+    def _attach_response_listener(self,page):
+        page.on("response",self._capture_product_response)
+
     def _open_on_worker(self, url):
         if self.login_open() or self._profile_locked():
             raise RuntimeError(LOGIN_CHROME_OPEN)
@@ -276,7 +311,9 @@ class AutoPinService:
                 if self._page is None or self._page.is_closed():
                     pages = [p for p in self._context.pages if not p.is_closed()]
                     self._page = pages[0] if pages else self._context.new_page()
-                self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                self._attach_response_listener(self._page)
+                self._attach_response_listener(self._page)
+            self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 # A closed Chrome context cannot be reused.
                 self._drop_context()
@@ -344,6 +381,20 @@ class AutoPinService:
                 break
             if stagnant>=4:break
             page.wait_for_timeout(120)
+        if self._network_products is None:
+            # A new request triggered by the page refresh may supply IDs.
+            try:
+                page.reload(wait_until="domcontentloaded",timeout=30000)
+                page.wait_for_timeout(700)
+            except Exception:
+                pass
+        if self._network_products is not None:
+            rows=list(self._network_products)
+            with self._lock:
+                self._found=[{"name":x["name"],"pinned":False} for x in rows]
+                self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
+                self._product_snapshot={"complete":True,"products":rows}
+            return {**self.status(),"products_found":self._found,"product_snapshot":self._product_snapshot}
         rows=sorted(found.values(),key=lambda x:x.get("position") or 999999)
         if not rows:
             raise RuntimeError("Không tìm thấy ô thứ tự sản phẩm (.pc_order_input) trên trang TikTok")
