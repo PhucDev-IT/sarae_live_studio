@@ -8,6 +8,7 @@ import { useAgent } from './agentContext'
 import { sessionsApi, type LiveSession } from './liveSessionsApi'
 import { IconButton, ImageField, Stat, Thumb } from './CatalogParts'
 
+type TikTokComparison = {scanned_at:string|null; summary:{tiktok:number;sarae:number;matched:number;unmatched_tiktok:number;ambiguous:number;missing_in_tiktok:number};products:Array<{name:string;match_status:string}>;missing_in_tiktok:Array<{id:number;name:string}>}
 type Product = { id:number; sku:string; name:string; description:string; price:number|null; image_url:string; status:'ACTIVE'|'INACTIVE'; created_at:string }
 type Form = { name:string; sku:string; price:string; image_url:string; description:string; active:boolean }
 type StatusFilter = 'ALL' | 'ACTIVE' | 'INACTIVE'
@@ -28,6 +29,7 @@ export default function ProductsPage(){
   const {agent} = useAgent()
   const agentId = agent?.id
   const [products,setProducts] = useState<Product[]>([])
+  const [tiktok,setTikTok] = useState<TikTokComparison|null>(null)
   const [videoCounts,setVideoCounts] = useState<Record<number,number>>({})
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [loaded,setLoaded] = useState(false)
@@ -49,6 +51,13 @@ export default function ProductsPage(){
     setProducts(p);setVideoCounts(Object.fromEntries(live.map(x=>[x.id,x.video_count])));setSessions(s);setLoaded(true)
   },[agentId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được sản phẩm',description:errorText(e, '')})})},[load,toast])
+
+  useEffect(()=>{
+    let active=true
+    if (!agentId){setTikTok(null);return}
+    void apiRequest<TikTokComparison>('/tiktok-products/'+encodeURIComponent(agentId)).then(v=>{if(active)setTikTok(v)}).catch(()=>{if(active)setTikTok(null)})
+    return ()=>{active=false}
+  },[agentId])
 
   const q = query.trim().toLocaleLowerCase('vi')
   const visible = products.filter(p=>
@@ -130,6 +139,23 @@ export default function ProductsPage(){
         onClick={stats.missing ? ()=>{setStatusFilter('ACTIVE');setVideoFilter('MISSING')} : undefined} actionTitle="Lọc sản phẩm thiếu video"/>
     </section>
 
+    {agentId && <section className="pp-panel" style={{padding:'14px 18px',marginBottom:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div>
+          <strong>Đối chiếu sản phẩm TikTok LIVE</strong>
+          <div className="pp-count">{tiktok?.scanned_at
+            ? 'TikTok: '+tiktok.summary.tiktok+' · Khớp: '+tiktok.summary.matched+' · Thiếu trên TikTok: '+tiktok.summary.missing_in_tiktok+' · Không khớp Sarae: '+tiktok.summary.unmatched_tiktok+' · Trùng tên: '+tiktok.summary.ambiguous
+            : 'Chưa có danh sách TikTok được đồng bộ từ Windows Agent'}</div>
+        </div>
+        <Button onClick={()=>void apiRequest<TikTokComparison>('/tiktok-products/'+encodeURIComponent(agentId)).then(setTikTok).catch(e=>toast.push({tone:'danger',title:'Không tải được danh sách TikTok',description:errorText(e,'')}))}>Làm mới đối chiếu</Button>
+      </div>
+      {!!tiktok?.scanned_at && (tiktok.summary.missing_in_tiktok>0 || tiktok.summary.unmatched_tiktok>0 || tiktok.summary.ambiguous>0) && (
+        <details style={{marginTop:10}}><summary>Xem các sản phẩm cần xử lý</summary>
+          {tiktok.missing_in_tiktok.map(p=><div key={'s-'+p.id} className="pp-count">Thiếu trên TikTok: {p.name}</div>)}
+          {tiktok.products.filter(p=>p.match_status!=='matched').map((p,i)=><div key={'t-'+i} className="pp-count">{p.match_status==='ambiguous'?'Trùng tên':'Không có trong Sarae'}: {p.name}</div>)}
+        </details>
+      )}
+    </section>}
     <section className="pp-panel">
       <div className="pp-toolbar">
         <div className="pp-search"><SearchInput value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm theo tên hoặc mã sản phẩm…" aria-label="Tìm sản phẩm"/></div>
