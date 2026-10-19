@@ -328,6 +328,15 @@ def session_detail(session_id: int, owner: Owner):
     with SessionLocal() as db:
         return serialize(db, get_session(db, session_id, owner))
 
+@router.get("/{session_id}/readiness")
+def session_readiness(session_id:int,owner:Owner):
+    """Readiness and TikTok Console comparison, without modifying catalog/session."""
+    from app.session_product_readiness import reconcile
+    with SessionLocal() as db:
+        item=get_session(db,session_id,owner)
+        return {"session_id":session_id,"agent_id":item.agent_id,
+                **reconcile(db,owner["id"],item.agent_id,ids_for(db,session_id))}
+
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
     with SessionLocal() as db:
@@ -361,6 +370,11 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if pid not in ids:
             raise HTTPException(422, "Sản phẩm không nằm trong phiên")
         agent = session_agent(owner, item, free=True)
+        from app.session_product_readiness import assess
+        check=assess(db,owner["id"],agent["id"],ids)
+        if not check["ready"]:
+            problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
+            raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
         view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
     return answer(view, owner, session_id)
 
