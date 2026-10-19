@@ -117,7 +117,7 @@ Agent ──GET .../next?wait=25 (claim, claim_token mới)──▶ RUNNING ─
 | `command_journal.json` | 500 lệnh Cloud gần nhất đã thực thi và kết quả | — |
 | `data\agent_commands.lock` | Khóa một tiến trình nhận lệnh | Khóa OS, tự nhả khi tiến trình thoát |
 | `playback_state.json` | Phiên phát cuối (chỉ để báo `needs_manual_resume`) | — |
-| `monitor\templates\`, `monitor\captures\` | Ảnh mẫu CAPTCHA, ảnh lúc phát hiện (giữ 50) | — |
+| `monitor\templates\`, `monitor\captures\` | Ảnh mẫu CAPTCHA (bản sao bộ ảnh SUPER_ADMIN đăng trên Cloud, `sarae_<id>.png`), ảnh lúc phát hiện (giữ 50) | sha256 khớp danh sách Cloud |
 | `voice\`, `logs\agent.log*`, `diagnostics\` | MP3 TTS (giữ 20), log xoay vòng 5×2 MB, gói zip | Log đã che bí mật |
 
 Nâng cấp từ Agent cũ (nhúng trong `backend/`): lần chạy đầu tự nhập `data\agent_gui_settings.json`, thư mục,
@@ -141,6 +141,8 @@ index và **credential DPAPI cũ** → giữ nguyên `agent_id`.
 * Không có API chính thức điều khiển TikTok LIVE Studio: Agent chỉ **phát hiện** cửa sổ/CAPTCHA, không thao tác.
 * Nhận diện CAPTCHA là so khớp cạnh theo ảnh mẫu: lệch tỉ lệ ~10 % làm điểm giảm còn ~0,64 (dưới ngưỡng mặc định 0,82)
   → ảnh mẫu phải được cắt ở **đúng mức Display scaling của Windows** mà TikTok LIVE Studio đang dùng (test `test_monitor.py`).
+  Ảnh mẫu do SUPER_ADMIN (nhà cung cấp dịch vụ) quản lý trên trang quản trị; Agent tải khi kết nối Cloud rồi 6 giờ/lần.
+  OWNER và ứng dụng Agent không thấy, không thêm/xoá được.
 * Thời lượng + thumbnail được dò dần (≤ 20 s mỗi lượt đồng bộ) sau khi quét; codec chưa được trích xuất.
 * Cảnh báo Telegram khi phát hiện CAPTCHA: Agent Core không tự gửi (không giữ bot token trên máy khách) và Cloud hiện chưa
   gửi khi heartbeat chuyển sang `captcha_detected` → cần bổ sung phía Cloud.

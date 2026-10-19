@@ -1,3 +1,4 @@
+import hashlib
 import cv2
 import numpy as np
 import pytest
@@ -65,17 +66,20 @@ def test_templates_and_start_guard(home, events, tmp_path):
     with pytest.raises(AgentError) as exc:
         monitor.start()
     assert exc.value.code == "TEMPLATE_MISSING"
-    good = tmp_path / "captcha.png"
-    cv2.imwrite(str(good), synthetic_dialog())
-    added = monitor.add_template(str(good))
-    assert (paths.monitor_templates / added["name"]).is_file()
-    flat = tmp_path / "flat.png"
-    cv2.imwrite(str(flat), np.full((60, 60, 3), 200, np.uint8))
-    with pytest.raises(AgentError) as exc:
-        monitor.add_template(str(flat))
-    assert exc.value.code == "INVALID_TEMPLATE"
-    with pytest.raises(AgentError):
-        monitor.remove_template("..\\..\\config.json")
+    ok, good = cv2.imencode(".png", synthetic_dialog())
+    good = good.tobytes()
+    ok, flat = cv2.imencode(".png", np.full((60, 60, 3), 200, np.uint8))
+    flat = flat.tobytes()
+    files = {"a" * 32: good, "b" * 32: flat}
+    remote = [{"id": i, "sha256": hashlib.sha256(raw).hexdigest()} for i, raw in files.items()]
+    (paths.monitor_templates / "custom_old.png").write_bytes(good)  # not from Sarae: removed by the sync
+    result = monitor.sync_templates(remote + [{"id": "../../config", "sha256": "x"}], files.__getitem__)
+    assert result == {"added": 1, "removed": 1, "failed": 1, "total": 1}  # the flat image has no detail
+    assert [t["name"] for t in monitor.templates()] == ["sarae_" + "a" * 32 + ".png"]
+    tampered = monitor.sync_templates([{"id": "c" * 32, "sha256": "0" * 64}] + remote[:1], lambda _id: good)
+    assert tampered["failed"] == 1 and tampered["total"] == 1  # sha256 mismatch is never installed
+    assert monitor.sync_templates([], files.__getitem__)["total"] == 0  # Sarae removed every template
+    monitor.sync_templates(remote[:1], files.__getitem__)
     config = monitor.configure({"interval_seconds": 1.5, "threshold": 0.9, "unknown": 1})
     assert config["interval_seconds"] == 1.5 and config["threshold"] == 0.9
     # Starting with a template runs the loop; with no TikTok window it reports that state.

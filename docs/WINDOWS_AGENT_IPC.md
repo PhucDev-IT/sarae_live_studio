@@ -65,7 +65,7 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 `current_filename`, `last_error`, `started_at`, `needs_manual_resume`, `source`.
 | `monitor.status` / `.start` / `.stop` | — | `{state, config, events, templates}` |
 | `monitor.config` | `{interval_seconds?,threshold?,telegram_enabled?,telegram_chat_id?,autostart?}` | Cấu hình monitor |
-| `monitor.templates.list` / `.add {path}` / `.remove {name}` | | Ảnh mẫu |
+| `monitor.templates.list` | — | Ảnh mẫu đang có (chỉ đọc: ảnh do SUPER_ADMIN cung cấp qua Cloud, GUI không thêm/xoá) |
 | `voice.speak` | `{text≤450, voice?}` | `{status:"sent_to_obs",source,voice,chars}` |
 | `diagnostics.export` | — | `{path, folder, bytes}` |
 | `logs.recent` | `{limit?≤500}` | `{entries[]}` |
@@ -120,6 +120,8 @@ Nguồn chuẩn: `backend/app/cloud_agents.py` (+ `identity.py`, `agent_library.
 | `POST /api/agents/{agent_id}/commands` `{kind, payload, idempotency_key?, wait?}` | **Chỉ OWNER sở hữu** | `Idempotency-Key` trùng → cùng lệnh; 409 nếu Agent offline |
 | `GET /api/agents/{agent_id}/commands[/{command_id}]`, `POST …/{command_id}/cancel` | OWNER | Trạng thái `PENDING/RUNNING/SUCCESS/FAILED/TIMEOUT/CANCELLED` |
 | `GET /api/agent-library/{agent_id}` | OWNER/SUPER_ADMIN | Danh sách video + `duration_seconds`, `thumb_url` |
+| `GET /api/captcha-templates/agent?agent_id=`, `GET /api/captcha-templates/agent/{id}/image?agent_id=` | Agent | Bộ ảnh mẫu CAPTCHA `{templates:[{id, sha256, bytes}]}`; Agent giữ đúng bộ này (tải khi kết nối Cloud, rồi 6 giờ/lần) |
+| `GET/POST /api/captcha-templates`, `DELETE /{id}`, `GET /{id}/image` | **Chỉ SUPER_ADMIN** | Quản lý ảnh mẫu (PNG/JPEG ≤ 3 MB, tối đa 50); OWNER không truy cập được |
 
 ### Kiểu lệnh (`kind`) và payload
 

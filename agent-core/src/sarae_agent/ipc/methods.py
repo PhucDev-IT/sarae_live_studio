@@ -65,14 +65,6 @@ class MonitorConfigParams(Strict):
     autostart: bool | None = None
 
 
-class TemplateAddParams(Strict):
-    path: str = Field(min_length=1, max_length=1000)
-
-
-class TemplateRemoveParams(Strict):
-    name: str = Field(min_length=1, max_length=120)
-
-
 class SpeakParams(Strict):
     text: str = Field(min_length=1, max_length=450)
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
@@ -192,9 +184,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("monitor.start", lambda _: rt.monitor.start())
     reg("monitor.stop", lambda _: rt.monitor.stop())
     reg("monitor.config", lambda p: rt.monitor.configure(p.model_dump(exclude_none=True)), MonitorConfigParams)
+    # Templates come from Sarae through the Cloud (cloud/worker.py); the GUI can only count them.
     reg("monitor.templates.list", lambda _: {"templates": rt.monitor.templates()})
-    reg("monitor.templates.add", lambda p: rt.monitor.add_template(p.path), TemplateAddParams)
-    reg("monitor.templates.remove", lambda p: rt.monitor.remove_template(p.name), TemplateRemoveParams)
 
     # voice
     reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice), SpeakParams)

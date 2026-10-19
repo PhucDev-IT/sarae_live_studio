@@ -267,9 +267,9 @@ def delete_template(name:str):
 DEFAULT_CONFIG=ConfigBody().model_dump()|{"template_loaded":False}
 
 def local_templates_only():
-    """Template files live on the Agent's PC; the server copy only works when Backend and Agent share a machine."""
+    """Old single-PC studio only. In SaaS mode SUPER_ADMIN manages templates (app/captcha_templates.py)."""
     if settings.sarae_saas_mode:
-        raise HTTPException(409,"Ảnh mẫu CAPTCHA được quản lý trên máy Windows Agent; tính năng gửi mẫu qua web sẽ có ở bản Agent mới")
+        raise HTTPException(409,"Không khả dụng trong SaaS mode: dữ liệu nhận diện CAPTCHA do Sarae cung cấp cho Agent")
 
 @router.get("/status")
 def agent_status(owner:Owner,agent_id:AgentId):

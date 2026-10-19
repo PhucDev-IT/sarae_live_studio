@@ -121,3 +121,15 @@
   .pa-owner-head{flex-wrap:wrap}
 }
 .pa-shell .pp-table .ui-badge{white-space:nowrap}
+
+.pa-captcha-list{display:grid;gap:10px}
+.pa-captcha-item{display:flex;align-items:center;gap:12px;padding:8px;border:1px solid var(--ui-border);border-radius:10px;min-width:0}
+.pa-captcha-item img,.pa-captcha-ph{width:96px;height:56px;object-fit:contain;border-radius:6px;background:rgba(127,127,127,.08);flex:none}
+.pa-captcha-meta{display:grid;gap:2px;min-width:0;flex:1}
+.pa-captcha-meta strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pa-captcha-meta small{font-size:12px;color:var(--ui-text-muted)}
+.pa-upload{display:grid;justify-items:center;gap:6px;padding:22px;border:1.5px dashed var(--ui-border);border-radius:12px;cursor:pointer;text-align:center;color:var(--ui-text-muted)}
+.pa-upload:hover{border-color:var(--ui-primary);color:var(--ui-primary)}
+.pa-upload input{display:none}
+.pa-upload strong{color:var(--ui-text)}
+.pa-upload small{font-size:12px}

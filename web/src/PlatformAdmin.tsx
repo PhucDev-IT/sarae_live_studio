@@ -5,7 +5,7 @@ import {
 } from './ui/core'
 import {
   CalendarClock, CalendarPlus, ChartNoAxesCombined, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Clock3, Copy, HardDrive, KeyRound,
-  LogOut, Menu, Moon, Plus, RefreshCcw, Settings2, ShieldCheck, ShieldOff, Sun, Unplug, UserPlus, Users, Wand2, Wifi, WifiOff, X,
+  LogOut, Menu, Moon, Plus, RefreshCcw, ScanEye, Settings2, ShieldCheck, ShieldOff, Sun, Trash2, Unplug, UploadCloud, UserPlus, Users, Wand2, Wifi, WifiOff, X,
 } from 'lucide-react'
 import { api } from './mediaApi'
 import { clearAuth, getAuthToken } from './AuthGate'
@@ -17,7 +17,7 @@ type Owner = { id:string; email:string; active:number; enabled:number; max_agent
 type Registered = { id:string; owner_id:string; hostname:string; enabled:number; created_at:string }
 type Heartbeat = { agent_id:string; hostname:string; online:boolean; last_seen:string; seconds_ago:number }
 type LicenseState = 'active'|'expiring'|'expired'|'locked'
-type Tab = 'dashboard'|'customers'|'licenses'|'agents'|'settings'
+type Tab = 'dashboard'|'customers'|'licenses'|'agents'|'captcha'|'settings'
 type OwnerRow = Owner & { state:LicenseState; daysLeft:number|null; agentsUsed:number } & Record<string, unknown>
 type AgentRow = Registered & { ownerEmail:string; online:boolean; lastSeen:string|null } & Record<string, unknown>
 
@@ -26,6 +26,7 @@ const NAV:{id:Tab;title:string;icon:typeof Users;hint:string}[] = [
   {id:'customers', title:'Khách hàng', icon:Users, hint:'Tài khoản OWNER, số máy đang dùng và mã kích hoạt.'},
   {id:'licenses', title:'License & Gói', icon:ShieldCheck, hint:'Thời hạn license, gia hạn nhanh và khóa / mở.'},
   {id:'agents', title:'Windows Agents', icon:HardDrive, hint:'Thiết bị đã kích hoạt trên toàn hệ thống. Chỉ giám sát, không điều khiển LIVE.'},
+  {id:'captcha', title:'Mẫu CAPTCHA', icon:ScanEye, hint:'Ảnh mẫu để Agent nhận diện CAPTCHA. Agent tự tải khi khởi động; khách hàng không thấy mục này.'},
   {id:'settings', title:'Cấu hình', icon:Settings2, hint:'Thông tin nền tảng và chính sách phân quyền.'},
 ]
 const STATE_META:Record<LicenseState,{label:string;tone:'success'|'warning'|'danger'|'default'}> = {
@@ -208,6 +209,7 @@ function Console({email,logout,dark,toggleDark}:{email:string;logout:()=>void;da
           {tab === 'licenses' && <Licenses rows={ownerRows} loaded={!!refreshedAt} busy={busy} onEdit={setEditing} onToggle={askToggle}
             onExtend={(o,m)=>void saveLicense(o, {expires_at:fromDateInput(addMonths(o.expires_at, m))}, `Đã gia hạn ${m} tháng cho ${o.email}`)}/>}
           {tab === 'agents' && <Agents rows={agentRows} loaded={!!refreshedAt} onRevoke={askRevoke}/>}
+          {tab === 'captcha' && <CaptchaTemplates/>}
           {tab === 'settings' && <SettingsView email={email}/>}
         </div>
       </div>
@@ -365,6 +367,88 @@ function Agents({rows,loaded,onRevoke}:{rows:AgentRow[];loaded:boolean;onRevoke:
       description={rows.length ? 'Thử từ khóa hoặc bộ lọc khác.' : 'Agent xuất hiện ở đây sau khi khách hàng nhập mã kích hoạt trên máy Windows.'}/></div>
     : <div className="pp-table"><Table<AgentRow> data={visible} columns={columns}/></div>}
   </section>
+}
+
+type CaptchaTemplate = { id:string; name:string; sha256:string; bytes:number; created_at:string }
+
+const readBase64 = (file:File) => new Promise<string>((resolve, reject)=>{
+  const reader = new FileReader()
+  reader.onload = ()=>resolve(String(reader.result).split(',', 2)[1] ?? '')
+  reader.onerror = ()=>reject(reader.error ?? new Error('Không đọc được file'))
+  reader.readAsDataURL(file)
+})
+
+/** Reference images every Windows Agent downloads for CAPTCHA detection; OWNERs never see them. */
+function CaptchaTemplates(){
+  const toast = useToast()
+  const [items,setItems] = useState<CaptchaTemplate[]|null>(null)
+  const [previews,setPreviews] = useState<Record<string,string>>({})
+  const [busy,setBusy] = useState(false)
+  const [removing,setRemoving] = useState<CaptchaTemplate|null>(null)
+
+  const load = useCallback(async ()=>{
+    try{setItems((await call<{templates:CaptchaTemplate[]}>('/captcha-templates')).templates)}
+    catch(e){toast.push({tone:'danger', title:'Không tải được mẫu CAPTCHA', description:e instanceof Error ? e.message : ''})}
+  },[toast])
+  useEffect(()=>{void load()},[load])
+
+  // <img> cannot send the admin token: fetch each preview once and show it from a blob URL.
+  useEffect(()=>{
+    let alive = true
+    for (const t of items ?? []) {
+      if (previews[t.id]) continue
+      fetch(`${api}/api/captcha-templates/${t.id}/image`, {headers:{Authorization:'Bearer ' + getAuthToken()}})
+        .then(r=>r.ok ? r.blob() : Promise.reject(new Error(String(r.status))))
+        .then(b=>{if (alive) setPreviews(p=>({...p, [t.id]:URL.createObjectURL(b)}))})
+        .catch(()=>undefined)
+    }
+    return ()=>{alive = false}
+  },[items, previews])
+
+  const upload = async (files:FileList|null) => {
+    if (!files?.length) return
+    setBusy(true)
+    try{
+      for (const file of Array.from(files)) {
+        if (!/^image\/(png|jpeg)$/.test(file.type) || file.size > 3_000_000) throw new Error(`${file.name}: chỉ nhận PNG/JPEG tối đa 3 MB`)
+        await call('/captcha-templates', body({name:file.name.replace(/\.(png|jpe?g)$/i, '').slice(0, 100) || 'captcha', image_base64:await readBase64(file)}))
+      }
+      toast.push({tone:'success', title:'Đã thêm mẫu CAPTCHA', description:'Agent nhận mẫu mới khi khởi động lại hoặc trong vòng 6 giờ.'})
+    }catch(e){toast.push({tone:'danger', title:'Không thêm được mẫu', description:e instanceof Error ? e.message : ''})}
+    finally{setBusy(false);await load()}
+  }
+  const remove = async (t:CaptchaTemplate) => {
+    setBusy(true)
+    try{await call(`/captcha-templates/${t.id}`, {method:'DELETE'});toast.push({tone:'success', title:'Đã xoá mẫu', description:'Agent tự xoá mẫu khi khởi động lại hoặc trong vòng 6 giờ.'})}
+    catch(e){toast.push({tone:'danger', title:'Không xoá được mẫu', description:e instanceof Error ? e.message : ''})}
+    finally{setBusy(false);await load()}
+  }
+
+  return <div className="pa-grid">
+    <section className="pa-card"><header className="pa-card-head"><h3><ScanEye size={17}/>Mẫu đang dùng</h3><span>{items ? `${items.length} mẫu` : 'Đang tải…'}</span></header>
+      {items && !items.length ? <EmptyState icon={<ScanEye size={30}/>} title="Chưa có mẫu CAPTCHA" description="Khi chưa có mẫu, Agent của khách không bật được giám sát CAPTCHA."/>
+      : <div className="pa-captcha-list">{(items ?? []).map(t=><div key={t.id} className="pa-captcha-item">
+          {previews[t.id] ? <img src={previews[t.id]} alt={t.name}/> : <span className="pa-captcha-ph"/>}
+          <span className="pa-captcha-meta"><strong title={t.name}>{t.name}</strong><small>{Math.max(1, Math.round(t.bytes / 1024))} KB · {dateLabel(t.created_at)}</small></span>
+          <IconButton title="Xoá mẫu" danger onClick={()=>setRemoving(t)}><Trash2 size={15}/></IconButton>
+        </div>)}</div>}
+    </section>
+    <section className="pa-card"><header className="pa-card-head"><h3><UploadCloud size={17}/>Thêm mẫu</h3></header>
+      <label className="pa-upload">
+        <input type="file" accept="image/png,image/jpeg" multiple disabled={busy} onChange={e=>{void upload(e.target.files);e.target.value=''}}/>
+        <UploadCloud size={22}/><strong>{busy ? 'Đang tải lên…' : 'Chọn ảnh PNG/JPEG'}</strong><small>Tối đa 3 MB mỗi ảnh, cạnh 20–1800 px</small>
+      </label>
+      <ul className="pa-rules">
+        <li><CheckCircle2 size={16}/>Cắt một vùng nhỏ, rõ nét chứa tiêu đề / khung CAPTCHA của TikTok LIVE Studio.</li>
+        <li><CheckCircle2 size={16}/>Windows Agent cập nhật mẫu khi khởi động (kết nối Cloud) và 6 giờ một lần; mẫu bị xoá ở đây cũng tự bị xoá trên máy.</li>
+        <li><CheckCircle2 size={16}/>Ảnh thiếu chi tiết sẽ bị Agent bỏ qua (ghi vào nhật ký của Agent).</li>
+        <li className="is-no"><X size={16}/>Khách hàng OWNER không thấy và không sửa được mục này.</li>
+      </ul>
+    </section>
+    <ConfirmModal open={!!removing} loading={busy} title={`Xoá mẫu “${removing?.name ?? ''}”?`} confirmLabel="Xoá" tone="danger"
+      description="Mọi Agent sẽ ngừng dùng mẫu này ở lần cập nhật kế tiếp."
+      onClose={()=>setRemoving(null)} onConfirm={()=>{const t = removing;setRemoving(null);if (t) void remove(t)}}/>
+  </div>
 }
 
 function SettingsView({email}:{email:string}){

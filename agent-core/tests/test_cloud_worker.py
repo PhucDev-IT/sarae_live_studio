@@ -74,6 +74,12 @@ class FakeCloud:
             self.synced.append(videos)
         return {"synced": len(videos), "thumbs_missing": list(self.thumbs_missing)}
 
+    def captcha_templates(self, key, agent_id):
+        return [{"id": "a" * 32, "sha256": "f" * 64}]
+
+    def captcha_template_image(self, key, agent_id, template_id):
+        return b"png-bytes"
+
     def close(self):
         pass
 
@@ -257,6 +263,21 @@ def test_media_sync_sends_duration_and_only_missing_thumbnails(events, journal):
         worker.stop(timeout=5)
 
 
+def test_captcha_templates_are_mirrored_from_cloud(events, journal):
+    cloud, router, states = FakeCloud(), CountingRouter(), []
+    monitor = mock.Mock()
+    monitor.sync_templates.return_value = {"added": 1, "removed": 0, "failed": 0, "total": 1}
+    worker = make_worker(cloud, router, events, states, journal)
+    worker._monitor = monitor
+    worker.start()
+    try:
+        assert wait_until(lambda: monitor.sync_templates.called)
+        remote, fetch = monitor.sync_templates.call_args.args
+        assert remote == [{"id": "a" * 32, "sha256": "f" * 64}] and fetch("a" * 32) == b"png-bytes"
+    finally:
+        worker.stop(timeout=5)
+
+
 def test_transient_then_fatal(events, journal):
     cloud, router, states = FakeCloud(), CountingRouter(), []
     cloud.fail_heartbeat = CloudError("CLOUD_UNREACHABLE", "offline", retryable=True)
@@ -368,6 +389,23 @@ def test_router_rejects(router, kind, payload, code):
 # --- HTTP client against dev's endpoints ------------------------------------------------------
 def http_client(handler):
     return CloudClient("https://cloud.example/api", transport=httpx.MockTransport(handler))
+
+
+def test_client_captcha_template_endpoints():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/image"):
+            return httpx.Response(200, content=b"image-bytes", headers={"content-type": "image/png"})
+        return httpx.Response(200, json={"templates": [{"id": "a" * 32, "sha256": "f" * 64, "bytes": 4}]})
+
+    client = http_client(handler)
+    assert client.captcha_templates("key", "agt_1")[0]["id"] == "a" * 32
+    assert client.captcha_template_image("key", "agt_1", "a" * 32) == b"image-bytes"
+    assert seen[0].url.path == "/api/captcha-templates/agent" and seen[0].url.params["agent_id"] == "agt_1"
+    assert seen[1].url.path == f"/api/captcha-templates/agent/{'a' * 32}/image"
+    assert all(r.headers["X-Sarae-Agent-Key"] == "key" for r in seen)
 
 
 def test_client_long_poll_ack_events_shapes():

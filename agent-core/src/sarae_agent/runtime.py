@@ -184,7 +184,8 @@ class AgentRuntime:
                 timeouts={"request": cfg.cloud.request_timeout_seconds, "heartbeat": cfg.cloud.heartbeat_seconds,
                           "poll": cfg.cloud.poll_seconds},
                 router=self.router, build_report=self.build_report, library=self.library, outbox=self.outbox,
-                journal=self.journal, lock=self.command_lock, emit=self.emit, on_state=self._on_worker_state)
+                journal=self.journal, lock=self.command_lock, monitor=self.monitor, emit=self.emit,
+                on_state=self._on_worker_state)
             self.library.dirty = True
             self.router.rescan = worker.rescan
             self._set_state("starting")

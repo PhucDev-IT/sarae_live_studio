@@ -33,7 +33,8 @@ class SaasTestCase(unittest.TestCase):
         self.identity_patch.start()
         # SaaS registries live in their own SQLite files; keep them in the temp folder too.
         self.saas_db_patches = [patch(f"app.{module}.DB", Path(self.tmp.name) / f"{module}.sqlite3")
-                                for module in ("cloud_agents", "agent_library", "agent_playlists")]
+                                for module in ("cloud_agents", "agent_library", "agent_playlists", "captcha_templates")]
+        self.saas_db_patches.append(patch("app.captcha_templates.FILES", Path(self.tmp.name) / "captcha_templates"))
         for p in self.saas_db_patches:
             p.start()
         identity.bootstrap_admin("admin@example.test", "AdminSecretPassword123!")

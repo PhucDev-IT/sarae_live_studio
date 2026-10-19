@@ -12,6 +12,8 @@ Threads (all outbound, no inbound port):
   * one executor per lane ("live", "background"), so a long TTS never blocks a product switch and each lane
     runs in the order the Cloud hands it out (the Cloud keeps at most one RUNNING command per lane).
   * media: probes new videos (duration, JPEG thumbnail) and syncs the library metadata; never a file path.
+    It also mirrors the CAPTCHA reference images Sarae's SUPER_ADMIN publishes: they rarely change, so once each
+    time the worker connects (every app start) and then every TEMPLATE_SYNC_SECONDS.
 
 At-most-once: every outcome goes to the CommandJournal before its ack. A command delivered again is acked
 with the stored outcome (with the new claim token) instead of running twice. Acks are retried on network
@@ -61,6 +63,8 @@ class CloudWorker:
     HEARTBEAT_PLAYING_SECONDS = 2.0
     MEDIA_SYNC_SECONDS = 60.0
     MEDIA_RETRY_SECONDS = 5.0
+    TEMPLATE_SYNC_SECONDS = 6 * 3600.0
+    TEMPLATE_RETRY_SECONDS = 1800.0
     THUMBS_PER_SYNC = 100
     RESULT_LIMIT = 60000
     ERROR_LIMIT = 1900
@@ -71,7 +75,7 @@ class CloudWorker:
                  router: CommandRouter, build_report: Callable[[], dict], library, outbox: EventOutbox,
                  journal: CommandJournal, emit: Callable[[str, dict], None],
                  on_state: Callable[[str, dict | None], None], lock: CommandLock | None = None,
-                 client_factory: Callable[..., CloudClient] = CloudClient):
+                 monitor=None, client_factory: Callable[..., CloudClient] = CloudClient):
         self.agent_id = agent_id
         self._credential = credential
         self.api_url = api_url
@@ -84,6 +88,7 @@ class CloudWorker:
         self._emit = emit
         self._on_state = on_state
         self._lock = lock
+        self._monitor = monitor  # CaptchaMonitor: receives the CAPTCHA templates
         self._factory = client_factory
         self._client: CloudClient | None = None
         self._stop = threading.Event()
@@ -336,7 +341,20 @@ class CloudWorker:
     # --- media inventory -----------------------------------------------------------------
     def _media_loop(self) -> None:
         next_sync = 0.0
+        next_templates = 0.0
         while not self._stop.is_set():
+            if self._monitor is not None and time.monotonic() >= next_templates and self._client is not None:
+                try:
+                    self.sync_templates(self._client)
+                    next_templates = time.monotonic() + self.TEMPLATE_SYNC_SECONDS
+                except CloudError as exc:
+                    if exc.fatal:
+                        self._fatal(exc)
+                        return
+                    next_templates = time.monotonic() + self.TEMPLATE_RETRY_SECONDS
+                except Exception:  # noqa: BLE001
+                    log.exception("Cập nhật ảnh mẫu CAPTCHA lỗi")
+                    next_templates = time.monotonic() + self.TEMPLATE_SYNC_SECONDS
             if self._library.dirty or time.monotonic() >= next_sync:
                 client = self._client
                 if client is None:
@@ -384,6 +402,11 @@ class CloudWorker:
         self._emit("media.sync_finished", {"synced": reply.get("synced", len(videos)),
                                            "at": self.connection["last_media_sync"], **result})
         return result
+
+    def sync_templates(self, client: CloudClient) -> dict:
+        remote = client.captcha_templates(self._credential, self.agent_id)
+        return self._monitor.sync_templates(
+            remote, lambda template_id: client.captcha_template_image(self._credential, self.agent_id, template_id))
 
     def rescan(self) -> dict:
         """Cloud `media_rescan`: rescan the allowed folders, then sync the library right away."""

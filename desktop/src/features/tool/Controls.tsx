@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ChevronDown, Clapperboard, Cloud, FolderPlus, ImagePlus, Pin, RefreshCw, ScanEye, Video } from 'lucide-react'
+import { ChevronDown, Clapperboard, Cloud, FolderPlus, Pin, RefreshCw, ScanEye, Video } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Input, Switch, type Tone } from '../../app/ui'
 import { call } from '../../services/core'
@@ -113,22 +113,15 @@ function CaptchaRow() {
   if (!monitor) return null
   const s = monitor.state
   const [label, tone] = MONITOR_LABEL[s.status] ?? [s.status, 'muted' as Tone]
+  // Detection data comes from Sarae through the Cloud (nothing to add here); it arrives once Cloud is connected.
   const noTemplate = monitor.templates === 0
-  const addTemplate = async () => {
-    const picked = await open({ multiple: false, title: 'Chọn ảnh mẫu CAPTCHA', filters: [{ name: 'Ảnh', extensions: ['png', 'jpg', 'jpeg'] }] })
-    if (typeof picked === 'string') {
-      await run(() => call('monitor.templates.add', { path: picked }), 'Đã thêm ảnh mẫu')
-      await refresh()
-    }
-  }
   return (
     <Row icon={<ScanEye size={16} />} title="Giám sát CAPTCHA"
-      status={noTemplate ? 'Cần ít nhất một ảnh mẫu CAPTCHA' : s.error && s.status === 'error' ? s.error : label}
-      tone={noTemplate ? 'warn' : tone}
-      control={noTemplate
-        ? <ActionButton variant="ghost" icon={<ImagePlus size={14} />} onAction={addTemplate}>Ảnh mẫu</ActionButton>
-        : <Switch checked={s.running} label="Giám sát CAPTCHA" onToggle={(value) =>
-          run(() => call(value ? 'monitor.start' : 'monitor.stop')).then(refresh)} />} />
+      status={noTemplate && !s.running ? 'Đang chờ dữ liệu nhận diện từ Sarae (cần Kết nối Cloud)'
+        : s.error && s.status === 'error' ? s.error : label}
+      tone={noTemplate && !s.running ? 'warn' : tone}
+      control={<Switch checked={s.running} disabled={noTemplate && !s.running} label="Giám sát CAPTCHA" onToggle={(value) =>
+        run(() => call(value ? 'monitor.start' : 'monitor.stop')).then(refresh)} />} />
   )
 }
 

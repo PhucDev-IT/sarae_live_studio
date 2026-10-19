@@ -3,17 +3,19 @@
 Captures only the Studio window rectangle, runs scale-tolerant edge template matching and
 raises an alert after two consecutive positive frames. It never clicks, solves or submits.
 Screen capture handles (mss) live only inside the worker thread and are closed on stop.
+
+Reference images come from Sarae (the platform's SUPER_ADMIN) through the Cloud: sync_templates() mirrors that
+set exactly. Operators and OWNERs neither add nor see them.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-import shutil
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 
 from sarae_agent.config import ConfigStore, MonitorConfig, paths
@@ -23,7 +25,8 @@ from sarae_agent.windows import win32
 
 log = logging.getLogger("sarae.monitor")
 
-TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,100}\.png$")
+TEMPLATE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+MAX_TEMPLATE_BYTES = 3_000_000
 CONFIRM_FRAMES = 2
 
 
@@ -79,33 +82,16 @@ class CaptchaMonitor:
                             "last_scan": None, "error": None, "events_count": 0, "match_score": None,
                             "matched_template": None, "monitors_detected": None, "capture_bounds": None}
         self._detected = False
-        self._import_legacy_templates()
 
-    # --- templates -----------------------------------------------------------------------
-    @staticmethod
-    def _import_legacy_templates() -> None:
-        legacy = paths.legacy_data / "verification_monitor"
-        target = paths.monitor_templates
-        sources = list((legacy / "templates").glob("*.png")) if (legacy / "templates").is_dir() else []
-        if (legacy / "captcha_reference.png").is_file():
-            sources.append(legacy / "captcha_reference.png")
-        for source in sources:
-            destination = target / source.name
-            if not destination.exists():
-                shutil.copy2(source, destination)
-
+    # --- templates (provided by Sarae through the Cloud) ---------------------------------
     def templates(self) -> list[dict]:
         return [{"name": p.name, "bytes": p.stat().st_size}
                 for p in sorted(paths.monitor_templates.glob("*.png"))]
 
-    def add_template(self, source_path: str) -> dict:
-        source = Path(source_path)
-        if not source.is_file():
-            raise AgentError("FILE_NOT_FOUND", "Không tìm thấy file ảnh mẫu")
-        if source.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-            raise AgentError("INVALID_TEMPLATE", "Ảnh mẫu phải là PNG hoặc JPEG")
-        raw = source.read_bytes()
-        if len(raw) > 3_000_000:
+    @staticmethod
+    def _normalize(raw: bytes) -> bytes:
+        """Decode and check one reference image; returns it re-encoded as PNG."""
+        if len(raw) > MAX_TEMPLATE_BYTES:
             raise AgentError("INVALID_TEMPLATE", "Ảnh mẫu tối đa 3 MB")
         cv2, np, _ = load_cv()
         image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -113,23 +99,49 @@ class CaptchaMonitor:
             raise AgentError("INVALID_TEMPLATE", "Ảnh phải hợp lệ, cạnh từ 20 đến 1800 px")
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         if cv2.countNonZero(cv2.Canny(gray, 70, 160)) < 25:
-            raise AgentError("INVALID_TEMPLATE", "Ảnh mẫu thiếu chi tiết; hãy cắt vùng tiêu đề CAPTCHA rõ nét")
+            raise AgentError("INVALID_TEMPLATE", "Ảnh mẫu thiếu chi tiết")
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
             raise AgentError("INVALID_TEMPLATE", "Không lưu được ảnh mẫu")
-        name = "custom_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + ".png"
-        (paths.monitor_templates / name).write_bytes(encoded.tobytes())
-        log.info("Đã thêm ảnh mẫu CAPTCHA %s", name)
-        return {"name": name, "width": int(image.shape[1]), "height": int(image.shape[0])}
+        return encoded.tobytes()
 
-    def remove_template(self, name: str) -> dict:
-        if not TEMPLATE_NAME_RE.fullmatch(name):
-            raise AgentError("INVALID_TEMPLATE", "Tên ảnh mẫu không hợp lệ")
-        target = paths.monitor_templates / name
-        if not target.is_file():
-            raise AgentError("FILE_NOT_FOUND", "Không tìm thấy ảnh mẫu")
-        target.unlink()
-        return {"deleted": name}
+    def sync_templates(self, remote: list[dict], fetch: Callable[[str], bytes]) -> dict:
+        """Mirror the Cloud set ``[{id, sha256}]``: download the new ones, delete every other image.
+
+        A download whose sha256 differs from the listing, or that does not decode, is skipped and retried on the
+        next sync. Returns {added, removed, failed, total}.
+        """
+        wanted = {f"sarae_{t['id']}.png": t for t in remote
+                  if isinstance(t, dict) and TEMPLATE_ID_RE.fullmatch(str(t.get("id", "")))}
+        folder = paths.monitor_templates
+        existing = {p.name for p in folder.glob("*.png")}
+        added = failed = 0
+        for name, item in wanted.items():
+            if name in existing:
+                continue
+            try:
+                raw = fetch(item["id"])
+                if hashlib.sha256(raw).hexdigest() != item.get("sha256"):
+                    raise AgentError("INVALID_TEMPLATE", "Ảnh mẫu tải về không khớp mã kiểm tra")
+                temp = folder / (name + ".tmp")
+                temp.write_bytes(self._normalize(raw))
+                temp.replace(folder / name)
+                added += 1
+            except Exception as exc:  # noqa: BLE001 - one bad image must not block the others
+                failed += 1
+                log.warning("Không tải được ảnh mẫu CAPTCHA %s: %s", item["id"][:8], exc,
+                            extra={"code": getattr(exc, "code", "TEMPLATE_DOWNLOAD_FAILED")})
+        removed = 0
+        for name in existing - set(wanted):
+            try:
+                (folder / name).unlink()
+                removed += 1
+            except OSError:
+                pass
+        if added or removed:
+            log.info("Đã cập nhật ảnh mẫu CAPTCHA từ Sarae: thêm %s, bỏ %s", added, removed)
+            self._status_changed()
+        return {"added": added, "removed": removed, "failed": failed, "total": len(self.templates())}
 
     # --- config --------------------------------------------------------------------------
     def configure(self, values: dict) -> dict:
@@ -145,7 +157,7 @@ class CaptchaMonitor:
                 return self.status()
             load_cv()
             if not self.templates():
-                raise AgentError("TEMPLATE_MISSING", "Cần ít nhất một ảnh mẫu CAPTCHA trước khi bật giám sát")
+                raise AgentError("TEMPLATE_MISSING", "Giám sát CAPTCHA chưa sẵn sàng: máy chưa nhận dữ liệu nhận diện từ Sarae (cần Kết nối Cloud)")
             self._stop = threading.Event()
             self._detected = False
             self.state.update(running=True, status="starting", error=None)

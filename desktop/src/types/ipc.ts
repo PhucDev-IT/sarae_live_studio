@@ -304,8 +304,6 @@ export interface CoreMethods {
   'monitor.stop': [NoParams, MonitorStatus]
   'monitor.config': [Partial<MonitorConfig>, MonitorConfig]
   'monitor.templates.list': [NoParams, { templates: TemplateInfo[] }]
-  'monitor.templates.add': [{ path: string }, { name: string; width: number; height: number }]
-  'monitor.templates.remove': [{ name: string }, { deleted: string }]
   'voice.speak': [{ text: string; voice?: Voice }, { status: string; source: string; voice: string; chars: number }]
   'diagnostics.export': [NoParams, { path: string; folder: string; bytes: number }]
   'logs.recent': [{ limit?: number }, { entries: LogEntry[] }]

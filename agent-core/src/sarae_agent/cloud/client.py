@@ -10,6 +10,8 @@ error code so the worker can decide between retry (transient) and stop (requires
     POST /agents/commands/ack                       {agent_id, command_id, claim_token, success, result}
     POST /agents/events                             {agent_id, events: [{seq, type, session_id, product_id, detail}]}
     POST /agent-library/sync                        {agent_id, videos: [...]} -> {synced, thumbs_missing}
+    GET  /captcha-templates/agent?agent_id=          {templates: [{id, sha256, bytes}]} (set by SUPER_ADMIN)
+    GET  /captcha-templates/agent/{id}/image?agent_id=   PNG/JPEG bytes
 Agent endpoints authenticate with the X-Sarae-Agent-Key header.
 """
 from __future__ import annotations
@@ -100,8 +102,8 @@ class CloudClient:
     def __exit__(self, *_exc) -> None:
         self.close()
 
-    def _request(self, method: str, path: str, context: str, *, key: str | None = None,
-                 json: Any = None, params: dict | None = None, timeout: float | None = None) -> dict:
+    def _send(self, method: str, path: str, context: str, *, key: str | None = None,
+              json: Any = None, params: dict | None = None, timeout: float | None = None) -> httpx.Response:
         headers = {"X-Sarae-Agent-Key": key} if key else None
         extra = {} if timeout is None else {"timeout": httpx.Timeout(timeout, connect=min(6.0, timeout))}
         try:
@@ -116,6 +118,10 @@ class CloudClient:
             raise CloudError("CLOUD_CLIENT_CLOSED", str(exc)[:160], retryable=True) from exc
         if response.status_code >= 400:
             raise classify(response, context)
+        return response
+
+    def _request(self, method: str, path: str, context: str, **kwargs: Any) -> dict:
+        response = self._send(method, path, context, **kwargs)
         try:
             body = response.json()
         except ValueError as exc:
@@ -159,3 +165,12 @@ class CloudClient:
     def sync_library(self, key: str, agent_id: str, videos: list[dict]) -> dict:
         return self._request("POST", "/agent-library/sync", "sync", key=key,
                              json={"agent_id": agent_id, "videos": videos}, timeout=max(60.0, self._timeout))
+
+    def captcha_templates(self, key: str, agent_id: str) -> list[dict]:
+        body = self._request("GET", "/captcha-templates/agent", "templates", key=key, params={"agent_id": agent_id})
+        templates = body.get("templates")
+        return templates if isinstance(templates, list) else []
+
+    def captcha_template_image(self, key: str, agent_id: str, template_id: str) -> bytes:
+        return self._send("GET", f"/captcha-templates/agent/{quote(template_id, safe='')}/image", "templates",
+                          key=key, params={"agent_id": agent_id}).content

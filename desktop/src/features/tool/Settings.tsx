@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
-import { open } from '@tauri-apps/plugin-dialog'
-import { ImagePlus, LogOut, Settings2, X } from 'lucide-react'
+import { LogOut, Settings2 } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Input, Toggle } from '../../app/ui'
 import { call } from '../../services/core'
-import type { MethodParams, TemplateInfo } from '../../types/ipc'
+import type { MethodParams } from '../../types/ipc'
 
-/** Rarely changed, folded by default: startup behaviour, OBS connection, CAPTCHA images, this device. */
+/** Rarely changed, folded by default: startup behaviour, OBS connection, this device. */
 export function Settings() {
   const { state, run, refresh, refreshConfig } = useApp()
   const config = state.config
@@ -14,18 +13,12 @@ export function Settings() {
   const [host, setHost] = useState('')
   const [port, setPort] = useState(4455)
   const [password, setPassword] = useState('')
-  const [templates, setTemplates] = useState<TemplateInfo[]>([])
-  const templateCount = state.status?.monitor.templates
 
   useEffect(() => {
     if (!config) return
     setHost(config.obs.host)
     setPort(config.obs.port)
   }, [config])
-
-  useEffect(() => {
-    call('monitor.templates.list').then((r) => setTemplates(r.templates)).catch(() => undefined)
-  }, [templateCount])
 
   if (!config || !agent) return null
   const workerActive = agent.state !== 'stopped' && agent.state !== 'error'
@@ -57,26 +50,6 @@ export function Settings() {
           await run(() => call('obs.connect'), 'Đã kết nối OBS')
           await refresh()
         }}>Lưu &amp; kết nối</ActionButton>
-      </div>
-
-      <div className="settings-group">
-        <h3>Ảnh mẫu CAPTCHA ({templates.length})</h3>
-        {templates.map((t) => (
-          <div key={t.name} className="inline chip-row">
-            <span className="chip-name">{t.name}</span>
-            <ActionButton variant="ghost" icon={<X size={14} />} aria-label={`Xoá ${t.name}`} onAction={async () => {
-              await run(() => call('monitor.templates.remove', { name: t.name }), 'Đã xoá ảnh mẫu')
-              await refresh()
-            }} />
-          </div>
-        ))}
-        <ActionButton variant="ghost" icon={<ImagePlus size={14} />} onAction={async () => {
-          const picked = await open({ multiple: false, title: 'Chọn ảnh mẫu CAPTCHA', filters: [{ name: 'Ảnh', extensions: ['png', 'jpg', 'jpeg'] }] })
-          if (typeof picked === 'string') {
-            await run(() => call('monitor.templates.add', { path: picked }), 'Đã thêm ảnh mẫu')
-            await refresh()
-          }
-        }}>Thêm ảnh mẫu</ActionButton>
       </div>
 
       {agent.activated && (
