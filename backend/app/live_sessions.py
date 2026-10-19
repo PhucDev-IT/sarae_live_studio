@@ -62,6 +62,7 @@ class SessionProducts(BaseModel):
 
 class SessionPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    shop_id: int | None = Field(default=None, gt=0)
     # Moving a LIVE to another PC is only allowed while it is a DRAFT, and only explicitly.
     agent_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
 
@@ -454,6 +455,15 @@ def update_session(session_id: int, body: SessionPatch, owner: Owner):
         item = get_session(db, session_id, owner)
         if item.status == "ENDED":
             raise HTTPException(409, "Không thể sửa phiên đã kết thúc")
+        if body.shop_id is not None and body.shop_id != item.shop_id:
+            if item.status != "DRAFT" or ids_for(db,session_id):
+                raise HTTPException(409,"Chỉ đổi Shop khi phiên đang chuẩn bị và chưa có sản phẩm")
+            from sqlalchemy import text
+            exists=db.execute(text("SELECT 1 FROM tiktok_shops WHERE id=:s AND owner_id=:o"),
+                              {"s":body.shop_id,"o":owner["id"]}).scalar()
+            if not exists:raise HTTPException(422,"TikTok Shop không thuộc OWNER")
+            item.shop_id=body.shop_id
+            event(db,session_id,"SHOP_CHANGED",detail=f"shop_id={body.shop_id}")
         if body.agent_id is not None and body.agent_id != item.agent_id:
             if item.status != "DRAFT":
                 raise HTTPException(409, "Không thể đổi Windows Agent của phiên đang LIVE")
