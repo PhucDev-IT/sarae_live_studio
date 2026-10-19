@@ -204,6 +204,7 @@ def new_sku(db: Session, owner: dict) -> str:
 
 @router.post("/products", response_model=ProductOut, status_code=201)
 def create_product(body: ProductInput, db: DB, owner: Owner):
+    raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
     if body.sku and sku_taken(db, owner, body.sku):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
     item = Product(**{**body.model_dump(), "sku": body.sku or new_sku(db, owner), "owner_id": owner["id"],
@@ -240,6 +241,7 @@ def get_product(entity_id: int, db: DB, owner: Owner):
 
 @router.put("/products/{entity_id}", response_model=ProductOut)
 def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
+    raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
     item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
     if body.sku and sku_taken(db, owner, body.sku, exclude_id=entity_id):
         raise HTTPException(status_code=409, detail="Mã sản phẩm đã tồn tại")
@@ -258,6 +260,7 @@ def update_product(entity_id: int, body: ProductInput, db: DB, owner: Owner):
 
 @router.delete("/products/{entity_id}", status_code=204)
 def delete_product(entity_id: int, db: DB, owner: Owner):
+    raise HTTPException(405,"Danh mục chỉ đồng bộ từ TikTok Shop; chỉ được sửa mô tả AI")
     from app.product_videos import ProductLiveVideo
     from app.live_sessions import LiveSession, SessionProduct
     item = owned(db, Product, entity_id, owner, "Không tìm thấy sản phẩm")
