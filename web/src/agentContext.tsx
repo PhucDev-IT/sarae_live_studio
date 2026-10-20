@@ -1,5 +1,5 @@
 /**
- * Which Windows Agent this browser tab works with.
+ * Which Agent this browser tab works with.
  *
  * The choice belongs to the TAB (sessionStorage), never to the account: two tabs of the same OWNER can drive two PCs
  * and switching here never changes what another tab or another browser does. Every Agent action sends this agent_id
@@ -67,9 +67,9 @@ export function useAgent(){
 
 /** Short state shown next to an Agent's name. */
 export const agentState = (agent:OwnerAgent) =>
-  !agent.online ? 'Offline' : agent.playing ? 'Đang phát' : agent.obs_connected ? 'OBS sẵn sàng' : 'Online · OBS chưa kết nối'
+  !agent.online ? 'Offline' : agent.platform === 'ANDROID' ? (agent.playback_state ?? (agent.playing ? 'Đang phát' : 'Đang kết nối')) : agent.playing ? 'Đang phát' : agent.obs_connected ? 'OBS sẵn sàng' : 'Online · OBS chưa kết nối'
 
-/** Topbar control: which PC this tab works with. */
+/** Topbar control: which Agent this tab works with. */
 export function AgentPicker(){
   const {agents, agent, select, loaded} = useAgent()
   const [open,setOpen] = useState(false)
@@ -83,23 +83,23 @@ export function AgentPicker(){
     return ()=>{document.removeEventListener('mousedown', close);document.removeEventListener('keydown', escape)}
   },[open])
   if (!loaded) return null
-  if (!agents.length) return <a className="agent-picker is-empty" href="#/agents" title="Chưa có Windows Agent nào được kích hoạt"><MonitorX size={16}/><span>Chưa có Agent</span></a>
+  if (!agents.length) return <a className="agent-picker is-empty" href="#/agents" title="Chưa có Agent nào được kích hoạt"><MonitorX size={16}/><span>Chưa có Agent</span></a>
   return <div className="agent-picker-wrap" ref={box}>
     <button type="button" className={'agent-picker' + (agent?.online ? ' is-online' : ' is-offline')} aria-haspopup="listbox" aria-expanded={open}
-      onClick={()=>setOpen(!open)} title="Windows Agent mà tab này đang điều khiển">
+      onClick={()=>setOpen(!open)} title="Agent mà tab này đang điều khiển">
       <span className="agent-dot"/><MonitorPlay size={16}/>
-      <span className="agent-picker-text"><strong>{agent?.hostname ?? 'Chọn Agent'}</strong><small>{agent ? agentState(agent) : ''}</small></span>
+      <span className="agent-picker-text"><strong>{agent?.hostname ?? 'Chọn Agent'}</strong><small>{agent ? `${agent.platform === 'ANDROID' ? 'Android' : 'Windows'} · ${agentState(agent)}` : ''}</small></span>
       <ChevronDown size={15}/>
     </button>
-    {open && <div className="agent-menu" role="listbox" aria-label="Chọn Windows Agent">
-      <div className="agent-menu-head">Máy tab này điều khiển<small>Chỉ áp dụng cho tab hiện tại</small></div>
+    {open && <div className="agent-menu" role="listbox" aria-label="Chọn Agent">
+      <div className="agent-menu-head">Agent tab này điều khiển<small>Chỉ áp dụng cho tab hiện tại</small></div>
       {agents.map(a=><button type="button" role="option" aria-selected={a.id === agent?.id} key={a.id} className={a.id === agent?.id ? 'is-selected' : ''}
         onClick={()=>{select(a.id);setOpen(false)}}>
         <span className={'agent-dot' + (a.online ? ' is-online' : '')}/>
         <span className="agent-menu-text"><strong>{a.hostname}</strong><small>{agentState(a)}</small></span>
         {a.id === agent?.id && <Check size={15}/>}
       </button>)}
-      <a className="agent-menu-link" href="#/agents" onClick={()=>setOpen(false)}>Quản lý Windows Agents →</a>
+      <a className="agent-menu-link" href="#/agents" onClick={()=>setOpen(false)}>Quản lý Agents →</a>
     </div>}
   </div>
 }
@@ -113,6 +113,12 @@ export function WithAgent({children, purpose}:{children:(agent:OwnerAgent)=>Reac
     <strong>Chưa có Windows Agent</strong>
     <p>{purpose} cần một máy Windows đã cài Sarae Agent. Nhờ quản trị viên cấp mã kích hoạt, nhập mã trong ứng dụng Agent trên máy chạy OBS, rồi quay lại đây.</p>
     <a href="#/agents">Đến trang Windows Agents →</a>
+  </div>
+  if (agent.platform === 'ANDROID') return <div className="agent-required">
+    <MonitorPlay size={30}/>
+    <strong>Tab này cần Windows Agent</strong>
+    <p>Agent Android đang được chọn. Chọn Windows Agent ở bộ chọn phía trên để dùng {purpose}; các lệnh Android nằm trong trang Agents.</p>
+    <a href="#/agents">Đến trang Agents →</a>
   </div>
   return <>{children(agent)}</>
 }

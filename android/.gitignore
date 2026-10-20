@@ -1,0 +1,22 @@
+.gradle-home/
+.android-home/
+**/.gradle/
+**/build/
+**/local.properties
+**/.idea/
+
+# Local HTTPS test credentials
+/test-results/android-agent-v1-tls/*-key.pem
+
+# Private isolated backend used for device acceptance tests
+/test-results/android-agent-v1-data/credentials.json
+/test-results/android-agent-v1-data/identity.sqlite3
+/test-results/android-agent-v1-data/agents.sqlite3
+/test-results/android-agent-v1-data/android_agent_media.sqlite3
+/test-results/android-agent-v1-data/sarae_live.db
+/test-results/android-agent-v1-data/verification_monitor/
+/test-results/android-agent-v1-data/server-*.log
+/test-results/android-agent-v1-data/android_agent_media/
+
+# Device-test binaries, logs, screenshots, and local credentials
+/test-results/

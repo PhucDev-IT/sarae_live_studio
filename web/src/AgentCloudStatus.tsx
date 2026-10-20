@@ -3,6 +3,7 @@ import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, Tab
 import { Ban, Check, KeyRound, MonitorPlay, MonitorX, Pencil, RefreshCw, X } from 'lucide-react'
 import { apiRequest, errorText, type AgentCommand, type OwnerAgent } from './mediaApi'
 import { agentState, useAgent } from './agentContext'
+import AndroidAgentPanel from './AndroidAgentPanel'
 import { dateTime } from './liveSessionsApi'
 import './agent-picker.css'
 
@@ -11,13 +12,17 @@ const KIND:Record<string,string> = {
   playback_select:'Chọn video', playback_seek:'Tua video', playback_stop:'Dừng phát', playback_cancel_pending:'Hủy hẹn chuyển', obs_configure:'Cấu hình OBS',
   obs_inputs:'Đọc source OBS', media_rescan:'Quét lại thư mục', monitor_start:'Bật CAPTCHA Monitor', monitor_stop:'Dừng CAPTCHA Monitor',
   monitor_config:'Cấu hình CAPTCHA Monitor', tts_speak:'Phát giọng nói', local_playlist_start:'Phát thử playlist',
+  android_play:'Android · phát', android_switch:'Android · chuyển video', android_pause:'Android · tạm dừng',
+  android_resume:'Android · tiếp tục', android_next:'Android · video tiếp', android_previous:'Android · video trước',
+  android_stop:'Android · dừng', android_queue_set:'Android · cập nhật playlist', android_rotation_set:'Android · auto rotation',
+  android_mock_live_start:'Android · bật Mock LIVE', android_mock_live_stop:'Android · tắt Mock LIVE',
 }
 const STATUS:Record<AgentCommand['status'],{label:string;tone:'default'|'info'|'success'|'danger'|'warning'}> = {
   PENDING:{label:'Chờ Agent nhận', tone:'default'}, RUNNING:{label:'Đang chạy', tone:'info'}, SUCCESS:{label:'Thành công', tone:'success'},
   FAILED:{label:'Lỗi', tone:'danger'}, TIMEOUT:{label:'Hết hạn', tone:'warning'}, CANCELLED:{label:'Đã hủy', tone:'default'},
 }
 
-/** The OWNER's Windows Agents: state of each PC, which one this tab drives, and the commands sent to it. */
+/** The OWNER's Agents: state of each device, which one this tab drives, and the commands sent to it. */
 export default function AgentCloudStatus(){
   const toast = useToast()
   const {agents, agent:current, select, refresh, loaded} = useAgent()
@@ -56,11 +61,11 @@ export default function AgentCloudStatus(){
 
   if (!loaded) return null
   return <div className="ag-page">
-    <Alert tone="info" title="Thêm máy Windows mới">
-      Quản trị nền tảng cấp mã kích hoạt theo License của bạn. Cài Sarae Agent trên máy chạy OBS / TikTok LIVE Studio và nhập mã đó trong ứng dụng.
+    <Alert tone="info" title="Thêm Agent Windows hoặc Android">
+      Quản trị nền tảng cấp mã kích hoạt theo License của bạn. Nhập mã trong Sarae Agent tương ứng để kết nối thiết bị.
       Video MP4 và cấu hình OBS luôn ở trên máy; máy chủ chỉ giữ tên file, thời lượng và ảnh thu nhỏ.
     </Alert>
-    {!agents.length ? <Card><EmptyState icon={<MonitorX size={32}/>} title="Chưa có Windows Agent" description="Sau khi kích hoạt, máy sẽ xuất hiện ở đây trong vài giây."/></Card>
+    {!agents.length ? <Card><EmptyState icon={<MonitorX size={32}/>} title="Chưa có Agent" description="Sau khi kích hoạt, thiết bị sẽ xuất hiện ở đây trong vài giây."/></Card>
       : <div className="ag-grid">{agents.map(a=><Card key={a.id} className={'ag-card' + (a.id === currentId ? ' is-current' : '')} padding={false}>
         <div className="ag-card-head">
           <span className={'agent-dot' + (a.online ? ' is-online' : '')}/>
@@ -69,18 +74,21 @@ export default function AgentCloudStatus(){
         </div>
         <dl className="ag-facts">
           <div><dt>Kết nối</dt><dd>{a.online ? 'Online' : 'Offline'}</dd></div>
-          <div><dt>OBS</dt><dd>{a.obs_connected ? 'Đã kết nối' : '—'}</dd></div>
-          <div><dt>Đang phát</dt><dd>{a.playing ? (a.session_id ? `Phiên #${a.session_id}` : 'Có') : 'Không'}</dd></div>
-          <div><dt>CAPTCHA</dt><dd>{a.monitor_running ? 'Đang giám sát' : 'Tắt'}</dd></div>
+          <div><dt>Nền tảng</dt><dd>{a.platform === 'ANDROID' ? 'Android' : 'Windows'}</dd></div>
+          <div><dt>OBS</dt><dd>{a.platform === 'ANDROID' ? 'Không áp dụng' : a.obs_connected ? 'Đã kết nối' : '—'}</dd></div>
+          <div><dt>Đang phát</dt><dd>{a.platform === 'ANDROID' ? (a.playback_state ?? '—') : a.playing ? (a.session_id ? `Phiên #${a.session_id}` : 'Có') : 'Không'}</dd></div>
+          {a.platform === 'ANDROID' && <div className="ag-wide"><dt>Video / Mock LIVE</dt><dd>{a.playback_error ? `Lỗi: ${a.playback_error}` : `${a.playback_media_id?.slice(0,12) ?? '—'} · ${a.mock_live ? 'Mock ON' : 'Mock OFF'}`}</dd></div>}
+          <div><dt>CAPTCHA</dt><dd>{a.platform === 'ANDROID' ? 'Không áp dụng' : a.monitor_running ? 'Đang giám sát' : 'Tắt'}</dd></div>
           <div className="ag-wide"><dt>Liên lạc gần nhất</dt><dd>{a.last_seen ? dateTime(a.last_seen) : 'Chưa từng kết nối'}</dd></div>
         </dl>
         <div className="ag-actions">
           {a.id !== currentId && <Button size="sm" leftIcon={<MonitorPlay size={14}/>} onClick={()=>select(a.id)}>Dùng trong tab này</Button>}
-          <Button size="sm" variant="ghost" leftIcon={<Pencil size={14}/>} onClick={()=>{setName(a.hostname);setRenaming(a)}}>Đổi tên</Button>
-          <Button size="sm" variant="ghost" leftIcon={<Ban size={14}/>} disabled={a.playing} title={a.playing ? 'Kết thúc phiên LIVE trên máy này trước' : undefined} onClick={()=>setRevoking(a)}>Thu hồi</Button>
+          {a.platform !== 'ANDROID' && <Button size="sm" variant="ghost" leftIcon={<Pencil size={14}/>} onClick={()=>{setName(a.hostname);setRenaming(a)}}>Đổi tên</Button>}
+          {a.platform !== 'ANDROID' && <Button size="sm" variant="ghost" leftIcon={<Ban size={14}/>} disabled={a.playing} title={a.playing ? 'Kết thúc phiên LIVE trên máy này trước' : undefined} onClick={()=>setRevoking(a)}>Thu hồi</Button>}
         </div>
       </Card>)}</div>}
 
+    {current?.platform === 'ANDROID' && <AndroidAgentPanel agent={current}/>}
     {current && <Card padding={false} title={<span className="ag-title"><KeyRound size={17}/>Lệnh gửi tới {current.hostname}</span>}
       description="30 lệnh gần nhất. Lệnh có tác động (phát, chuyển, tua…) không tự gửi lại khi hết hạn để tránh phát hai lần."
       actions={<Button size="sm" variant="ghost" aria-label="Tải lại" onClick={()=>void loadCommands()}><RefreshCw size={15}/></Button>}>

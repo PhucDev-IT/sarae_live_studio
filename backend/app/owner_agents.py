@@ -34,14 +34,15 @@ def _heartbeats(ids: list[str]) -> dict[str, tuple[str, str]]:
 def _describe(row, beat) -> dict:
     seen, payload = beat or (None, None)
     age = (datetime.now(timezone.utc) - datetime.fromisoformat(seen)).total_seconds() if seen else None
-    return {"id": row["id"], "hostname": row["hostname"], "created_at": row["created_at"], "last_seen": seen,
+    return {"id": row["id"], "hostname": row["hostname"], "platform": row["platform"],
+            "created_at": row["created_at"], "last_seen": seen,
             "online": age is not None and age < ONLINE_SECONDS, "status": json.loads(payload) if payload else {}}
 
 
 def agents_of(owner_id: str) -> list[dict]:
     """Enabled Agents of the owner with their latest heartbeat, most recently seen first."""
     with db_open() as registry:
-        rows = registry.execute("SELECT id,hostname,created_at FROM registered_agents WHERE owner_id=? AND enabled=1",
+        rows = registry.execute("SELECT id,hostname,platform,created_at FROM registered_agents WHERE owner_id=? AND enabled=1",
                                 (owner_id,)).fetchall()
     beats = _heartbeats([r["id"] for r in rows])
     return sorted((_describe(r, beats.get(r["id"])) for r in rows), key=lambda a: a["last_seen"] or "", reverse=True)
@@ -53,7 +54,7 @@ def owned_agent(owner: dict, agent_id: str | None, online: bool = False) -> dict
     if not agent_id:
         raise HTTPException(422, "Chọn Windows Agent cần thao tác (agent_id)")
     with db_open() as registry:
-        row = registry.execute("""SELECT a.id,a.hostname,a.created_at,a.enabled,l.enabled AS license_enabled,l.expires_at
+        row = registry.execute("""SELECT a.id,a.hostname,a.platform,a.created_at,a.enabled,l.enabled AS license_enabled,l.expires_at
             FROM registered_agents a JOIN licenses l ON l.owner_id=a.owner_id
             WHERE a.id=? AND a.owner_id=?""", (agent_id, owner["id"])).fetchone()
     if row is None:
@@ -76,7 +77,7 @@ def send_command(owner: dict, agent_id: str, kind: str, payload: dict | None = N
 
 
 def public(agent: dict | None) -> dict | None:
-    return None if agent is None else {k: agent[k] for k in ("id", "hostname", "online", "last_seen")}
+    return None if agent is None else {k: agent[k] for k in ("id", "hostname", "platform", "online", "last_seen")}
 
 
 @router.get("/agents")
@@ -93,5 +94,11 @@ def summary(agent: dict) -> dict:
     online = agent["online"]
     return {"obs_connected": online and bool(playback.get("connected")),
             "playing": online and bool(playback.get("running")),
+            "playback_state": playback.get("state"),
+            "playback_media_id": playback.get("current_media_id"),
+            "playback_position_ms": playback.get("position_ms"),
+            "playback_duration_ms": playback.get("duration_ms"),
+            "playback_error": playback.get("error"),
+            "mock_live": bool(playback.get("mock_live")),
             "session_id": playback.get("session_id") if online else None,
             "monitor_running": online and bool(monitor.get("running"))}

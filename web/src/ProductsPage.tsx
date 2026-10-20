@@ -15,7 +15,7 @@ const vnd=new Intl.NumberFormat('vi-VN',{style:'currency',currency:'VND',maximum
 export default function ProductsPage(){
   const toast=useToast()
   const {agent}=useAgent()
-  const agentId=agent?.id
+  const agentId=agent?.platform === 'ANDROID' ? undefined : agent?.id
   const [products,setProducts]=useState<Product[]>([])
   const [shops,setShops]=useState<Shop[]>([])
   const [shopFilter,setShopFilter]=useState('all')

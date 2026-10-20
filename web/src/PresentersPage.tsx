@@ -21,7 +21,7 @@ const toBody = (f:Form) => ({name:f.name.trim(), description:f.description, avat
 export default function PresentersPage(){
   const toast = useToast()
   const {agent} = useAgent()
-  const agentId = agent?.id
+  const agentId = agent?.platform === 'ANDROID' ? undefined : agent?.id
   const [people,setPeople] = useState<Presenter[]>([])
   const [videoCounts,setVideoCounts] = useState<Record<number,number>>({})
   const [loaded,setLoaded] = useState(false)

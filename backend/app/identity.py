@@ -10,6 +10,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from app.database import DATA_DIR
@@ -61,6 +62,9 @@ def _prepare(db):
         id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,hostname TEXT NOT NULL,
         credential_hash TEXT UNIQUE NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL)""")
+    columns={row[1] for row in db.execute("PRAGMA table_info(registered_agents)")}
+    if "platform" not in columns:
+        db.execute("ALTER TABLE registered_agents ADD COLUMN platform TEXT NOT NULL DEFAULT 'WINDOWS'")
     db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS one_super_admin ON users(role) WHERE role='SUPER_ADMIN'""")
     db.execute("""CREATE TABLE IF NOT EXISTS user_sessions (
         token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at TEXT NOT NULL)""")
@@ -141,6 +145,12 @@ def verify_agent(agent_id:str,credential:str|None):
         return {k:row[k] for k in ("id","owner_id","enabled","expires_at")}
     raise agent_error(403,"Agent không có license hợp lệ",code)
 
+def agent_platform(agent_id:str)->str|None:
+    """Read platform after verify_agent, without changing the legacy verification result shape."""
+    with db_open() as db:
+        row=db.execute("SELECT platform FROM registered_agents WHERE id=?",(agent_id,)).fetchone()
+    return row["platform"] if row else None
+
 class Login(BaseModel):
     email:str
     password:str
@@ -154,6 +164,7 @@ class CreateOwner(BaseModel):
 class Activate(BaseModel):
     activation_key:str=Field(min_length=20,max_length=200)
     hostname:str=Field(min_length=1,max_length=160)
+    platform:Literal["WINDOWS","ANDROID"]="WINDOWS"
 
 class AgentCheck(BaseModel):
     agent_id:str
@@ -307,20 +318,21 @@ def activate(body:Activate):
         if count>=row["max_agents"]:raise agent_error(409,"Đã đạt giới hạn Agent của license","AGENT_LIMIT_REACHED")
         aid="agt_"+uuid.uuid4().hex
         credential=secrets.token_urlsafe(40)
-        db.execute("INSERT INTO registered_agents VALUES(?,?,?,?,1,?)",
-                   (aid,row["owner_id"],body.hostname,secret_hash(credential),now()))
+        db.execute("""INSERT INTO registered_agents(id,owner_id,hostname,credential_hash,enabled,created_at,platform)
+                    VALUES(?,?,?,?,1,?,?)""",
+                   (aid,row["owner_id"],body.hostname,secret_hash(credential),now(),body.platform))
         db.execute("UPDATE activation_keys SET used_at=? WHERE key_hash=?",
                    (now(),secret_hash(body.activation_key)))
-    return {"agent_id":aid,"agent_credential":credential,"owner_id":row["owner_id"]}
+    return {"agent_id":aid,"agent_credential":credential,"owner_id":row["owner_id"],"platform":body.platform}
 
 @router.get("/agents")
 def my_agents(authorization:str|None=Header(None)):
     user=auth(authorization)
     with db_open() as db:
         if user["role"]=="SUPER_ADMIN":
-            rows=db.execute("SELECT id,owner_id,hostname,enabled,created_at FROM registered_agents").fetchall()
+            rows=db.execute("SELECT id,owner_id,hostname,enabled,created_at,platform FROM registered_agents").fetchall()
         else:
-            rows=db.execute("SELECT id,owner_id,hostname,enabled,created_at FROM registered_agents WHERE owner_id=?",
+            rows=db.execute("SELECT id,owner_id,hostname,enabled,created_at,platform FROM registered_agents WHERE owner_id=?",
                             (user["id"],)).fetchall()
         return [dict(r) for r in rows]
 

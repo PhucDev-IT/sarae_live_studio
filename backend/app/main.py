@@ -21,6 +21,7 @@ from app.owner_agents import router as owner_agents_router
 from app.captcha_templates import router as captcha_templates_router
 from app.tiktok_products import router as tiktok_products_router
 from app.tiktok_catalog import router as tiktok_catalog_router
+from app.android_agents import router as android_agents_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
@@ -44,6 +45,7 @@ async def saas_legacy_guard(request, call_next):
     from fastapi.responses import JSONResponse
     path=request.url.path
     safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists", "/api/owner",
+          "/api/android-agents",
           "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
           "/api/media", "/api/live", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor",
           "/api/captcha-templates", "/api/tiktok-products", "/api/tiktok-catalog")
@@ -88,3 +90,4 @@ def health() -> dict[str, str]:
 app.include_router(tiktok_products_router)
 
 app.include_router(tiktok_catalog_router)
+app.include_router(android_agents_router)

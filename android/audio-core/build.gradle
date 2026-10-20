@@ -1,0 +1,14 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'io.twinkle.unreal.audio.core'
+    // Kept at a named platform version so the hook project's AGP 8.3 can resolve it.
+    compileSdk 36
+    defaultConfig { minSdk 24 }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}

@@ -26,7 +26,8 @@ const STEPS:{status:SessionStatus;label:string;hint:string}[] = [
 /** Plans LIVE sessions: build the product lineup, check readiness, start, and review history. Live switching happens in #/live. */
 export default function LiveSessions(){
   const toast = useToast()
-  const {agents, agentId:tabAgentId} = useAgent()
+  const {agents:allAgents, agentId:tabAgentId} = useAgent()
+  const agents = useMemo(()=>allAgents.filter(agent=>agent.platform !== 'ANDROID'),[allAgents])
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
   const [createAgent,setCreateAgent] = useState('')
   const [createShop,setCreateShop] = useState('')
@@ -283,7 +284,7 @@ export default function LiveSessions(){
           {/* Product lineup */}
           <Card className="ls-lineup" padding={false} title={<span className="ls-card-title"><Package size={17}/>Danh sách sản phẩm</span>}
             description={chosen.status === 'ENDED' ? `${lineup.length} sản phẩm đã dùng trong phiên` : 'Sản phẩm chuẩn bị sẵn cho phiên · khi LIVE có thể đưa bất kỳ sản phẩm nào lên, không theo thứ tự'}
-            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy} disabled={chosen.shop_id==null} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
+            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy||chosen.shop_id==null} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
             {!lineup.length
               ? <div className="ls-lineup-empty"><EmptyState icon={<Package size={28}/>} title="Chưa có sản phẩm" description="Thêm những sản phẩm dự định bán trong phiên này, theo thứ tự sẽ giới thiệu."
                 actionLabel={editable&&chosen.shop_id!=null ? 'Thêm sản phẩm' : undefined} onAction={()=>{if(chosen.shop_id!=null)setPickerOpen(true)}}/></div>

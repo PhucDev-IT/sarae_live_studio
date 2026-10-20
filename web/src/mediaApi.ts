@@ -2,7 +2,7 @@
 /** A video on one of the OWNER's Windows Agents (id = the Agent's 64-hex file id; the MP4 stays on that PC). */
 export type Media = { id:string; agent_id:string; filename:string; size_bytes:number; duration_seconds:number|null; available:boolean; thumb_url:string|null; tags:string; product_ids:number[]; presenter_ids:number[] }
 /** A Windows Agent of the logged-in OWNER (GET /api/owner/agents), with a summary of its last heartbeat. */
-export type OwnerAgent = { id:string; hostname:string; online:boolean; last_seen:string|null; obs_connected?:boolean; playing?:boolean; session_id?:number|null; monitor_running?:boolean }
+export type OwnerAgent = { id:string; hostname:string; platform?:'WINDOWS'|'ANDROID'; online:boolean; last_seen:string|null; obs_connected?:boolean; playing?:boolean; playback_state?:string|null; playback_media_id?:string|null; playback_position_ms?:number|null; playback_duration_ms?:number|null; playback_error?:string|null; mock_live?:boolean; session_id?:number|null; monitor_running?:boolean }
 export type CatalogItem = { id:number; name:string }
 export type Product = CatalogItem & { sku?:string; image_url?:string }
 export type Presenter = CatalogItem & { description?:string; avatar_url?:string }

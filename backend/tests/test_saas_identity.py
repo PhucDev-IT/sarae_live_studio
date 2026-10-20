@@ -1,10 +1,11 @@
 """Identity/ownership tests. Run: python -m unittest discover -s tests -p test_*.py"""
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from fastapi import HTTPException
 
-from app import identity
+from app import identity, cloud_agents
 
 class IdentityTests(unittest.TestCase):
     def setUp(self):
@@ -48,6 +49,19 @@ class IdentityTests(unittest.TestCase):
         identity.revoke_agent(device["agent_id"],authorization=self.admin_header)
         with self.assertRaises(HTTPException):
             identity.verify_agent(device["agent_id"],device["agent_credential"])
+
+    def test_android_activation_preserves_legacy_verify_shape(self):
+        owner=self.create_owner("android@example.test")
+        key=identity.issue_key(owner["id"],authorization=self.admin_header)["activation_key"]
+        device=identity.activate(identity.Activate(activation_key=key,hostname="Galaxy-Test",platform="ANDROID"))
+        self.assertEqual(device["platform"],"ANDROID")
+        self.assertEqual(identity.agent_platform(device["agent_id"]),"ANDROID")
+        self.assertEqual(set(identity.verify_agent(device["agent_id"],device["agent_credential"])),
+                         {"id","owner_id","enabled","expires_at"})
+        with self.assertRaises(HTTPException) as exc:
+            asyncio.run(cloud_agents.next_command(device["agent_id"], wait=0,
+                                                   x_sarae_agent_key=device["agent_credential"]))
+        self.assertEqual(exc.exception.status_code,403)
 
     def test_logout_revokes_session(self):
         self.assertEqual(identity.me(authorization=self.admin_header)["role"], "SUPER_ADMIN")

@@ -40,13 +40,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Literal
 from urllib import parse, request
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import DATA_DIR
-from app.identity import auth, allow_owner, verify_agent, db_open, license_not_expired
+from app.identity import auth, allow_owner, verify_agent, agent_platform, db_open, license_not_expired
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
@@ -60,7 +60,9 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
 RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "media_rescan", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
-                   "obs_pause", "obs_resume", "obs_stop", "local_media_stop"}
+                   "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
+                   "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
+                   "android_mock_live_start", "android_mock_live_stop"}
 BACKGROUND_KINDS = {"tts_speak", "media_rescan", "monitor_config", "monitor_start", "monitor_stop"}
 MAX_ATTEMPTS = 3
 DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
@@ -249,13 +251,13 @@ def get_status(authorization:str|None=Header(None)):
     for aid,host,seen,payload in rows:
         try:
             with db_open() as registry:
-                owned=registry.execute("SELECT owner_id,hostname FROM registered_agents WHERE id=? AND enabled=1",(aid,)).fetchone()
+                owned=registry.execute("SELECT owner_id,hostname,platform FROM registered_agents WHERE id=? AND enabled=1",(aid,)).fetchone()
             if owned is None or (user["role"]!="SUPER_ADMIN" and owned["owner_id"]!=user["id"]):
                 continue
         except Exception:
             continue
         age=(now-datetime.fromisoformat(seen)).total_seconds()
-        agents.append({"agent_id":aid,"hostname":owned["hostname"],"reported_hostname":host,"last_seen":seen,
+        agents.append({"agent_id":aid,"hostname":owned["hostname"],"platform":owned["platform"],"reported_hostname":host,"last_seen":seen,
                        "online":age<ONLINE_SECONDS,"seconds_ago":round(age,1),**json.loads(payload)})
     return {"agents":agents}
 
@@ -265,7 +267,9 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
     "playback_resume","playback_next","playback_previous","playback_stop","media_rescan"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
-    "product_play","playback_select","playback_seek","obs_configure","obs_inputs"}
+    "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
+    "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
+    "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
 # Payload fields that must not stay in the command log once the command is final.
 SECRET_FIELDS={"password"}
 
@@ -345,6 +349,18 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         return {"index":_int(payload.get("index"),"index",0,9999)}
     if kind=="playback_seek":
         return {"ms":_int(payload.get("ms"),"ms",0,24*3600*1000)}
+    if kind in ("android_play", "android_switch"):
+        if not _media_id(payload.get("media_id")):raise HTTPException(422,"media_id không hợp lệ")
+        if kind == "android_play":return {"media_id":payload["media_id"]}
+        mode=payload.get("mode","immediate")
+        if mode not in ("immediate","after_current"):
+            raise HTTPException(422,"mode phải là immediate hoặc after_current")
+        return {"media_id":payload["media_id"],"mode":mode}
+    if kind=="android_queue_set":
+        return {"media_ids":_media_ids(payload.get("media_ids")),"loop":_bool(payload.get("loop",True),"loop"),
+                "auto_rotate":_bool(payload.get("auto_rotate",True),"auto_rotate")}
+    if kind=="android_rotation_set":
+        return {"enabled":_bool(payload.get("enabled"),"enabled")}
     if kind=="obs_inputs":
         return _obs_connection(payload)
     if kind=="obs_configure":
@@ -365,7 +381,7 @@ def validate_payload(kind:str,payload:dict|None)->dict:
 
 def _owner_row(agent_id:str):
     with db_open() as registry:
-        row=registry.execute("""SELECT a.owner_id,l.enabled AS license_enabled,l.expires_at
+        row=registry.execute("""SELECT a.owner_id,a.platform,l.enabled AS license_enabled,l.expires_at
             FROM registered_agents a JOIN licenses l ON l.owner_id=a.owner_id
             WHERE a.id=? AND a.enabled=1""",(agent_id,)).fetchone()
     if row is None:raise HTTPException(404,"Không tìm thấy Agent")
@@ -422,7 +438,10 @@ def create_command(agent_id:str,owner_id:str,kind:str,payload:dict|None=None,*,i
     With `idempotency_key`, a second call for the same Agent and key returns the first command unchanged.
     `context` is kept server-side (never sent to the Agent) for whoever applies the outcome.
     """
-    if _owner_row(agent_id)["owner_id"]!=owner_id:raise HTTPException(404,"Không tìm thấy Agent")
+    agent=_owner_row(agent_id)
+    if agent["owner_id"]!=owner_id:raise HTTPException(404,"Không tìm thấy Agent")
+    if (agent["platform"] == "ANDROID") != kind.startswith("android_"):
+        raise HTTPException(422,"Lệnh không tương thích với loại Agent")
     payload=validate_payload(kind,payload)
     if idempotency_key is not None and not 1<=len(idempotency_key)<=120:
         raise HTTPException(422,"Idempotency-Key dài 1-120 ký tự")
@@ -520,6 +539,8 @@ async def next_command(agent_id:str,wait:int=Query(0,ge=0,le=MAX_WAIT_SECONDS),
     """Return the next deliverable command; with ``wait`` > 0, hold the request up to that many
     seconds until one is queued. Waiting costs no worker thread (async sleep on a counter)."""
     await run_in_threadpool(verify_agent,agent_id,x_sarae_agent_key)
+    if await run_in_threadpool(agent_platform,agent_id)!="WINDOWS":
+        raise HTTPException(403,"Android Agent dùng WebSocket command channel")
     entry=_signal(agent_id)
     deadline=time.monotonic()+wait
     while True:
@@ -530,6 +551,48 @@ async def next_command(agent_id:str,wait:int=Query(0,ge=0,le=MAX_WAIT_SECONDS),
         recheck=min(deadline,time.monotonic()+1.0)
         while entry[1]==seen and time.monotonic()<recheck:
             await asyncio.sleep(0.05)
+
+
+@router.websocket("/ws/{agent_id}")
+async def android_command_socket(websocket: WebSocket, agent_id: str):
+    """Persistent command stream for Android Agents; uses the same claim/ack lifecycle as REST Agents."""
+    credential=websocket.headers.get("x-sarae-agent-key")
+    try:
+        agent=await run_in_threadpool(verify_agent,agent_id,credential)
+    except HTTPException as exc:
+        await websocket.close(code=4401 if exc.status_code==401 else 4403,reason=str(exc.detail)[:120])
+        return
+    if await run_in_threadpool(agent_platform, agent_id)!="ANDROID":
+        await websocket.close(code=4403,reason="ANDROID_AGENT_REQUIRED")
+        return
+    await websocket.accept()
+    next_ping=time.monotonic()
+    try:
+        while True:
+            command=await run_in_threadpool(_claim,agent_id)
+            if command:
+                await websocket.send_json({"type":"command","command":command})
+                while True:
+                    message=json.loads(await websocket.receive_text())
+                    if message.get("type")=="ack":
+                        body=AckBody(agent_id=agent_id,command_id=message.get("command_id",""),
+                                     claim_token=message.get("claim_token",""),
+                                     success=message.get("success") is True,
+                                     result=str(message.get("result", ""))[:65000])
+                        await run_in_threadpool(ack_command,body,credential)
+                        break
+                    if message.get("type")=="pong":continue
+            else:
+                if time.monotonic()>=next_ping:
+                    await websocket.send_json({"type":"ping","server_time":_now()})
+                    next_ping=time.monotonic()+15
+                try:
+                    message=json.loads(await asyncio.wait_for(websocket.receive_text(),timeout=1.0))
+                    if message.get("type")=="pong":continue
+                except asyncio.TimeoutError:
+                    pass
+    except WebSocketDisconnect:
+        return
 
 @router.post("/commands/ack")
 def ack_command(body:AckBody,x_sarae_agent_key:str|None=Header(None)):

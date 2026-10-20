@@ -15,7 +15,7 @@ type Account = {
 const DAY = 24 * 3600 * 1000
 const daysLeft = (iso:string|null) => iso ? Math.ceil((new Date(iso).getTime() - Date.now()) / DAY) : null
 
-/** The OWNER's own account: license and device slots (set by the platform admin), Windows PCs, password and sign-ins. */
+/** The OWNER's own account: license and Agent slots (set by the platform admin), devices, password and sign-ins. */
 export default function AccountPortal(){
   const toast = useToast()
   const {agents} = useAgent()
