@@ -28,8 +28,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "VCAM Manager"
 include(":app")
-include(":sarae-agent")
 include(":audio-core")
 project(":audio-core").projectDir = file("../audio-core")
-project(":sarae-agent").projectDir = file("../SaraeAgent/app")
  
