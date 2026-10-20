@@ -35,3 +35,15 @@ The server stores uploaded Android MP4 assets in its existing `DATA_DIR`; no sec
 ## Offline/mock validation
 
 Run the isolated local backend over HTTPS, use ADB reverse for localhost, upload test MP4s through the normal owner API, then use the Web Dashboard or the exact same owner command API. The endurance monitor in `scripts/endurance_monitor.py` records agent online state, playback state, current media transitions, foreground-service checks and app-process checks. It must not be interpreted as evidence about TikTok LIVE audio or the TikTok hook.
+
+## Unified VCAM source control (Android Agent)
+
+The Android Agent is the **only user-facing controller** needed for local media sync, queue controls and exporting that queue to the existing VCAM file convention. Product sync from TikTok is deliberately **not** part of the Android Agent. The separate injection module/TikTok patched package is still a technical prerequisite for non-root camera hook setups, not an independent management application.
+
+1. Activate and connect the Agent, then sync the MP4 files from the backend.
+2. Prepare a queue using the existing Agent local/Web control.
+3. In the Agent, under **Nguồn VCAM**, grant Android's all-files access permission when prompted.
+4. Tap **Áp dụng queue cho VCAM**. The Agent exports files to `DCIM/Camera1/playlist/001.mp4` etc., `virtual.mp4`, and `playlist.txt` when looping is enabled.
+5. Reopen the **test camera preview** to check whether the hook has picked up the changed source. Applying a queue does not guarantee a live camera session reloads its source.
+
+**Limits:** The Agent's local MediaPlayer playback and queue commands are separate from the VCAM camera hook. The explicit apply step is required; there is currently no verified direct hot-switch from backend to a running TikTok camera session. This feature neither opens TikTok LIVE nor verifies TikTok audio. Do not use LIVE accounts to debug.
