@@ -3,6 +3,9 @@ package co.sarae.agent
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.view.SurfaceHolder
@@ -46,6 +49,7 @@ class MainActivity : ComponentActivity() {
     var snapshot by remember { mutableStateOf(runtime.current()) }
     var status by remember { mutableStateOf(if (config == null) "Chưa đăng ký" else "Đã đăng ký") }
     var busy by remember { mutableStateOf(false) }
+    var vcamStatus by remember { mutableStateOf("Chưa áp dụng nguồn VCAM từ Android Agent.") }
     DisposableEffect(runtime) { val observer: (PlaybackSnapshot) -> Unit = { snapshot = it }; runtime.observe(observer); onDispose { runtime.remove(observer) } }
 
     MaterialTheme {
@@ -101,6 +105,34 @@ class MainActivity : ComponentActivity() {
                         launch(Dispatchers.Main) { result.onSuccess { videos = it; status = "Đã đồng bộ ${it.size} video" }.onFailure { status = "Đồng bộ lỗi: ${it.message}" }; busy = false }
                     }
                 }, enabled = config != null && !busy) { Text(if (busy) "Đang xử lý…" else "Đồng bộ video từ backend") } }
+                item {
+                    HorizontalDivider()
+                    Text("Nguồn VCAM", style = MaterialTheme.typography.titleMedium)
+                    Text("Áp dụng queue MP4 vào DCIM/Camera1 của VCAM hiện tại. Đây là thao tác chuẩn bị nguồn; không tự bắt đầu LIVE hay xác nhận TikTok đã nhận hình.")
+                    Text(vcamStatus, style = MaterialTheme.typography.bodySmall)
+                    if (!VcamPlaylistBridge.canWriteSharedFolder()) {
+                        OutlinedButton(onClick = {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:${context.packageName}"))
+                            context.startActivity(intent)
+                        }) { Text("Cấp quyền truy cập thư mục VCAM") }
+                    }
+                    Button(
+                        enabled = !busy && videos.isNotEmpty() && VcamPlaylistBridge.canWriteSharedFolder(),
+                        onClick = {
+                            busy = true
+                            val selectedIds = snapshot.queue.ifEmpty { videos.map { it.mediaId } }
+                            val repeat = snapshot.loop
+                            scope.launch(Dispatchers.IO) {
+                                val result = runCatching { VcamPlaylistBridge.apply(context, selectedIds, repeat) }
+                                launch(Dispatchers.Main) {
+                                    vcamStatus = result.getOrElse { "Không áp dụng được VCAM: ${it.message}" }
+                                    busy = false
+                                }
+                            }
+                        }
+                    ) { Text("Áp dụng queue cho VCAM") }
+                }
                 item { Text("Video đã tải xuống · ${videos.size}", style = MaterialTheme.typography.titleMedium) }
                 items(videos, key = { it.mediaId }) { video ->
                     Card(Modifier.fillMaxWidth()) {
