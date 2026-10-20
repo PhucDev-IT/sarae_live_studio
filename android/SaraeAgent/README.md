@@ -2,15 +2,23 @@
 
 Android Agent is a separate Jetpack Compose app for managing Android playback from the existing Sarae FastAPI backend and Web Dashboard. It does not connect to TikTok or start a LIVE session. **Mock LIVE** is only a label/state inside the test player.
 
-## Build
+## Open in Android Studio (standalone project)
 
-From `android/VCAMManager`:
+Open **`android/SaraeAgent`** directly with **File → Open**, NOT `android/SaraeAgent/app` or `android/VCAMManager`.
+This folder now has its own `settings.gradle.kts`, `build.gradle.kts`, version catalog, and Gradle Wrapper.
+Wait for Gradle Sync, select the **app** run configuration and the connected device, then press **Run ▶**.
+Android Studio must have a compatible JDK 17+ and Android SDK (compile SDK 37 as currently configured).
+
+Build from PowerShell:
 
 ```powershell
-./gradlew :sarae-agent:assembleDebug
+cd D:\\Android_Programming\\sarae_tool_live_studio\\android\\SaraeAgent
+.\\gradlew.bat :app:assembleDebug
+adb install -r .\\app\\build\\outputs\\apk\\debug\\app-debug.apk
 ```
 
-The app project is `android/SaraeAgent/app`; it is included as `:sarae-agent` in the existing Android Gradle build. The debug APK is `android/SaraeAgent/app/build/outputs/apk/debug/sarae-agent-debug.apk`.
+Only install/open the **Sarae LIVE Agent** controller app. `VCAMManager` is legacy and not needed for the Agent's local playlist apply action.
+The Xposed injection module and patched TikTok remain separate technical components when the camera hook is used; Android cannot merge the patched target into the Agent APK. TikTok LIVE is not needed for Agent development.
 
 ## Connect a device
 
