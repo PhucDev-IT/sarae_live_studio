@@ -26,6 +26,18 @@ def upgrade():
             account_id INTEGER NOT NULL,
             PRIMARY KEY(owner_id, account_id)
         )"""))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS live_start_claims (
+            tiktok_account_id INTEGER PRIMARY KEY,
+            session_id INTEGER NOT NULL UNIQUE,
+            agent_id VARCHAR(80) NOT NULL UNIQUE,
+            acquired_at VARCHAR(40) NOT NULL
+        )"""))
+        # Preserve in-progress ownership when upgrading an installation with active LIVE.
+        conn.execute(text("""INSERT OR IGNORE INTO live_start_claims
+            (tiktok_account_id,session_id,agent_id,acquired_at)
+            SELECT tiktok_account_id,id,agent_id,COALESCE(started_at,created_at)
+              FROM live_sessions WHERE status='RUNNING'
+                AND tiktok_account_id IS NOT NULL AND agent_id IS NOT NULL"""))
         for table,columns in {
             "products":{"shop_id":"INTEGER","tiktok_product_id":"VARCHAR(80)","tiktok_seller_id":"VARCHAR(80)",
                         "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)"},
