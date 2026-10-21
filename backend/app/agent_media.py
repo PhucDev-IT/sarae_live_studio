@@ -37,13 +37,8 @@ def manifest_item(media: MediaItem, product_ids: list[int]) -> dict:
             "product_ids": product_ids, "download_path": f"/api/agent-media/{media.id}/content"}
 
 
-@router.get("/manifest")
-def manifest(agent_id: str, session_id: int, db: DB, x_sarae_agent_key: str | None = Header(None)):
-    """Every AVAILABLE video of the session's products (random playback may pick any of them)."""
-    owner_id = agent_owner(agent_id, x_sarae_agent_key)
-    session = db.get(LiveSession, session_id)
-    if session is None or session.owner_id != owner_id or (session.agent_id and session.agent_id != agent_id):
-        raise agent_error(404, "Không tìm thấy phiên LIVE của Agent này", "SESSION_NOT_FOUND")
+def session_manifest(db: Session, owner_id: str, session_id: int) -> dict:
+    """Every AVAILABLE Media Library video of the session's products (random playback may pick any of them)."""
     product_ids = list(db.scalars(select(SessionProduct.product_id).where(SessionProduct.session_id == session_id)
                                   .order_by(SessionProduct.sort_order)))
     rows = db.execute(select(ProductMedia.product_id, MediaItem)
@@ -55,10 +50,76 @@ def manifest(agent_id: str, session_id: int, db: DB, x_sarae_agent_key: str | No
     for product_id, media in rows:
         items.setdefault(media.id, (media, []))[1].append(product_id)
     with_video = {pid for _, pids in items.values() for pid in pids}
-    return {"session_id": session_id, "agent_id": agent_id,
+    return {"session_id": session_id, "product_ids": product_ids,
             "items": [manifest_item(media, pids) for media, pids in items.values()],
             "total_bytes": sum(media.size_bytes for media, _ in items.values()),
             "products_without_video": [pid for pid in product_ids if pid not in with_video]}
+
+
+@router.get("/manifest")
+def manifest(agent_id: str, session_id: int, db: DB, x_sarae_agent_key: str | None = Header(None)):
+    """What the Agent must download into its cache before this session can play."""
+    owner_id = agent_owner(agent_id, x_sarae_agent_key)
+    session = db.get(LiveSession, session_id)
+    if session is None or session.owner_id != owner_id or (session.agent_id and session.agent_id != agent_id):
+        raise agent_error(404, "Không tìm thấy phiên LIVE của Agent này", "SESSION_NOT_FOUND")
+    body = session_manifest(db, owner_id, session_id)
+    body.pop("product_ids")
+    return {"session_id": session_id, "agent_id": agent_id, **body}
+
+
+def agent_cache_report(agent_id: str) -> tuple[dict, str | None]:
+    """The Agent's last reported media cache job (heartbeat) and when it was seen."""
+    import json
+    from app.cloud_agents import _db
+    with _db() as db:
+        row = db.execute("SELECT last_seen,status_json FROM agent_status WHERE agent_id=?", (agent_id,)).fetchone()
+    if row is None:
+        return {}, None
+    report = (json.loads(row["status_json"] or "{}") or {}).get("media_cache") or {}
+    return (report if isinstance(report, dict) else {}), row["last_seen"]
+
+
+def media_readiness(db: Session, owner_id: str, agent_id: str, session_id: int) -> dict:
+    """Whether `agent_id` holds a verified copy of EVERY video of the session (same revision as the Cloud).
+
+    state: NO_VIDEO (nothing to download) / NOT_STARTED / DOWNLOADING / FAILED / INCOMPLETE / READY.
+    Only the Agent's own report for this session counts; a report for another session or an older revision of a
+    video never makes the session ready.
+    """
+    manifest = session_manifest(db, owner_id, session_id)
+    required = {item["media_id"]: item for item in manifest["items"]}
+    report, last_seen = agent_cache_report(agent_id)
+    if report.get("session_id") != session_id:
+        report = {}
+    cached = {r.get("media_id"): r.get("revision") for r in report.get("ready") or [] if isinstance(r, dict)}
+    ok = [mid for mid, item in required.items() if cached.get(mid) == item["revision"]]
+    failed = [f for f in report.get("failed") or [] if isinstance(f, dict)]
+    if not required:
+        state = "NO_VIDEO"
+    elif len(ok) == len(required):
+        state = "READY"
+    elif report.get("state") == "PREPARING":
+        state = "DOWNLOADING"
+    elif report.get("state") == "FAILED" or failed:
+        state = "FAILED"
+    elif report:
+        state = "INCOMPLETE"  # finished, but the videos changed since (re-linked / new video): download again
+    else:
+        state = "NOT_STARTED"
+    names = {item["media_id"]: item["filename"] for item in manifest["items"]}
+    products = []
+    for pid in manifest["product_ids"]:
+        ids = [mid for mid, item in required.items() if pid in item["product_ids"]]
+        products.append({"product_id": pid, "total": len(ids), "ready": sum(1 for mid in ids if mid in ok)})
+    return {"session_id": session_id, "agent_id": agent_id, "state": state, "ready": state == "READY",
+            "total": len(required), "ready_count": len(ok),
+            "bytes_total": manifest["total_bytes"],
+            "bytes_done": manifest["total_bytes"] if state == "READY" else min(int(report.get("bytes_done") or 0), manifest["total_bytes"]),
+            "missing": [mid for mid in required if mid not in ok],
+            "failed": [{"media_id": f.get("media_id"), "filename": names.get(f.get("media_id")), "error": f.get("error")} for f in failed][:20],
+            "products": products, "products_without_video": manifest["products_without_video"],
+            "reported_at": last_seen}
 
 
 @router.get("/{media_id}/content")

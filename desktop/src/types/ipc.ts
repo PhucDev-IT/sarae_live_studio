@@ -91,6 +91,9 @@ export interface CloudCacheStatus {
   failed?: Array<{ media_id?: string; error: string }>
   products_without_video?: number[]
   total?: number
+  bytes_total?: number
+  bytes_done?: number
+  current?: string | null
 }
 
 export interface MediaSummary {

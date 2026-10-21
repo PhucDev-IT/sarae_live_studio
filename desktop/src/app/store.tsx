@@ -143,6 +143,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'patch', patch: { obs: frame.data } })
       } else if (isEvent(frame, 'playback.changed')) {
         dispatch({ type: 'patch', patch: { playback: frame.data } })
+      } else if (isEvent(frame, 'media.cache_changed')) {
+        dispatch({ type: 'patch', patch: { media: { cloud_cache: frame.data } } })
       } else if (isEvent(frame, 'monitor.status_changed')) {
         dispatch({ type: 'patch', patch: { monitor: frame.data } })
       } else if (isEvent(frame, 'command.received') || isEvent(frame, 'command.finished')) {

@@ -582,6 +582,8 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if not check["ready"]:
             problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
             raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
+        # Playback reads local files only: every video of the session must be cached and verified first.
+        require_media_ready(db, owner, agent, item.id)
         # Persist ownership of the selected Agent before dispatch: fast Agent ack
         # can arrive while the HTTP request is still waiting.
         acquire_live_claim(db,item,agent["id"])
@@ -590,6 +592,65 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         # Do not release the claim on ambiguous transport timeouts.
         view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
     return answer(view, owner, session_id)
+
+def require_media_ready(db, owner: dict, agent: dict, session_id: int):
+    """409 MEDIA_NOT_READY unless the Agent cached every video of the session (checked before any playback)."""
+    from app.agent_media import media_readiness
+    status = media_readiness(db, owner["id"], agent["id"], session_id)
+    if not status["ready"]:
+        raise HTTPException(409, f"Agent “{agent['hostname']}” chưa tải đủ video của phiên ({status['ready_count']}/{status['total']}). "
+                                 "Hãy tải video về máy trước khi phát.", headers={"X-Sarae-Error": "MEDIA_NOT_READY"})
+    return status
+
+
+def require_product_cached(db, owner: dict, agent: dict, session_id: int, product_id: int):
+    """During LIVE: a product added later (or whose videos changed) is downloaded first, never played half-cached."""
+    from app.agent_media import media_readiness
+    from app.owner_agents import send_command
+    status = media_readiness(db, owner["id"], agent["id"], session_id)
+    row = next((p for p in status["products"] if p["product_id"] == product_id), None)
+    if row is None or row["total"] == 0 or row["ready"] == row["total"]:
+        return  # no video at all is reported by play_product itself
+    if status["state"] != "DOWNLOADING":
+        send_command(owner, agent["id"], "media_prepare", {"session_id": session_id},
+                     idempotency_key=f"media-prepare-{session_id}-{datetime.now(timezone.utc):%Y%m%d%H%M}")
+    raise HTTPException(409, f"Đang tải video của sản phẩm #{product_id} về máy “{agent['hostname']}” "
+                             f"({row['ready']}/{row['total']}). Thử lại sau khi tải xong.", headers={"X-Sarae-Error": "MEDIA_NOT_READY"})
+
+
+@router.post("/{session_id}/prepare-media")
+def prepare_media(session_id: int, body: StartInput, owner: Owner,
+                  idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    """Ask the Agent to download every video of the session into its cache (it reports progress by heartbeat)."""
+    from app.agent_media import media_readiness, session_manifest
+    from app.owner_agents import send_command
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        if item.status not in ("DRAFT", "RUNNING"):
+            raise HTTPException(409, "Phiên đã kết thúc")
+        agent_id = item.agent_id if item.status == "RUNNING" else body.agent_id
+        if item.agent_id and body.agent_id and body.agent_id != item.agent_id:
+            raise HTTPException(409, "Phiên đang chạy trên Agent khác")
+        if not session_manifest(db, owner["id"], session_id)["items"]:
+            raise HTTPException(409, "Sản phẩm trong phiên chưa có video nào trong Thư viện video")
+        view = send_command(owner, agent_id, "media_prepare", {"session_id": session_id},
+                            idempotency_key=idempotency_key or f"media-prepare-{session_id}-{datetime.now(timezone.utc):%Y%m%d%H%M}")
+        status = media_readiness(db, owner["id"], view["agent"]["id"], session_id)
+        if status["state"] in ("NOT_STARTED", "INCOMPLETE", "FAILED"):
+            status["state"] = "QUEUED"  # until the Agent's first progress report
+    return {**status, "command": {k: view.get(k) for k in ("command_id", "status")}}
+
+
+@router.get("/{session_id}/media-readiness")
+def get_media_readiness(session_id: int, owner: Owner, agent_id: str | None = None):
+    from app.agent_media import media_readiness
+    from app.owner_agents import owned_agent
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
+        agent = owned_agent(owner, item.agent_id if item.status == "RUNNING" else agent_id)
+        status = media_readiness(db, owner["id"], agent["id"], session_id)
+    return {**status, "agent_online": agent["online"], "hostname": agent["hostname"]}
+
 
 @router.post("/{session_id}/resume")
 def resume_session(session_id: int, body: StartInput, owner: Owner,
@@ -634,6 +695,7 @@ def switch_session_product(session_id: int, body: SwitchInput, owner: Owner,
             db.add(SessionProduct(session_id=session_id, product_id=body.product_id, sort_order=len(ids)))
             event(db, session_id, "PRODUCT_ADDED", body.product_id, "during_live=true")
             db.commit()
+        require_product_cached(db, owner, agent, session_id, body.product_id)
         view = play_product(db, owner, agent, item, body.product_id, body.mode, "switch", idempotency_key)
     return answer(view, owner, session_id)
 

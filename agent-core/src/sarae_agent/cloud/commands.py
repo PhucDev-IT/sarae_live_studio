@@ -17,7 +17,7 @@ MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 
 
 def lane(kind: str) -> str:
@@ -79,6 +79,10 @@ class ObsConfigurePayload(ObsConnectionPayload):
     camera_input: str | None = Field(default="", max_length=200)
 
 
+class MediaPreparePayload(Payload):
+    session_id: int = Field(gt=0)
+
+
 class TikTokSyncPayload(Payload):
     expected_user_id: str = Field(pattern=r"^[0-9]{1,80}$")
 
@@ -96,12 +100,15 @@ class MonitorConfigPayload(Payload):
 
 
 class CommandRouter:
-    def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None):
-        """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud."""
+    def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None,
+                 media_prepare: Callable[[int], dict] | None = None):
+        """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud;
+        ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once)."""
         self.playback = playback
         self.monitor = monitor
         self.voice = voice
         self.tiktok_sync = tiktok_sync
+        self.media_prepare = media_prepare
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -128,6 +135,7 @@ class CommandRouter:
             "playback_camera": (NoPayload, lambda _: p.use_camera()),
             "playback_video": (NoPayload, lambda _: p.use_video()),
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
+            "media_prepare": (MediaPreparePayload, lambda b: self._media_prepare(b.session_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
@@ -149,6 +157,13 @@ class CommandRouter:
                 "account":result.get("account"),
                 "summary":result.get("summary"),
                 "imported":result.get("imported")}
+
+    def _media_prepare(self, session_id: int) -> dict:
+        if self.media_prepare is None:
+            raise AgentError("MEDIA_PREPARE_UNAVAILABLE", "Agent chưa hỗ trợ tải video về cache")
+        status = self.media_prepare(session_id)
+        # Progress goes up with heartbeats; the ACK only says the download was accepted.
+        return {"session_id": status.get("session_id"), "state": status.get("state"), "total": status.get("total")}
 
     @property
     def kinds(self) -> list[str]:

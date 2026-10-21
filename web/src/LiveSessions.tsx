@@ -10,6 +10,7 @@ import {
   EVENT_LABEL, STATUS_META, dateTime, durationText, eventDetail, sessionIdFromHash, sessionsApi, timeOnly,
   type LiveProduct, type LiveSession, type SessionEvent, type SessionStatus,
 } from './liveSessionsApi'
+import MediaPrepare from './MediaPrepare'
 import './live-sessions.css'
 
 type LiveStatus = { connected:boolean; running:boolean; session_id?:number|null; product_id?:number|null; pending_product_id?:number|null }
@@ -62,6 +63,8 @@ export default function LiveSessions(){
   const [consoleRows,setConsoleRows] = useState<Array<{product_id:string;seller_id:string;name:string;sarae_product_id:number|null;match_status:string}>|null>(null)
   const [consoleSelection,setConsoleSelection] = useState<number[]>([])
   const [consoleConfirmed,setConsoleConfirmed] = useState(false)
+  // Every video of the session is on the chosen Agent (MediaPrepare); playback may only start then.
+  const [mediaReady,setMediaReady] = useState(false)
   /** Product chosen to open the LIVE with; any product of the session that has videos. */
   const [opener,setOpener] = useState<number|null>(null)
   const [dragIndex,setDragIndex] = useState<number|null>(null)
@@ -459,7 +462,7 @@ export default function LiveSessions(){
 
     {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="md" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
-      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startOpener == null || !startAgent || !consoleConfirmed || busy}
+      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startOpener == null || !startAgent || !consoleConfirmed || !mediaReady || busy}
         onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startOpener ?? undefined);setStartOpen(false);openConsole(startAgent)}, 'Sarae đã bắt đầu phát')}>Bắt đầu phát</Button>
     </>}>
       <div className="ls-picker">
@@ -483,15 +486,15 @@ export default function LiveSessions(){
               <label style={{display:'flex',gap:10,alignItems:'center',padding:8}}>
                 <input type="checkbox" checked={checked} disabled={!available||busy||consoleConfirmed}
                   onChange={e=>{if(id==null)return;setConsoleSelection(prev=>e.target.checked?[...prev,id]:prev.filter(v=>v!==id))}}/>
-                <span>{row.name} {available ? `(${startById.get(id!)?.video_count} video trên máy này)` : id == null ? '— chưa có trong Sarae' : '— chưa có video trên máy này'}</span>
+                <span>{row.name} {available ? `(${startById.get(id!)?.video_count} video trong Thư viện)` : id == null ? '— chưa có trong Sarae' : '— chưa có video trong Thư viện'}</span>
               </label>
             </li>
           })}</ul>
           {!consoleConfirmed && dropped.length > 0 && <Alert tone="warning" title={`${dropped.length} sản phẩm đã chuẩn bị sẽ bị bỏ khỏi phiên`}>
-            {dropped.map(productName).join(', ')} — không có trong giỏ LIVE vừa đồng bộ, chưa có video trên máy này, hoặc bạn đã bỏ tích.
+            {dropped.map(productName).join(', ')} — không có trong giỏ LIVE vừa đồng bộ, chưa có video trong Thư viện, hoặc bạn đã bỏ tích.
           </Alert>}
           {consoleConfirmed
-            ? <Alert tone="info">Danh sách đã được lưu. Chọn sản phẩm phát đầu tiên rồi bấm Bắt đầu phát.</Alert>
+            ? <MediaPrepare key={`${chosen.id}:${startAgent}`} sessionId={chosen.id} agentId={startAgent} hostname={agentName(startAgent)} onReady={setMediaReady}/>
             : <Button disabled={!consoleSelection.length||busy} loading={busy} onClick={()=>void confirmConsole()}>{dropped.length ? `Xác nhận (bỏ ${dropped.length} sản phẩm) & lưu danh sách` : 'Xác nhận & lưu danh sách LIVE'}</Button>}
         </div>}
         {consoleConfirmed && <p className="ls-muted">Chọn sản phẩm phát đầu tiên. Trong lúc LIVE bạn chuyển sang sản phẩm nào cũng được, kể cả sản phẩm chưa có trong danh sách.</p>}

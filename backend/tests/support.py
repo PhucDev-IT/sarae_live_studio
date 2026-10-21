@@ -89,9 +89,9 @@ class SaasTestCase(unittest.TestCase):
                 db.commit()
         return agent
 
-    def heartbeat(self, agent, playback=None, hostname="PC"):
-        """The Agent reporting in (online), optionally with its PlaybackEngine status."""
-        body = {"agent_id": agent["agent_id"], "hostname": hostname, "playback": playback}
+    def heartbeat(self, agent, playback=None, hostname="PC", media_cache=None):
+        """The Agent reporting in (online), optionally with its PlaybackEngine status and media cache job."""
+        body = {"agent_id": agent["agent_id"], "hostname": hostname, "playback": playback, "media_cache": media_cache}
         response = self.client.post("/api/agents/heartbeat", json=body, headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
         self.assertEqual(response.status_code, 200, response.text)
 
@@ -130,6 +130,16 @@ class SaasTestCase(unittest.TestCase):
             db.add_all(rows)
             db.commit()
             return [row.id for row in rows]
+
+    def cache_report(self, owner, session_id, state="READY", only=None, revision=None):
+        """What an Agent reports after downloading the session's videos (all of them, or only `only`)."""
+        from app.agent_media import session_manifest
+        with self.Session() as db:
+            items = session_manifest(db, owner["id"], session_id)["items"]
+        ready = [{"media_id": i["media_id"], "revision": revision or i["revision"]} for i in items
+                 if only is None or i["media_id"] in only]
+        return {"session_id": session_id, "state": state, "total": len(items), "ready": ready, "failed": [],
+                "bytes_total": sum(i["size_bytes"] for i in items), "bytes_done": sum(i["size_bytes"] for i in items)}
 
     def link_videos(self, product_id, media_ids, headers=None):
         """Set a product's ordered Media Library videos (what LIVE plays for it)."""

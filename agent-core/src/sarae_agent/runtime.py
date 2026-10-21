@@ -85,7 +85,7 @@ class AgentRuntime:
         self.voice = VoiceService(self.config, self.obs)
         self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
-                                    tiktok_sync=self.sync_tiktok_products)
+                                    tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
     def resolve_media(self, media_id: str):
@@ -292,6 +292,7 @@ class AgentRuntime:
                                "loop": play.get("loop", False), "paused": play.get("paused", False),
                                "needs_manual_resume": False},
             "playback": play,
+            "media_cache": self.media_cache_report(),
         }
 
     def sync_tiktok_products(self, expected_user_id: str | None = None) -> dict:
@@ -324,6 +325,22 @@ class AgentRuntime:
     def cloud_cache_status(self) -> dict:
         return dict(self._cloud_cache_job)
 
+    def media_cache_report(self) -> dict:
+        """Cache job for the Cloud: ids, revisions and progress only (never local file paths)."""
+        job = self._cloud_cache_job
+        return {"session_id": job.get("session_id"), "state": job.get("state", "IDLE"), "total": job.get("total"),
+                "bytes_total": job.get("bytes_total"), "bytes_done": job.get("bytes_done"), "current": job.get("current"),
+                "ready": [{"media_id": r.get("media_id"), "revision": r.get("revision")} for r in job.get("ready") or []][:300],
+                "failed": [{"media_id": f.get("media_id"), "error": str(f.get("error") or "")[:200]} for f in job.get("failed") or []][:50],
+                "products_without_video": list(job.get("products_without_video") or [])[:300]}
+
+    def _cache_progress(self, status: dict) -> None:
+        self._cloud_cache_job = status
+        self.emit("media.cache_changed", status)
+        worker = self.worker
+        if worker is not None:
+            worker.poke()  # the Web shows download progress from heartbeats
+
     def prepare_cloud_cache(self, session_id: int) -> dict:
         """Queue preparation on a separate thread: IPC never blocks on large video downloads."""
         identity = self.activation.require()
@@ -331,6 +348,8 @@ class AgentRuntime:
         if not api_url:
             raise AgentError("CLOUD_URL_MISSING", "Chưa kết nối Cloud")
         if not self._cloud_cache_lock.acquire(blocking=False):
+            if self._cloud_cache_job.get("session_id") == session_id:
+                return dict(self._cloud_cache_job)  # a repeated request for the same session: keep the running job
             raise AgentError("CACHE_BUSY", "Agent đang chuẩn bị cache cho phiên khác")
         self._cloud_cache_job = {"session_id": session_id, "state": "PREPARING", "ready": [], "failed": []}
 
@@ -338,14 +357,12 @@ class AgentRuntime:
             try:
                 with httpx.Client(base_url=api_url, timeout=120, follow_redirects=False) as client:
                     cache = CloudMediaCache(client, identity.agent_id, identity.credential)
-                    result = cache.prepare(session_id)
-                self._cloud_cache_job = result
-                self.emit("media.cache_changed", result)
+                    result = cache.prepare(session_id, on_progress=self._cache_progress)
+                self._cache_progress(result)
             except Exception as exc:
                 log.exception("Cloud media cache failed")
-                self._cloud_cache_job = {"session_id": session_id, "state": "FAILED",
-                                         "ready": [], "failed": [{"error": str(exc)[:200]}]}
-                self.emit("media.cache_changed", self._cloud_cache_job)
+                self._cache_progress({"session_id": session_id, "state": "FAILED",
+                                      "ready": [], "failed": [{"error": str(exc)[:200]}]})
             finally:
                 self._cloud_cache_lock.release()
 

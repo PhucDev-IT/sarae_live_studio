@@ -419,7 +419,7 @@ def test_heartbeat_report_matches_cloud_and_has_no_paths(home, events):
                                                       "exe_path": "C:\\Users\\me\\AppData\\TikTok LIVE Studio.exe"}}
     rt.monitor.heartbeat_view = lambda: view
     report = rt.build_report()
-    assert set(report) == {"agent_id", "hostname", "verification", "obs", "local_playback", "playback"}
+    assert set(report) == {"agent_id", "hostname", "verification", "obs", "local_playback", "playback", "media_cache"}
     assert report["playback"]["connected"] is True and report["playback"]["queue_ids"] == []
     assert report["verification"]["state"]["window_info"] == {"exe_name": "TikTok LIVE Studio.exe"}
     assert "C:\\Users" not in json.dumps(report)
