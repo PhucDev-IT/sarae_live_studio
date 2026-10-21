@@ -58,18 +58,18 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "media_rescan", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "media_rescan", "tiktok_products_sync", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
                    "android_mock_live_start", "android_mock_live_stop"}
-BACKGROUND_KINDS = {"tts_speak", "media_rescan", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "media_rescan", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
 MAX_ATTEMPTS = 3
 DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
 SLOW_TTL_SECONDS = 180
 DEFAULT_LEASE_SECONDS = 30        # time the Agent has to ack after claiming
 SLOW_LEASE_SECONDS = 150
-SLOW_KINDS = {"media_rescan", "tts_speak", "obs_configure", "obs_inputs"}
+SLOW_KINDS = {"media_rescan", "tiktok_products_sync", "tts_speak", "obs_configure", "obs_inputs"}
 
 
 def lane(kind: str) -> str:
@@ -265,7 +265,7 @@ def get_status(authorization:str|None=Header(None)):
 
 NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_resume","obs_next","obs_previous",
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
-    "playback_resume","playback_next","playback_previous","playback_stop","media_rescan"}
+    "playback_resume","playback_next","playback_previous","playback_stop","media_rescan","tiktok_products_sync"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
