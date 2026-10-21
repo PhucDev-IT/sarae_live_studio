@@ -20,14 +20,17 @@ def core(tmp_path):
 def test_ready_event_and_status(core):
     ready = core.events[0]
     assert ready["event"] == "core.ready" and ready["v"] == 1
-    assert "media.scan" in ready["data"]["methods"] and "system.shutdown" in ready["data"]["methods"]
+    assert "media.cloud_cache.prepare" in ready["data"]["methods"] and "system.shutdown" in ready["data"]["methods"]
     status = core.request("system.status")
     assert status["ok"] and status["result"]["agent"]["state"] == "stopped"
+    methods = ready["data"]["methods"]
+    assert not any(m.startswith(("media.folders", "media.scan")) or m in ("media.list", "media.summary")
+                   for m in methods)  # local video folders are retired
 
 
 def test_bad_frames_do_not_kill_core(core):
     core.send_raw(b"this is not json\n")
-    core.send_raw(b'{"v":1,"type":"request","request_id":"x1","method":"media.folders.add","params":{"path":1,"extra":2}}\n')
+    core.send_raw(b'{"v":1,"type":"request","request_id":"x1","method":"playback.play","params":{"media_id":1,"extra":2}}\n')
     bad = core.wait_response("x1")
     assert bad["ok"] is False and bad["error"]["code"] == "INVALID_PARAMS"
     assert core.request("system.ping")["result"] == {"pong": True}
@@ -45,13 +48,9 @@ def test_slow_request_does_not_block_others(core):
     assert slow["ok"] is False and slow["error"]["code"] in ("OBS_TIMEOUT", "OBS_CONNECT_FAILED", "OBS_NOT_RUNNING")
 
 
-def test_stdout_only_carries_frames(core, tmp_path):
-    folder = tmp_path / "videos"
-    folder.mkdir()
-    (folder / "x.mp4").write_bytes(b"0")
-    core.request("media.folders.add", {"path": str(folder)})
-    core.request("media.scan")
-    core.wait_event("media.scan_finished")
+def test_stdout_only_carries_frames(core):
+    core.request("media.cloud_cache.status")
+    core.request("playback.play", {"media_id": "a" * 32})  # not cached: fails cleanly
     core.request("diagnostics.export")
     time.sleep(0.3)
     for line in core.raw_lines:

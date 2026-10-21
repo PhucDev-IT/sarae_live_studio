@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import storage_service
 from app.identity import agent_error, verify_agent
 from app.live_sessions import LiveSession, SessionProduct
-from app.media import get_db
+from app.database import get_db
 from app.storage_errors import StorageError, http_error
 from app.storage_models import MediaItem, ProductMedia
 

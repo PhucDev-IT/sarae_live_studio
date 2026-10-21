@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from sarae_agent.errors import AgentError
 from sarae_agent.ipc.server import IpcServer
 from sarae_agent.logging_setup import event_handler
+from sarae_agent.media.cloud_cache import MEDIA_ID
 from sarae_agent.runtime import AgentRuntime
 
 
@@ -22,7 +23,6 @@ class Strict(BaseModel):
 class ConfigSetParams(Strict):
     cloud: dict | None = None
     obs: dict | None = None
-    media: dict | None = None
     monitor: dict | None = None
     agent: dict | None = None
     obs_password: str | None = Field(default=None, max_length=256)
@@ -34,22 +34,19 @@ class ActivateParams(Strict):
     cloud_url: str | None = Field(default=None, max_length=300)
 
 
-class FolderParams(Strict):
-    path: str = Field(min_length=1, max_length=1000)
-
-
-class MediaListParams(Strict):
-    offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=200, ge=1, le=1000)
-    query: str = Field(default="", max_length=200)
-
-
 class PlayParams(Strict):
-    media_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    media_id: str = Field(pattern=MEDIA_ID.pattern)  # Media Library id, played from the cloud media cache
 
 
 class PlaylistParams(Strict):
     media_ids: list[str] = Field(min_length=1, max_length=300)
+
+    @field_validator("media_ids")
+    @classmethod
+    def _ids(cls, value: list[str]) -> list[str]:
+        if any(not MEDIA_ID.fullmatch(m) for m in value):
+            raise ValueError("Danh sách media_ids không hợp lệ")
+        return value
     loop: bool = True
 
 
@@ -106,10 +103,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
 
     # config
     def config_set(p: ConfigSetParams) -> dict:
-        patch = {k: v for k, v in p.model_dump(include={"cloud", "obs", "media", "monitor", "agent"}).items()
+        patch = {k: v for k, v in p.model_dump(include={"cloud", "obs", "monitor", "agent"}).items()
                  if v is not None}
-        if "media" in patch and "folders" in patch["media"]:
-            raise AgentError("INVALID_PARAMS", "Dùng media.folders.add/remove để đổi thư mục")
         if "cloud" in patch and "api_url" in patch["cloud"] and rt.worker is not None:
             raise AgentError("AGENT_RUNNING", "Dừng Agent trước khi đổi Cloud URL")
         if patch:
@@ -153,14 +148,7 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("agent.restart", lambda _: rt.restart_agent())
     reg("agent.status", lambda _: {**rt.agent_status(), "cloud": rt.cloud_status()})
 
-    # media
-    reg("media.folders.list", lambda _: {"folders": rt.library.folders()})
-    reg("media.folders.add", lambda p: {"folders": rt.library.add_folder(p.path)}, FolderParams)
-    reg("media.folders.remove", lambda p: {"folders": rt.library.remove_folder(p.path)}, FolderParams)
-    reg("media.scan", lambda _: rt.library.start_scan())
-    reg("media.scan_cancel", lambda _: rt.library.cancel_scan())
-    reg("media.list", lambda p: rt.library.list_videos(p.offset, p.limit, p.query), MediaListParams)
-    reg("media.summary", lambda _: rt.library.summary())
+    # media: Media Library videos are played from the Agent cloud media cache (no local folders)
     reg("media.cloud_cache.prepare", lambda p: rt.prepare_cloud_cache(p.session_id), CachePrepareParams)
     reg("media.cloud_cache.status", lambda _: rt.cloud_cache_status())
 

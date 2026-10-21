@@ -16,7 +16,7 @@ from sarae_agent.cloud.worker import CloudWorker
 from sarae_agent.errors import AgentError
 from sarae_agent.playback.engine import PlaybackError
 
-MID = "c" * 64
+MID = "c" * 32  # Sarae Media Library id
 
 
 class FakeCloud:
@@ -29,8 +29,6 @@ class FakeCloud:
         self.ack_attempts = 0
         self.reports: list[dict] = []
         self.events: list[dict] = []
-        self.synced: list[list[dict]] = []
-        self.thumbs_missing: list[str] = []
         self.fail_heartbeat: CloudError | None = None
         self.fail_ack_times = 0
         self.reject_acks = False
@@ -69,11 +67,6 @@ class FakeCloud:
             self.events.extend(events)
         return {"accepted": len(events)}
 
-    def sync_library(self, key, agent_id, videos):
-        with self.lock:
-            self.synced.append(videos)
-        return {"synced": len(videos), "thumbs_missing": list(self.thumbs_missing)}
-
     def captcha_templates(self, key, agent_id):
         return [{"id": "a" * 32, "sha256": "f" * 64}]
 
@@ -86,25 +79,6 @@ class FakeCloud:
     def acks_for(self, command_id):
         with self.lock:
             return [a for a in self.acks if a["command_id"] == command_id]
-
-
-class FakeLibrary:
-    def __init__(self):
-        self.dirty = True
-        self.thumbs = {"a" * 64: "/9j/AAAA"}
-
-    def probe_pending(self, budget_seconds=20.0):
-        return 0
-
-    def cloud_inventory(self):
-        return [{"media_id": "a" * 64, "filename": "a.mp4", "size_bytes": 1, "modified_ns": 1, "duration_seconds": 2.5},
-                {"media_id": "b" * 64, "filename": "b.mp4", "size_bytes": 1, "modified_ns": 1}]
-
-    def thumb_base64(self, media_id):
-        return self.thumbs.get(media_id)
-
-    def scan_blocking(self):
-        return {"state": "succeeded", "total": 2}
 
 
 class CountingRouter(CommandRouter):
@@ -136,11 +110,11 @@ def journal(tmp_path):
     return CommandJournal(tmp_path / "journal.json")
 
 
-def make_worker(cloud, router, events, states, journal, *, library=None, outbox=None, lock=None, report=None):
+def make_worker(cloud, router, events, states, journal, *, outbox=None, lock=None, report=None):
     worker = CloudWorker(agent_id="agt_1", credential="cred", api_url="https://c/api",
                          timeouts={"request": 5, "heartbeat": 0.3, "poll": 1}, router=router,
                          build_report=report or (lambda: {"agent_id": "agt_1", "playback": {"running": False}}),
-                         library=library or FakeLibrary(), outbox=outbox or EventOutbox(), journal=journal,
+                         outbox=outbox or EventOutbox(), journal=journal,
                          emit=events, on_state=lambda s, e: states.append((s, e)), lock=lock, client_factory=cloud)
     worker.ACK_RETRY_DELAYS = (0.05, 0.05, 0.05)
     return worker
@@ -246,23 +220,6 @@ def test_playback_events_and_heartbeat(events, journal):
         worker.stop(timeout=5)
 
 
-def test_media_sync_sends_duration_and_only_missing_thumbnails(events, journal):
-    cloud, router, states, library = FakeCloud(), CountingRouter(), [], FakeLibrary()
-    worker = make_worker(cloud, router, events, states, journal, library=library)
-    worker.MEDIA_SYNC_SECONDS = 0.2
-    worker.start()
-    try:
-        assert wait_until(lambda: len(cloud.synced) >= 2)
-        first, second = cloud.synced[0], cloud.synced[1]
-        assert first[0]["thumb_jpeg_base64"] == "/9j/AAAA" and first[0]["duration_seconds"] == 2.5
-        assert "thumb_jpeg_base64" not in first[1]  # no local thumbnail yet
-        assert all("thumb_jpeg_base64" not in v for v in second)  # Cloud has it (thumbs_missing empty)
-        assert all("path" not in v for v in first)
-        assert worker.rescan() == {"count": 2, "thumbs_sent": 0, "thumbs_pending": 0}
-    finally:
-        worker.stop(timeout=5)
-
-
 def test_captcha_templates_are_mirrored_from_cloud(events, journal):
     cloud, router, states = FakeCloud(), CountingRouter(), []
     monitor = mock.Mock()
@@ -354,6 +311,9 @@ def test_router_reaches_engine(router):
     engine.cancel_pending.assert_called_once()
     r.execute("local_playlist_start", {"media_ids": [MID], "loop": False})
     engine.start_playlist.assert_called_once_with([MID], loop=False)
+    r.execute("local_media_play", {"media_id": MID})
+    engine.start_playlist.assert_called_with([MID], loop=False)
+    assert "media_rescan" not in r.kinds
     for kind, method in (("obs_pause", "pause"), ("playback_resume", "resume"), ("obs_next", "next"),
                          ("playback_previous", "previous"), ("local_media_stop", "stop")):
         r.execute(kind, {})
@@ -377,7 +337,9 @@ def test_router_obs_configure_never_returns_password(router):
     ("product_play", {"session_id": 0, "product_id": 1, "media_ids": [MID]}, "INVALID_COMMAND_PAYLOAD"),
     ("local_playlist_start", {"media_ids": ["../../x"]}, "INVALID_COMMAND_PAYLOAD"),
     ("playback_next", {"unexpected": 1}, "INVALID_COMMAND_PAYLOAD"),
-    ("media_rescan", {}, "AGENT_NOT_CONNECTED"),
+    ("media_rescan", {}, "UNSUPPORTED_COMMAND"),  # retired with local video folders
+    ("product_play", {"session_id": 7, "product_id": 1, "media_ids": ["c" * 64]}, "INVALID_COMMAND_PAYLOAD"),
+    ("local_media_play", {"media_id": "c" * 64}, "INVALID_COMMAND_PAYLOAD"),  # legacy local ids
 ])
 def test_router_rejects(router, kind, payload, code):
     r, _, _, _ = router

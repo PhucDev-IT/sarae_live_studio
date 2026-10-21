@@ -20,3 +20,9 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 class Base(DeclarativeBase):
     pass
+
+
+def get_db():
+    """FastAPI dependency: one SQLAlchemy session per request."""
+    with SessionLocal() as db:
+        yield db

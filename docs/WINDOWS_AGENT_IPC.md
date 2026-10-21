@@ -17,10 +17,10 @@ Rust  ──stdin: 1 dòng JSON──▶ sarae-agent-core.exe ──stdout: 1 d�
 
 | Loại | Hướng | Dạng |
 |---|---|---|
-| request | GUI → Core | `{"v":1,"type":"request","request_id":"g1-7","method":"media.scan","params":{}}` |
+| request | GUI → Core | `{"v":1,"type":"request","request_id":"g1-7","method":"media.cloud_cache.prepare","params":{"session_id":7}}` |
 | response | Core → GUI | `{"v":1,"type":"response","request_id":"g1-7","ok":true,"result":{...},"error":null}` |
 | response lỗi | Core → GUI | `{"v":1,"type":"response","request_id":"g1-7","ok":false,"result":null,"error":{"code":"OBS_NOT_RUNNING","message":"…","details":{}}}` |
-| event | Core → GUI | `{"v":1,"type":"event","event":"media.scan_progress","data":{...},"ts":"2026-10-18T05:37:36.422+00:00"}` |
+| event | Core → GUI | `{"v":1,"type":"event","event":"media.cache_changed","data":{...},"ts":"2026-10-18T05:37:36.422+00:00"}` |
 
 ### Chống deadlock / timeout giả
 
@@ -28,7 +28,7 @@ Rust  ──stdin: 1 dòng JSON──▶ sarae-agent-core.exe ──stdout: 1 d�
 |---|---|
 | GUI đọc chậm làm treo worker | Mọi khung vào hàng đợi, **một** thread ghi; khi đầy chỉ bỏ `log.entry`, không bao giờ bỏ response |
 | Request chậm chặn request khác | Reader chỉ parse rồi giao cho thread pool 8 luồng (test: `obs.connect` treo không chặn `system.ping`) |
-| Quét thư viện lâu → timeout | `media.scan` trả ngay `{job_id,state:"accepted"}`, tiến độ qua `media.scan_progress`/`media.scan_finished` |
+| Tải cache video lâu → timeout | `media.cloud_cache.prepare` trả ngay `{state:"PREPARING"}`, kết quả qua `media.cache_changed` |
 | Core chết khi đang chờ | Rust trả lỗi `CORE_EXITED` cho mọi request đang chờ |
 | Timeout | Rust: mặc định 30 s, `activation.activate` 45 s, `voice.speak` 60 s (giới hạn 1–120 s) |
 
@@ -43,15 +43,13 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | `system.ping` / `system.methods` | — | `{pong}` / `{methods, cloud_command_kinds}` |
 | `system.shutdown` | — | `{accepted}` rồi Core dừng mọi thứ và thoát (exit 0) |
 | `config.get` | — | Cấu hình + `obs.password_set` + `paths` (không có bí mật) |
-| `config.set` | `{cloud?, obs?, monitor?, agent?, media?:{rescan_minutes}, obs_password?, clear_obs_password?}` | Cấu hình mới |
+| `config.set` | `{cloud?, obs?, monitor?, agent?, obs_password?, clear_obs_password?}` | Cấu hình mới |
 | `activation.status` | — | `{activated, agent_id, activated_cloud_url, activated_at, hostname, credential_error}` |
 | `activation.activate` | `{activation_key, cloud_url?}` | như trên |
 | `activation.deactivate` | — | Xoá credential **trên máy này** |
 | `agent.start` / `agent.stop` / `agent.restart` / `agent.status` | — | `AgentStatus` |
-| `media.folders.list` / `.add` / `.remove` | `{path}` cho add/remove | `{folders:[{path,exists,video_count}]}` |
-| `media.scan` / `media.scan_cancel` | — | `{job_id,state:"accepted"}` / `{cancelling}` |
-| `media.list` | `{offset?,limit?≤1000,query?}` | `{total,offset,items[]}` |
-| `media.summary` | — | `{video_count,folder_count,scanned_at,scan}` |
+| `media.cloud_cache.prepare` | `{session_id}` | Tải (resume, kiểm checksum) video Media Library của phiên vào cache → `{state:"PREPARING",…}` |
+| `media.cloud_cache.status` | — | `{state: IDLE/PREPARING/READY/FAILED, session_id?, ready[], failed[], products_without_video[]}` |
 | `obs.status` | — | Trạng thái + `media_input_ok`, `voice_input_ok`, `media{state,duration_ms,cursor_ms}` |
 | `obs.connect` | `{host?,port?,password?}` | Trạng thái OBS |
 | `obs.disconnect` | — | Trạng thái OBS |
@@ -79,9 +77,7 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | `core.stopped` | Trước khi thoát | `{reason}` |
 | `agent.status_changed` | Đổi trạng thái Agent / kích hoạt | `AgentStatus` |
 | `cloud.connection_changed` | connecting/connected/disconnected/rejected/stopped | `CloudStatus` |
-| `media.scan_progress` | ~0,4 s/lần khi quét | `{job_id, scanned_files, found, folder}` |
-| `media.scan_finished` | Quét xong/huỷ/lỗi | `{job_id, state, total, added, removed, duration_ms, errors}` |
-| `media.sync_finished` | Đồng bộ metadata lên Cloud xong | `{synced, at}` |
+| `media.cache_changed` | Chuẩn bị cache video xong/lỗi | Như `media.cloud_cache.status` |
 | `obs.status_changed` | Kết nối OBS đổi | `ObsStatus` |
 | `playback.changed` | Bất kỳ thay đổi playlist | `PlaybackStatus` |
 | `monitor.status_changed` | Đổi trạng thái giám sát | `MonitorStatus` |
@@ -97,14 +93,14 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | Rust shell | `CORE_NOT_READY`, `CORE_TIMEOUT`, `CORE_EXITED`, `CORE_IO_ERROR`, `CORE_CRASHED`, `CORE_KILLED`, `CORE_ALREADY_RUNNING` |
 | Kích hoạt | `ACTIVATION_KEY_INVALID`, `ACTIVATION_KEY_USED`, `LICENSE_EXPIRED`, `AGENT_LIMIT_REACHED`, `ALREADY_ACTIVATED`, `ACTIVATION_IN_PROGRESS`, `DPAPI_FAILED`, `CREDENTIAL_CORRUPT` |
 | Cloud | `CLOUD_URL_MISSING`, `CLOUD_URL_MISMATCH`, `CLOUD_UNREACHABLE`, `CLOUD_TIMEOUT`, `CLOUD_SERVER_ERROR`, `CLOUD_BAD_RESPONSE`, `CLOUD_VALIDATION_ERROR`, `AGENT_UNAUTHORIZED`, `AGENT_REVOKED`, `AGENT_NOT_ACTIVATED`, `AGENT_RUNNING`, `AGENT_ALREADY_RUNNING`, `AGENT_NOT_CONNECTED`, `ACK_REJECTED` |
-| Media | `FOLDER_NOT_FOUND`, `FOLDER_TOO_BROAD`, `FOLDER_ALREADY_ADDED`, `FOLDER_NOT_IN_LIST`, `FOLDER_LIMIT`, `SCAN_IN_PROGRESS`, `INVALID_MEDIA_ID`, `MEDIA_NOT_INDEXED`, `MEDIA_FILE_MISSING`, `MEDIA_OUTSIDE_ALLOWED`, `MEDIA_NOT_ALLOWED` |
+| Media | `CACHE_BUSY`, `CACHE_MANIFEST_FAILED`, `CACHE_MEDIA_INVALID`, `CACHE_CHECKSUM_MISSING`, `CACHE_INTEGRITY_FAILED`; video chưa có trong cache → `PLAYBACK_CONFLICT` "… chưa tải về cache của Agent" |
 | OBS/Phát | `OBS_NOT_RUNNING`, `OBS_AUTH_FAILED`, `OBS_TIMEOUT`, `OBS_CONNECT_FAILED`, `OBS_DISCONNECTED`, `OBS_INPUT_MISSING`, `OBS_REQUEST_FAILED`, `OBS_NOT_APPLIED`, `OBS_UNAVAILABLE` (503), `PLAYBACK_CONFLICT` (409), `INVALID_REQUEST` (422) — `PlaybackError` giữ `status_code` của engine Cloud |
 | Monitor/TTS | `MONITOR_UNSUPPORTED`, `MONITOR_DEPENDENCY_MISSING`, `TEMPLATE_MISSING`, `INVALID_TEMPLATE`, `TTS_BUSY`, `TTS_TIMEOUT`, `TTS_FAILED`, `TTS_UNAVAILABLE` |
 | Lệnh Cloud | `UNSUPPORTED_COMMAND`, `INVALID_COMMAND_PAYLOAD` |
 
 ## 5. Cloud API dùng bởi Agent
 
-Nguồn chuẩn: `backend/app/cloud_agents.py` (+ `identity.py`, `agent_library.py`). Base URL người dùng nhập, chuẩn hoá về
+Nguồn chuẩn: `backend/app/cloud_agents.py` (+ `identity.py`, `agent_media.py`). Base URL người dùng nhập, chuẩn hoá về
 `https://<host>[/prefix]/api` (HTTP chỉ cho localhost). Agent xác thực bằng `X-Sarae-Agent-Key: <agent_credential>` +
 `agent_id` đã đăng ký. Mã lỗi Agent suy ra từ HTTP status + endpoint; nếu Cloud gửi header `X-Sarae-Error` thì dùng mã đó.
 
@@ -115,18 +111,19 @@ Nguồn chuẩn: `backend/app/cloud_agents.py` (+ `identity.py`, `agent_library.
 | `GET /api/agents/commands/{agent_id}/next?wait=0..25` | Agent | Long-poll; `{command:{command_id, kind, payload, claim_token, attempt, expires_at} \| null}` |
 | `POST /api/agents/commands/ack` `{agent_id, command_id, claim_token, success, result}` | Agent | `result` ≤ 65000 ký tự (JSON khi thành công, thông điệp lỗi khi thất bại); ACK lặp → `duplicate:true`; ACK trễ → `late:true`; 404/409 → `ACK_REJECTED` |
 | `POST /api/agents/events` `{agent_id, events[≤200]:{seq, type, session_id, product_id, detail}}` | Agent | `type` ∈ `PRODUCT_SWITCHED`/`PLAYBACK_ENDED`/`ERROR`; `seq` trùng bị bỏ qua |
-| `POST /api/agent-library/sync` `{agent_id, videos[≤10000]}` | Agent | `media_id, filename, size_bytes, modified_ns`, tuỳ chọn `duration_seconds`, `thumb_jpeg_base64` (JPEG ≤ 40 KB); trả `thumbs_missing` |
+| `GET /api/agent-media/manifest?agent_id=&session_id=`, `GET /api/agent-media/{media_id}/content?agent_id=` | Agent | Manifest video Media Library của phiên + tải file (hỗ trợ Range) vào cache cục bộ |
 | `GET /api/agents/status` | OWNER/SUPER_ADMIN (Bearer) | Chỉ Agent thuộc quyền |
 | `POST /api/agents/{agent_id}/commands` `{kind, payload, idempotency_key?, wait?}` | **Chỉ OWNER sở hữu** | `Idempotency-Key` trùng → cùng lệnh; 409 nếu Agent offline |
 | `GET /api/agents/{agent_id}/commands[/{command_id}]`, `POST …/{command_id}/cancel` | OWNER | Trạng thái `PENDING/RUNNING/SUCCESS/FAILED/TIMEOUT/CANCELLED` |
-| `GET /api/agent-library/{agent_id}` | OWNER/SUPER_ADMIN | Danh sách video + `duration_seconds`, `thumb_url` |
 | `GET /api/captcha-templates/agent?agent_id=`, `GET /api/captcha-templates/agent/{id}/image?agent_id=` | Agent | Bộ ảnh mẫu CAPTCHA `{templates:[{id, sha256, bytes}]}`; Agent giữ đúng bộ này (tải khi kết nối Cloud, rồi 6 giờ/lần) |
 | `GET/POST /api/captcha-templates`, `DELETE /{id}`, `GET /{id}/image` | **Chỉ SUPER_ADMIN** | Quản lý ảnh mẫu (PNG/JPEG ≤ 3 MB, tối đa 50); OWNER không truy cập được |
 
 ### Kiểu lệnh (`kind`) và payload
 
-Lane `background`: `tts_speak`, `media_rescan`, `monitor_*`; còn lại lane `live`. Cloud chỉ giao lại (khi mất ACK) các kind
-idempotent (`obs_status`, `obs_inputs`, `obs_configure`, `media_rescan`, `monitor_*`, pause/resume/stop/cancel_pending).
+Lane `background`: `tts_speak`, `tiktok_products_sync`, `monitor_*`; còn lại lane `live`. Cloud chỉ giao lại (khi mất ACK) các kind
+idempotent (`obs_status`, `obs_inputs`, `obs_configure`, `monitor_*`, pause/resume/stop/cancel_pending).
+`media_ids`/`media_id` là id Media Library (32 hex); Agent phát file trong cache `cloud-media-cache\<agent_id>\`
+(chưa tải → lệnh thất bại "chưa tải về cache của Agent"). `media_rescan` đã bỏ cùng tính năng "Thư mục video".
 
 | kind | payload | Hành động trên Agent (`PlaybackEngine` trừ khi ghi khác) |
 |---|---|---|
@@ -139,7 +136,6 @@ idempotent (`obs_status`, `obs_inputs`, `obs_configure`, `media_rescan`, `monito
 | `obs_status` | `{}` | `PlaybackEngine.status()` |
 | `obs_configure` | `{host (localhost), port, password, input_name, dual_mode, source_a, source_b}` | Lưu vào `config.json` + mật khẩu DPAPI (rỗng = giữ); trả status, không bao giờ trả mật khẩu |
 | `obs_inputs` | `{host, port, password}` | Danh sách input OBS + `in_scene` |
-| `media_rescan` | `{}` | Quét lại thư mục + đồng bộ ngay → `{count, thumbs_sent, thumbs_pending}` |
 | `tts_speak` | `{text 1..450, voice ∈ vi-VN-HoaiMyNeural/NamMinhNeural}` | Đọc qua nguồn OBS giọng nói |
 | `monitor_start` / `monitor_stop` / `monitor_config` | `{}` / `{interval_seconds, threshold, telegram_enabled, telegram_chat_id}` | CAPTCHA Monitor |
 

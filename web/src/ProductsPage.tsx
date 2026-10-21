@@ -110,7 +110,7 @@ export default function ProductsPage(){
           placeholder="Chất liệu, màu sắc, size, ưu điểm, cách phối đồ…"
           hint={description.length.toLocaleString('vi-VN')+'/10.000 ký tự'}
           onChange={e=>setDescription(e.target.value)}/>
-        <a href="#/product-videos">Thiết lập video LIVE cho sản phẩm →</a>
+        <a href="#/cloud-media">Gắn video cho sản phẩm trong Thư viện video →</a>
       </div>}
     </Sheet>
   </div>

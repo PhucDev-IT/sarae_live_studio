@@ -134,27 +134,6 @@ def release(db: Session, value: str | None, directory, still_used) -> bool:
     return True
 
 
-# ----- Agent video thumbnails ------------------------------------------------------------------
-
-def thumb_url(thumb_name: str | None, owner_id: str) -> str | None:
-    return signed(f"/api/agent-library/thumbs/{thumb_name}", "thumb", thumb_name, owner_id) if thumb_name else None
-
-
-def thumb_owner(thumb_name: str) -> str | None:
-    """Owner of the Agent whose library has this thumbnail, if that Agent is still enabled."""
-    from app.agent_library import connection
-    from app.identity import db_open
-    db = connection()
-    try:
-        row = db.execute("SELECT agent_id FROM agent_media WHERE thumb_name=? LIMIT 1", (thumb_name,)).fetchone()
-    finally:
-        db.close()
-    if row is None:
-        return None
-    with db_open() as registry:
-        agent = registry.execute("SELECT owner_id FROM registered_agents WHERE id=? AND enabled=1", (row["agent_id"],)).fetchone()
-    return agent["owner_id"] if agent else None
-
 
 def owned_image_names(db: Session, owner_id: str) -> set[str]:
     return set(db.scalars(select(OwnerImage.name).where(OwnerImage.owner_id == owner_id)).all())

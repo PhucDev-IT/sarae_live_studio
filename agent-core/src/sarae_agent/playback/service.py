@@ -11,16 +11,14 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from sarae_agent.config import paths, read_json, write_json
-from sarae_agent.media.library import MediaLibrary
 from sarae_agent.playback.engine import PlaybackEngine
 
 log = logging.getLogger("sarae.playback")
 
 
 class PlaybackService:
-    def __init__(self, engine: PlaybackEngine, library: MediaLibrary, emit: Callable[[str, dict], None]):
+    def __init__(self, engine: PlaybackEngine, emit: Callable[[str, dict], None]):
         self.engine = engine
-        self._library = library
         self._emit = emit
         previous = read_json(paths.playback_state, None)
         self.recovery = previous if isinstance(previous, dict) and previous.get("was_active") else None
@@ -104,7 +102,8 @@ class PlaybackService:
             **st,
             "active": bool(st.get("running")), "paused": bool(st.get("paused")), "loop": bool(st.get("loop")),
             "media_ids": ids, "index": index, "count": len(ids), "current_media_id": current,
-            "current_filename": self._library.filename(current) if current else None,
+            # Cloud-cached files are named by media id; the Media Library title lives on the Cloud.
+            "current_filename": current,
             "media_state": st.get("media_state"), "skipped": [],
             "last_error": {"code": "OBS_UNAVAILABLE", "message": str(error)} if error else None,
             "started_at": datetime.fromtimestamp(started, timezone.utc).isoformat() if started else None,

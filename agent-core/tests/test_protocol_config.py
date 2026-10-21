@@ -29,8 +29,8 @@ def test_parse_request_rejects(line, code):
 
 
 def test_parse_request_ok_with_bom():
-    request = protocol.parse_request('\ufeff{"v":1,"request_id":"r-1","method":"media.folders.add","params":{"path":"C:/x"}}'.encode())
-    assert (request.request_id, request.method, request.params) == ("r-1", "media.folders.add", {"path": "C:/x"})
+    request = protocol.parse_request('\ufeff{"v":1,"request_id":"r-1","method":"playback.play","params":{"media_id":"x"}}'.encode())
+    assert (request.request_id, request.method, request.params) == ("r-1", "playback.play", {"media_id": "x"})
 
 
 def test_oversized_frame_rejected():
@@ -75,11 +75,20 @@ def test_config_migrates_legacy_agent_files(home):
     legacy = paths.legacy_data
     legacy.mkdir(parents=True)
     write_json(legacy / "agent_gui_settings.json", {"cloud_url": "https://old.example/api"})
-    write_json(legacy / "agent_media_folders.json", ["D:\\Videos"])
+    write_json(legacy / "agent_media_folders.json", ["D:\\Videos"])  # retired: ignored
     config = ConfigStore().get()
     assert config.version == 2
     assert config.cloud.api_url == "https://old.example/api"
-    assert config.media.folders == ["D:\\Videos"]
+    assert "media" not in config.model_dump()
+
+
+def test_config_with_retired_media_section_still_loads(home):
+    write_json(paths.config_file, {"version": 2, "obs": {"port": 4461},
+                                   "media": {"folders": ["D:\\Videos"], "rescan_minutes": 10}})
+    config = ConfigStore().get()
+    assert config.obs.port == 4461
+    assert "media" not in config.model_dump()
+    assert not paths.config_file.with_suffix(".invalid.json").exists()
 
 
 def test_corrupt_config_is_backed_up(home):

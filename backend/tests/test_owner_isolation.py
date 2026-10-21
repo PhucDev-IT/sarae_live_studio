@@ -8,7 +8,7 @@ from app.main import app
 from support import SaasTestCase
 
 # Modules holding customer data or controlling a customer's LIVE; all their routes must require an OWNER.
-CUSTOMER_MODULES = {"app.catalog", "app.media", "app.owner_agents", "app.live", "app.product_videos", "app.media_presenters",
+CUSTOMER_MODULES = {"app.catalog", "app.owner_agents", "app.live",
                     "app.live_sessions", "app.tiktok_chat", "app.ai_service", "app.ai_live_batches", "app.ai_voice",
                     "app.verification_monitor"}
 # <img> cannot send a token; these check a signed, expiring URL instead (app/media_access.py).
@@ -36,9 +36,11 @@ class SaasGuardTests(SaasTestCase):
         agent = self.activate_agent(self.owner_a, "PC-A")
         on = {"agent_id": agent["agent_id"]}
         with patch.object(settings, "sarae_saas_mode", True):
-            for path in ("/api/media", "/api/live/status", "/api/live/products", "/api/live/sessions"):
+            for path in ("/api/media-library", "/api/live/status", "/api/live/products", "/api/live/sessions"):
                 self.assertEqual(self.client.get(path, params=on).status_code, 200, path)
-            self.assertEqual(self.client.get("/api/media", params=on, headers=self.B).status_code, 404, "still owner-checked")
+            self.assertEqual(self.client.get("/api/live/products", params=on, headers=self.B).status_code, 404, "still owner-checked")
+            for gone in ("/api/media", "/api/product-videos/1", "/api/presenter-videos"):
+                self.assertEqual(self.client.get(gone, params=on).status_code, 403, f"{gone} was removed and fails closed")
             self.assertEqual(self.client.get("/api/not-scoped-yet").status_code, 403, "unknown APIs fail closed")
 
 
@@ -98,12 +100,12 @@ class OwnerIsolationTests(SaasTestCase):
         agent = self.activate_agent(self.owner_b, "PC-B")
         on = {"agent_id": agent["agent_id"]}
         (theirs,) = self.tiktok_products(self.owner_a, "Áo")
-        self.assertEqual(self.client.get(f"/api/product-videos/{theirs}", headers=self.B, params=on).status_code, 404)
-        self.assertEqual(self.client.put(f"/api/product-videos/{theirs}", json={"media_ids": []}, headers=self.B, params=on).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/products/{theirs}/videos", headers=self.B).status_code, 404)
+        self.assertEqual(self.client.put(f"/api/products/{theirs}/videos", json={"media_ids": []}, headers=self.B).status_code, 404)
         self.assertEqual(self.client.get("/api/live/products", headers=self.B, params=on).json(), [])
 
     def test_anonymous_and_super_admin_are_refused(self):
-        for path in ("/api/products", "/api/presenters", "/api/media?agent_id=x", "/api/live/sessions", "/api/live/products?agent_id=x"):
+        for path in ("/api/products", "/api/presenters", "/api/media-library", "/api/live/sessions", "/api/live/products?agent_id=x"):
             self.assertEqual(self.client.get(path, headers=self.ANON).status_code, 401, path)
             self.assertEqual(self.client.get(path, headers=self.ADMIN).status_code, 403, path)
 

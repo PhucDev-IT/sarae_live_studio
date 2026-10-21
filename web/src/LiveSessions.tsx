@@ -191,10 +191,10 @@ export default function LiveSessions(){
   const startOpener = opener != null && startReady.includes(opener) ? opener : startReady[0] ?? null
   const checks = [
     {ok:lineup.length > 0, label:'Có ít nhất 1 sản phẩm trong danh sách', blocking:true},
-    {ok:readyIds.length > 0, label:'Có ít nhất 1 sản phẩm đã có video để phát', blocking:true, href:'#/product-videos'},
+    {ok:readyIds.length > 0, label:'Có ít nhất 1 sản phẩm đã có video để phát', blocking:true, href:'#/cloud-media'},
     {ok:!dirty, label:'Đã lưu thay đổi danh sách', blocking:true},
     {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
-    {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/product-videos'},
+    {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/cloud-media'},
   ]
   const canStart = chosen?.status === 'DRAFT' && chosen.tiktok_account_id != null && checks.every(c=>c.ok || !c.blocking)
 
@@ -385,7 +385,7 @@ export default function LiveSessions(){
                     {isLive && <Badge tone="danger" dot>Đang phát</Badge>}
                     {isPending && <Badge tone="warning">Chờ chuyển</Badge>}
                     {p?.video_count ? <Badge tone="success"><Video size={12}/>{p.video_count} video</Badge>
-                      : <a className="ls-novideo" href="#/product-videos" title="Gán video cho sản phẩm"><CircleAlert size={13}/>Chưa có video</a>}
+                      : <a className="ls-novideo" href="#/cloud-media" title="Gán video cho sản phẩm"><CircleAlert size={13}/>Chưa có video</a>}
                   </span>
                   {editable && <span className="ls-row-actions">
                     <button type="button" className="ls-icon-btn is-danger" title={isLive ? 'Không thể gỡ sản phẩm đang phát' : 'Gỡ khỏi phiên'} aria-label="Gỡ khỏi phiên"
@@ -547,7 +547,7 @@ function ProductPicker({products,exclude,onClose,onAdd}:{products:LiveProduct[];
           {p.video_count ? <Badge tone="success">{p.video_count} video</Badge> : <Badge tone="warning">Chưa có video</Badge>}
         </button></li>
       })}{!options.length && <li className="ls-list-empty">{!products.length?'Chưa có sản phẩm đồng bộ từ TikTok LIVE Console.':products.every(p=>exclude.includes(p.id))?'Tất cả sản phẩm đã có trong phiên.':'Không có sản phẩm khớp.'}</li>}</ul>
-      <p className="ls-muted">Số trên mỗi ô là thứ tự sẽ thêm vào cuối danh sách. Sản phẩm chưa có video hoặc đang tạm ẩn vẫn hiển thị để kiểm tra, nhưng chưa thể chọn. Hãy gắn video trên Agent tại trang Video theo sản phẩm.</p>
+      <p className="ls-muted">Số trên mỗi ô là thứ tự sẽ thêm vào cuối danh sách. Sản phẩm chưa có video hoặc đang tạm ẩn vẫn hiển thị để kiểm tra, nhưng chưa thể chọn. Hãy gắn video cho sản phẩm trong Thư viện video.</p>
     </div>
   </Modal>
 }

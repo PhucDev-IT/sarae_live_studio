@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -30,8 +29,7 @@ from sarae_agent.config import ConfigError, ConfigStore, normalize_cloud_url, pa
 from sarae_agent.diagnostics import export_bundle
 from sarae_agent.errors import AgentError
 from sarae_agent.logging_setup import event_handler
-from sarae_agent.media.library import MediaLibrary
-from sarae_agent.media.cloud_cache import CloudMediaCache
+from sarae_agent.media.cloud_cache import CloudMediaCache, cache_dir, cached_path
 import httpx
 from sarae_agent.monitoring.captcha import CaptchaMonitor
 from sarae_agent.obs.controller import ObsController, ObsSettingsStore
@@ -73,23 +71,32 @@ class AgentRuntime:
         self.config = ConfigStore()
         self.activation = ActivationService()
         self._restore_activated_cloud_url()
-        self.library = MediaLibrary(self.config, self.emit)
         self._cloud_cache_lock = threading.Lock()
         self._cloud_cache_job: dict = {"state": "IDLE"}
         self.obs = ObsController(self.config, self.emit)
         self.outbox = EventOutbox()
         self.journal = CommandJournal(paths.command_journal)
         self.command_lock = CommandLock(paths.command_lock)
-        self.engine = PlaybackEngine(resolve=self.library.resolve, on_event=self._on_playback_event,
+        self.engine = PlaybackEngine(resolve=self.resolve_media, on_event=self._on_playback_event,
                                      client_factory=self.obs.requests_for,
                                      store=ObsSettingsStore(self.config, self.obs))
-        self.playback = PlaybackService(self.engine, self.library, self.emit)
+        self.playback = PlaybackService(self.engine, self.emit)
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.voice = VoiceService(self.config, self.obs)
         self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
+
+    def resolve_media(self, media_id: str):
+        """Media Library id -> verified file in this Agent's cloud media cache (None if not downloaded).
+
+        Looked up at call time: the Agent may be activated after the Core booted.
+        """
+        identity = self.activation.identity
+        if identity is None:
+            return None
+        return cached_path(cache_dir(identity.agent_id), media_id)
 
     def _restore_activated_cloud_url(self) -> None:
         """Repair an empty local Cloud URL using this device's existing activation.
@@ -172,19 +179,10 @@ class AgentRuntime:
                 log.warning("Không tự khởi động Agent: %s", exc.message, extra={"code": exc.code})
 
     def _watch(self) -> None:
-        last_rescan = time.monotonic()
         while not self._closing.wait(5):
             try:
                 if self.obs.wanted:
                     self.obs.ensure_connected()
-                minutes = self.config.get().media.rescan_minutes
-                if self.worker is not None and time.monotonic() - last_rescan >= minutes * 60:
-                    last_rescan = time.monotonic()
-                    if self.config.get().media.folders:
-                        try:
-                            self.library.start_scan()
-                        except AgentError:
-                            pass
             except Exception:  # noqa: BLE001
                 log.exception("Watchdog lỗi")
 
@@ -211,16 +209,13 @@ class AgentRuntime:
                 agent_id=identity.agent_id, credential=identity.credential, api_url=api_url,
                 timeouts={"request": cfg.cloud.request_timeout_seconds, "heartbeat": cfg.cloud.heartbeat_seconds,
                           "poll": cfg.cloud.poll_seconds},
-                router=self.router, build_report=self.build_report, library=self.library, outbox=self.outbox,
+                router=self.router, build_report=self.build_report, outbox=self.outbox,
                 journal=self.journal, lock=self.command_lock, monitor=self.monitor, emit=self.emit,
                 on_state=self._on_worker_state)
-            self.library.dirty = True
-            self.router.rescan = worker.rescan
             self._set_state("starting")
             try:
                 worker.start()  # AGENT_ALREADY_RUNNING when another process holds the command lock
             except AgentError as exc:
-                self.router.rescan = None
                 self._set_state("error", exc.to_dict())
                 raise
             self.worker = worker
@@ -238,7 +233,6 @@ class AgentRuntime:
                 self._set_state("stopped")
                 return self.agent_status()
             self._set_state("stopping")
-            self.router.rescan = None
             stopped = worker.stop(timeout=10)
             self.worker = None
             if not stopped:
@@ -274,7 +268,7 @@ class AgentRuntime:
             "agent": self.agent_status(),
             "cloud": self.cloud_status(),
             "obs": self.obs.status(),
-            "media": self.library.summary(),
+            "media": {"cloud_cache": self.cloud_cache_status()},
             "playback": self.playback.status(live=False),
             "monitor": self.monitor.status(),
             "auto_pin": self.auto_pin.status(),
@@ -370,7 +364,6 @@ class AgentRuntime:
             self.stop_agent()
         except Exception:  # noqa: BLE001
             log.exception("Lỗi khi dừng Cloud worker")
-        self.library.cancel_scan()
         try:
             self.monitor.stop(wait=5)
         except Exception:  # noqa: BLE001

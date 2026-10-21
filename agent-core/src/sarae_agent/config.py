@@ -53,21 +53,8 @@ class Paths:
         return self._dir("secrets")
 
     @property
-    def media_index(self) -> Path:
-        return self.root / "media_index.json"
-
-    @property
     def playback_state(self) -> Path:
         return self.root / "playback_state.json"
-
-    @property
-    def media_meta(self) -> Path:
-        """Duration/thumbnail cache per media_id, keyed by (size, mtime)."""
-        return self.root / "media_meta.json"
-
-    @property
-    def thumbs(self) -> Path:
-        return self._dir("thumbs")
 
     @property
     def command_journal(self) -> Path:
@@ -135,11 +122,6 @@ class ObsConfig(BaseModel):
     camera_input: str = Field(default="", max_length=200)
 
 
-class MediaConfig(BaseModel):
-    folders: list[str] = Field(default_factory=list, max_length=50)
-    rescan_minutes: int = Field(default=10, ge=1, le=240)
-
-
 class MonitorConfig(BaseModel):
     """Same field names/limits as the Cloud `monitor_config` command payload."""
     interval_seconds: float = Field(default=2.0, ge=0.5, le=15)
@@ -154,10 +136,11 @@ class AgentOptions(BaseModel):
 
 
 class AgentConfig(BaseModel):
+    # Unknown keys are ignored, so config.json files written by older Agents (with the retired
+    # "media": {"folders", "rescan_minutes"} section) still load; the next save drops them.
     version: int = CONFIG_VERSION
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     obs: ObsConfig = Field(default_factory=ObsConfig)
-    media: MediaConfig = Field(default_factory=MediaConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     agent: AgentOptions = Field(default_factory=AgentOptions)
 
@@ -214,28 +197,20 @@ def _migrate(raw: dict) -> dict:
     """Upgrade older config shapes in place. Version 1 = flat legacy GUI settings."""
     version = int(raw.get("version") or 1)
     if version < 2:
-        upgraded: dict = {"version": 2, "cloud": {}, "media": {}}
+        upgraded: dict = {"version": 2, "cloud": {}}
         if isinstance(raw.get("cloud_url"), str):
             upgraded["cloud"]["api_url"] = raw["cloud_url"]
-        if isinstance(raw.get("folders"), list):
-            upgraded["media"]["folders"] = [f for f in raw["folders"] if isinstance(f, str)]
         raw = upgraded
     raw["version"] = CONFIG_VERSION
     return raw
 
 
 def _import_legacy() -> dict | None:
-    """First run after upgrading from the backend-embedded agent: keep Cloud URL and folders."""
-    legacy = paths.legacy_data
-    gui = read_json(legacy / "agent_gui_settings.json", None)
-    folders = read_json(legacy / "agent_media_folders.json", None)
-    if gui is None and folders is None:
+    """First run after upgrading from the backend-embedded agent: keep the Cloud URL."""
+    gui = read_json(paths.legacy_data / "agent_gui_settings.json", None)
+    if not isinstance(gui, dict):
         return None
-    raw: dict = {"version": 1}
-    if isinstance(gui, dict):
-        raw["cloud_url"] = gui.get("cloud_url", "")
-    if isinstance(folders, list):
-        raw["folders"] = folders
+    raw: dict = {"version": 1, "cloud_url": gui.get("cloud_url", "")}
     log.info("Đã nhập cấu hình từ Agent phiên bản cũ")
     return raw
 

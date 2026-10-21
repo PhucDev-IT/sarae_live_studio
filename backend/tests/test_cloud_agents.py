@@ -19,20 +19,18 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import agent_library, cloud_agents, identity
+from app import agent_library_compat, cloud_agents, identity
 
-MID = "a" * 64
+MID = "a" * 32  # a Media Library id
 
 
 class AgentChannelBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         root = Path(self.tmp.name)
-        self.saved = (identity.DB, cloud_agents.DB, agent_library.DB, agent_library.THUMB_DIR)
+        self.saved = (identity.DB, cloud_agents.DB)
         identity.DB = root / "identity.sqlite3"
         cloud_agents.DB = root / "agents.sqlite3"
-        agent_library.DB = root / "agent_library.sqlite3"
-        agent_library.THUMB_DIR = root / "media_thumbs"
         # Heartbeats reconcile LIVE sessions and their locks: give them an in-memory customer DB with the full schema
         # (never the developer's real database).
         import app.live_sessions  # noqa: F401  (registers the session models)
@@ -56,13 +54,13 @@ class AgentChannelBase(unittest.TestCase):
             email="owner@example.test", password="OwnerSecretPassword123!"))["access_token"]
         app = FastAPI()
         app.include_router(cloud_agents.router)
-        app.include_router(agent_library.router)
+        app.include_router(agent_library_compat.router)
         app.include_router(identity.router)
         self.client = TestClient(app)
         self.headers = {"X-Sarae-Agent-Key": self.key}
 
     def tearDown(self):
-        identity.DB, cloud_agents.DB, agent_library.DB, agent_library.THUMB_DIR = self.saved
+        identity.DB, cloud_agents.DB = self.saved
         self.session_patch.stop()
         self.engine.dispose()
         self.client.close()
@@ -395,7 +393,7 @@ class PayloadValidationTests(unittest.TestCase):
         self.assertEqual(cloud_agents.validate_payload("playback_seek", {"ms": 1500}), {"ms": 1500})
         self.bad("playback_seek", {})
         for kind in ("playback_cancel_pending", "playback_pause", "playback_resume", "playback_next",
-                     "playback_previous", "playback_stop", "media_rescan", "obs_pause"):
+                     "playback_previous", "playback_stop", "obs_pause"):
             self.assertEqual(cloud_agents.validate_payload(kind, {}), {})
             self.bad(kind, {"x": 1})
         self.bad("format_disk", {})
@@ -412,54 +410,30 @@ class PayloadValidationTests(unittest.TestCase):
         self.bad("obs_inputs", {"password": 5})
 
     def test_command_body_accepts_new_kinds(self):
-        for kind in ("product_play", "playback_seek", "obs_configure", "obs_inputs", "media_rescan"):
+        for kind in ("product_play", "playback_seek", "obs_configure", "obs_inputs"):
             cloud_agents.CommandBody(agent_id="agent_1", kind=kind)
         with self.assertRaises(Exception):
             cloud_agents.CommandBody(agent_id="agent_1", kind="shell")
 
 
-class LibraryThumbnailTests(AgentChannelBase):
-    def jpeg(self):
-        # The Cloud only checks the JPEG signature and size; OpenCV is an Agent-side dependency.
-        return bytes.fromhex("ffd8ffe0") + bytes(200) + bytes.fromhex("ffd9")
+class LegacyLibrarySyncTests(AgentChannelBase):
+    """Older Agents still post their local MP4 inventory; the Cloud accepts it without storing anything."""
 
-    def sync(self, videos):
-        return self.client.post("/api/agent-library/sync", headers=self.headers,
+    def sync(self, videos, headers=None):
+        return self.client.post("/api/agent-library/sync", headers=headers or self.headers,
                                 json={"agent_id": self.agent_id, "videos": videos})
 
-    def test_sync_stores_duration_and_serves_thumbnail(self):
-        base = {"media_id": MID, "filename": "a.mp4", "size_bytes": 10, "modified_ns": 1}
-        other = {"media_id": "b" * 64, "filename": "b.mp4", "size_bytes": 10, "modified_ns": 1}
-        reply = self.sync([{**base, "duration_seconds": 12.5,
-                            "thumb_jpeg_base64": base64.b64encode(self.jpeg()).decode()}, other])
+    def test_inventory_is_accepted_and_dropped(self):
+        video = {"media_id": "b" * 64, "filename": "a.mp4", "size_bytes": 10, "modified_ns": 1,
+                 "thumb_jpeg_base64": base64.b64encode(bytes([255, 216, 255])).decode()}
+        reply = self.sync([video])
         self.assertEqual(reply.status_code, 200, reply.text)
-        self.assertEqual(reply.json()["thumbs_missing"], ["b" * 64])
-        videos = self.client.get(f"/api/agent-library/{self.agent_id}",
-                                 headers={"Authorization": self.owner_token}).json()["videos"]
-        first = next(v for v in videos if v["media_id"] == MID)
-        self.assertEqual(first["duration_seconds"], 12.5)
-        name = first["thumb_url"].split("?")[0].rsplit("/", 1)[-1]
-        self.assertRegex(name, r"^[0-9a-f]{32}$")
-        image = self.client.get(first["thumb_url"])
-        self.assertEqual(image.status_code, 200)
-        self.assertEqual(image.headers["content-type"], "image/jpeg")
-        # A plain re-sync (no thumbnail, no duration) keeps both.
-        self.sync([base, other])
-        videos = self.client.get(f"/api/agent-library/{self.agent_id}",
-                                 headers={"Authorization": self.owner_token}).json()["videos"]
-        first = next(v for v in videos if v["media_id"] == MID)
-        self.assertEqual(first["duration_seconds"], 12.5)
-        self.assertTrue(first["thumb_url"].split("?")[0].endswith(name))
-        # A changed file drops its thumbnail until the Agent sends a new one.
-        self.assertIn(MID, self.sync([{**base, "modified_ns": 2}]).json()["thumbs_missing"])
-        self.assertEqual(self.client.get(f"/api/agent-library/thumbs/{name}").status_code, 404)
+        self.assertEqual(reply.json()["thumbs_missing"], [], "an old Agent must not be asked for thumbnails")
+        self.assertFalse(reply.json()["stored"])
+        self.assertEqual(self.client.get(f"/api/agent-library/{self.agent_id}", headers={"Authorization": self.owner_token}).status_code, 404)
 
-    def test_sync_rejects_bad_thumbnail_and_old_payload_still_works(self):
-        base = {"media_id": MID, "filename": "a.mp4", "size_bytes": 10, "modified_ns": 1}
-        self.assertEqual(self.sync([{**base, "thumb_jpeg_base64": base64.b64encode(b"GIF89a").decode()}]).status_code, 422)
-        self.assertEqual(self.sync([{**base, "thumb_jpeg_base64": "%%%"}]).status_code, 422)
-        self.assertEqual(self.sync([base]).json()["synced"], 1)
-        self.assertEqual(self.client.get("/api/agent-library/thumbs/../../x").status_code, 404)
+    def test_unknown_agent_is_still_refused(self):
+        self.assertEqual(self.sync([], headers={"X-Sarae-Agent-Key": "wrong"}).status_code, 403)
 
 
 class AgentErrorCodeTests(AgentChannelBase):

@@ -3,8 +3,8 @@
 Ported from the Cloud repository's backend/app/playback_engine.py (a port of
 ``app.live.PlayState``): product queue looping, pending "after_current" switch,
 dual A/B Media Sources, watchdog with stall recovery and bounded retries.
-Videos are addressed by Agent media ids (64-hex sha256 of the local path) and
-turned into files by the ``resolve`` callable; business state (sessions,
+Videos are addressed by Sarae Media Library ids (32-hex) and turned into files by
+the ``resolve`` callable (the runtime looks them up in the cloud media cache); business state (sessions,
 lineups, history) stays on the VPS, which drives this engine through Agent
 commands (cloud/commands.py).
 
@@ -185,7 +185,7 @@ class PlaybackEngine:
     def product_queue(self, product_id) -> list[str]:
         ids = self._valid_ids(self.product_media.get(product_id, []))
         if not ids:
-            raise PlaybackError(409, f"Sản phẩm #{product_id} chưa có video hợp lệ")
+            raise PlaybackError(409, f"Sản phẩm #{product_id}: video chưa tải về cache của Agent")
         return ids
 
     def client(self):
@@ -209,7 +209,7 @@ class PlaybackEngine:
         media_id = self.ids[index]
         path = self._path(media_id)
         if path is None:
-            raise PlaybackError(409, f"Thiếu file video {media_id[:12]}")
+            raise PlaybackError(409, f"Video {media_id[:12]} chưa tải về cache của Agent")
         path = path.resolve()
         stat = path.stat()
         cached = self._prepared.get(str(path))
@@ -536,7 +536,7 @@ class PlaybackEngine:
                 raise PlaybackError(422, "Playlist cần ít nhất 1 video")
             missing = [m for m in media_ids if self._path(m) is None]
             if missing:
-                raise PlaybackError(409, f"Thiếu {len(missing)} video trên máy Agent")
+                raise PlaybackError(409, f"{len(missing)} video chưa tải về cache của Agent")
             self._begin_session(list(media_ids), mode="playlist", loop=bool(loop), playlist_id=playlist_id)
             return self.play(start_index)
 

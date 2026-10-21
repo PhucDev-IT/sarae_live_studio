@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app import media_access, storage_service
 from app.catalog import Presenter, Product
 from app.identity import current_owner
-from app.media import get_db
+from app.database import get_db
 from app.ownership import Owner, owned_ids
 from app.storage_errors import StorageError, fail, http_error
 from app.storage_models import MediaItem, MediaItemPresenter, MediaThumbnail, MediaUpload, ProductMedia, aware, now
@@ -95,6 +95,22 @@ def upload_view(row: MediaUpload) -> dict:
     return {"id": row.id, "client_upload_id": row.client_upload_id, "filename": row.filename, "size_bytes": row.size_bytes,
             "received_bytes": row.received_bytes, "status": row.status, "media_id": row.media_id if row.status == "COMPLETED" else None,
             "error_code": row.error_code, "chunk_size": storage_service.CHUNK_SIZE}
+
+
+def product_video_ids(db: Session, owner_id: str, product_id: int) -> list[str]:
+    """AVAILABLE Media Library videos of a product, in playback order (what LIVE plays for that product)."""
+    return list(db.scalars(select(MediaItem.id).join(ProductMedia, ProductMedia.media_id == MediaItem.id).where(
+        ProductMedia.product_id == product_id, ProductMedia.owner_id == owner_id, MediaItem.owner_id == owner_id,
+        MediaItem.status == "AVAILABLE").order_by(ProductMedia.sort_order, ProductMedia.id)))
+
+
+def product_video_counts(db: Session, owner_id: str, product_ids: list[int] | None = None) -> dict[int, int]:
+    """Number of AVAILABLE Media Library videos per product (shared by every Agent of the owner)."""
+    query = select(ProductMedia.product_id, func.count(MediaItem.id)).join(MediaItem, MediaItem.id == ProductMedia.media_id).where(
+        ProductMedia.owner_id == owner_id, MediaItem.owner_id == owner_id, MediaItem.status == "AVAILABLE")
+    if product_ids is not None:
+        query = query.where(ProductMedia.product_id.in_(product_ids))
+    return {pid: count for pid, count in db.execute(query.group_by(ProductMedia.product_id))}
 
 
 # ----- uploads --------------------------------------------------------------------------------

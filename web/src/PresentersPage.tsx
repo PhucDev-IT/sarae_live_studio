@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Badge, Button, ConfirmModal, EmptyState, Input, SearchInput, SegmentedControl, Select, Sheet, Switch, Table, Textarea, useToast, type TableColumn } from './ui/core'
 import { CircleAlert, Edit3, Film, Plus, Trash2, UserCheck, Users } from 'lucide-react'
-import { apiRequest, errorText, onAgent } from './mediaApi'
-import { useAgent } from './agentContext'
+import { apiRequest, errorText } from './mediaApi'
+import { listCloudMedia } from './cloudMediaApi'
 import { IconButton, ImageField, Stat, Thumb } from './CatalogParts'
 
 type Presenter = { id:number; name:string; description:string; avatar_url:string; status:'ACTIVE'|'INACTIVE'; created_at:string }
@@ -20,8 +20,6 @@ const toBody = (f:Form) => ({name:f.name.trim(), description:f.description, avat
 /** People who appear in the videos (models / hosts), with photo and how many videos they are tagged in. */
 export default function PresentersPage(){
   const toast = useToast()
-  const {agent} = useAgent()
-  const agentId = agent?.platform === 'ANDROID' ? undefined : agent?.id
   const [people,setPeople] = useState<Presenter[]>([])
   const [videoCounts,setVideoCounts] = useState<Record<number,number>>({})
   const [loaded,setLoaded] = useState(false)
@@ -35,12 +33,11 @@ export default function PresentersPage(){
   const [toDelete,setToDelete] = useState<Presenter|null>(null)
 
   const load = useCallback(async ()=>{
-    const [p, counts] = await Promise.all([
-      apiRequest<Presenter[]>('/presenters?limit=500'),
-      agentId ? apiRequest<{presenter_id:number;video_count:number}[]>(onAgent('/presenter-videos', agentId)) : Promise.resolve([]),
-    ])
-    setPeople(p);setVideoCounts(Object.fromEntries(counts.map(c=>[c.presenter_id,c.video_count])));setLoaded(true)
-  },[agentId])
+    const [p, library] = await Promise.all([apiRequest<Presenter[]>('/presenters?limit=500'), listCloudMedia()])
+    const counts:Record<number, number> = {}
+    for (const media of library.items) for (const id of media.presenter_ids) counts[id] = (counts[id] ?? 0) + 1
+    setPeople(p);setVideoCounts(counts);setLoaded(true)
+  },[])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được người giới thiệu',description:errorText(e, '')})})},[load,toast])
 
   const q = query.trim().toLocaleLowerCase('vi')
@@ -92,9 +89,9 @@ export default function PresentersPage(){
       <span className="pp-row-thumb pp-avatar"><Thumb src={p.avatar_url} name={p.name} fallback={<Users size={18}/>}/></span>
       <span className="pp-row-text"><strong>{p.name}</strong><small>{p.description || 'Chưa có mô tả'}</small></span>
     </button>},
-    {key:'videos', header:agent ? `Video · ${agent.hostname}` : 'Xuất hiện trong', render:p=>videoCounts[p.id]
-      ? <a className="pp-badge-link" href="#/presenter-videos" title="Xem / gắn video"><Badge tone="success"><Film size={12}/>{videoCounts[p.id]} video</Badge></a>
-      : <a className="pp-novideo" href="#/presenter-videos" title="Gắn video cho người này"><CircleAlert size={13}/>Chưa gắn video</a>},
+    {key:'videos', header:'Xuất hiện trong video', render:p=>videoCounts[p.id]
+      ? <a className="pp-badge-link" href="#/cloud-media" title="Xem / gắn video trong Thư viện video"><Badge tone="success"><Film size={12}/>{videoCounts[p.id]} video</Badge></a>
+      : <a className="pp-novideo" href="#/cloud-media" title="Gắn người trong chi tiết video"><CircleAlert size={13}/>Chưa gắn video</a>},
     {key:'status', header:'Đang hoạt động', render:p=><Switch aria-label={`Đang hoạt động ${p.name}`} checked={p.status === 'ACTIVE'} onChange={()=>void toggleStatus(p)}/>},
     {key:'actions', header:'Thao tác', align:'right', render:p=><div className="pp-row-actions">
       <IconButton title="Sửa" onClick={()=>openEdit(p)}><Edit3 size={15}/></IconButton>
@@ -150,7 +147,7 @@ export default function PresentersPage(){
         </div>
         {editingPerson && <div className="pp-meta">
           {videoCounts[editingPerson.id] ? <Badge tone="success"><Film size={12}/>{videoCounts[editingPerson.id]} video</Badge> : <span>Chưa gắn video</span>}
-          <a href="#/presenter-videos">Gắn video cho người này →</a>
+          <a href="#/cloud-media">Gắn người cho video trong Thư viện video →</a>
           <span>Tạo {new Date(editingPerson.created_at).toLocaleDateString('vi-VN')}</span>
         </div>}
       </form>}

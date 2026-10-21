@@ -9,22 +9,14 @@ import json
 from datetime import datetime,timezone
 from sqlalchemy import select,text
 from app.catalog import Product
-from app.product_videos import ProductLiveVideo
-from app.agent_library import connection as library_connection
 from app.tiktok_products import connection as snapshot_connection
 
 def assess(db,owner_id:str,agent_id:str,product_ids:list[int])->dict:
     products={p.id:p for p in db.scalars(select(Product).where(Product.owner_id==owner_id,
                         Product.id.in_(product_ids))).all()} if product_ids else {}
-    linked={}
-    if product_ids:
-        pairs=db.execute(select(ProductLiveVideo.product_id,ProductLiveVideo.media_id).where(
-            ProductLiveVideo.owner_id==owner_id,ProductLiveVideo.agent_id==agent_id,
-            ProductLiveVideo.product_id.in_(product_ids))).all()
-        for pid,mid in pairs:linked.setdefault(pid,set()).add(mid)
-    with library_connection() as library_db:
-        present={r["media_id"] for r in library_db.execute(
-            "SELECT media_id FROM agent_media WHERE agent_id=? AND available=1",(agent_id,))}
+    # Videos come from the owner's Media Library and are shared by every Agent (agent_id kept for callers).
+    from app.media_library import product_video_counts
+    counts=product_video_counts(db,owner_id,product_ids) if product_ids else {}
     rows=[]
     for pid in product_ids:
         product=products.get(pid)
@@ -33,7 +25,7 @@ def assess(db,owner_id:str,agent_id:str,product_ids:list[int])->dict:
         else:
             if product.status!="ACTIVE":reasons.append("PRODUCT_INACTIVE")
             if not product.name.strip():reasons.append("NAME_MISSING")
-        available=len(linked.get(pid,set())&present)
+        available=counts.get(pid,0)
         if available==0: reasons.append("VIDEO_UNAVAILABLE")
         rows.append({"product_id":pid,"name":product.name if product else None,
                      "available_video_count":available,"ready":not reasons,"reasons":reasons})

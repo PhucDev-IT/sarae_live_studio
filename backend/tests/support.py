@@ -18,11 +18,11 @@ from app import identity
 from app.catalog import db_session
 from app.database import Base
 from app.main import app
-from app.media import get_db
+from app.database import get_db
 
 PASSWORD = "OwnerSecretPassword123!"
 # Modules that open sessions with SessionLocal() directly instead of the FastAPI dependency.
-SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.ai_live_batches", "app.tiktok_catalog",
+SESSION_MODULES = ["app.live", "app.live_sessions", "app.ai_live_batches", "app.tiktok_catalog",
                    "app.tiktok_products"]
 
 
@@ -34,7 +34,7 @@ class SaasTestCase(unittest.TestCase):
         self.identity_patch.start()
         # SaaS registries live in their own SQLite files; keep them in the temp folder too.
         self.saas_db_patches = [patch(f"app.{module}.DB", Path(self.tmp.name) / f"{module}.sqlite3")
-                                for module in ("cloud_agents", "agent_library", "captcha_templates", "tiktok_products")]
+                                for module in ("cloud_agents", "captcha_templates", "tiktok_products")]
         self.saas_db_patches.append(patch("app.captcha_templates.FILES", Path(self.tmp.name) / "captcha_templates"))
         for p in self.saas_db_patches:
             p.start()
@@ -120,16 +120,21 @@ class SaasTestCase(unittest.TestCase):
         with self.Session() as db:
             return db.execute(text("SELECT id FROM tiktok_accounts WHERE user_id=:u"), {"u": user_id}).scalar_one()
 
-    def sync_videos(self, agent, *filenames):
-        """The Agent syncing its library; returns the media ids (64-hex) in the given order."""
-        import hashlib
-        ids = [hashlib.sha256(name.encode()).hexdigest() for name in filenames]
-        videos = [{"media_id": mid, "filename": name, "size_bytes": 1000, "modified_ns": 1, "duration_seconds": 12.5}
-                  for mid, name in zip(ids, filenames)]
-        response = self.client.post("/api/agent-library/sync", json={"agent_id": agent["agent_id"], "videos": videos},
-                                    headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
+    def library_videos(self, owner, *filenames):
+        """Videos already uploaded to the owner's Media Library; returns their ids (32-hex) in the given order."""
+        from app.storage_models import MediaItem, new_id
+        with self.Session() as db:
+            rows = [MediaItem(id=new_id(), owner_id=owner["id"], provider="TEST", provider_file_id=new_id(), filename=name,
+                              display_name=name, mime_type="video/mp4", size_bytes=1000, duration_seconds=12.5)
+                    for name in filenames]
+            db.add_all(rows)
+            db.commit()
+            return [row.id for row in rows]
+
+    def link_videos(self, product_id, media_ids, headers=None):
+        """Set a product's ordered Media Library videos (what LIVE plays for it)."""
+        response = self.client.put(f"/api/products/{product_id}/videos", json={"media_ids": list(media_ids)}, headers=headers or self.A)
         self.assertEqual(response.status_code, 200, response.text)
-        return ids
 
     def run_agent(self, agent, reply=None):
         """The Agent taking every deliverable command and acking it with reply(command) -> (success, result).

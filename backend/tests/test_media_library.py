@@ -523,20 +523,3 @@ class ProviderMigrationTest(MediaLibraryTestCase):
             media_id = self.upload(video_bytes(seed=b"m"))
         with self.Session() as db:
             self.assertEqual(db.get(MediaItem, media_id).provider, "MEMORY")
-
-
-class LocalLegacyTest(MediaLibraryTestCase):
-    def test_agent_local_library_and_product_videos_are_untouched(self):
-        agent = self.activate_agent(self.owner_a)
-        legacy_ids = self.sync_videos(agent, "local-a.mp4", "local-b.mp4")
-        product = self.tiktok_products(self.owner_a, "Áo")[0]
-        put = self.client.put(f"/api/product-videos/{product}", params={"agent_id": agent["agent_id"]}, json={"media_ids": legacy_ids})
-        self.assertEqual(put.status_code, 200, put.text)
-        before = (self.client.get(f"/api/agent-library/{agent['agent_id']}").json(),
-                  self.client.get(f"/api/product-videos/{product}", params={"agent_id": agent["agent_id"]}).json())
-        self.connect_storage()
-        media_id = self.upload()
-        self.client.put(f"/api/products/{product}/videos", json={"media_ids": [media_id]})
-        after = (self.client.get(f"/api/agent-library/{agent['agent_id']}").json(),
-                 self.client.get(f"/api/product-videos/{product}", params={"agent_id": agent["agent_id"]}).json())
-        self.assertEqual(before, after)

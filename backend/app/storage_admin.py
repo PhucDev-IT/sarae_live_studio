@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app import credentials, google_api
 from app.config import settings
 from app.identity import require_admin
-from app.media import get_db
+from app.database import get_db
 from app.storage_errors import StorageError, fail, http_error
 from app.storage_models import (PROVIDER_GOOGLE_DRIVE, MediaItem, StorageCredential, StorageOAuthState, aware, now)
 from app.storage_providers import GoogleDriveStorageProvider

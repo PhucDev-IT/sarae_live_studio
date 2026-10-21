@@ -18,6 +18,28 @@ from sarae_agent.errors import AgentError
 
 MEDIA_ID = re.compile(r"^[0-9a-f]{32}$")
 CHUNK = 1024 * 1024
+CACHE_EXTENSIONS = (".mp4", ".mov")
+
+
+def cache_dir(agent_id: str) -> Path:
+    """Cache namespace of one Agent: <data root>/cloud-media-cache/<agent_id>."""
+    if not agent_id or Path(agent_id).name != agent_id or agent_id in (".", ".."):
+        raise AgentError("CACHE_AGENT_INVALID", "Agent ID không hợp lệ")
+    return paths.root / "cloud-media-cache" / agent_id
+
+
+def cached_path(root: Path, media_id: str) -> Path | None:
+    """Verified cached file of a Media Library video (32-hex id), or None.
+
+    Only the published ``<id>.mp4`` / ``<id>.mov`` count; an unfinished ``.part`` never does.
+    """
+    if not isinstance(media_id, str) or not MEDIA_ID.fullmatch(media_id):
+        return None
+    for extension in CACHE_EXTENSIONS:
+        path = root / f"{media_id}{extension}"
+        if path.is_file():
+            return path
+    return None
 
 
 def _digest(path: Path, algorithm: str) -> str:
@@ -33,7 +55,7 @@ class CloudMediaCache:
 
     def __init__(self, client: httpx.Client, agent_id: str, key: str, root: Path | None = None):
         self.client, self.agent_id, self.key = client, agent_id, key
-        self.root = root if root is not None else paths.root / "cloud-media-cache" / agent_id
+        self.root = root if root is not None else cache_dir(agent_id)
         self._lock = threading.RLock()
 
     def _headers(self) -> dict[str, str]:
@@ -62,7 +84,7 @@ class CloudMediaCache:
         if not isinstance(media_id, str) or not MEDIA_ID.fullmatch(media_id):
             raise AgentError("CACHE_MEDIA_INVALID", "Media ID không hợp lệ")
         extension = Path(str(item.get("filename") or "")).suffix.lower()
-        if extension not in (".mp4", ".mov"):
+        if extension not in CACHE_EXTENSIONS:
             raise AgentError("CACHE_MEDIA_INVALID", "Định dạng video không hợp lệ")
         return self.root / f"{media_id}{extension}"
 

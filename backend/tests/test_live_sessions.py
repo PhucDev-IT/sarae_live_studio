@@ -23,9 +23,9 @@ class LiveSessionTests(SaasTestCase):
         self.on_agent = {"agent_id": self.agent["agent_id"]}
         # The account the shop goes LIVE with, verified by a Console sync on its Agent.
         self.account = self.console_sync(self.agent, product_ids=(1, 2, 3))
-        self.ao, self.quan = self.sync_videos(self.agent, "ao.mp4", "quan.mp4")
-        self.client.put("/api/product-videos/1", json={"media_ids": [self.ao]}, params=self.on_agent)
-        self.client.put("/api/product-videos/2", json={"media_ids": [self.quan]}, params=self.on_agent)
+        self.ao, self.quan = self.library_videos(self.owner_a, "ao.mp4", "quan.mp4")
+        self.link_videos(1, [self.ao])
+        self.link_videos(2, [self.quan])
         for target in ("app.live_sessions.LIVE_WAIT_SECONDS", "app.live.CONTROL_WAIT_SECONDS"):
             patcher = patch(target, 0)
             patcher.start()
@@ -96,52 +96,30 @@ class LiveSessionTests(SaasTestCase):
         self.assertEqual(events[-1]["event_type"], "START_FAILED")
         self.assertIn("OBS chưa kết nối", events[-1]["detail"])
 
-    def test_stale_agent_video_index_rescans_then_retries_product_play(self):
+    def test_product_plays_its_media_library_videos_in_order(self):
         sid = self.create((1,))
-        product_commands = []
+        second = self.library_videos(self.owner_a, "ao-2.mp4")[0]
+        self.link_videos(1, [second, self.ao])
+        sent = []
 
         def command(agent_id, owner_id, kind, payload=None, **options):
-            if kind == "media_rescan":
-                return {"status": "SUCCESS", "result": {"count": 1}}
-            product_commands.append((payload, options))
-            if len(product_commands) == 1:
-                return {"status": "FAILED", "command_id": "first", "error": "Sản phẩm #1 chưa có video hợp lệ"}
-            return {"status": "SUCCESS", "command_id": "retry", "result": {"ok": True}}
+            sent.append((kind, payload))
+            return {"status": "SUCCESS", "command_id": "c1", "result": {"ok": True}}
 
         with self.Session() as db, patch("app.cloud_agents.run_command", side_effect=command):
             item = db.get(LiveSession, sid)
-            result = play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"},
-                                  item, 1, "immediate", "start", "click-1")
+            play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"}, item, 1, "immediate", "start", "k1")
+        self.assertEqual(sent, [("product_play", {"session_id": sid, "product_id": 1, "media_ids": [second, self.ao], "mode": "immediate"})])
 
-        self.assertEqual(result["command_id"], "retry")
-        self.assertEqual([payload["media_ids"] for payload, _ in product_commands], [[self.ao], [self.ao]])
-        self.assertNotEqual(product_commands[0][1]["idempotency_key"], product_commands[1][1]["idempotency_key"])
-
-    def test_stale_agent_video_index_reports_when_rescan_finds_no_file(self):
-        from app.agent_library import connection
-
+    def test_deleted_library_video_is_not_played(self):
         sid = self.create((1,))
-        calls = []
-
-        def command(agent_id, owner_id, kind, payload=None, **options):
-            calls.append(kind)
-            if kind == "media_rescan":
-                with connection() as library_db:
-                    library_db.execute("UPDATE agent_media SET available=0 WHERE agent_id=?", (agent_id,))
-                    library_db.commit()
-                return {"status": "SUCCESS", "result": {"count": 0}}
-            return {"status": "FAILED", "command_id": "first", "error": "Sản phẩm #1 chưa có video hợp lệ"}
-
-        with self.Session() as db:
+        self.client.delete(f"/api/media-library/{self.ao}")
+        with self.Session() as db, patch("app.cloud_agents.run_command") as command:
             item = db.get(LiveSession, sid)
-            with patch("app.cloud_agents.run_command", side_effect=command):
-                with self.assertRaises(HTTPException) as raised:
-                    play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"},
-                                 item, 1, "immediate", "start", "click-2")
-
-        self.assertEqual(raised.exception.status_code, 409)
-        self.assertIn("Đã quét lại thư viện", raised.exception.detail)
-        self.assertEqual(calls, ["product_play", "media_rescan"])
+            with self.assertRaises(HTTPException) as refused:
+                play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"}, item, 1, "immediate", "start", "k2")
+        self.assertEqual(refused.exception.status_code, 409)
+        command.assert_not_called()
 
     def test_double_click_never_starts_twice(self):
         sid = self.create()
@@ -244,7 +222,6 @@ class LiveSessionTests(SaasTestCase):
     def test_one_account_one_live_across_agents(self):
         first = self.start()
         other = self.activate_agent(self.owner_a, "PC-B")
-        self.client.put("/api/product-videos/1", json={"media_ids": self.sync_videos(other, "ao-b.mp4")}, params={"agent_id": other["agent_id"]})
         self.console_sync(other, product_ids=(1,))
         second = self.create((1,))
         refused = self.client.post(f"/api/live/sessions/{second}/start", json={"agent_id": other["agent_id"]})
@@ -269,7 +246,7 @@ class LiveSessionTests(SaasTestCase):
         self.assertEqual((unknown["snapshot_state"], unknown["products"][0]["reasons"]), ("UNKNOWN", ["AGENT_NOT_SELECTED"]))
         ready = self.client.get(f"/api/live/sessions/{sid}/readiness", params=self.on_agent).json()
         self.assertEqual((ready["snapshot_state"], ready["account_match"]), ("FRESH", True))
-        self.assertEqual([p["ready"] for p in ready["products"]], [True, False], "Váy has no video on this PC")
+        self.assertEqual([p["ready"] for p in ready["products"]], [True, False], "Váy has no video in the Media Library")
         self.console_sync(self.agent, user_id="7495962653689350865", product_ids=(1,))
         self.assertEqual(self.client.get(f"/api/live/sessions/{sid}/readiness", params=self.on_agent).json()["snapshot_state"], "ACCOUNT_MISMATCH")
 

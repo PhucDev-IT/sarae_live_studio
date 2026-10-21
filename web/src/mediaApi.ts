@@ -1,6 +1,4 @@
-/** Media library API shared by the library page and the per-product LIVE video setup. */
-/** A video on one of the OWNER's Windows Agents (id = the Agent's 64-hex file id; the MP4 stays on that PC). */
-export type Media = { id:string; agent_id:string; filename:string; size_bytes:number; duration_seconds:number|null; available:boolean; thumb_url:string|null; tags:string; product_ids:number[]; presenter_ids:number[] }
+/** Shared Backend client helpers (auth, errors, Agent commands) and common catalog types. */
 /** A Windows Agent of the logged-in OWNER (GET /api/owner/agents), with a summary of its last heartbeat. */
 export type OwnerAgent = { id:string; hostname:string; platform?:'WINDOWS'|'ANDROID'; online:boolean; last_seen:string|null; obs_connected?:boolean; playing?:boolean; playback_state?:string|null; playback_media_id?:string|null; playback_position_ms?:number|null; playback_duration_ms?:number|null; playback_error?:string|null; mock_live?:boolean; session_id?:number|null; monitor_running?:boolean }
 export type CatalogItem = { id:number; name:string }
@@ -68,39 +66,3 @@ export async function agentAction<T = unknown>(agentId:string, url:string, init?
   if (command && !FINAL.includes(command.status)) await waitCommand(agentId, command.command_id)
   return result
 }
-
-/** Ordered LIVE playlist of a product; the array order is the playback order. */
-export const getProductVideos = (agentId:string, productId:number) =>
-  apiRequest<{product_id:number;media_ids:string[]}>(onAgent(`/product-videos/${productId}`, agentId)).then(result=>result.media_ids)
-
-export const putProductVideos = (agentId:string, productId:number, mediaIds:string[]) =>
-  apiRequest<{product_id:number;media_ids:string[]}>(onAgent(`/product-videos/${productId}`, agentId), {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({media_ids:mediaIds}),
-  })
-
-/**
- * Replaces the products that use a video (many-to-many) in one backend transaction.
- * Newly linked products get the video appended to the end of their playlist; existing order is kept.
- */
-export const setVideoProducts = (agentId:string, mediaId:string, productIds:number[]) =>
-  apiRequest<Media>(onAgent(`/media/${mediaId}/products`, agentId), {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({product_ids:productIds}),
-  })
-
-/** Replaces the people who appear in a video (many-to-many, unordered). */
-export const setVideoPresenters = (agentId:string, mediaId:string, presenterIds:number[]) =>
-  apiRequest<Media>(onAgent(`/media/${mediaId}/presenters`, agentId), {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({presenter_ids:presenterIds}),
-  })
-
-/** Videos a person appears in. */
-export const getPresenterVideos = (agentId:string, presenterId:number) =>
-  apiRequest<{presenter_id:number;media_ids:string[]}>(onAgent(`/presenter-videos/${presenterId}`, agentId)).then(result=>result.media_ids)
-
-export const putPresenterVideos = (agentId:string, presenterId:number, mediaIds:string[]) =>
-  apiRequest<{presenter_id:number;media_ids:string[]}>(onAgent(`/presenter-videos/${presenterId}`, agentId), {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({media_ids:mediaIds}),
-  })
-
-/** Videos on an Agent (metadata only; the files stay on that PC). */
-export const listVideos = (agentId:string) => apiRequest<Media[]>(onAgent('/media', agentId))
