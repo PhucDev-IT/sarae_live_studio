@@ -60,8 +60,6 @@ function Console({agent}:{agent:OwnerAgent}){
   const [busy,setBusy] = useState(false)
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [target,setTarget] = useState<number|null>(null)
-  const [pickSession,setPickSession] = useState<number|null>(null)
-  const [startProduct,setStartProduct] = useState<number|null>(null)
   const [productQuery,setProductQuery] = useState('')
   const [confirmStop,setConfirmStop] = useState(false)
 
@@ -131,16 +129,13 @@ function Console({agent}:{agent:OwnerAgent}){
   // Nothing running: pick one of the prepared (DRAFT) sessions and the product to open with.
   // Only this Agent's sessions: a session always plays on the Agent it belongs to.
   const mine = sessions.filter(s=>s.agent_id === agentId)
-  const drafts = mine.filter(s=>s.status === 'DRAFT')
+  // DRAFTs have no Agent yet: they are started from the session page, after the Console sync and product review.
+  const drafts = sessions.filter(s=>s.status === 'DRAFT')
   // RUNNING rows with no playback behind them (Agent, OBS or PC restarted mid-LIVE).
   const stale = running ? [] : mine.filter(s=>s.status === 'RUNNING')
   // Other PCs of the owner that are LIVE right now (switching shows their console instead).
   const elsewhere = agents.filter(a=>a.id !== agentId && a.playing)
   const offline = !agent.online
-  const picked = drafts.find(s=>s.id === pickSession) ?? drafts[0]
-  const pickedReady = picked ? picked.product_ids.filter(id=>productById.get(id)?.video_count) : []
-  const startId = startProduct != null && pickedReady.includes(startProduct) ? startProduct : pickedReady[0]
-  const startSession = (session:LiveSession, productId:number) => perform(()=>sessionsApi.start(session, agentId, productId), `Đã bắt đầu “${session.name}”`).then(ok=>{if (ok) void loadAll()})
   const switchProduct = (id:number, mode:'immediate'|'after_current') => perform(
     async ()=>{if (activeSession) await sessionsApi.switchTo(activeSession, id, mode)},
     mode === 'immediate' ? 'Đã chuyển sản phẩm' : 'Sẽ chuyển sau video hiện tại',
@@ -155,7 +150,7 @@ function Console({agent}:{agent:OwnerAgent}){
     return <li key={p.id}><button type="button" className={(target === p.id && !isLive ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} disabled={!p.video_count || isLive || busy} onClick={()=>setTarget(p.id)}>
       <span className="lc-p-index">{isLive ? <Radio size={13}/> : <Package size={13}/>}</span>
       <span className="lc-p-text"><strong>{p.name}</strong><small>{p.sku || '—'} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
-      {isLive ? <Badge tone="danger" dot>LIVE</Badge> : isPending ? <Badge tone="warning">Chờ</Badge> : isOutside ? <Badge>Ngoài DS</Badge> : null}
+      {isLive ? <Badge tone="danger" dot>Đang phát</Badge> : isPending ? <Badge tone="warning">Chờ</Badge> : isOutside ? <Badge>Ngoài DS</Badge> : null}
     </button></li>
   }
   const togglePause = () => act(status?.paused ? '/live/resume' : '/live/pause', post(), status?.paused ? 'Đã tiếp tục phát' : 'Đã tạm dừng')
@@ -189,7 +184,7 @@ function Console({agent}:{agent:OwnerAgent}){
       <MonitorPlay size={16}/>
       <span>Đang điều khiển máy <b>{agent.hostname}</b> · {offline ? 'offline — mở Sarae Agent trên máy đó' : 'online'}. Đổi máy ở góc trên bên phải; tab khác có thể điều khiển máy khác cùng lúc.</span>
     </div>
-    {elsewhere.length > 0 && <Alert tone="info" title="Máy khác đang LIVE">
+    {elsewhere.length > 0 && <Alert tone="info" title="Máy khác đang phát">
       {elsewhere.map(a=><div key={a.id} className="lc-alert"><span><b>{a.hostname}</b> đang phát{a.session_id ? ` phiên #${a.session_id}` : ''}.</span>
         <Button size="sm" variant="outline" onClick={()=>select(a.id)}>Điều khiển máy này</Button></div>)}
     </Alert>}
@@ -312,25 +307,14 @@ function Console({agent}:{agent:OwnerAgent}){
             </div>)}
           </Alert>
         </div>}{!drafts.length ? <div className="lc-pad">
-          <EmptyState icon={<CalendarClock size={28}/>} title="Phiên nháp được quản lý tại trang Phiên LIVE" description={`Tạo hoặc chuẩn bị phiên trên trang Phiên LIVE, xác minh TikTok Account và chọn máy ${agent.hostname} khi bắt đầu.`}
+          <EmptyState icon={<CalendarClock size={28}/>} title="Chưa có phiên nào được chuẩn bị" description={`Tạo phiên trên trang Phiên LIVE, chọn TikTok Account; khi bắt đầu chọn máy ${agent.hostname}, đồng bộ LIVE Console và xác nhận sản phẩm.`}
             actionLabel="Tạo phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/>
         </div> : <>
-          <ul className="lc-product-list">{drafts.map(s=>{
-            const ready = s.product_ids.filter(id=>productById.get(id)?.video_count).length
-            return <li key={s.id}><button type="button" className={picked?.id === s.id ? 'is-selected' : ''} onClick={()=>{setPickSession(s.id);setStartProduct(null)}}>
-              <span className="lc-p-text"><strong>{s.name}</strong><small>{s.product_ids.length} sản phẩm · {ready}/{s.product_ids.length} có video</small></span>
-              {!s.product_ids.length ? <Badge tone="warning">Trống</Badge> : !ready ? <Badge tone="warning">Thiếu video</Badge> : null}
-            </button></li>
-          })}</ul>
-          <div className="lc-product-actions">
-            {picked && (pickedReady.length
-              ? <Select label="Phát đầu tiên" value={String(startId)} onChange={v=>setStartProduct(Number(v))}
-                options={pickedReady.map(id=>({value:String(id), label:productById.get(id)?.name ?? `Sản phẩm #${id}`}))}/>
-              : <small className="lc-hint">Phiên chưa có sản phẩm nào có video.</small>)}
-            <Button block leftIcon={<Play size={16}/>} disabled={busy || !picked || !status?.connected || startId == null} onClick={()=>{if (picked && startId != null) void startSession(picked, startId)}}>Bắt đầu LIVE</Button>
-            {!status?.connected && <small className="lc-hint">Cần kết nối OBS trước khi bắt đầu.</small>}
-            <a className="lc-link lc-center" href={sessionHref(picked?.id)}>Xem / sửa phiên ở trang Phiên LIVE →</a>
-          </div>
+          <p className="lc-muted lc-pad">Bắt đầu một phiên tại trang Phiên LIVE: Agent kiểm tra đúng TikTok Account, đồng bộ giỏ sản phẩm rồi bạn xác nhận danh sách trước khi phát.</p>
+          <ul className="lc-product-list">{drafts.map(s=><li key={s.id}><a className="lc-draft-link" href={sessionHref(s.id)}>
+            <span className="lc-p-text"><strong>{s.name}</strong><small>{s.product_ids.length} sản phẩm · mở để bắt đầu</small></span>
+            {!s.product_ids.length ? <Badge tone="warning">Trống</Badge> : null}
+          </a></li>)}</ul>
         </>}</>}
       </Card>
     </div>

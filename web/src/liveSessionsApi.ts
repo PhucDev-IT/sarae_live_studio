@@ -13,7 +13,8 @@ export type LiveProduct = { id:number; shop_id:number|null; name:string; sku:str
 
 export const STATUS_META:Record<SessionStatus,{label:string;tone:'default'|'danger'|'primary'}> = {
   DRAFT:{label:'Chuẩn bị', tone:'primary'},
-  RUNNING:{label:'Đang LIVE', tone:'danger'},
+  // Sarae's own playback state; the actual TikTok LIVE state is tracked separately (it can differ).
+  RUNNING:{label:'Sarae đang phát', tone:'danger'},
   ENDED:{label:'Đã kết thúc', tone:'default'},
 }
 
@@ -21,7 +22,7 @@ export const EVENT_LABEL:Record<string,string> = {
   CREATED:'Tạo phiên',
   QUEUE_UPDATED:'Cập nhật danh sách sản phẩm',
   PRODUCT_ADDED:'Thêm sản phẩm khi đang LIVE',
-  STARTED:'Bắt đầu LIVE',
+  STARTED:'Sarae bắt đầu phát',
   SWITCH_QUEUED:'Hẹn chuyển sau video hiện tại',
   SWITCH_CANCELLED:'Hủy hẹn chuyển',
   PRODUCT_SWITCHED:'Chuyển sản phẩm',
@@ -38,6 +39,11 @@ export const EVENT_LABEL:Record<string,string> = {
   RECONCILE_STOP:'Dừng phát thừa trên Agent',
   PLAYBACK_ENDED:'Agent dừng phát',
   ERROR:'Lỗi trên Agent',
+  ACCOUNT_CHANGED:'Đổi TikTok Account',
+  AGENT_STOP_CONFIRMED:'Agent xác nhận đã dừng phát',
+  AGENT_STOP_UNCONFIRMED:'Chưa xác nhận Agent đã dừng',
+  CLAIM_RELEASED:'Nhả khóa tài khoản / Agent',
+  START_ABANDONED:'Hủy lần bắt đầu chưa rõ kết quả',
 }
 
 /** Turns the backend's `key=value;…` event detail into a short Vietnamese note. */
@@ -72,8 +78,6 @@ export const sessionsApi = {
   events:(id:number) => apiRequest<SessionEvent[]>(`/live/sessions/${id}/events`),
   create:(name:string, accountId:number) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], tiktok_account_id:accountId})),
   rename:(id:number, name:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({name}, 'PATCH')),
-  /** Only while DRAFT: a session never moves to another Agent once it has started. */
-  moveToAgent:(id:number, agentId:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({agent_id:agentId}, 'PATCH')),
   remove:(id:number) => apiRequest<void>(`/live/sessions/${id}`, {method:'DELETE'}),
   duplicate:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/duplicate`, {method:'POST'}),
   saveProducts:(id:number, productIds:number[]) => apiRequest<LiveSession>(`/live/sessions/${id}/products`, json({product_ids:productIds}, 'PUT')),
