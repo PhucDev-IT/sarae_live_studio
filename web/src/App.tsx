@@ -6,6 +6,7 @@ import PresentersPage from './PresentersPage'
 import ProductsPage from './ProductsPage'
 import MediaPage from './MediaPage'
 import CloudMediaPage from './CloudMediaPage'
+import UploadDock from './UploadDock'
 import LiveWorkspace from './LiveWorkspace'
 import LiveControl from './LiveControl'
 import LiveSessions from './LiveSessions'
@@ -24,22 +25,24 @@ type Page = 'agents' | 'account' | 'verification-monitor' | 'dashboard' | 'cloud
 type Health = 'checking' | 'online' | 'offline'
 
 const navigation: { title: string; items: { id: Page; title: string; icon: LucideIcon }[] }[] = [
-  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'cloud-media', title: 'Thư viện video', icon: Cloud }, { id: 'media', title: 'Video trên Agent (cũ)', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }, { id: 'presenter-videos', title: 'Video theo người', icon: Contact }] },
-  { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'tiktok-chat', title: 'TikTok Chat', icon: Bell }, { id: 'verification-monitor', title: 'CAPTCHA Monitor', icon: Activity }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
+  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'cloud-media', title: 'Thư viện video', icon: Cloud }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }] },
+  { title: 'BROADCAST', items: [{ id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'tiktok-chat', title: 'TikTok Chat', icon: Bell }, { id: 'verification-monitor', title: 'CAPTCHA Monitor', icon: Activity }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
+  // LIVE still plays the MP4 files kept on each Windows Agent until the Agent cache uses the cloud library (Phase 3–4).
+  { title: 'AGENT · CÁCH CŨ', items: [{ id: 'media', title: 'Video trên Agent', icon: Film }, { id: 'product-videos', title: 'Video LIVE theo sản phẩm', icon: ListVideo }, { id: 'presenter-videos', title: 'Video theo người (Agent)', icon: Contact }] },
   { title: 'SYSTEM', items: [{ id: 'account', title: 'Tài khoản & License', icon: Users }, { id: 'agents', title: 'Windows Agents', icon: MonitorPlay }, { id: 'settings', title: 'Cài đặt', icon: Settings2 }] },
 ]
-const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & License', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', 'cloud-media': 'Thư viện video', media: 'Video trên Agent (cũ)', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
+const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & License', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', 'cloud-media': 'Thư viện video', media: 'Video trên Agent (cách cũ)', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người (Agent)', 'product-videos': 'Video LIVE theo sản phẩm (Agent)', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
   account: 'Thông tin tài khoản, license và số máy được dùng, đổi mật khẩu và quản lý phiên đăng nhập.',
   agents: 'Các máy Windows chạy OBS của bạn: trạng thái, chọn máy cho tab này và lịch sử lệnh.',
   'verification-monitor': 'Phát hiện yêu cầu xác minh TikTok LIVE Studio, theo dõi sự kiện và nhận cảnh báo Telegram.',
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
   'cloud-media': 'Tải video lên kho của Sarae, xem trước, gắn sản phẩm. Mọi Windows Agent của bạn dùng chung thư viện này.',
-  media: 'Video MP4 nằm sẵn trên từng máy Windows Agent (cách lưu cũ, giữ nguyên dữ liệu).',
+  media: 'Video MP4 nằm sẵn trên từng máy Windows Agent. Phiên LIVE hiện vẫn phát từ đây cho đến khi Agent tải video từ Thư viện video; sau đó mục này sẽ được gỡ.',
   products: 'Những sản phẩm bán trên LIVE: ảnh, mã, giá, mô tả cho AI và trạng thái sẵn sàng video.',
   presenters: 'Người mẫu / người dẫn xuất hiện trong video: ảnh, mô tả và số video đã gắn.',
-  'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
-  'product-videos': 'Chọn và sắp xếp video chuẩn bị LIVE theo từng sản phẩm.',
+  'presenter-videos': 'Người xuất hiện trong video trên từng Agent (cách cũ). Video trong Thư viện video gắn người ngay trong chi tiết video.',
+  'product-videos': 'Thứ tự video phát trong LIVE theo từng sản phẩm, trên từng Agent (cách cũ, LIVE hiện vẫn dùng).',
   playlists: 'Playlist phát thử trên máy Windows đang chọn (không dùng cho phiên LIVE theo sản phẩm).',
   sessions: 'Lên kế hoạch từng buổi LIVE: chọn sản phẩm sẽ bán, kiểm tra sẵn sàng và xem lại lịch sử.',
   live: 'Vận hành phiên LIVE đang chạy: đưa bất kỳ sản phẩm nào lên LIVE, điều khiển video trên OBS.',
@@ -158,6 +161,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
       </div>
+      <UploadDock onOpenLibrary={() => navigate('cloud-media')}/>
     </div></AgentProvider></ToastProvider></ThemeProvider>
   )
 }

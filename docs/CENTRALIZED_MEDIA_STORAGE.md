@@ -69,6 +69,8 @@ Tên file trên Drive là Media ID, **không** dùng tên file của khách.
 | `media_storage_objects` | Lịch sử bản lưu: ACTIVE / COPYING / RETIRED / FAILED (phục vụ migrate) |
 | `media_uploads` | Phiên upload resumable; `client_upload_id` chống tạo trùng; session provider mã hóa |
 | `product_media` | Product ↔ Video N:N có thứ tự, **không** gắn Agent |
+| `media_thumbnails` | Ảnh bìa (khung hình do trình duyệt chụp, ≤ 512 KB) — migration `20261022_0013` |
+| `media_item_presenters` | Video ↔ Người giới thiệu N:N — migration `20261022_0013` |
 
 Rollback: `alembic downgrade 20261018_0011` chỉ xóa 7 bảng mới (**mất metadata media mới** → backup DB trước). Đã thử upgrade → downgrade → upgrade trên DB tạm.
 
@@ -92,6 +94,8 @@ Rollback: `alembic downgrade 20261018_0011` chỉ xóa 7 bảng mới (**mất m
 | GET | `/api/media-library/{id}/thumbnail` | URL ký | Ảnh xem trước |
 | PUT | `/api/media-library/{id}/products` | OWNER | Gắn video vào nhiều sản phẩm |
 | GET/PUT | `/api/products/{id}/videos` | OWNER | Danh sách video có thứ tự của sản phẩm |
+| PUT | `/api/media-library/{id}/thumbnail` | OWNER | Ảnh bìa JPEG/PNG/WebP; kèm `duration_seconds/width/height` chỉ điền khi kho chưa có |
+| PUT | `/api/media-library/{id}/presenters` | OWNER | Gắn người giới thiệu (lọc danh sách bằng `presenter_id`) |
 | GET | `/api/agent-media/manifest?agent_id&session_id` | Agent | Mọi video AVAILABLE của sản phẩm trong phiên + sha256/md5/size |
 | GET | `/api/agent-media/{id}/content?agent_id` | Agent | Tải qua Backend, có Range để resume |
 
@@ -130,8 +134,8 @@ sequenceDiagram
 
 | Bộ | Kết quả | Ghi chú |
 |---|---|---|
-| `tests/test_media_library.py` | **26/26 PASS** | Google giả lập (`tests/fake_google_drive.py`) |
-| Toàn bộ backend `python -m unittest discover -s tests` | **174/174 PASS** | Gồm test LIVE, Agent, owner isolation cũ |
+| `tests/test_media_library.py` | **29/29 PASS** | Google giả lập (`tests/fake_google_drive.py`) |
+| Toàn bộ backend `python -m unittest discover -s tests` | **177/177 PASS** | Gồm test LIVE, Agent, owner isolation cũ |
 | Alembic upgrade/downgrade/upgrade | PASS | DB tạm |
 | Web `tsc -b` + `vite build` | PASS | Chạy trên bản sao tạm, có junction tới `node_modules`/`vendor` của checkout chính |
 | Google Drive thật | **CHƯA CHẠY** | Cần OAuth client + tài khoản Drive của chủ hệ thống |
@@ -149,3 +153,14 @@ Những gì test bao phủ: chỉ admin kết nối được, state giả/dùng 
 | Upload lên thẳng kho (không đi qua Backend) | Không làm: phiên resumable của Drive là URL có quyền ghi, không đưa cho trình duyệt |
 | Duration/độ phân giải | Lấy từ Google sau khi Drive xử lý xong video; tự cập nhật khi mở chi tiết |
 | SHA-256 khi Backend khởi động lại giữa lúc upload | Bỏ trống; dùng MD5 của Google; SHA-256 được tính lại khi migrate |
+
+## 8. Giao diện Thư viện video (cập nhật 2026-10-22)
+
+| Vấn đề người dùng báo | Cách xử lý |
+|---|---|
+| Đổi trang thì mất trạng thái upload | Hàng đợi upload nằm ngoài React (`web/src/uploadStore.ts`), ô tiến trình nổi (`UploadDock`) hiện ở mọi trang; tải lại trang thì chọn lại đúng file để tải tiếp |
+| Không có thumbnail | Trình duyệt chụp khung hình từ file trước khi upload và lưu làm ảnh bìa; video cũ tự tạo ảnh bìa nền; có nút "Đặt khung hình đang xem làm ảnh bìa" |
+| Bố cục chưa đẹp | Card dọc 9:16, thanh tóm tắt + nút tải lên, kéo-thả toàn trang, bộ lọc sản phẩm/người/chưa gắn, sắp xếp |
+| Gán sản phẩm khó khi danh sách dài, thiếu người giới thiệu | Panel chi tiết 2 cột, tab Thông tin / Sản phẩm / Người giới thiệu với danh sách tìm kiếm (không dấu), ảnh, "Đã chọn" |
+| "Video trên Agent (cũ)" | Giữ lại vì LIVE vẫn phát từ video trên Agent; chuyển xuống nhóm menu "AGENT · CÁCH CŨ" cùng 2 trang liên quan, gỡ sau Phase 3–4 |
+| Khối "Video theo sản phẩm" khó hiểu | Bỏ khỏi trang thư viện; gán sản phẩm làm trong chi tiết video. Thứ tự phát theo sản phẩm sẽ làm cùng tích hợp LIVE |

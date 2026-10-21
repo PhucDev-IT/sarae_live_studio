@@ -16,12 +16,12 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app import media_access, storage_service
-from app.catalog import Product
+from app.catalog import Presenter, Product
 from app.identity import current_owner
 from app.media import get_db
 from app.ownership import Owner, owned_ids
 from app.storage_errors import StorageError, fail, http_error
-from app.storage_models import MediaItem, MediaUpload, ProductMedia, aware
+from app.storage_models import MediaItem, MediaItemPresenter, MediaThumbnail, MediaUpload, ProductMedia, aware, now
 
 log = logging.getLogger("sarae.media_library")
 DB = Annotated[Session, Depends(get_db)]
@@ -29,6 +29,8 @@ router = APIRouter(prefix="/api/media-library", tags=["Media Library"])
 products_router = APIRouter(prefix="/api/products", tags=["Media Library"], dependencies=[Depends(current_owner)])
 SIGN_KIND = "media"
 MAX_PRODUCT_VIDEOS = 200
+THUMB_MAX_BYTES = 512 * 1024
+THUMB_TYPES = {"image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG", "image/webp": b"RIFF"}
 
 
 # ----- views ----------------------------------------------------------------------------------
@@ -40,17 +42,29 @@ def owned_media(db: Session, owner_id: str, media_id: str) -> MediaItem:
     return media
 
 
-def _product_ids(db: Session, media_ids: list[str]) -> dict[str, list[int]]:
-    result: dict[str, list[int]] = {mid: [] for mid in media_ids}
+def _links(db: Session, media_ids: list[str]) -> dict[str, dict]:
+    """Products, presenters and cover version of each media, in three queries for the whole page."""
+    result: dict[str, dict] = {mid: {"product_ids": [], "presenter_ids": [], "thumb": None} for mid in media_ids}
     if media_ids:
         for media_id, product_id in db.execute(select(ProductMedia.media_id, ProductMedia.product_id)
                                                .where(ProductMedia.media_id.in_(media_ids)).order_by(ProductMedia.product_id)):
-            result[media_id].append(product_id)
+            result[media_id]["product_ids"].append(product_id)
+        for media_id, presenter_id in db.execute(select(MediaItemPresenter.media_id, MediaItemPresenter.presenter_id)
+                                                 .where(MediaItemPresenter.media_id.in_(media_ids)).order_by(MediaItemPresenter.presenter_id)):
+            result[media_id]["presenter_ids"].append(presenter_id)
+        for media_id, updated in db.execute(select(MediaThumbnail.media_id, MediaThumbnail.updated_at)
+                                            .where(MediaThumbnail.media_id.in_(media_ids))):
+            result[media_id]["thumb"] = int(aware(updated).timestamp())
     return result
 
 
-def media_view(media: MediaItem, product_ids: list[int]) -> dict:
+def _one(db: Session, media: MediaItem) -> dict:
+    return media_view(media, _links(db, [media.id])[media.id])
+
+
+def media_view(media: MediaItem, links: dict) -> dict:
     available = media.status == "AVAILABLE"
+    thumb = links["thumb"]
     return {
         "id": media.id,
         "filename": media.filename,
@@ -65,9 +79,13 @@ def media_view(media: MediaItem, product_ids: list[int]) -> dict:
         "checksum_sha256": media.sha256,
         "status": media.status,
         "available": available,
-        "product_ids": product_ids,
+        "product_ids": links["product_ids"],
+        "presenter_ids": links["presenter_ids"],
+        "has_thumbnail": thumb is not None,
         "stream_url": media_access.signed(f"/api/media-library/{media.id}/stream", SIGN_KIND, media.id, media.owner_id) if available else None,
-        "thumb_url": media_access.signed(f"/api/media-library/{media.id}/thumbnail", SIGN_KIND, media.id, media.owner_id) if available else None,
+        # ?v= changes when the cover changes, so browsers never show a stale cached image.
+        "thumb_url": media_access.signed(f"/api/media-library/{media.id}/thumbnail", SIGN_KIND, media.id, media.owner_id) + f"&v={thumb}"
+        if available and thumb is not None else None,
         "created_at": aware(media.created_at).isoformat(),
         "updated_at": aware(media.updated_at).isoformat(),
     }
@@ -135,7 +153,8 @@ def cancel_upload(upload_id: str, owner: Owner, db: DB):
 # ----- library ----------------------------------------------------------------------------------
 
 @router.get("")
-def list_media(owner: Owner, db: DB, q: str = "", product_id: int | None = None, status: str = "AVAILABLE",
+def list_media(owner: Owner, db: DB, q: str = "", product_id: int | None = None, presenter_id: int | None = None,
+               status: str = "AVAILABLE",
                limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     query = select(MediaItem).where(MediaItem.owner_id == owner["id"])
     if status in ("AVAILABLE", "DELETED"):
@@ -146,9 +165,12 @@ def list_media(owner: Owner, db: DB, q: str = "", product_id: int | None = None,
     if product_id is not None:
         query = query.where(MediaItem.id.in_(select(ProductMedia.media_id).where(
             ProductMedia.product_id == product_id, ProductMedia.owner_id == owner["id"])))
+    if presenter_id is not None:
+        query = query.where(MediaItem.id.in_(select(MediaItemPresenter.media_id).where(
+            MediaItemPresenter.presenter_id == presenter_id, MediaItemPresenter.owner_id == owner["id"])))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     items = db.scalars(query.order_by(MediaItem.created_at.desc()).limit(limit).offset(offset)).all()
-    links = _product_ids(db, [m.id for m in items])
+    links = _links(db, [m.id for m in items])
     return {"total": total, "items": [media_view(m, links[m.id]) for m in items]}
 
 
@@ -160,7 +182,7 @@ def get_media(media_id: str, owner: Owner, db: DB):
             storage_service.refresh_metadata(db, media)
         except StorageError as exc:
             log.info("metadata refresh skipped for %s: %s", media_id, exc.code)
-    return media_view(media, _product_ids(db, [media.id])[media.id])
+    return _one(db, media)
 
 
 class MediaPatch(BaseModel):
@@ -178,18 +200,17 @@ def patch_media(media_id: str, body: MediaPatch, owner: Owner, db: DB):
         if value is not None:
             setattr(media, field, value.strip())
     db.commit()
-    return media_view(media, _product_ids(db, [media.id])[media.id])
+    return _one(db, media)
 
 
 @router.delete("/{media_id}")
 def delete_media(media_id: str, owner: Owner, db: DB):
     """Hide from the library (DELETED). The stored object and product history are kept for LIVE audit."""
-    from app.storage_models import now
     media = owned_media(db, owner["id"], media_id)
     if media.status != "DELETED":
         media.status, media.deleted_at = "DELETED", now()
         db.commit()
-    return media_view(media, _product_ids(db, [media.id])[media.id])
+    return _one(db, media)
 
 
 def _signed_media(db: Session, media_id: str, exp: int | None, sig: str | None) -> MediaItem:
@@ -216,6 +237,9 @@ def stream(media_id: str, db: DB, exp: int | None = None, sig: str | None = None
 @router.get("/{media_id}/thumbnail", include_in_schema=False)
 def thumbnail(media_id: str, db: DB, exp: int | None = None, sig: str | None = None):
     media = _signed_media(db, media_id, exp, sig)
+    cover = db.get(MediaThumbnail, media.id)
+    if cover is not None:
+        return Response(cover.content, media_type=cover.mime_type, headers={"Cache-Control": "private, max-age=86400"})
     from app.storage_providers import provider
     try:
         found = provider(media.provider, db).thumbnail(media.provider_file_id)
@@ -224,6 +248,54 @@ def thumbnail(media_id: str, db: DB, exp: int | None = None, sig: str | None = N
     if found is None:
         raise fail(404, "THUMBNAIL_NOT_READY", "Chưa có ảnh xem trước")
     return Response(found[0], media_type=found[1], headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.put("/{media_id}/thumbnail")
+async def put_thumbnail(media_id: str, request: Request, owner: Owner, db: DB,
+                        duration_seconds: float | None = Query(None, gt=0, lt=86400),
+                        width: int | None = Query(None, gt=0, le=10000), height: int | None = Query(None, gt=0, le=10000)):
+    """Cover image captured by the browser (raw JPEG/PNG/WebP body). The browser also reports the video's duration and
+    size it read locally; they only fill fields the storage provider has not reported yet."""
+    media = owned_media(db, owner["id"], media_id)
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if mime not in THUMB_TYPES:
+        raise fail(415, "THUMBNAIL_TYPE_NOT_ALLOWED", "Ảnh bìa phải là JPEG, PNG hoặc WebP")
+    data = bytearray()
+    async for piece in request.stream():
+        data += piece
+        if len(data) > THUMB_MAX_BYTES:
+            raise fail(413, "THUMBNAIL_TOO_LARGE", "Ảnh bìa tối đa 512 KB")
+    if not bytes(data).startswith(THUMB_TYPES[mime]):
+        raise fail(422, "THUMBNAIL_CONTENT_INVALID", "Nội dung không phải ảnh hợp lệ")
+    cover = db.get(MediaThumbnail, media.id)
+    if cover is None:
+        cover = MediaThumbnail(media_id=media.id, owner_id=owner["id"], mime_type=mime, content=bytes(data))
+        db.add(cover)
+    else:
+        cover.mime_type, cover.content, cover.updated_at = mime, bytes(data), now()
+    if media.duration_seconds is None and duration_seconds is not None:
+        media.duration_seconds = round(duration_seconds, 3)
+    if media.width is None and media.height is None and width and height:
+        media.width, media.height = width, height
+    db.commit()
+    return _one(db, media)
+
+
+class PresenterIds(BaseModel):
+    presenter_ids: list[int] = Field(default_factory=list, max_length=200)
+
+
+@router.put("/{media_id}/presenters")
+def set_media_presenters(media_id: str, body: PresenterIds, owner: Owner, db: DB):
+    """People appearing in this video (replaces the list)."""
+    media = owned_media(db, owner["id"], media_id)
+    wanted = list(dict.fromkeys(body.presenter_ids))
+    if len(owned_ids(db, Presenter, wanted, owner)) != len(wanted):
+        raise fail(422, "PRESENTER_NOT_FOUND", "Có người giới thiệu không thuộc tài khoản này")
+    db.execute(delete(MediaItemPresenter).where(MediaItemPresenter.media_id == media.id))
+    db.add_all(MediaItemPresenter(media_id=media.id, presenter_id=pid, owner_id=owner["id"]) for pid in wanted)
+    db.commit()
+    return _one(db, media)
 
 
 # ----- Product ↔ Video (N:N) ---------------------------------------------------------------------
@@ -248,7 +320,7 @@ def set_media_products(media_id: str, body: ProductIds, owner: Owner, db: DB):
             last = db.scalar(select(func.max(ProductMedia.sort_order)).where(ProductMedia.product_id == product_id))
             db.add(ProductMedia(owner_id=owner["id"], product_id=product_id, media_id=media.id, sort_order=(last or 0) + 1))
     db.commit()
-    return media_view(media, _product_ids(db, [media.id])[media.id])
+    return _one(db, media)
 
 
 def _owned_product(db: Session, owner: dict, product_id: int) -> Product:
@@ -261,7 +333,7 @@ def _owned_product(db: Session, owner: dict, product_id: int) -> Product:
 def product_videos_view(db: Session, product_id: int) -> dict:
     rows = db.execute(select(MediaItem).join(ProductMedia, ProductMedia.media_id == MediaItem.id)
                       .where(ProductMedia.product_id == product_id).order_by(ProductMedia.sort_order, ProductMedia.id)).scalars().all()
-    links = _product_ids(db, [m.id for m in rows])
+    links = _links(db, [m.id for m in rows])
     return {"product_id": product_id, "media_ids": [m.id for m in rows], "items": [media_view(m, links[m.id]) for m in rows],
             "available_count": sum(1 for m in rows if m.status == "AVAILABLE")}
 

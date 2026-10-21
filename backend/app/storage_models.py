@@ -8,7 +8,7 @@ never in the storage layout.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -153,8 +153,28 @@ class ProductMedia(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class MediaThumbnail(Base):
+    """Cover image of a media (a frame the browser captured from the video). Small (≤ 512 KB), kept in the DB so it
+    does not depend on the storage provider or on provider-side thumbnail processing."""
+    __tablename__ = "media_thumbnails"
+    media_id: Mapped[str] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    mime_type: Mapped[str] = mapped_column(String(30))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class MediaItemPresenter(Base):
+    """Presenters appearing in a Media Library video (N:N), independent of any Agent."""
+    __tablename__ = "media_item_presenters"
+    media_id: Mapped[str] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True)
+    presenter_id: Mapped[int] = mapped_column(ForeignKey("presenters.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+
+
 TABLES = [StorageCredential.__table__, StorageOAuthState.__table__, StorageOwnerContainer.__table__,
-          MediaItem.__table__, MediaStorageObject.__table__, MediaUpload.__table__, ProductMedia.__table__]
+          MediaItem.__table__, MediaStorageObject.__table__, MediaUpload.__table__, ProductMedia.__table__,
+          MediaThumbnail.__table__, MediaItemPresenter.__table__]
 
 
 def ensure_schema(bind=None):
