@@ -122,8 +122,36 @@ flowchart TD
 - **P4:** device recovery và kiểm thử LIVE thật.
 - Không tự diễn giải nghiệp vụ **CHƯA CHỐT** là đã chốt. Không sửa data production; hiện nhánh dev/test.
 
-## 11. Trạng thái triển khai (2026-10-21)
-- **Đã code P0 (chưa kiểm thử end-to-end):** migration cộng thêm `tiktok_accounts`, `user_tiktok_accounts`, `products.tiktok_seller_id`, `live_sessions.tiktok_account_id`; Agent theo dõi response `account_info/get` khi nhấn sync; gửi profile + sản phẩm trong một request; backend yêu cầu profile và upsert tài khoản; import sản phẩm không sinh `tiktok_shops` từ từng `seller_id` mới.
-- **Chưa hoàn tất P1:** giao diện tạo phiên và LIVE Session vẫn còn sử dụng `shop_id` từ mô hình cũ; cần chuyển UI/API theo `tiktok_account_id`, DRAFT không chọn Agent và workflow xác minh trước phát. Các sản phẩm mới của Affiliate chưa thể dùng với bộ lọc Shop cũ. **Không coi nhánh dev hiện tại là bản triển khai hoàn chỉnh/production-ready.**
-- **Chưa hoàn tất P2–P4:** Google Drive OAuth và folder sync, cache cloud, random/pin realtime, activation recovery.
-- **Chưa chạy build/test hoặc kiểm thử trong môi trường Windows/TikTok thật.**
+## 11. Trạng thái triển khai (2026-10-21, nhánh `dev`)
+
+### Hoàn thành code giai đoạn tài khoản + luồng chuẩn bị (chưa xác nhận end-to-end trên TikTok)
+- Schema additive `tiktok_accounts`, `user_tiktok_accounts`, `products.tiktok_seller_id`, `live_sessions.tiktok_account_id`; bảo toàn `tiktok_shops` cũ làm nguồn legacy, không tự gán seller thành account.
+- `GET /api/tiktok-catalog/accounts`: danh sách TikTok LIVE Account của User sau xác minh profile.
+- Khi đồng bộ sản phẩm, Agent quan sát `account_info/get`, lấy `user_id`, rồi đọc `live_product/list`; Backend nhận account + sản phẩm, tạo Account đúng, giữ seller_id chỉ làm metadata nguồn.
+- `POST /api/live/sessions`: DRAFT chỉ cần tên + `tiktok_account_id`, chưa gán Agent. API/Web cho đổi Account khi DRAFT, hiển thị thư viện sản phẩm độc lập Agent.
+- `POST /api/live/sessions/{id}/prepare`: gửi command `tiktok_products_sync` đến Agent được chọn, mang `expected_user_id`; **Agent chặn ngay trước khi import nếu sai tài khoản**, không tự đồng bộ chỉ do mở Console.
+- Web hiển thị giỏ vừa đồng bộ và cho User tích/bỏ chọn sản phẩm có video, lưu lựa chọn rồi mới cho Bắt đầu.
+- `POST /api/live/sessions/{id}/start`: chọn Agent; so `account_user_id` của snapshot với Account LIVE; yêu cầu snapshot gần đây (hiện tại 10 phút); xác minh từng sản phẩm đã chọn còn trong giỏ Console và có video khả dụng trên Agent.
+- Khóa `live_start_claims` theo tài khoản TikTok + Agent từ trước khi dispatch lệnh playback; giữ khóa nếu timeout chưa rõ thực tế; giải phóng sau FAILED ACK xác nhận hoặc stop ACK. Unique partial index giữ bất biến RUNNING.
+- LIVE Control hiện ưu tiên điều khiển phiên đã gán Agent, DRAFT được quản lý tập trung ở trang Phiên LIVE.
+- Thêm GitHub Actions `sarae-syntax.yml`: kiểm tra Python syntax, Web TSX parse + Web build/typecheck và contract test identity.
+
+### CẦN KIỂM THỬ / Nghiệp vụ chưa triển khai
+- Bắt buộc test thực tế Seller + Affiliate cho việc TikTok Console **có phát sinh lại** `account_info/get` khi reload. Nếu API không xuất hiện, đồng bộ bị chặn an toàn; cần bổ sung cơ chế lấy profile từ XHR hợp lệ mà không hardcode chữ ký.
+- Chưa có Google Drive OAuth/folder sync, cloud video viewer, Agent cache từ Drive, random scheduler, theo dõi ghim tay realtime, phát hiện TikTok LIVE thực tế kết thúc, dự phòng camera vật lý, khôi phục license thiết bị theo phần cứng.
+- LIVE video vẫn theo mô hình media link trên từng Agent; DRAFT xem catalog độc lập nhưng lúc start Agent bắt buộc đã có video. Đây là **giới hạn tạm thời**, chưa hoàn thành thiết kế lưu trữ cloud chung.
+- Bộ test legacy `test_live_sessions.py`, `test_multi_agent.py`, `test_owner_isolation.py` giả định mô hình Shop/Agent cũ và cần viết lại trước khi chạy toàn bộ. CI hiện chỉ chạy contract test mới, kiểm tra Python cú pháp và build Web.
+- Chưa chạy thử trực tiếp TikTok/OBS/Windows Agent; chưa triển khai môi trường production. Repo đang ở giai đoạn dev/test.
+- Cần triển khai cơ chế reconciliation/quản trị khi lock có trạng thái mơ hồ và Agent mất kết nối, không được tự giải phóng khóa mà chưa chắc phiên đã dừng.
+- Bước đồng bộ sau chọn Agent hiện do User nhấn **Đồng bộ giỏ sản phẩm** trong modal chuẩn bị, không chạy tự động khi mới mở Console.
+
+## 12. API hiện có cần chú ý
+| API | Chức năng |
+|---|---|
+| `GET /api/tiktok-catalog/accounts` | Account đã xác minh thuộc User |
+| `POST /api/tiktok-products/sync` | Agent gửi profile + snapshot sản phẩm |
+| `GET /api/tiktok-products/{agent_id}` | Đọc snapshot với `account_user_id` |
+| `GET /api/live/catalog-products` | Product catalog để tạo DRAFT, không yêu cầu Agent |
+| `POST /api/live/sessions` | Tạo DRAFT bằng `tiktok_account_id` |
+| `POST /api/live/sessions/{id}/prepare` | User yêu cầu đồng bộ Console trên Agent |
+| `POST /api/live/sessions/{id}/start` | Gắn Agent và bắt đầu phát sau kiểm tra Account/sản phẩm |
