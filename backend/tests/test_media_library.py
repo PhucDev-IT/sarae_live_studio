@@ -19,6 +19,7 @@ from memory_storage import MemoryStorageProvider, MemoryStore
 from support import SaasTestCase
 
 ALIGN = storage_service.CHUNK_ALIGN
+JPEG = b"\xff\xd8\xff\xe0" + b"cover" * 50
 
 
 def video_bytes(size=600_000, seed=b"a"):
@@ -334,8 +335,10 @@ class LibraryTest(MediaLibraryTestCase):
         query = dict(urllib.parse.parse_qsl(url.split("?")[1]))
         with patch("app.media_access.time.time", return_value=int(query["exp"]) + 1):
             self.assertEqual(self.client.get(url, headers=self.ANON).status_code, 403)
+        self.assertIsNone(self.media(self.media_id).json()["thumb_url"])  # no cover yet
+        self.client.put(f"/api/media-library/{self.media_id}/thumbnail", content=JPEG, headers={"Content-Type": "image/jpeg"})
         thumb = self.client.get(self.media(self.media_id).json()["thumb_url"], headers=self.ANON)
-        self.assertEqual((thumb.status_code, thumb.headers["content-type"]), (200, "image/jpeg"))
+        self.assertEqual((thumb.status_code, thumb.headers["content-type"], thumb.content), (200, "image/jpeg", JPEG))
         self.client.delete(f"/api/media-library/{self.media_id}")
         self.assertEqual(self.client.get(url, headers=self.ANON).status_code, 410)
 
@@ -366,6 +369,58 @@ class LibraryTest(MediaLibraryTestCase):
         self.assertEqual((kept["media_ids"], kept["available_count"]), ([third, self.media_id, second], 2))
         new_link = self.client.put(f"/api/products/{p2}/videos", json={"media_ids": [self.media_id, second]})
         self.assertEqual(new_link.headers["X-Sarae-Error"], "MEDIA_NOT_AVAILABLE")
+
+
+class CoverAndPresenterTest(MediaLibraryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.connect_storage()
+        self.media_id = self.upload()
+
+    def put_cover(self, body=JPEG, content_type="image/jpeg", headers=None, **params):
+        return self.client.put(f"/api/media-library/{self.media_id}/thumbnail", content=body, params=params,
+                               headers={**(headers or self.A), "Content-Type": content_type})
+
+    def test_cover_is_stored_versioned_and_fills_missing_metadata(self):
+        with self.Session() as db:
+            item = db.get(MediaItem, self.media_id)
+            item.duration_seconds = item.width = item.height = None  # provider has not processed the video yet
+            db.commit()
+        first = self.put_cover(duration_seconds=33.25, width=720, height=1280).json()
+        self.assertTrue(first["has_thumbnail"])
+        self.assertEqual((first["duration_seconds"], first["width"], first["height"]), (33.25, 720, 1280))
+        with patch("app.media_library.now", return_value=now() + timedelta(seconds=5)):
+            second = self.put_cover(body=b"\x89PNG" + b"x" * 40, content_type="image/png", duration_seconds=99).json()
+        self.assertNotEqual(first["thumb_url"], second["thumb_url"])  # cache busting
+        self.assertEqual(second["duration_seconds"], 33.25)  # client hints never overwrite known metadata
+        image = self.client.get(second["thumb_url"], headers=self.ANON)
+        self.assertEqual(image.headers["content-type"], "image/png")
+        listed = self.client.get("/api/media-library").json()["items"][0]
+        self.assertTrue(listed["has_thumbnail"])
+
+    def test_cover_validation_and_isolation(self):
+        self.assertEqual(self.put_cover(content_type="image/gif").headers["X-Sarae-Error"], "THUMBNAIL_TYPE_NOT_ALLOWED")
+        self.assertEqual(self.put_cover(body=b"not-a-jpeg").headers["X-Sarae-Error"], "THUMBNAIL_CONTENT_INVALID")
+        self.assertEqual(self.put_cover(body=b"\xff\xd8\xff" + b"0" * 600_000).status_code, 413)
+        self.assertEqual(self.put_cover(headers=self.B).status_code, 404)
+
+    def test_presenters_are_linked_filtered_and_owner_scoped(self):
+        from app.catalog import Presenter
+        with self.Session() as db:
+            rows = [Presenter(owner_id=self.owner_a["id"], name="Lan"), Presenter(owner_id=self.owner_a["id"], name="Mai"),
+                    Presenter(owner_id=self.owner_b["id"], name="B-person")]
+            db.add_all(rows)
+            db.commit()
+            lan, mai, other = (r.id for r in rows)
+        linked = self.client.put(f"/api/media-library/{self.media_id}/presenters", json={"presenter_ids": [mai, lan, mai]})
+        self.assertEqual(linked.json()["presenter_ids"], [lan, mai])
+        self.assertEqual(self.client.get("/api/media-library", params={"presenter_id": lan}).json()["total"], 1)
+        self.assertEqual(self.client.get("/api/media-library", params={"presenter_id": 999}).json()["total"], 0)
+        foreign = self.client.put(f"/api/media-library/{self.media_id}/presenters", json={"presenter_ids": [other]})
+        self.assertEqual(foreign.headers["X-Sarae-Error"], "PRESENTER_NOT_FOUND")
+        self.assertEqual(self.client.put(f"/api/media-library/{self.media_id}/presenters", json={"presenter_ids": []}, headers=self.B).status_code, 404)
+        cleared = self.client.put(f"/api/media-library/{self.media_id}/presenters", json={"presenter_ids": []})
+        self.assertEqual(cleared.json()["presenter_ids"], [])
 
 
 class AgentMediaTest(MediaLibraryTestCase):
