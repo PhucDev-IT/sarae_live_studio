@@ -5,7 +5,7 @@ import {apiRequest,errorText,onAgent} from './mediaApi'
 import {useAgent} from './agentContext'
 import {Stat,Thumb} from './CatalogParts'
 
-type Product={id:number;shop_id:number|null;tiktok_product_id:string|null;name:string;sku:string;description:string;price:number|null;origin_price:number|null;stock_num:number|null;image_url:string;status:'ACTIVE'|'INACTIVE';created_at:string}
+type Product={id:number;shop_id:number|null;tiktok_seller_id:string|null;tiktok_product_id:string|null;name:string;sku:string;description:string;price:number|null;origin_price:number|null;stock_num:number|null;image_url:string;status:'ACTIVE'|'INACTIVE';created_at:string}
 type Shop={id:number;seller_id:string;display_name:string}
 type TikTokSnapshot={scanned_at:string|null;summary:{tiktok:number;matched:number;unmatched_tiktok:number}}
 type Row=Product&Record<string,unknown>
@@ -19,6 +19,9 @@ export default function ProductsPage(){
   const [products,setProducts]=useState<Product[]>([])
   const [shops,setShops]=useState<Shop[]>([])
   const [shopFilter,setShopFilter]=useState('all')
+  // Products are identified by their source Seller (seller_id), not by the LIVE account that sells them.
+  const sellerOf=(p:Product)=>p.tiktok_seller_id ?? shops.find(sh=>sh.id===p.shop_id)?.seller_id ?? ''
+  const sellerName=(id:string)=>!id?'Chưa rõ Seller':shops.find(sh=>sh.seller_id===id)?.display_name||'Seller '+id
   const [videoCounts,setVideoCounts]=useState<Record<number,number>>({})
   const [snapshot,setSnapshot]=useState<TikTokSnapshot|null>(null)
   const [loaded,setLoaded]=useState(false)
@@ -41,9 +44,10 @@ export default function ProductsPage(){
     setLoaded(true)
   },[agentId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được danh mục',description:errorText(e,'')})})},[load,toast])
+  const sellers=useMemo(()=>[...new Set(products.map(sellerOf).filter(Boolean))].sort(),[products,shops])
   const current=useMemo(()=>products.filter(p=>
-    (shopFilter==='all'||String(p.shop_id)===shopFilter)
-    &&(!query.trim()||(p.name+' '+p.sku).toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))),[products,shopFilter,query])
+    (shopFilter==='all'||sellerOf(p)===shopFilter)
+    &&(!query.trim()||(p.name+' '+p.sku).toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))),[products,shops,shopFilter,query])
   const ready=products.filter(p=>p.status==='ACTIVE'&&!!videoCounts[p.id]).length
   const missing=products.filter(p=>p.status==='ACTIVE'&&!videoCounts[p.id]).length
   const open=(p:Product)=>{setEditing(p);setDescription(p.description||'')}
@@ -66,7 +70,7 @@ export default function ProductsPage(){
     {key:'price',header:'Giá bán',align:'right',render:p=><span className="pp-num">{p.price==null?'—':vnd.format(p.price)}</span>},
     {key:'stock',header:'Tồn kho',render:p=><span>{p.stock_num??'—'}</span>},
     {key:'video',header:'Video LIVE',render:p=><span>{videoCounts[p.id]||0} video</span>},
-    {key:'shop',header:'TikTok Shop',render:p=><span>{shops.find(sh=>sh.id===p.shop_id)?.display_name||shops.find(sh=>sh.id===p.shop_id)?.seller_id||'Chưa liên kết'}</span>},
+    {key:'shop',header:'Seller nguồn',render:p=><span title="Seller sở hữu sản phẩm (một giỏ Affiliate có thể gồm nhiều Seller)">{sellerName(sellerOf(p))}</span>},
   ]
   return <div className="pp-page">
     <section className="pp-stats" aria-label="Tổng quan sản phẩm">
@@ -86,7 +90,7 @@ export default function ProductsPage(){
     <section className="pp-panel">
       <div className="pp-toolbar">
         <div className="pp-search"><SearchInput value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm sản phẩm theo tên hoặc ID…" aria-label="Tìm sản phẩm"/></div>
-        <div className="pp-select"><Select value={shopFilter} onChange={setShopFilter} options={[{value:'all',label:'Tất cả TikTok Shop'},...shops.map(sh=>({value:String(sh.id),label:sh.display_name||'Shop '+sh.seller_id}))]}/></div>
+        <div className="pp-select"><Select value={shopFilter} onChange={setShopFilter} options={[{value:'all',label:'Tất cả Seller nguồn'},...sellers.map(id=>({value:id,label:sellerName(id)}))]}/></div>
       </div>
       <div className="pp-count">{current.length} / {products.length} sản phẩm</div>
       {!loaded||!current.length?<div className="pp-empty"><EmptyState icon={<Package size={30}/>} title={loaded?'Chưa có sản phẩm phù hợp':'Đang tải…'} description="Sản phẩm được lấy từ TikTok qua Windows Agent, không nhập thủ công trên Sarae."/></div>
