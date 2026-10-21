@@ -601,6 +601,10 @@ def update_session(session_id: int, body: SessionPatch, owner: Owner):
         if item.status == "ENDED":
             raise HTTPException(409, "Không thể sửa phiên đã kết thúc")
         if body.tiktok_account_id is not None and body.tiktok_account_id != item.tiktok_account_id:
+            from sqlalchemy import text
+            claim=db.execute(text("SELECT 1 FROM live_start_claims WHERE session_id=:sid"),
+                             {"sid":session_id}).scalar()
+            if claim: raise HTTPException(409,"Phiên đang giữ quyền điều khiển TikTok Account; chưa thể đổi")
             if item.status != "DRAFT":
                 raise HTTPException(409,"Không đổi được tài khoản LIVE đang chạy")
             from sqlalchemy import text
@@ -625,6 +629,11 @@ def delete_session(session_id: int, owner: Owner):
         item = get_session(db, session_id, owner)
         if item.status == "RUNNING":
             raise HTTPException(409, "Hãy kết thúc phiên trước khi xóa")
+        from sqlalchemy import text
+        claim=db.execute(text("SELECT 1 FROM live_start_claims WHERE session_id=:sid"),
+                         {"sid":session_id}).scalar()
+        if claim:
+            raise HTTPException(409,"Chưa xác nhận Agent đã ngừng phát; không thể xóa phiên còn giữ khóa LIVE")
         # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
         db.execute(delete(SessionEvent).where(SessionEvent.session_id == session_id))
         db.execute(delete(SessionProduct).where(SessionProduct.session_id == session_id))
