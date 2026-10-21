@@ -31,6 +31,8 @@ from sarae_agent.diagnostics import export_bundle
 from sarae_agent.errors import AgentError
 from sarae_agent.logging_setup import event_handler
 from sarae_agent.media.library import MediaLibrary
+from sarae_agent.media.cloud_cache import CloudMediaCache
+import httpx
 from sarae_agent.monitoring.captcha import CaptchaMonitor
 from sarae_agent.obs.controller import ObsController, ObsSettingsStore
 from sarae_agent.playback.engine import PlaybackEngine
@@ -72,6 +74,8 @@ class AgentRuntime:
         self.activation = ActivationService()
         self._restore_activated_cloud_url()
         self.library = MediaLibrary(self.config, self.emit)
+        self._cloud_cache_lock = threading.Lock()
+        self._cloud_cache_job: dict = {"state": "IDLE"}
         self.obs = ObsController(self.config, self.emit)
         self.outbox = EventOutbox()
         self.journal = CommandJournal(paths.command_journal)
@@ -321,6 +325,37 @@ class AgentRuntime:
         log.info("Đồng bộ TikTok: %s sản phẩm, khớp Sarae: %s",
                  result.get("summary",{}).get("tiktok"),result.get("summary",{}).get("matched"))
         return result
+
+    def cloud_cache_status(self) -> dict:
+        return dict(self._cloud_cache_job)
+
+    def prepare_cloud_cache(self, session_id: int) -> dict:
+        """Queue preparation on a separate thread: IPC never blocks on large video downloads."""
+        identity = self.activation.require()
+        api_url = identity.cloud_url or self.config.get().cloud.api_url
+        if not api_url:
+            raise AgentError("CLOUD_URL_MISSING", "Chưa kết nối Cloud")
+        if not self._cloud_cache_lock.acquire(blocking=False):
+            raise AgentError("CACHE_BUSY", "Agent đang chuẩn bị cache cho phiên khác")
+        self._cloud_cache_job = {"session_id": session_id, "state": "PREPARING", "ready": [], "failed": []}
+
+        def work():
+            try:
+                with httpx.Client(base_url=api_url, timeout=120, follow_redirects=False) as client:
+                    cache = CloudMediaCache(client, identity.agent_id, identity.credential)
+                    result = cache.prepare(session_id)
+                self._cloud_cache_job = result
+                self.emit("media.cache_changed", result)
+            except Exception as exc:
+                log.exception("Cloud media cache failed")
+                self._cloud_cache_job = {"session_id": session_id, "state": "FAILED",
+                                         "ready": [], "failed": [{"error": str(exc)[:200]}]}
+                self.emit("media.cache_changed", self._cloud_cache_job)
+            finally:
+                self._cloud_cache_lock.release()
+
+        threading.Thread(target=work, name="cloud-media-cache", daemon=True).start()
+        return dict(self._cloud_cache_job)
 
     def diagnostics(self) -> dict:
         return export_bundle(self.system_status(), self.config_view(), list(event_handler.recent))

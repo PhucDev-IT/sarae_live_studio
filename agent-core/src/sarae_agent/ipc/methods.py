@@ -53,6 +53,10 @@ class PlaylistParams(Strict):
     loop: bool = True
 
 
+class CachePrepareParams(Strict):
+    session_id: int = Field(ge=1)
+
+
 class LoopParams(Strict):
     loop: bool
 
@@ -157,6 +161,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("media.scan_cancel", lambda _: rt.library.cancel_scan())
     reg("media.list", lambda p: rt.library.list_videos(p.offset, p.limit, p.query), MediaListParams)
     reg("media.summary", lambda _: rt.library.summary())
+    reg("media.cloud_cache.prepare", lambda p: rt.prepare_cloud_cache(p.session_id), CachePrepareParams)
+    reg("media.cloud_cache.status", lambda _: rt.cloud_cache_status())
 
     # obs
     def obs_connect(p: ObsConnectParams) -> dict:
