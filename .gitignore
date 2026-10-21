@@ -31,3 +31,6 @@ backend/data/url_signing.key
 backend/data/credential.key
 backend/data/agent_command_journal.json
 backend/data/agent_commands.lock
+
+# Google Drive OAuth PoC output (file names / folder IDs of a real account)
+google_drive_poc_report*.json
