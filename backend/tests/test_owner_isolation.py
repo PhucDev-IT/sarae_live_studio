@@ -10,7 +10,7 @@ from support import SaasTestCase
 # Modules holding customer data or controlling a customer's LIVE; all their routes must require an OWNER.
 CUSTOMER_MODULES = {"app.catalog", "app.media", "app.owner_agents", "app.live", "app.product_videos", "app.media_presenters",
                     "app.live_sessions", "app.tiktok_chat", "app.ai_service", "app.ai_live_batches", "app.ai_voice",
-                    "app.verification_monitor", "app.agent_playlists"}
+                    "app.verification_monitor"}
 # <img> cannot send a token; these check a signed, expiring URL instead (app/media_access.py).
 PUBLIC_ROUTES = {"product_image", "presenter_image"}
 
@@ -36,7 +36,7 @@ class SaasGuardTests(SaasTestCase):
         agent = self.activate_agent(self.owner_a, "PC-A")
         on = {"agent_id": agent["agent_id"]}
         with patch.object(settings, "sarae_saas_mode", True):
-            for path in ("/api/media", "/api/live/status", "/api/live/products", "/api/agent-playlists", "/api/live/sessions"):
+            for path in ("/api/media", "/api/live/status", "/api/live/products", "/api/live/sessions"):
                 self.assertEqual(self.client.get(path, params=on).status_code, 200, path)
             self.assertEqual(self.client.get("/api/media", params=on, headers=self.B).status_code, 404, "still owner-checked")
             self.assertEqual(self.client.get("/api/not-scoped-yet").status_code, 403, "unknown APIs fail closed")

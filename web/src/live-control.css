@@ -100,10 +100,6 @@
 .lc-muted{margin:0;padding:6px 4px;font-size:13px;color:var(--ui-text-muted);text-align:center}
 .lc-hint{color:var(--ui-danger);font-size:12px;text-align:center}
 
-.lc-manual{display:flex;align-items:end;gap:14px;flex-wrap:wrap;padding:6px 0 4px}
-.lc-manual>.ui-field{flex:1 1 260px}
-.lc-manual .ui-switch{padding-bottom:12px}
-.lc-link{padding-bottom:12px;font-size:13px;color:var(--ui-primary);text-decoration:none}
 .lc-disclaimer{margin:0;font-size:12px;color:var(--ui-text-muted)}
 .lc-form-row{display:grid;grid-template-columns:2fr 1fr;gap:12px}
 .lc-form-row--even{grid-template-columns:1fr 1fr}

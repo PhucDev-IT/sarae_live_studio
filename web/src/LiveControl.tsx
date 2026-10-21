@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
-  Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Kbd, Modal, SearchInput, Select, useToast,
+  Alert, Badge, Button, Card, ConfirmModal, EmptyState, Kbd, Modal, SearchInput, useToast,
 } from './ui/core'
 import {
   CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
@@ -20,7 +20,6 @@ type LiveStatus = {
   queue_ids?:string[]; index:number; count:number; last_status:string; retry_count?:number; error_count?:number; transition_count?:number
   recovery_count?:number; session_seconds?:number; obs?:ObsSettings
 }
-type Playlist = { id:string; name:string; media_ids:string[]; loop:boolean }
 
 const POLL_MS = 3000
 const post = (body?:unknown):RequestInit => body === undefined ? {method:'POST'} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}
@@ -55,7 +54,6 @@ function Console({agent}:{agent:OwnerAgent}){
   const [receivedAt,setReceivedAt] = useState(0)
   const [now,setNow] = useState(()=>Date.now())
   const [products,setProducts] = useState<LiveProduct[]>([])
-  const [playlists,setPlaylists] = useState<Playlist[]>([])
   const [videos,setVideos] = useState<Media[]>([])
   const [busy,setBusy] = useState(false)
   const [sessions,setSessions] = useState<LiveSession[]>([])
@@ -64,17 +62,15 @@ function Console({agent}:{agent:OwnerAgent}){
   const [confirmStop,setConfirmStop] = useState(false)
 
   const [obsOpen,setObsOpen] = useState(false)
-  const [playlistId,setPlaylistId] = useState('')
 
   const applyStatus = (next:LiveStatus) => {setStatus(next);setReceivedAt(Date.now())}
   const agentId = agent.id
   const pollStatus = useCallback(async ()=>{try{applyStatus(await apiRequest<LiveStatus>(onAgent('/live/status', agentId)))}catch{/* keep last known status */}},[agentId])
   const loadAll = useCallback(async ()=>{
-    const [s, p, l, v, ss] = await Promise.all([
-      apiRequest<LiveStatus>(onAgent('/live/status', agentId)), sessionsApi.products(agentId),
-      apiRequest<Playlist[]>(onAgent('/agent-playlists', agentId)), listVideos(agentId), sessionsApi.list(),
+    const [s, p, v, ss] = await Promise.all([
+      apiRequest<LiveStatus>(onAgent('/live/status', agentId)), sessionsApi.products(agentId), listVideos(agentId), sessionsApi.list(),
     ])
-    applyStatus(s);setProducts(p);setPlaylists(l);setVideos(v);setSessions(ss)
+    applyStatus(s);setProducts(p);setVideos(v);setSessions(ss)
   },[agentId])
   useEffect(()=>{
     void loadAll().catch(e=>toast.push({tone:'danger',title:'Không tải được dữ liệu LIVE',description:errorText(e, '')}))
@@ -102,7 +98,6 @@ function Console({agent}:{agent:OwnerAgent}){
   const videoById = useMemo(()=>new Map(videos.map(v=>[v.id,v])),[videos])
   const productById = useMemo(()=>new Map(products.map(p=>[p.id,p])),[products])
   const running = !!status?.running
-  const productSession = running && status?.session_mode === 'product'
   const queue = status?.queue_ids ?? []
   const currentId = running ? queue[status?.index ?? 0] : undefined
   const current = currentId != null ? videoById.get(currentId) : undefined
@@ -193,7 +188,7 @@ function Console({agent}:{agent:OwnerAgent}){
       <div className="lc-status-main">
         <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={16}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
         <div className="lc-status-text">
-          <strong>{liveProduct ? liveProduct.name : running ? `Playlist #${status?.playlist_id ?? '—'}` : 'Chưa có phiên phát'}</strong>
+          <strong>{liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
           <small>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị ở khung bên phải để bắt đầu.'}</small>
         </div>
       </div>
@@ -290,10 +285,8 @@ function Console({agent}:{agent:OwnerAgent}){
             <small className="lc-tip">Ghim sản phẩm trên TikTok LIVE trước, rồi mới chuyển video.</small>
           </div>
         </> : running ? <div className="lc-pad">
-          <Alert tone="warning" title={productSession ? 'Đang phát ngoài Phiên LIVE' : 'Đang phát playlist thủ công'}>
-            {productSession
-              ? 'Phiên phát này không gắn với Phiên LIVE nào nên không có danh sách sản phẩm và không được lưu lịch sử. Dừng phát rồi bắt đầu lại từ một phiên đã chuẩn bị.'
-              : 'Dừng playlist để bắt đầu một phiên LIVE theo danh sách sản phẩm.'}
+          <Alert tone="warning" title="Đang phát ngoài Phiên LIVE">
+            Video đang phát không gắn với Phiên LIVE nào nên không có danh sách sản phẩm và không được lưu lịch sử. Dừng phát rồi bắt đầu lại từ một phiên đã chuẩn bị.
           </Alert>
         </div> : <>{stale.length > 0 && <div className="lc-pad lc-stale">
           <Alert tone="warning" title="Phiên bị ngắt">
@@ -319,13 +312,6 @@ function Console({agent}:{agent:OwnerAgent}){
       </Card>
     </div>
 
-    <Collapse title="Phát thử playlist thủ công (chế độ phụ)">
-      <div className="lc-manual">
-        <Select label="Playlist" value={playlistId} onChange={setPlaylistId} options={[{value:'',label:playlists.length ? 'Chọn playlist…' : 'Chưa có playlist'},...playlists.map(p=>({value:String(p.id),label:`${p.name} · ${p.media_ids.length} video`}))]}/>
-        <Button leftIcon={<Play size={16}/>} disabled={busy || !playlistId || running || !status?.connected} onClick={()=>void perform(()=>agentAction(agentId, `/agent-playlists/${playlistId}/play`, {method:'POST'}), 'Đã phát playlist lên OBS')}>Phát thử</Button>
-        <a className="lc-link" href="#/playlists">Quản lý playlist →</a>
-      </div>
-    </Collapse>
     <p className="lc-disclaimer">Bản thử nghiệm chỉ điều khiển Media Source trong OBS; không tự bật Start Streaming. Kiểm tra trên OBS Preview trước khi phát thật.</p>
 
     <Modal open={obsOpen} title="Trạng thái OBS" size="md" onClose={()=>setObsOpen(false)} footer={<Button onClick={()=>setObsOpen(false)}>Đóng</Button>}>
