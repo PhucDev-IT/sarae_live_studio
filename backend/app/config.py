@@ -17,6 +17,20 @@ class Settings(BaseSettings):
     sarae_cloud_api_url: str = ""
     sarae_agent_id: str = ""
     sarae_agent_autostart_monitor: bool = False
+    # Centralized Media Library storage (system-owned). Provider for NEW uploads; existing media keep theirs.
+    sarae_storage_provider: str = "GOOGLE_DRIVE"
+    # Google OAuth web client of the Sarae Google Cloud project (system account, connected by a SUPER_ADMIN).
+    sarae_google_client_id: str = ""
+    sarae_google_client_secret: str = ""
+    # Backend URL Google redirects to, e.g. https://api.example.com/api/storage-admin/google/callback
+    sarae_google_redirect_uri: str = ""
+    # Drive folder name Sarae creates as its root (per-owner folders go inside it).
+    sarae_google_root_folder_name: str = "Sarae Media Storage"
+    # Sarae Web origin the admin callback returns the browser to.
+    sarae_web_app_url: str = "http://localhost:5173"
+    sarae_media_max_upload_bytes: int = 4 * 1024 ** 3
+    # Per-owner storage quota in bytes; 0 = unlimited.
+    sarae_media_owner_quota_bytes: int = 0
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""

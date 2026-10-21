@@ -22,6 +22,9 @@ from app.captcha_templates import router as captcha_templates_router
 from app.tiktok_products import router as tiktok_products_router
 from app.tiktok_catalog import router as tiktok_catalog_router
 from app.android_agents import router as android_agents_router
+from app.storage_admin import router as storage_admin_router
+from app.media_library import products_router as media_library_products_router, router as media_library_router
+from app.agent_media import router as agent_media_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 
@@ -30,6 +33,8 @@ app = FastAPI(title=settings.app_name, version=settings.app_version)
 def start_runtime_janitor():
     from app.shop_schema import upgrade
     upgrade()
+    from app.storage_models import ensure_schema
+    ensure_schema()
     from app.runtime import start_janitor
     start_janitor()
 
@@ -48,7 +53,8 @@ async def saas_legacy_guard(request, call_next):
           "/api/android-agents",
           "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
           "/api/media", "/api/live", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor",
-          "/api/captcha-templates", "/api/tiktok-products", "/api/tiktok-catalog")
+          "/api/captcha-templates", "/api/tiktok-products", "/api/tiktok-catalog",
+          "/api/storage-admin", "/api/media-library", "/api/agent-media")
     if settings.sarae_saas_mode and path.startswith("/api/") and path!="/api/health":
         if not any(path==prefix or path.startswith(prefix+"/") for prefix in safe):
             return JSONResponse(status_code=403,content={
@@ -91,3 +97,7 @@ app.include_router(tiktok_products_router)
 
 app.include_router(tiktok_catalog_router)
 app.include_router(android_agents_router)
+app.include_router(storage_admin_router)
+app.include_router(media_library_router)
+app.include_router(media_library_products_router)
+app.include_router(agent_media_router)

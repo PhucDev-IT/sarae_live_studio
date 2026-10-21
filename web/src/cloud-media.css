@@ -1,0 +1,23 @@
+/* Cloud Media Library: upload queue, player and product order (cards and grid reuse media.css). */
+.cm-drop{border:1px dashed var(--ui-border);border-radius:var(--ui-radius-card);padding:14px}
+.cm-muted{display:flex;align-items:center;gap:8px;margin:0;color:var(--ui-text-muted);font-size:14px}
+.cm-queue{display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.cm-row{display:grid;gap:6px;min-width:0}
+.cm-row-head,.cm-row-foot{display:flex;align-items:center;gap:10px;min-width:0;font-size:13px}
+.cm-row-head strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-row-head span,.cm-row-foot span{color:var(--ui-text-muted)}
+.cm-row-foot span{flex:1;min-width:0}
+.cm-row.is-error .cm-row-foot span{color:var(--ui-danger,#d33)}
+.cm-bar{height:6px;border-radius:999px;background:var(--ui-surface-2);overflow:hidden}
+.cm-bar span{display:block;height:100%;background:var(--ui-primary);transition:width .2s}
+.cm-row.is-done .cm-bar span{background:var(--ui-success)}
+.cm-row.is-error .cm-bar span,.cm-row.is-cancelled .cm-bar span{background:var(--ui-text-subtle)}
+.cm-player{width:100%;max-height:420px;border-radius:10px;background:#000}
+.cm-order{display:grid;gap:12px;max-width:640px}
+.cm-order-list{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.cm-order-list li{display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control);min-width:0}
+.cm-order-list li.is-missing{opacity:.65}
+.cm-order-index{width:24px;text-align:center;color:var(--ui-text-muted);font-variant-numeric:tabular-nums}
+.cm-order-name{flex:1;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-order-add{display:flex;gap:8px;align-items:center}
+.cm-order-add > :first-child{flex:1;min-width:0}

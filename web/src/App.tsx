@@ -5,6 +5,7 @@ import { Button, Input, ThemeProvider, ToastProvider } from './ui/core'
 import PresentersPage from './PresentersPage'
 import ProductsPage from './ProductsPage'
 import MediaPage from './MediaPage'
+import CloudMediaPage from './CloudMediaPage'
 import LiveWorkspace from './LiveWorkspace'
 import LiveControl from './LiveControl'
 import LiveSessions from './LiveSessions'
@@ -19,21 +20,22 @@ import PresenterVideoSetup from './PresenterVideoSetup'
 import { Activity, ArrowRight, BarChart3, Bell, Bot, ChevronLeft, ChevronRight, CircleHelp, Clapperboard, Cloud, Contact, Film, HardDrive, LayoutDashboard, ListVideo, Menu, MonitorPlay, Moon, Package, Play, Plus, Radio, Search, Settings2, Sun, Users, Video, Wifi, WifiOff, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
-type Page = 'agents' | 'account' | 'verification-monitor' | 'dashboard' | 'media' | 'products' | 'presenters' | 'presenter-videos' | 'product-videos' | 'playlists' | 'sessions' | 'live' | 'tiktok-chat' | 'ai' | 'settings'
+type Page = 'agents' | 'account' | 'verification-monitor' | 'dashboard' | 'cloud-media' | 'media' | 'products' | 'presenters' | 'presenter-videos' | 'product-videos' | 'playlists' | 'sessions' | 'live' | 'tiktok-chat' | 'ai' | 'settings'
 type Health = 'checking' | 'online' | 'offline'
 
 const navigation: { title: string; items: { id: Page; title: string; icon: LucideIcon }[] }[] = [
-  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'media', title: 'Thư viện video', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }, { id: 'presenter-videos', title: 'Video theo người', icon: Contact }] },
+  { title: 'WORKSPACE', items: [{ id: 'dashboard', title: 'Tổng quan', icon: LayoutDashboard }, { id: 'cloud-media', title: 'Thư viện video', icon: Cloud }, { id: 'media', title: 'Video trên Agent (cũ)', icon: Film }, { id: 'products', title: 'Sản phẩm', icon: Package }, { id: 'presenters', title: 'Người giới thiệu', icon: Users }, { id: 'presenter-videos', title: 'Video theo người', icon: Contact }] },
   { title: 'BROADCAST', items: [{ id: 'product-videos', title: 'Video theo sản phẩm', icon: ListVideo }, { id: 'playlists', title: 'Playlist', icon: ListVideo }, { id: 'sessions', title: 'Phiên LIVE', icon: Activity }, { id: 'live', title: 'Điều khiển LIVE', icon: Radio }, { id: 'tiktok-chat', title: 'TikTok Chat', icon: Bell }, { id: 'verification-monitor', title: 'CAPTCHA Monitor', icon: Activity }, { id: 'ai', title: 'AI Assistant', icon: Bot }] },
   { title: 'SYSTEM', items: [{ id: 'account', title: 'Tài khoản & License', icon: Users }, { id: 'agents', title: 'Windows Agents', icon: MonitorPlay }, { id: 'settings', title: 'Cài đặt', icon: Settings2 }] },
 ]
-const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & License', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', media: 'Thư viện video', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
+const titles: Record<Page, string> = { agents:'Windows Agents', account: 'Tài khoản & License', 'verification-monitor': 'CAPTCHA Monitor', dashboard: 'Tổng quan', 'cloud-media': 'Thư viện video', media: 'Video trên Agent (cũ)', products: 'Sản phẩm', presenters: 'Người giới thiệu', 'presenter-videos': 'Video theo người', 'product-videos': 'Video theo sản phẩm', playlists: 'Playlist', sessions: 'Phiên LIVE', live: 'Điều khiển LIVE', 'tiktok-chat': 'TikTok Chat', ai: 'AI Assistant', settings: 'Cài đặt' }
 const descriptions: Record<Page, string> = {
   account: 'Thông tin tài khoản, license và số máy được dùng, đổi mật khẩu và quản lý phiên đăng nhập.',
   agents: 'Các máy Windows chạy OBS của bạn: trạng thái, chọn máy cho tab này và lịch sử lệnh.',
   'verification-monitor': 'Phát hiện yêu cầu xác minh TikTok LIVE Studio, theo dõi sự kiện và nhận cảnh báo Telegram.',
   dashboard: 'Quản lý nội dung, trạng thái hệ thống và phiên phát từ một nơi.',
-  media: 'Tổ chức các short video, phân loại nội dung và liên kết sản phẩm.',
+  'cloud-media': 'Tải video lên kho của Sarae, xem trước, gắn sản phẩm. Mọi Windows Agent của bạn dùng chung thư viện này.',
+  media: 'Video MP4 nằm sẵn trên từng máy Windows Agent (cách lưu cũ, giữ nguyên dữ liệu).',
   products: 'Những sản phẩm bán trên LIVE: ảnh, mã, giá, mô tả cho AI và trạng thái sẵn sàng video.',
   presenters: 'Người mẫu / người dẫn xuất hiện trong video: ảnh, mô tả và số video đã gắn.',
   'presenter-videos': 'Xác định những ai xuất hiện trong từng video. Một video có thể có nhiều người.',
@@ -151,7 +153,7 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
               <div><div className="eyebrow">SARAE WORKSPACE <span className="eyebrow-line"/></div><h1>{titles[page]}</h1><p>{descriptions[page]}</p></div>
               {false && page === 'dashboard' && <Button className="primary-button" leftIcon={<Plus size={17}/>} onClick={() => navigate('media')}>Quản lý video</Button>}
             </div>
-            {page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
+            {page === 'agents' ? <AgentCloudStatus/> : page === 'account' ? <AccountPortal/> : page === 'dashboard' ? <Dashboard health={health} navigate={navigate}/> : page === 'settings' ? <Settings health={health} checkedAt={checkedAt}/> : page === 'products' ? <ProductsPage/> : page === 'presenters' ? <PresentersPage/> : page === 'cloud-media' ? <CloudMediaPage/> : page === 'media' ? <MediaPage/> : page === 'product-videos' ? <ProductVideoSetup/> : page === 'presenter-videos' ? <PresenterVideoSetup/> : page === 'sessions' ? <LiveSessions/> : page === 'playlists' ? <LiveWorkspace/> : page === 'live' ? <LiveControl/> : page === 'tiktok-chat' ? <TikTokChat/> : page === 'ai' ? <AISettings/> : page === 'verification-monitor' ? <VerificationMonitor/> : <ModulePage page={page} navigate={navigate}/>}
           </div>
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
@@ -190,7 +192,7 @@ function Dashboard({ health, navigate }: { health: Health; navigate: (page: Page
 }
 
 function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => void }) {
-  const content: Record<Exclude<Page, 'dashboard' | 'settings' | 'account' | 'agents'>, { icon: LucideIcon; title: string; summary: string; tasks: string[] }> = {
+  const content: Record<Exclude<Page, 'dashboard' | 'settings' | 'account' | 'agents' | 'cloud-media'>, { icon: LucideIcon; title: string; summary: string; tasks: string[] }> = {
     media: { icon: Film, title: 'Thư viện video sắp ra mắt', summary: 'Tại đây bạn sẽ import MP4 hàng loạt, chọn nơi lưu trữ và gắn sản phẩm cho từng video.', tasks: ['Import video / Link local folder', 'Metadata & ảnh đại diện', 'Phân loại theo sản phẩm, người mẫu'] },
     products: { icon: Package, title: 'Quản lý sản phẩm', summary: 'Dữ liệu sản phẩm sẽ được quản lý tập trung trên Backend và liên kết với video.', tasks: ['Sản phẩm và biến thể', 'Thông tin giới thiệu', 'Liên kết với video'] },
     presenters: { icon: Users, title: 'Người giới thiệu', summary: 'Quản lý người mẫu hoặc người giới thiệu xuất hiện trong từng video.', tasks: ['Hồ sơ người giới thiệu', 'Danh sách video liên quan', 'Thông tin mô tả'] },
@@ -203,7 +205,7 @@ function ModulePage({ page, navigate }: { page: Page; navigate: (page: Page) => 
     'verification-monitor': { icon: Activity, title: 'CAPTCHA Monitor', summary: 'Phát hiện yêu cầu xác minh trên TikTok LIVE Studio và cảnh báo qua Telegram.', tasks: ['Chụp màn hình', 'So khớp mẫu', 'Cảnh báo Telegram'] },
     ai: { icon: Bot, title: 'AI Assistant', summary: 'Thiết lập ngữ cảnh sản phẩm, quy tắc phản hồi và giọng nói ở giai đoạn AI.', tasks: ['Quy tắc phản hồi', 'Ngữ cảnh sản phẩm', 'Cấu hình TTS'] },
   }
-  const config = content[page as Exclude<Page, 'dashboard' | 'settings' | 'account' | 'agents'>]
+  const config = content[page as Exclude<Page, 'dashboard' | 'settings' | 'account' | 'agents' | 'cloud-media'>]
   const Icon = config.icon
   return <section className="module-panel panel"><div className="module-art"><span className="module-icon"><Icon size={31}/></span><div className="module-orbit orbit-a"/><div className="module-orbit orbit-b"/></div><div className="module-content"><div className="module-kicker">MODULE ROADMAP</div><h2>{config.title}</h2><p>{config.summary}</p><div className="module-tags">{config.tasks.map(task => <span key={task}>{task}</span>)}</div><Button variant="outline" className="secondary-button" leftIcon={<ChevronLeft size={17}/>} onClick={() => navigate('dashboard')}>Quay lại tổng quan</Button></div></section>
 }

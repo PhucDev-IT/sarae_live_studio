@@ -133,3 +133,4 @@
 .pa-upload input{display:none}
 .pa-upload strong{color:var(--ui-text)}
 .pa-upload small{font-size:12px}
+.pa-storage-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
