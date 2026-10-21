@@ -421,7 +421,13 @@ def prepare_session(session_id: int, body: PrepareInput, owner: Owner):
         agent=owned_agent(owner,body.agent_id,online=True)
         if playback_of(agent).get("running"):
             raise HTTPException(409,"Agent đang vận hành phiên khác")
-    result=run_command(body.agent_id,owner["id"],"tiktok_products_sync",{},wait=8,
+        from sqlalchemy import text
+        expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:id"),
+                            {"id":item.tiktok_account_id}).scalar_one_or_none()
+        if not expected:
+            raise HTTPException(409,"Chưa có user_id TikTok Account được xác minh")
+    result=run_command(body.agent_id,owner["id"],"tiktok_products_sync",
+                       {"expected_user_id":expected},wait=8,
                        context={"module":"tiktok_prepare","session_id":session_id})
     return respond(result,session_id=session_id,agent_id=body.agent_id)
 
