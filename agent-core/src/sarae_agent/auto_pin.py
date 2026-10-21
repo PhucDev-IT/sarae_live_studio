@@ -158,6 +158,7 @@ class AutoPinService:
         self._state = "idle"
         self._product_snapshot = None
         self._network_products = None
+        self._account_profile = None
         self._sync_capture_active = False
         self._observed_pages = set()
 
@@ -271,6 +272,34 @@ class AutoPinService:
         self._state = "ready"
         self._last_error = ""
 
+    def _capture_account_response(self, response):
+        """Capture the logged-in broadcaster's verified account from the page's own XHR."""
+        from urllib.parse import urlsplit
+        if not self._sync_capture_active:
+            return
+        if urlsplit(response.url).path != "/api/v1/streamer_desktop/account_info/get":
+            return
+        if response.status != 200:
+            return
+        try:
+            body = response.json()
+            data = body.get("data") or {}
+            uid = str(data.get("user_id") or "")
+            if body.get("code") != 0 or not uid.isdigit():
+                return
+            avatar = (data.get("avatar") or {}).get("url_list") or []
+            self._account_profile = {
+                "user_id": uid,
+                "tt_uid": str(data.get("tt_uid") or ""),
+                "user_name": str(data.get("user_name") or ""),
+                "nick_name": str(data.get("nick_name") or ""),
+                "user_type": data.get("user_type"),
+                "avatar_url": avatar[0] if avatar else "",
+            }
+            log.info("Verified TikTok LIVE account user_id=%s", uid)
+        except Exception as exc:
+            log.warning("Không đọc được TikTok account_info: %s", exc)
+
     def _capture_product_response(self,response):
         """Observe product responses only during an explicit manual sync."""
         if not self._sync_capture_active:
@@ -307,6 +336,7 @@ class AutoPinService:
     def _attach_response_listener(self,page):
         if id(page) not in self._observed_pages:
             page.on("response",self._capture_product_response)
+            page.on("response",self._capture_account_response)
             self._observed_pages.add(id(page))
 
     def _open_on_worker(self, url):
@@ -364,6 +394,7 @@ class AutoPinService:
         # A fresh scan must not reuse a prior shop's response. Refresh once to trigger
         # the console's own authenticated XHR; never reconstruct its signed URL.
         self._network_products = None
+        self._account_profile = None
         self._attach_response_listener(page)
         self._sync_capture_active = True
         try:
@@ -375,13 +406,15 @@ class AutoPinService:
         finally:
             self._sync_capture_active = False
         if self._network_products is not None:
+            if not self._account_profile:
+                raise RuntimeError("Không xác minh được user_id TikTok hiện tại từ account_info/get; chưa đồng bộ sản phẩm")
             rows=list(self._network_products)
             with self._lock:
                 self._found=[{"name":x["name"],"pinned":False} for x in rows]
                 self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
                 self._product_snapshot={"complete":True,"products":rows}
             return {**self.status(),"products_found":self._found,
-                    "product_snapshot":self._product_snapshot}
+                    "product_snapshot":self._product_snapshot, "account_profile":self._account_profile}
         # Old console revisions: retain read-only DOM diagnostics. The Cloud import
         # refuses DOM-only rows because they have no trustworthy TikTok IDs.
         found={}
