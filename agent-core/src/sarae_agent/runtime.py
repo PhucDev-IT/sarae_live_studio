@@ -292,15 +292,19 @@ class AgentRuntime:
 
     def sync_tiktok_products(self) -> dict:
         """Scan browser on its worker, then send the verified complete snapshot to Cloud."""
-        snapshot=self.auto_pin.scan_products().get("product_snapshot") or {}
+        scan=self.auto_pin.scan_products()
+        snapshot=scan.get("product_snapshot") or {}
+        account=scan.get("account_profile")
         if not snapshot.get("complete"):
             raise AgentError("TIKTOK_SCAN_PARTIAL",
                              "Danh sách TikTok chưa quét đủ; chưa đồng bộ Cloud")
+        if not account or not account.get("user_id"):
+            raise AgentError("TIKTOK_ACCOUNT_UNVERIFIED", "Chưa xác minh được tài khoản TikTok đang đăng nhập")
         identity=self.activation.require()
         from sarae_agent.cloud.client import CloudClient
         with CloudClient(identity.cloud_url or self.config.get().cloud.api_url) as client:
             result=client.sync_tiktok_products(identity.credential,identity.agent_id,
-                                               snapshot["products"])
+                                               snapshot["products"],account)
         log.info("Đồng bộ TikTok: %s sản phẩm, khớp Sarae: %s",
                  result.get("summary",{}).get("tiktok"),result.get("summary",{}).get("matched"))
         return result
