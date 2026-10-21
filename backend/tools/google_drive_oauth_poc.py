@@ -115,6 +115,20 @@ def diff_ids(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> dict[
     return {"added": sorted(new - old), "removed": sorted(old - new)}
 
 
+def parse_drive_id(text: str) -> str:
+    """Accept a raw file ID or a drive.google.com link (/file/d/<id>/, ?id=<id>)."""
+    text = text.strip()
+    if not text:
+        return ""
+    url = urllib.parse.urlparse(text)
+    if url.scheme and url.netloc:
+        parts = [p for p in url.path.split("/") if p]
+        if "d" in parts and parts.index("d") + 1 < len(parts):
+            return parts[parts.index("d") + 1]
+        return urllib.parse.parse_qs(url.query).get("id", [""])[0]
+    return text
+
+
 def redact(text: str) -> str:
     """Strip anything that looks like a Google token from error text."""
     out = []
@@ -140,8 +154,12 @@ class Report:
         self.checks = {c.code: c for c in [
             Check("C1", "Folder selected and readable"),
             Check("C2", "List existing files in folder"),
+            Check("C2b", "Direct files.get on --probe-file-id (file added in an earlier run)"),
             Check("C3", "User added new file directly in Drive"),
-            Check("C4", "New file visible to Sarae"),
+            Check("C4", "New file visible in files.list (polling)"),
+            Check("C4b", "Direct files.get on the new file ID"),
+            Check("C4c", "Changes API reports the new file"),
+            Check("C4d", "New file visible after re-picking the folder (drive.file only)"),
             Check("C5", "Download private file (Range + integrity)"),
             Check("C6a", "Refresh token issues new access token"),
             Check("C6b", "Access rejected after revoke"),
@@ -351,6 +369,91 @@ def wait(inbox: _Inbox, seconds: int) -> bool:
     return ok
 
 
+def pick_folder(inbox: _Inbox, drive: Drive, port: int, prompt: str) -> list[dict[str, Any]]:
+    cfg = {"token": drive.access_token, "apiKey": os.environ["GOOGLE_PICKER_API_KEY"],
+           "appId": os.environ["GOOGLE_CLOUD_PROJECT_NUMBER"]}
+    inbox.picked = []
+    inbox.picker_html = PICKER_PAGE.replace("__CFG__", json.dumps(cfg)).replace("__FOLDER__", FOLDER_MIME)
+    webbrowser.open(f"http://127.0.0.1:{port}/picker")
+    log(prompt)
+    got = wait(inbox, 600)
+    inbox.picker_html = ""  # drop the page that embeds the short-lived token
+    return inbox.picked if got else []
+
+
+def probe_new_file(drive: Drive, report: Report, file_id: str, folder_id: str, code: str = "C4b") -> None:
+    r = drive.get_file(file_id)
+    body = r.json() if r.status_code == 200 else {}
+    report.set(code, r.status_code == 200, http=r.status_code, file_id=file_id,
+               name=body.get("name"), mime_type=body.get("mimeType"),
+               in_folder=folder_id in body.get("parents", []) if body else None,
+               trashed=body.get("trashed"),
+               error=None if r.status_code == 200 else redact(r.text[:200]),
+               meaning="404 with drive.file = app has no per-file grant (permission, not delay)")
+
+
+def check_new_file(args: argparse.Namespace, drive: Drive, report: Report, inbox: _Inbox,
+                   folder_id: str, before: list[dict[str, Any]], page_token: str) -> list[dict[str, Any]]:
+    """C3/C4/C4b/C4c/C4d. Returns the newest folder listing."""
+    input("\n>>> Now open drive.google.com, upload a NEW video into this folder, wait until "
+          "the upload finishes (no 'Processing'), then press Enter here... ")
+    report.set("C3", True, confirmed_by="operator")
+    new_id = parse_drive_id(input(">>> Optional: paste the new video's Drive link or file ID "
+                                  "(right click > Share > Copy link), or press Enter to skip: "))
+
+    # C4: poll files.list so a transient propagation delay cannot cause a false FAIL.
+    attempts = []
+    after = before
+    deadline = time.monotonic() + args.poll_seconds
+    while True:
+        code, listing, err = drive.list_children(folder_id)
+        delta = diff_ids(before, listing) if code == 200 else {"added": [], "removed": []}
+        attempts.append({"at": stamp(), "http": code, "items": len(listing), "added": delta["added"], "error": err})
+        log(f"C4 poll #{len(attempts)}: http={code} items={len(listing)} added={delta['added']}")
+        if code == 200:
+            after = listing
+        if delta["added"] or time.monotonic() >= deadline:
+            break
+        time.sleep(args.poll_interval)
+    added = diff_ids(before, after)["added"]
+    report.set("C4", bool(added), poll_seconds=args.poll_seconds, poll_interval=args.poll_interval,
+               attempts=len(attempts), first_seen_at=next((a["at"] for a in attempts if a["added"]), None),
+               added=added, operator_file_id=new_id or None,
+               operator_file_listed=(new_id in added) if new_id else None, history=attempts)
+
+    # C4b: ask Drive for the exact file. 200 => readable; 404 => not granted.
+    if new_id:
+        probe_new_file(drive, report, new_id, folder_id)
+    else:
+        report.set("C4b", None, reason="operator did not paste the file ID")
+
+    # C4c: Changes API since before the upload; record everything, not only folder hits.
+    changes = drive.list_changes(page_token)
+    summary = [{"fileId": c.get("fileId"), "removed": c.get("removed"),
+                "name": (c.get("file") or {}).get("name"),
+                "in_folder": folder_id in (c.get("file") or {}).get("parents", [])} for c in changes]
+    hit = any(s["in_folder"] or (new_id and s["fileId"] == new_id) for s in summary)
+    report.set("C4c", hit, total_changes=len(changes), changes=summary[:50],
+               meaning="Changes API only returns files the token can access")
+
+    # C4d: does picking the folder again extend the drive.file grant to the new file?
+    if args.scope != "file" or not args.repick:
+        report.set("C4d", None, reason="only with --scope file --repick")
+        return after
+    picked = pick_folder(inbox, drive, args.port, "Re-pick the SAME folder in the Picker...")
+    if not any(p.get("id") == folder_id for p in picked):
+        report.set("C4d", False, reason="same folder was not re-picked", picked=picked)
+        return after
+    code, listing, err = drive.list_children(folder_id)
+    delta = diff_ids(before, listing) if code == 200 else {"added": [], "removed": []}
+    detail: dict[str, Any] = {"http": code, "items": len(listing), "added": delta["added"], "error": err}
+    if new_id:
+        detail["direct_get_http"] = drive.get_file(new_id).status_code
+    report.set("C4d", bool(delta["added"]), **detail,
+               meaning="PASS = re-pick refreshes the grant; still a manual action, not auto-sync")
+    return listing if code == 200 else after
+
+
 def run(args: argparse.Namespace) -> int:
     client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
@@ -393,18 +496,13 @@ def run(args: argparse.Namespace) -> int:
         # ---- C1 select folder
         folder_id = args.folder_id
         if args.scope == "file":
-            cfg = {"token": drive.access_token, "apiKey": os.environ["GOOGLE_PICKER_API_KEY"],
-                   "appId": os.environ["GOOGLE_CLOUD_PROJECT_NUMBER"]}
-            inbox.picker_html = PICKER_PAGE.replace("__CFG__", json.dumps(cfg)).replace("__FOLDER__", FOLDER_MIME)
-            webbrowser.open(f"http://127.0.0.1:{args.port}/picker")
-            log("Pick a folder in the browser Picker page...")
-            if not wait(inbox, 600) or not inbox.picked:
+            picked = pick_folder(inbox, drive, args.port, "Pick a folder in the browser Picker page...")
+            if not picked:
                 report.set("C1", False, reason="no folder picked")
                 return 1
-            inbox.picker_html = ""  # drop the page that embeds the short-lived token
-            folders = [p for p in inbox.picked if p.get("mimeType") == FOLDER_MIME]
+            folders = [p for p in picked if p.get("mimeType") == FOLDER_MIME]
             if not folders:
-                report.set("C1", False, reason="picked items are not folders", picked=inbox.picked)
+                report.set("C1", False, reason="picked items are not folders", picked=picked)
                 return 1
             folder_id = folders[0]["id"]
         r = drive.get_file(folder_id)
@@ -418,7 +516,7 @@ def run(args: argparse.Namespace) -> int:
         videos = [f for f in before if is_video(f)]
         report.set("C2", code == 200 and len(videos) > 0, http=code, error=err,
                    items_visible=len(before), videos_visible=len(videos),
-                   sample=[f.get("name") for f in videos[:5]],
+                   visible=[{"name": f.get("name"), "mimeType": f.get("mimeType")} for f in before[:50]],
                    note="Compare items_visible with what Drive UI shows in this folder")
         if args.expected_count is not None:
             report.checks["C2"].detail["expected_count"] = args.expected_count
@@ -426,21 +524,17 @@ def run(args: argparse.Namespace) -> int:
                 report.set("C2", False, reason="visible count differs from what the user sees in Drive")
 
         # ---- C3/C4 new file added outside Sarae
-        if args.skip_manual:
-            report.set("C3", None)
-            report.set("C4", None)
+        if args.probe_file_id:
+            # A file that already exists in Drive (e.g. the 9th video of a previous run).
+            probe_new_file(drive, report, parse_drive_id(args.probe_file_id), folder_id, code="C2b")
         else:
-            input("\n>>> Now open drive.google.com, upload a NEW video into this folder, wait until "
-                  "the upload finishes, then press Enter here... ")
-            report.set("C3", True, confirmed_by="operator")
-            code, after, err = drive.list_children(folder_id)
-            delta = diff_ids(before, after)
-            changes = drive.list_changes(page_token)
-            changed_in_folder = [c["fileId"] for c in changes
-                                 if folder_id in (c.get("file") or {}).get("parents", [])]
-            report.set("C4", bool(delta["added"]), http=code, error=err, list_delta=delta,
-                       changes_api_hits_in_folder=changed_in_folder)
-            before = after if code == 200 else before
+            report.set("C2b", None, reason="no --probe-file-id")
+        if args.skip_manual:
+            for code_ in ("C3", "C4", "C4b", "C4c", "C4d"):
+                if report.checks[code_].status == "NOT_RUN":
+                    report.set(code_, None)
+        else:
+            before = check_new_file(args, drive, report, inbox, folder_id, before, page_token)
             videos = [f for f in before if is_video(f)]
 
         # ---- C5 download private file
@@ -487,6 +581,10 @@ def main() -> int:
     parser.add_argument("--full-download", action="store_true", help="Also stream the whole file and compare md5")
     parser.add_argument("--max-full-mb", type=int, default=200)
     parser.add_argument("--skip-manual", action="store_true", help="Skip C3/C4 (no manual upload step)")
+    parser.add_argument("--poll-seconds", type=int, default=300, help="How long C4 keeps re-listing the folder")
+    parser.add_argument("--poll-interval", type=int, default=15)
+    parser.add_argument("--repick", action="store_true", help="C4d: re-pick the folder after C4 (drive.file)")
+    parser.add_argument("--probe-file-id", help="Drive link/ID of an existing file to probe with files.get (C4b)")
     return run(parser.parse_args())
 
 
