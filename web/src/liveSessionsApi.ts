@@ -81,7 +81,7 @@ export const sessionsApi = {
   start:(session:LiveSession, agentId:string, productId?:number) => agentAction<SessionAction>(agentId, `/live/sessions/${session.id}/start`, json({agent_id:agentId, ...(productId ? {product_id:productId} : {})})),
   switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
   /** Plays a RUNNING session again on its Agent after playback was lost (Agent or OBS restarted). */
-  resume:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/resume`, json(productId ? {product_id:productId} : {})),
+  resume:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/resume`, json(productId ? {product_id:productId} : {})),
   finish:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/finish`, {method:'POST'}),
   /** The owner's products with how many LIVE videos each has on that Agent. */
   products:(agentId:string) => apiRequest<LiveProduct[]>(onAgent('/live/products', agentId)),
