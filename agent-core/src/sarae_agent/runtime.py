@@ -26,7 +26,7 @@ from sarae_agent.auto_pin import AutoPinService
 from sarae_agent.cloud.commands import CommandRouter
 from sarae_agent.cloud.journal import CommandJournal, CommandLock, EventOutbox
 from sarae_agent.cloud.worker import CloudWorker
-from sarae_agent.config import ConfigStore, paths
+from sarae_agent.config import ConfigError, ConfigStore, normalize_cloud_url, paths
 from sarae_agent.diagnostics import export_bundle
 from sarae_agent.errors import AgentError
 from sarae_agent.logging_setup import event_handler
@@ -70,6 +70,7 @@ class AgentRuntime:
 
         self.config = ConfigStore()
         self.activation = ActivationService()
+        self._restore_activated_cloud_url()
         self.library = MediaLibrary(self.config, self.emit)
         self.obs = ObsController(self.config, self.emit)
         self.outbox = EventOutbox()
@@ -84,6 +85,22 @@ class AgentRuntime:
         self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
+
+    def _restore_activated_cloud_url(self) -> None:
+        """Repair an empty local Cloud URL using this device's existing activation.
+
+        Never replace a nonempty URL: start_agent must still reject an identity mismatch.
+        """
+        identity = self.activation.identity
+        if not identity or not identity.cloud_url or self.config.get().cloud.api_url:
+            return
+        try:
+            restored = normalize_cloud_url(identity.cloud_url)
+            if restored:
+                self.config.update({"cloud": {"api_url": restored}})
+                log.info("Đã khôi phục Cloud API URL từ thông tin kích hoạt")
+        except (ConfigError, ValueError, OSError) as exc:
+            log.warning("Không thể khôi phục Cloud API URL: %s", exc)
 
     # --- events --------------------------------------------------------------------------
     def emit(self, name: str, data: dict) -> None:
@@ -170,6 +187,7 @@ class AgentRuntime:
                 self.worker.stop(timeout=5)  # stopped on a fatal error: release its threads and command lock
                 self.worker = None
             identity = self.activation.require()
+            self._restore_activated_cloud_url()
             cfg = self.config.get()
             api_url = cfg.cloud.api_url
             if not api_url:
