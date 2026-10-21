@@ -21,6 +21,10 @@ jobs:
         env:
           PYTHONPATH: backend:backend/tests
         run: python -m unittest discover -s backend/tests -p test_tiktok_account_contract.py
+      - name: Test Agent Cloud Media Cache (fake Cloud)
+        env:
+          PYTHONPATH: agent-core/src
+        run: python -m unittest discover -s agent-core/tests -p test_cloud_media_cache.py
       - name: Test centralized Media Library (fake Google Drive)
         env:
           PYTHONPATH: backend:backend/tests
