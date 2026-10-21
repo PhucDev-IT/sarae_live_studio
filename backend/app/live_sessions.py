@@ -677,7 +677,13 @@ def finish_session(session_id: int, owner: Owner):
         stop = None
         if playing:
             stop = create_command(item.agent_id, owner["id"], "playback_stop", session_id=session_id,
-                                  idempotency_key=f"finish:{session_id}")
+                                  idempotency_key=f"finish:{session_id}",
+                                  context={"module":"live_sessions","action":"finish","session_id":session_id})
+        elif agent and agent["online"]:
+            # User finished and the Agent reports idle; keep an offline claim reserved
+            # until a confirmed stop/reconciliation rather than guessing.
+            release_live_claim(db,session_id)
+            db.commit()
         return {**serialize(db, item), "command": stop}
 
 @router.get("/{session_id}/events")
