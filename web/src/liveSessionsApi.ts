@@ -77,6 +77,8 @@ export const sessionsApi = {
   remove:(id:number) => apiRequest<void>(`/live/sessions/${id}`, {method:'DELETE'}),
   duplicate:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/duplicate`, {method:'POST'}),
   saveProducts:(id:number, productIds:number[]) => apiRequest<LiveSession>(`/live/sessions/${id}/products`, json({product_ids:productIds}, 'PUT')),
+  prepare:(session:LiveSession, agentId:string) =>
+    agentAction(agentId, `/live/sessions/${session.id}/prepare`, json({agent_id:agentId})),
   // Sent to the session's own Agent; resolved once the Agent confirmed (or rejected with its error).
   start:(session:LiveSession, agentId:string, productId?:number) => agentAction<SessionAction>(agentId, `/live/sessions/${session.id}/start`, json({agent_id:agentId, ...(productId ? {product_id:productId} : {})})),
   switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
