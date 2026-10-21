@@ -293,7 +293,11 @@ class AgentRuntime:
 
     def sync_tiktok_products(self, expected_user_id: str | None = None) -> dict:
         """Scan browser on its worker, then send the verified complete snapshot to Cloud."""
-        scan=self.auto_pin.scan_products()
+        from sarae_agent.auto_pin import AccountMismatch
+        try:
+            scan=self.auto_pin.scan_products(expected_user_id)
+        except AccountMismatch as exc:
+            raise AgentError("TIKTOK_ACCOUNT_MISMATCH", str(exc)) from exc
         snapshot=scan.get("product_snapshot") or {}
         account=scan.get("account_profile")
         if not snapshot.get("complete"):
