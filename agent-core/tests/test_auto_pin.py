@@ -26,18 +26,48 @@ class FakeProc:
         return 0
 
 
+class FakeResponse:
+    def __init__(self, path, body, status=200):
+        self.url, self.status, self._body = "https://shop.tiktok.com" + path, status, body
+
+    def json(self):
+        return self._body
+
+
+def console_responses(user_id="7494647113328657914", products=(("9", "1", "Son môi Đỏ"), ("9", "2", "Đồng hồ S9"))):
+    """What the LIVE Console's own XHRs return after a reload: the logged-in account and the LIVE cart."""
+    return [FakeResponse("/api/v1/streamer_desktop/account_info/get",
+                         {"code": 0, "data": {"user_id": user_id, "user_name": "sarae.fashion3", "user_type": 1}}),
+            FakeResponse("/api/v1/streamer_desktop/live_product/list",
+                         {"code": 0, "data": {"products": [{"product_id": pid, "title": name, "seller_info": {"seller_id": seller}}
+                                                           for seller, pid, name in products]}})]
+
+
 class FakePage:
-    def __init__(self, url, rows=None):
+    def __init__(self, url, rows=None, responses=()):
         self.url = url
         self.rows = rows or []
         self.scripts = []
+        self.handlers = []
+        self.responses = list(responses)
 
     def is_closed(self):
         return False
 
+    def on(self, event, handler):
+        self.handlers.append(handler)
+
+    def reload(self, **_options):
+        for response in self.responses:
+            for handler in self.handlers:
+                handler(response)
+
+    def wait_for_timeout(self, _ms):
+        pass
+
     def evaluate(self, script):
         self.scripts.append(script)
-        return self.rows
+        return {"rows": self.rows, "scroll": None}
 
 
 class AutoPinTests(unittest.TestCase):
@@ -167,29 +197,41 @@ class LoginFlowTests(unittest.TestCase):
         self.assertIn("đăng nhập lại", status["last_error"])
         self.pin._context = None
 
-    def test_scan_reads_products_from_the_console(self):
-        rows = [{"name": "Son môi Đỏ", "pinned": False}, {"name": "Đồng hồ S9", "pinned": True},
-                {"name": "Son môi Đỏ", "pinned": False}, {"name": " ", "pinned": False}, "junk"]
+    def test_scan_reads_account_and_cart_from_the_console_responses(self):
         self.pin._context = object()
-        self.pin._page = FakePage(CONSOLE, rows)
+        self.pin._page = FakePage(CONSOLE, responses=console_responses())
         result = self.pin.scan_products()
-        self.assertEqual(result["products"], ["Son môi Đỏ", "Đồng hồ S9"])  # deduplicated, blanks dropped
-        self.assertEqual(result["products_found"][1], {"name": "Đồng hồ S9", "pinned": True})
-        self.assertEqual(result["found"], 2)
-        self.assertIs(self.pin._page.scripts[0], auto_pin.SCAN_PRODUCTS_JS)  # read-only page script
-        self.pin._page = FakePage(CONSOLE, [])
-        with self.assertRaises(RuntimeError):
-            self.pin.scan_products()  # no product row with a Ghim button: never an empty list
-        self.assertEqual(self.pin.status()["products"], ["Son môi Đỏ", "Đồng hồ S9"])
+        self.assertEqual(result["account_profile"]["user_id"], "7494647113328657914", "account_info data.user_id, not seller_id")
+        self.assertEqual(result["product_snapshot"]["complete"], True)
+        self.assertEqual([(p["seller_id"], p["product_id"]) for p in result["product_snapshot"]["products"]], [("9", "1"), ("9", "2")])
+        self.assertEqual(result["products"], ["Son môi Đỏ", "Đồng hồ S9"])
+        self.assertEqual(self.pin._page.scripts, [], "no DOM script when the console's own response is available")
+        # Old console without the product response: DOM rows are diagnostics only, never a complete snapshot.
+        self.pin._page = FakePage(CONSOLE, rows=[{"name": "Váy", "pinned": False}])
+        self.assertFalse(self.pin.scan_products()["product_snapshot"]["complete"])
         self.pin._page = FakePage("https://www.tiktok.com/login")
         with self.assertRaises(RuntimeError):
             self.pin.scan_products()
         self.assertEqual(self.pin.status()["state"], "login_required")
         self.pin._context = None
 
-    def test_start_without_a_list_pins_every_product_of_the_page(self):
+    def test_scan_for_another_account_keeps_the_previous_list(self):
+        self.pin._context = object()
+        self.pin._page = FakePage(CONSOLE, responses=console_responses())
+        self.pin.scan_products("7494647113328657914")
+        self.pin._page = FakePage(CONSOLE, responses=console_responses(user_id="7495962653689350865", products=(("8", "5", "Khác"),)))
+        with self.assertRaises(auto_pin.AccountMismatch):
+            self.pin.scan_products("7494647113328657914")
+        self.assertEqual(self.pin.status()["products"], ["Son môi Đỏ", "Đồng hồ S9"], "the wrong account's cart is not kept")
+        self.pin._context = None
+
+    def test_start_needs_a_manual_sync_first(self):
+        """Products found on the page are never pinned wholesale without the user's explicit sync."""
         self.pin._context = object()
         self.pin._page = FakePage(CONSOLE, [{"name": "A", "pinned": False}, {"name": "B", "pinned": False}])
+        with self.assertRaises(RuntimeError):
+            self.pin.start()
+        self.pin.configure(["A", "B"], 15)
         with mock.patch.object(AutoPinService, "_pin", side_effect=lambda term: term):
             status = self.pin.start()
             self.assertEqual((status["enabled"], status["products"]), (True, ["A", "B"]))

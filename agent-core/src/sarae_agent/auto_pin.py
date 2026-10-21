@@ -79,6 +79,10 @@ SCAN_PRODUCTS_JS = r"""
 """
 
 
+class AccountMismatch(RuntimeError):
+    """The LIVE Console is logged in with another TikTok account than the one expected."""
+
+
 class LoginRequired(RuntimeError):
     """The console sent the controlled browser to a login or verification page."""
 
@@ -376,16 +380,20 @@ class AutoPinService:
         self._landed()
         return self.status()
 
-    def scan_products(self):
-        """Read the products of the open LIVE Console and make them the pin list (all of them)."""
-        return self._request("scan")
+    def scan_products(self, expected_user_id: str | None = None):
+        """Read the products of the open LIVE Console (account_info + live_product/list).
 
-    def _scan_on_worker(self) -> dict:
-        """Read visible DOM rows while scrolling the TikTok product container (read-only)."""
+        With `expected_user_id`, a Console logged in with another account raises AccountMismatch and changes
+        nothing: the pin list and the snapshot keep what they had."""
+        return self._request("scan", expected_user_id)
+
+    def _scan_on_worker(self, expected_user_id: str | None = None) -> dict:
+        """Read the console's own product response (or, on old consoles, visible DOM rows) — read-only."""
         page=self._page
         if self._context is None or page is None:
             raise RuntimeError("Chưa mở Chrome điều khiển: đăng nhập rồi bấm đồng bộ")
         if needs_login(page.url):
+            self._state = "login_required"
             raise LoginRequired(RELOGIN)
         if urlsplit(page.url).hostname not in LIVE_ORIGINS:
             raise RuntimeError("Trang hiện tại không phải TikTok LIVE Console")
@@ -408,6 +416,9 @@ class AutoPinService:
         if self._network_products is not None:
             if not self._account_profile:
                 raise RuntimeError("Không xác minh được user_id TikTok hiện tại từ account_info/get; chưa đồng bộ sản phẩm")
+            if expected_user_id is not None and self._account_profile.get("user_id") != expected_user_id:
+                # Checked before anything is kept: the wrong account's cart never becomes the pin list.
+                raise AccountMismatch("TikTok LIVE Console đang đăng nhập tài khoản khác với phiên LIVE")
             rows=list(self._network_products)
             with self._lock:
                 self._found=[{"name":x["name"],"pinned":False} for x in rows]
@@ -445,11 +456,15 @@ class AutoPinService:
         rows=sorted(found.values(),key=lambda x:x.get("position") or 999999)
         if not rows:
             raise RuntimeError("Không tìm thấy ô thứ tự sản phẩm (.pc_order_input) trên trang TikTok")
+        if expected_user_id is not None:
+            # Without account_info the logged-in account cannot be verified for a session sync.
+            raise RuntimeError("Không đọc được account_info/get của TikTok; chưa xác minh được tài khoản để đồng bộ")
         with self._lock:
             self._found=[{"name":x["name"],"pinned":False} for x in rows]
             self._items=[x["name"] for x in rows[:MAX_PRODUCTS]]
             self._index=0
-            self._product_snapshot={"complete":complete and len(rows)<=1000,"products":rows}
+            # DOM rows have no TikTok IDs: diagnostics and pin names only, never a complete Cloud snapshot.
+            self._product_snapshot={"complete":False,"dom_complete":complete and len(rows)<=1000,"products":rows}
         log.info("TikTok DOM scan: %s sản phẩm, complete=%s",len(rows),complete)
         return {**self.status(),"products_found":self._found,
                 "product_snapshot":self._product_snapshot}
@@ -505,7 +520,7 @@ class AutoPinService:
                 if method == "open":
                     result = self._open_on_worker(*args)
                 elif method == "scan":
-                    result = self._scan_on_worker()
+                    result = self._scan_on_worker(*args)
                 elif method == "start":
                     if self._context is None:
                         self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
