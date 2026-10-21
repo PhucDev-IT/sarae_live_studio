@@ -39,19 +39,28 @@ def assess(db,owner_id:str,agent_id:str,product_ids:list[int])->dict:
                      "available_video_count":available,"ready":not reasons,"reasons":reasons})
     return {"products":rows,"ready":all(p["ready"] for p in rows)}
 
-def reconcile(db,owner_id:str,agent_id:str,selected:list[int],shop_id:int|None=None)->dict:
+def reconcile(db,owner_id:str,agent_id:str|None,selected:list[int],shop_id:int|None=None,
+              expected_user_id:str|None=None)->dict:
     """Compare selected LIVE products against the latest TikTok browser snapshot.
 
     Legacy snapshots contain names but no TikTok IDs, so those matches are provisional.
     A missing/stale snapshot is UNKNOWN, never interpreted as an empty TikTok lineup.
     """
+    if agent_id is None:
+        # No Agent chosen yet: video availability and the Console cart are unknown, not "missing".
+        return {"products":[{"product_id":pid,"name":None,"available_video_count":None,"ready":False,
+                             "reasons":["AGENT_NOT_SELECTED"]} for pid in selected],
+                "ready":False,"snapshot_at":None,"snapshot_state":"UNKNOWN","account_match":None,
+                "missing_on_tiktok":[],"unselected_on_sarae":[],"ambiguous":[]}
     readiness=assess(db,owner_id,agent_id,selected)
     with snapshot_connection() as conn:
-        snap=conn.execute("SELECT scanned_at,products_json FROM snapshots WHERE owner_id=? AND agent_id=?",
+        snap=conn.execute("SELECT scanned_at,products_json,account_user_id FROM snapshots WHERE owner_id=? AND agent_id=?",
                           (owner_id,agent_id)).fetchone()
     if not snap:
-        return {**readiness,"snapshot_at":None,"snapshot_state":"UNKNOWN",
+        return {**readiness,"snapshot_at":None,"snapshot_state":"UNKNOWN","account_match":None,
                 "missing_on_tiktok":[],"unselected_on_sarae":[],"ambiguous":[]}
+    # The Console cart only counts for this session when it was read while the session's account was logged in.
+    account_match=None if expected_user_id is None else snap["account_user_id"]==expected_user_id
     all_source=json.loads(snap["products_json"])
     selected_products={p.id:p for p in db.scalars(select(Product).where(
         Product.owner_id==owner_id,Product.id.in_(selected))).all()} if selected else {}
@@ -80,7 +89,12 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int],shop_id:int|None=N
         recent=(datetime.now(timezone.utc)-ts).total_seconds()<=600
     except (ValueError,TypeError):
         recent=False
+    if account_match is False:
+        state="ACCOUNT_MISMATCH"
+    else:
+        state="FRESH" if recent else "STALE"
     return {**readiness,"snapshot_at":snap["scanned_at"],
-            "snapshot_state":"FRESH" if recent else "STALE",
+            "snapshot_state":state,"account_match":account_match,
+            "snapshot_account_user_id":snap["account_user_id"],
             "matching_basis":"SELLER_ID_AND_PRODUCT_ID",
             "missing_on_tiktok":missing,"unselected_on_sarae":unselected,"ambiguous":ambiguous}

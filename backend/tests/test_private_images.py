@@ -51,27 +51,33 @@ class PrivateImageTests(SaasTestCase):
         name = uploaded["ref"].rsplit("/", 1)[1]
         forged = media_access.signed(uploaded["ref"], "product", name, self.owner_b["id"])
         self.assertEqual(self.client.get(forged).status_code, 403, "a URL signed for B does not open A's photo")
-        attach = self.client.post("/api/products", json={"name": "Của B", "image_url": uploaded["url"]}, headers=self.B)
+        attach = self.client.post("/api/presenters", json={"name": "Của B", "avatar_url": uploaded["url"]}, headers=self.B)
         self.assertEqual(attach.status_code, 422)
 
     def test_api_returns_signed_urls_and_stores_the_stable_reference(self):
-        uploaded = self.upload()
-        created = self.client.post("/api/products", json={"name": "Áo", "image_url": uploaded["url"]}).json()
-        self.assertIn("sig=", created["image_url"])
+        uploaded = self.upload(folder="presenters")
+        created = self.client.post("/api/presenters", json={"name": "Lan", "avatar_url": uploaded["url"]}).json()
+        self.assertIn("sig=", created["avatar_url"])
         with self.Session() as db:
-            self.assertEqual(db.get(catalog.Product, created["id"]).image_url, uploaded["ref"])
-        listed = self.client.get("/api/products").json()[0]["image_url"]
+            self.assertEqual(db.get(catalog.Presenter, created["id"]).avatar_url, uploaded["ref"])
+        listed = self.client.get("/api/presenters").json()[0]["avatar_url"]
         self.assertEqual(self.client.get(listed).status_code, 200)
-        external = self.client.post("/api/products", json={"name": "Ngoài", "image_url": "https://cdn.example/a.png"}).json()
-        self.assertEqual(external["image_url"], "https://cdn.example/a.png", "external URLs are left as they are")
+        external = self.client.post("/api/presenters", json={"name": "Ngoài", "avatar_url": "https://cdn.example/a.png"}).json()
+        self.assertEqual(external["avatar_url"], "https://cdn.example/a.png", "external URLs are left as they are")
+        # Product photos come from TikTok (CDN URLs synced by the Agent) and are returned as they are.
+        (pid,) = self.tiktok_products(self.owner_a, "Áo")
+        with self.Session() as db:
+            db.get(catalog.Product, pid).image_url = "https://p16-oec.tiktokcdn.com/a.jpg"
+            db.commit()
+        self.assertEqual(self.client.get(f"/api/products/{pid}").json()["image_url"], "https://p16-oec.tiktokcdn.com/a.jpg")
 
     def test_replaced_or_deleted_photo_is_removed(self):
-        first, second = self.upload(), self.upload()
-        product = self.client.post("/api/products", json={"name": "Áo", "image_url": first["url"]}).json()
-        self.client.put(f"/api/products/{product['id']}", json={"name": "Áo", "image_url": second["url"]})
+        first, second = self.upload(folder="presenters"), self.upload(folder="presenters")
+        person = self.client.post("/api/presenters", json={"name": "Lan", "avatar_url": first["url"]}).json()
+        self.client.put(f"/api/presenters/{person['id']}", json={"name": "Lan", "avatar_url": second["url"]})
         self.assertFalse((Path(self.images.name) / first["ref"].rsplit("/", 1)[1]).exists())
         self.assertEqual(self.client.get(first["url"]).status_code, 404)
-        self.client.delete(f"/api/products/{product['id']}")
+        self.client.delete(f"/api/presenters/{person['id']}")
         self.assertEqual(self.client.get(second["url"]).status_code, 404)
 
     def test_presenter_photos_follow_the_same_rules(self):
