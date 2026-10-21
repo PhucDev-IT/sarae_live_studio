@@ -13,11 +13,19 @@ export function Settings() {
   const [host, setHost] = useState('')
   const [port, setPort] = useState(4455)
   const [password, setPassword] = useState('')
+  const [mediaInput, setMediaInput] = useState('Sarae Video')
+  const [dualMode, setDualMode] = useState(false)
+  const [sourceA, setSourceA] = useState('')
+  const [sourceB, setSourceB] = useState('')
 
   useEffect(() => {
     if (!config) return
     setHost(config.obs.host)
     setPort(config.obs.port)
+    setMediaInput(config.obs.media_input)
+    setDualMode(config.obs.dual_mode)
+    setSourceA(config.obs.source_a)
+    setSourceB(config.obs.source_b)
   }, [config])
 
   if (!config || !agent) return null
@@ -44,8 +52,15 @@ export function Settings() {
         </div>
         <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off"
           placeholder={config.obs.password_set ? 'Mật khẩu đã lưu (để trống = giữ nguyên)' : 'Mật khẩu (nếu OBS bật xác thực)'} />
-        <ActionButton disabled={!host.trim()} onAction={async () => {
-          await setConfig({ obs: { host: host.trim(), port }, ...(password ? { obs_password: password } : {}) })
+        <h4>Media Source phát video</h4>
+        <Input value={mediaInput} onChange={(e) => setMediaInput(e.target.value)} placeholder="Sarae Video" />
+        <Toggle checked={dualMode} label="Phát A/B (hai Media Source luân phiên)" onChange={setDualMode} />
+        {dualMode && <div className="inline">
+          <Input value={sourceA} onChange={(e) => setSourceA(e.target.value)} placeholder={mediaInput + ' A'} />
+          <Input value={sourceB} onChange={(e) => setSourceB(e.target.value)} placeholder={mediaInput + ' B'} />
+        </div>}
+        <ActionButton disabled={!host.trim() || !mediaInput.trim() || (dualMode && (sourceA.trim() || mediaInput.trim() + ' A') === (sourceB.trim() || mediaInput.trim() + ' B'))} onAction={async () => {
+          await setConfig({ obs: { host: host.trim(), port, media_input: mediaInput.trim(), dual_mode: dualMode, source_a: sourceA.trim(), source_b: sourceB.trim() }, ...(password ? { obs_password: password } : {}) })
           setPassword('')
           await run(() => call('obs.connect'), 'Đã kết nối OBS')
           await refresh()
