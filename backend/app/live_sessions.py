@@ -384,7 +384,7 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         from app.session_product_readiness import assess
         previous=set(ids_for(db,session_id))
         added=[pid for pid in body.product_ids if pid not in previous]
-        if added:
+        if added and item.status == "RUNNING":
             check=assess(db,owner["id"],item.agent_id,added)
             if not check["ready"]:
                 raise HTTPException(409,"Sản phẩm mới phải đang bán và có video khả dụng trên Agent")
@@ -439,14 +439,15 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
             {"a":item.tiktok_account_id,"id":item.id}).scalar()
         if conflict:
             raise HTTPException(409,"TikTok Account đang có LIVE Session khác")
-        item.agent_id=agent["id"]
-        db.commit()
         from app.session_product_readiness import assess
         check=assess(db,owner["id"],agent["id"],ids)
         if not check["ready"]:
             problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
             raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
+        item.agent_id=agent["id"]
+        db.flush()
         view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
+        db.commit()
     return answer(view, owner, session_id)
 
 @router.post("/{session_id}/resume")
