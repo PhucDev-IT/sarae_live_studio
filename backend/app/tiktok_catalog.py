@@ -18,41 +18,71 @@ def price(text_value):
     return float(digits) if digits else None
 
 def import_snapshot(owner_id,products):
-    """Only import products with verified seller and product IDs; no name-only linking."""
-    count=0;updated=0;shops=set()
+    """Import seller-sourced products without turning each seller into a LIVE account.
+
+    Legacy catalog products are matched by their old (owner, shop seller, product)
+    identity and retain their IDs, video links and session references.
+    """
+    count=0
+    updated=0
+    sellers=set()
     with SessionLocal() as db:
+        legacy_shops={str(seller):sid for sid,seller in db.execute(
+            text("SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:o"),
+            {"o":owner_id}).all()}
         for row in products:
             seller=str(row.get("seller_id") or "").strip()
             external=str(row.get("product_id") or "").strip()
-            if not seller or not external:raise ValueError("Thiếu TikTok seller_id/product_id")
-            if not seller.isdigit() or not external.isdigit():raise ValueError("TikTok ID không hợp lệ")
-            shop=db.execute(text("SELECT id FROM tiktok_shops WHERE owner_id=:o AND seller_id=:s"),
-                            {"o":owner_id,"s":seller}).scalar_one_or_none()
-            if shop is None:
-                db.execute(text("INSERT OR IGNORE INTO tiktok_shops(owner_id,seller_id,display_name) VALUES(:o,:s,'')"),
-                           {"o":owner_id,"s":seller})
-                shop=db.execute(text("SELECT id FROM tiktok_shops WHERE owner_id=:o AND seller_id=:s"),
-                                {"o":owner_id,"s":seller}).scalar_one()
-            shops.add(shop)
-            product=db.scalar(select(Product).where(Product.owner_id==owner_id,
-                              Product.shop_id==shop,Product.tiktok_product_id==external))
+            if not seller.isdigit() or not external.isdigit():
+                raise ValueError("Thiếu hoặc sai TikTok seller_id/product_id")
+            sellers.add(seller)
             name=str(row.get("name") or "").strip()[:200]
-            if not name:raise ValueError("Thiếu tên sản phẩm TikTok")
+            if not name:
+                raise ValueError("Thiếu tên sản phẩm TikTok")
+            product=db.scalar(select(Product).where(
+                Product.owner_id==owner_id,
+                Product.tiktok_seller_id==seller,
+                Product.tiktok_product_id==external))
+            if product is None and seller in legacy_shops:
+                # In-place migration of a known legacy product, never match by name.
+                product=db.scalar(select(Product).where(
+                    Product.owner_id==owner_id,
+                    Product.shop_id==legacy_shops[seller],
+                    Product.tiktok_product_id==external))
             if product is None:
-                # Existing handmade products are never guessed/merged by name.
-                product=Product(owner_id=owner_id,shop_id=shop,tiktok_product_id=external,
-                                sku="TK-"+str(shop)+"-"+external,name=name,description="")
-                db.add(product);count+=1
-            else:updated+=1
+                # SKU length <= 64, deterministic and collision-resistant for distinct IDs.
+                import hashlib
+                digest=hashlib.sha256((seller+":"+external).encode()).hexdigest()[:24].upper()
+                product=Product(owner_id=owner_id,shop_id=None,
+                                tiktok_seller_id=seller,tiktok_product_id=external,
+                                sku="TK-"+digest,name=name,description="")
+                db.add(product)
+                count+=1
+            else:
+                updated+=1
+                product.tiktok_seller_id=seller
             product.name=name
             product.price=price(row.get("price_text"))
             product.origin_price=price(row.get("origin_price_text"))
             product.stock_num=row.get("stock_num")
             product.tiktok_category=(row.get("category_name") or "")[:250]
-            if row.get("image_url"):product.image_url=row["image_url"]
-            # Preserve description, attached videos, existing session selections.
+            if row.get("image_url"):
+                product.image_url=row["image_url"]
         db.commit()
-    return {"created":count,"updated":updated,"shops":len(shops)}
+    return {"created":count,"updated":updated,"shops":len(sellers)}
+
+
+@router.get("/accounts")
+def accounts(owner=Depends(current_owner)):
+    """Actual TikTok LIVE accounts verified from account_info, not seller IDs."""
+    with SessionLocal() as db:
+        return [dict(r._mapping) for r in db.execute(text("""
+            SELECT a.id,a.user_id,a.tt_uid,a.user_name,a.nick_name,a.user_type,
+                   a.avatar_url,a.last_verified_at
+            FROM tiktok_accounts a JOIN user_tiktok_accounts ua ON ua.account_id=a.id
+            WHERE ua.owner_id=:o ORDER BY a.id
+        """),{"o":owner["id"]}).all()]
+
 
 @router.get("/shops")
 def shops(owner=Depends(current_owner)):
