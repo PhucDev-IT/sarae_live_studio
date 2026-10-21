@@ -31,7 +31,7 @@ class CacheTests(unittest.TestCase):
                 data = DATA[start:]
                 if self.corrupt:
                     data = data[:-1] + b"X"
-                headers = {"Content-Range": f"bytes {start}-{len(DATA)-1}/{len(DATA)"} if start else {}
+                headers = {"Content-Range": f"bytes {start}-{len(DATA)-1}/{len(DATA)}"} if start else {}
                 return httpx.Response(206 if start else 200, content=data, headers=headers)
             return httpx.Response(404)
         self.client = httpx.Client(base_url="https://example.test/api", transport=httpx.MockTransport(handler))
