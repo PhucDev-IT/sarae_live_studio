@@ -430,10 +430,33 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
                             {"a":item.tiktok_account_id}).scalar_one_or_none()
         from app.tiktok_products import connection as snapshot_connection
         with snapshot_connection() as snap_db:
-            snap=snap_db.execute("SELECT account_user_id FROM snapshots WHERE agent_id=? AND owner_id=?",
+            snap=snap_db.execute("SELECT account_user_id,scanned_at,products_json FROM snapshots WHERE agent_id=? AND owner_id=?",
                                  (agent["id"],owner["id"])).fetchone()
         if not snap or not snap["account_user_id"] or snap["account_user_id"]!=expected:
             raise HTTPException(409,"Chưa đồng bộ đúng tài khoản TikTok trên LIVE Console")
+        # Manual sync is mandatory immediately before starting this LIVE, not just any historical sync.
+        import json
+        from datetime import datetime as _dt
+        try:
+            checked_at=_dt.fromisoformat(snap["scanned_at"].replace("Z","+00:00"))
+            if checked_at.tzinfo is None:
+                checked_at=checked_at.replace(tzinfo=timezone.utc)
+            recent=(datetime.now(timezone.utc)-checked_at).total_seconds() <= 600
+        except (ValueError,TypeError):
+            recent=False
+        if not recent:
+            raise HTTPException(409,"Danh sách LIVE Console đã cũ; đồng bộ sản phẩm lại trước khi LIVE")
+        source=json.loads(snap["products_json"])
+        source_keys={(str(x.get("seller_id") or ""),str(x.get("product_id") or "")) for x in source}
+        legacy={int(row[0]):str(row[1]) for row in db.execute(text(
+            "SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:owner"),
+            {"owner":owner["id"]}).all()}
+        for product_id in ids:
+            product=db.get(Product,product_id)
+            seller=product.tiktok_seller_id or legacy.get(product.shop_id)
+            if not seller or (str(seller),str(product.tiktok_product_id)) not in source_keys:
+                raise HTTPException(409,f"Sản phẩm #{product_id} không còn trong giỏ LIVE Console vừa đồng bộ")
+
         conflict=db.execute(text("""SELECT id FROM live_sessions WHERE tiktok_account_id=:a
             AND status='RUNNING' AND id<>:id LIMIT 1"""),
             {"a":item.tiktok_account_id,"id":item.id}).scalar()
