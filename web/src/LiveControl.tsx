@@ -3,7 +3,7 @@ import {
   Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, SearchInput, Select, useToast,
 } from './ui/core'
 import {
-  CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, Settings2, SkipBack, SkipForward,
+  CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
   MonitorPlay, Square, Undo2, Wifi, WifiOff,
 } from 'lucide-react'
 import { agentAction, apiRequest, durationLabel, errorText, listVideos, onAgent, type Media, type OwnerAgent } from './mediaApi'
