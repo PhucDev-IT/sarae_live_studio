@@ -494,8 +494,6 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if not chosen_agent:
             raise HTTPException(422,"Chọn Windows Agent trước khi bắt đầu")
         agent=owned_agent(owner,chosen_agent,online=True)
-        if item.agent_id and item.agent_id!=agent["id"]:
-            raise HTTPException(409,"Phiên đã gán Agent khác")
         from app.live import playback_of
         if playback_of(agent).get("running"):
             raise HTTPException(409,"Agent đang phát phiên khác")
@@ -613,11 +611,8 @@ def update_session(session_id: int, body: SessionPatch, owner: Owner):
             if not allowed: raise HTTPException(422,"Tài khoản TikTok không thuộc User")
             item.tiktok_account_id=body.tiktok_account_id
             event(db,session_id,"ACCOUNT_CHANGED",detail=f"account_id={item.tiktok_account_id}")
-        if body.agent_id is not None and body.agent_id != item.agent_id:
-            if item.status != "DRAFT":
-                raise HTTPException(409, "Không thể đổi Windows Agent của phiên đang LIVE")
-            item.agent_id = owned_agent(owner, body.agent_id)["id"]
-            event(db, session_id, "AGENT_CHANGED", detail=f"agent={item.agent_id}")
+        if body.agent_id is not None:
+            raise HTTPException(409,"Windows Agent chỉ được chọn khi bắt đầu phiên LIVE")
         if body.name is not None:
             item.name = body.name.strip()
         db.commit()
