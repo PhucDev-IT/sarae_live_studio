@@ -23,6 +23,9 @@ def connection():
     db.execute("""CREATE TABLE IF NOT EXISTS snapshots (
        agent_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,scanned_at TEXT NOT NULL,
        complete INTEGER NOT NULL,products_json TEXT NOT NULL)""")
+    cols={row[1] for row in db.execute("PRAGMA table_info(snapshots)")}
+    if "account_user_id" not in cols:
+        db.execute("ALTER TABLE snapshots ADD COLUMN account_user_id TEXT")
     return db
 
 class TikTokProduct(BaseModel):
@@ -119,11 +122,11 @@ def sync(body:Snapshot,x_sarae_agent_key:str|None=Header(None)):
         raise HTTPException(422,str(exc)) from exc
     now=datetime.now(timezone.utc).isoformat()
     with connection() as db:
-        db.execute("""INSERT INTO snapshots(agent_id,owner_id,scanned_at,complete,products_json)
-          VALUES(?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
+        db.execute("""INSERT INTO snapshots(agent_id,owner_id,scanned_at,complete,products_json,account_user_id)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
           owner_id=excluded.owner_id,scanned_at=excluded.scanned_at,complete=excluded.complete,
-          products_json=excluded.products_json""",
-          (body.agent_id,agent["owner_id"],now,1,json.dumps(data,ensure_ascii=False)))
+          products_json=excluded.products_json,account_user_id=excluded.account_user_id""",
+          (body.agent_id,agent["owner_id"],now,1,json.dumps(data,ensure_ascii=False),account.user_id))
     return {"agent_id":body.agent_id,"account":account.model_dump(),"scanned_at":now,"imported":imported,**comparison(agent["owner_id"],data)}
 
 @router.get("/{agent_id}")
