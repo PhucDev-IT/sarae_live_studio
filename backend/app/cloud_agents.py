@@ -322,6 +322,14 @@ def validate_payload(kind:str,payload:dict|None)->dict:
     """Return the normalized payload for ``kind`` or raise HTTPException(422)."""
     payload=payload or {}
     if kind not in COMMAND_KINDS:raise HTTPException(422,"Lệnh không được hỗ trợ")
+    if kind=="tiktok_products_sync":
+        uid=payload.get("expected_user_id")
+        if uid is None:
+            # Manual Agent-side synchronization is a separate explicit IPC operation.
+            raise HTTPException(422,"Thiếu user_id TikTok Account cần xác minh")
+        if not isinstance(uid,str) or not uid.isdigit() or len(uid)>80:
+            raise HTTPException(422,"expected_user_id không hợp lệ")
+        return {"expected_user_id":uid}
     if kind=="tts_speak":
         text=payload.get("text","")
         if not isinstance(text,str) or not 1<=len(text)<=450:
