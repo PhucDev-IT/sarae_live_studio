@@ -495,10 +495,23 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if not check["ready"]:
             problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
             raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
+        # Persist ownership of the selected Agent before dispatch: fast Agent ack
+        # can arrive while the HTTP request is still waiting.
         item.agent_id=agent["id"]
-        db.flush()
-        view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
         db.commit()
+        try:
+            view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
+        except Exception:
+            db.refresh(item)
+            if item.status == "DRAFT" and item.agent_id == agent["id"]:
+                item.agent_id=None
+                db.commit()
+            raise
+        if view.get("status") in ("FAILED","TIMEOUT","CANCELLED"):
+            db.refresh(item)
+            if item.status == "DRAFT" and item.agent_id == agent["id"]:
+                item.agent_id=None
+                db.commit()
     return answer(view, owner, session_id)
 
 @router.post("/{session_id}/resume")
