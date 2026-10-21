@@ -312,7 +312,7 @@ function Console({agent}:{agent:OwnerAgent}){
             </div>)}
           </Alert>
         </div>}{!drafts.length ? <div className="lc-pad">
-          <EmptyState icon={<CalendarClock size={28}/>} title="Máy này chưa có phiên nào được chuẩn bị" description={`Tạo phiên LIVE cho máy ${agent.hostname} và chọn những sản phẩm sẽ bán, rồi quay lại đây để bắt đầu.`}
+          <EmptyState icon={<CalendarClock size={28}/>} title="Phiên nháp được quản lý tại trang Phiên LIVE" description={`Tạo hoặc chuẩn bị phiên trên trang Phiên LIVE, xác minh TikTok Account và chọn máy ${agent.hostname} khi bắt đầu.`}
             actionLabel="Tạo phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/>
         </div> : <>
           <ul className="lc-product-list">{drafts.map(s=>{
