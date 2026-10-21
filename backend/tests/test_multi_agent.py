@@ -27,6 +27,11 @@ class MultiAgentTests(SaasTestCase):
         # Two browser tabs of the same OWNER, each working with a different PC.
         self.tab1, self.tab2 = self.client, TestClient(app, headers=self.A)
         self.on1, self.on2 = {"agent_id": self.a1["agent_id"]}, {"agent_id": self.a2["agent_id"]}
+        # These tests cover sessions, locks and switching; the media cache gate is tested in test_media_prepare.py.
+        for gate in ("app.live_sessions.require_media_ready", "app.live_sessions.require_product_cached"):
+            patcher = patch(gate, lambda *args, **kwargs: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for target in ("app.live_sessions.LIVE_WAIT_SECONDS", "app.live.CONTROL_WAIT_SECONDS"):
             patcher = patch(target, 0)
             patcher.start()

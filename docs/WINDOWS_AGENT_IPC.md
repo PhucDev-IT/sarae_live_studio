@@ -140,3 +140,10 @@ idempotent (`obs_status`, `obs_inputs`, `obs_configure`, `monitor_*`, pause/resu
 | `monitor_start` / `monitor_stop` / `monitor_config` | `{}` / `{interval_seconds, threshold, telegram_enabled, telegram_chat_id}` | CAPTCHA Monitor |
 
 Payload được kiểm tra **hai lần**: Cloud (`validate_payload`, 422) và Agent (`cloud/commands.py`, `INVALID_COMMAND_PAYLOAD`).
+
+## Cloud command `media_prepare` (Phase 3)
+
+`{"session_id": <int>}` on the background lane. The Agent starts `media.cloud_cache.prepare` for that session (a repeated
+request for the same session returns the running job) and reports progress in every heartbeat as `media_cache`
+(`session_id`, `state` PREPARING/READY/FAILED, `total`, `bytes_total`, `bytes_done`, `ready[{media_id, revision}]`,
+`failed[{media_id, error}]`; never file paths). The desktop shows it from the `media.cache_changed` event.

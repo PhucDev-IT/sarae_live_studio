@@ -26,6 +26,11 @@ class LiveSessionTests(SaasTestCase):
         self.ao, self.quan = self.library_videos(self.owner_a, "ao.mp4", "quan.mp4")
         self.link_videos(1, [self.ao])
         self.link_videos(2, [self.quan])
+        # These tests cover sessions, locks and switching; the media cache gate is tested in test_media_prepare.py.
+        for gate in ("app.live_sessions.require_media_ready", "app.live_sessions.require_product_cached"):
+            patcher = patch(gate, lambda *args, **kwargs: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for target in ("app.live_sessions.LIVE_WAIT_SECONDS", "app.live.CONTROL_WAIT_SECONDS"):
             patcher = patch(target, 0)
             patcher.start()

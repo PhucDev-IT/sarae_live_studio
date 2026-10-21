@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, Clapperboard, Cloud, Pin, ScanEye } from 'lucide-react'
+import { ChevronDown, Clapperboard, Cloud, Download, Pin, ScanEye } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Input, Switch, type Tone } from '../../app/ui'
 import { call } from '../../services/core'
@@ -40,6 +40,7 @@ export function Controls() {
     <section className="panel panel-flush">
       <CloudRow />
       <ObsRow />
+      <CacheRow />
       <CaptchaRow />
       <AutoPinRow />
     </section>
@@ -109,6 +110,35 @@ function ObsRow() {
         <Switch checked={obs.auto_connect} label="OBS" onToggle={(value) =>
           run(() => call(value ? 'obs.connect' : 'obs.disconnect')).then(refresh)} />
       </>} />
+  )
+}
+
+const megabytes = (bytes?: number) => `${((bytes ?? 0) / 1024 ** 2).toFixed(0)} MB`
+
+/** Videos of the LIVE being prepared: the Web starts the download, the Agent plays only from this cache. */
+function CacheRow() {
+  const { state } = useApp()
+  const job = state.status?.media?.cloud_cache
+  if (!job || job.state === 'IDLE') return null
+  const total = job.bytes_total ?? 0
+  const percent = total ? Math.min(100, Math.round((job.bytes_done ?? 0) / total * 100)) : 0
+  const ready = job.ready?.length ?? 0
+  let status: string
+  let tone: Tone
+  if (job.state === 'PREPARING') {
+    status = `Đang tải video phiên #${job.session_id}: ${ready}/${job.total ?? '?'} video · ${megabytes(job.bytes_done)} / ${megabytes(total)} (${percent}%)`
+    tone = 'info'
+  } else if (job.state === 'READY') {
+    status = `Đủ ${ready} video cho phiên #${job.session_id} · sẵn sàng phát`
+    tone = 'ok'
+  } else {
+    status = `Thiếu ${job.failed?.length ?? 0} video cho phiên #${job.session_id}: ${job.failed?.[0]?.error ?? 'tải lỗi'}`
+    tone = 'danger'
+  }
+  return (
+    <Row icon={<Download size={16} />} title="Video LIVE trên máy" status={status} tone={tone}>
+      {job.state === 'PREPARING' && <div className="cache-bar"><span style={{ width: `${percent}%` }} /></div>}
+    </Row>
   )
 }
 

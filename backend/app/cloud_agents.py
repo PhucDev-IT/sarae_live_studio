@@ -58,12 +58,12 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
                    "android_mock_live_start", "android_mock_live_stop"}
-BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 MAX_ATTEMPTS = 3
 DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
 SLOW_TTL_SECONDS = 180
@@ -162,6 +162,22 @@ class Heartbeat(BaseModel):
     local_playback:dict|None=None
     # PlaybackEngine.status() on the Agent: same shape as GET /api/live/status.
     playback:dict|None=None
+    # Media cache job (ids, revisions, progress; never file paths): see agent_media.media_readiness.
+    media_cache:dict|None=None
+
+def _media_cache(report:dict|None)->dict|None:
+    """Keep only what readiness needs from the Agent's cache report, with bounded sizes."""
+    if not isinstance(report,dict):
+        return None
+    def items(key,fields,limit):
+        rows=report.get(key) if isinstance(report.get(key),list) else []
+        return [{f:str(r.get(f))[:200] if r.get(f) is not None else None for f in fields} for r in rows[:limit] if isinstance(r,dict)]
+    number=lambda v:int(v) if isinstance(v,(int,float)) and v>=0 else None
+    session=report.get("session_id")
+    return {"session_id":session if isinstance(session,int) else None,"state":str(report.get("state") or "IDLE")[:20],
+            "total":number(report.get("total")),"bytes_total":number(report.get("bytes_total")),
+            "bytes_done":number(report.get("bytes_done")),
+            "ready":items("ready",("media_id","revision"),300),"failed":items("failed",("media_id","error"),50)}
 
 def _without_paths(verification:dict)->dict:
     """Drop absolute file paths of the Agent's PC before storing (the watched program's name is enough)."""
@@ -224,7 +240,7 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     at=_now()
     verification=_without_paths(body.verification)
     sanitized={"verification":verification,"obs":body.obs,"local_playback":body.local_playback,
-               "playback":body.playback}
+               "playback":body.playback,"media_cache":_media_cache(body.media_cache)}
     with _db() as db:
         db.execute("BEGIN IMMEDIATE")
         row=db.execute("SELECT captcha_alert FROM agent_status WHERE agent_id=?",(body.agent_id,)).fetchone()
@@ -265,7 +281,7 @@ def get_status(authorization:str|None=Header(None)):
 
 NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_resume","obs_next","obs_previous",
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
-    "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync"}
+    "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
@@ -347,6 +363,8 @@ def validate_payload(kind:str,payload:dict|None)->dict:
     if kind=="monitor_config":
         from app.verification_monitor import ConfigBody
         return ConfigBody.model_validate(payload).model_dump()
+    if kind=="media_prepare":
+        return {"session_id":_int(payload.get("session_id"),"session_id",1,2**31-1)}
     if kind=="product_play":
         mode=payload.get("mode","immediate")
         if mode not in ("immediate","after_current"):

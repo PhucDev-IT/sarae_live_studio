@@ -9,6 +9,8 @@ import hashlib
 import os
 import re
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -19,6 +21,7 @@ from sarae_agent.errors import AgentError
 MEDIA_ID = re.compile(r"^[0-9a-f]{32}$")
 CHUNK = 1024 * 1024
 CACHE_EXTENSIONS = (".mp4", ".mov")
+PROGRESS_SECONDS = 0.5
 
 
 def cache_dir(agent_id: str) -> Path:
@@ -99,10 +102,12 @@ class CloudMediaCache:
             return _digest(path, "md5") == md5.lower()
         return False  # no checksum: cannot mark ready
 
-    def prepare(self, session_id: int, *, max_items: int = 300) -> dict:
+    def prepare(self, session_id: int, *, max_items: int = 300, on_progress: Callable[[dict], None] | None = None) -> dict:
         """Download all session videos before playback; return an explicit READY/FAILED manifest.
 
-        Interrupted .part files are retained to resume. Each final file is integrity verified.
+        Every video of the session is required (random playback may pick any of them). Interrupted .part files are
+        retained to resume; a file already cached with the same checksum is not downloaded again. ``on_progress``
+        receives the running state (no file paths) at most every PROGRESS_SECONDS.
         """
         with self._lock:
             manifest = self.manifest(session_id)
@@ -111,18 +116,37 @@ class CloudMediaCache:
                 raise AgentError("CACHE_LIMIT", "Quá nhiều video trong phiên")
             self.root.mkdir(parents=True, exist_ok=True)
             ready, failed = [], []
+            state = {"session_id": session_id, "state": "PREPARING", "total": len(items), "ready": ready, "failed": failed,
+                     "bytes_total": sum(int(i.get("size_bytes") or 0) for i in items), "bytes_done": 0, "current": None}
+            last = [0.0]
+
+            def report(force: bool = False):
+                if on_progress is not None and (force or time.monotonic() - last[0] >= PROGRESS_SECONDS):
+                    last[0] = time.monotonic()
+                    on_progress(dict(state, ready=list(ready), failed=list(failed)))
+
+            report(force=True)
             for item in items:
+                state["current"] = item.get("media_id")
+                done_before = state["bytes_done"]
+
+                def advance(received: int, base=done_before):
+                    state["bytes_done"] = base + received
+                    report()
                 try:
-                    path = self._prepare_item(item)
-                    ready.append({"media_id": item["media_id"], "path": str(path), "size_bytes": item["size_bytes"]})
+                    path = self._prepare_item(item, advance)
+                    ready.append({"media_id": item["media_id"], "path": str(path), "size_bytes": item["size_bytes"],
+                                  "revision": item.get("revision")})
                 except (AgentError, OSError, httpx.HTTPError, ValueError) as exc:
                     failed.append({"media_id": str(item.get("media_id", "")), "error": str(exc)[:200]})
+                state["bytes_done"] = done_before + int(item.get("size_bytes") or 0)
+                report(force=True)
             missing = manifest.get("products_without_video") or []
             return {"session_id": session_id, "state": "READY" if not failed and not missing and ready else "FAILED",
                     "ready": ready, "failed": failed, "products_without_video": missing,
-                    "total": len(items)}
+                    "total": len(items), "bytes_total": state["bytes_total"], "bytes_done": state["bytes_done"]}
 
-    def _prepare_item(self, item: dict) -> Path:
+    def _prepare_item(self, item: dict, advance: Callable[[int], None] | None = None) -> Path:
         length = item.get("size_bytes")
         if not isinstance(length, int) or not (0 < length <= 4 * 1024**3):
             raise AgentError("CACHE_MEDIA_INVALID", "Dung lượng file không hợp lệ")
@@ -152,9 +176,13 @@ class CloudMediaCache:
                     raise AgentError("CACHE_RANGE_INVALID", "Cloud không hỗ trợ tiếp tục tải đúng offset")
             elif response.status_code == 206 and not response.headers.get("content-range", "").startswith("bytes 0-"):
                 raise AgentError("CACHE_RANGE_INVALID", "Cloud trả về Range không hợp lệ")
+            received = offset
             with part.open("ab" if offset else "wb") as output:
                 for data in response.iter_bytes(CHUNK):
                     output.write(data)
+                    received += len(data)
+                    if advance is not None:
+                        advance(received)
         if not self._valid(part, item):
             # Keep partial only if incomplete, discard corrupt complete file.
             if part.exists() and part.stat().st_size == length:

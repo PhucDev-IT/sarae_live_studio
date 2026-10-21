@@ -176,4 +176,33 @@ Chủ dự án chấp nhận LIVE tạm thời **không phát được** trên A
 | Tương thích | Giữ `POST /api/agent-library/sync` dạng nhận-rồi-bỏ (`agent_library_compat.py`) để Agent bản cũ không bị dừng kết nối Cloud (403) hay gửi lại liên tục (404). Xóa khi mọi Agent đã cập nhật |
 | Windows Agent | Gỡ chức năng "Thư mục video" (quét MP4, đồng bộ lên Cloud). Agent phát theo Media ID từ `cloud-media-cache`; video chưa tải về cache thì báo lỗi rõ ràng |
 | Dữ liệu | Không xóa bảng/tệp cũ trong DB hay trên máy Agent |
-| Còn thiếu | Tự tải cache khi bắt đầu LIVE (Phase 3): hiện chỉ tải được qua IPC `media.cloud_cache.prepare` |
+| Còn thiếu | ~~Tự tải cache khi bắt đầu LIVE~~ → xong ở mục 10 |
+
+## 10. Phase 3: Agent tải toàn bộ video trước LIVE (2026-10-22)
+
+```mermaid
+sequenceDiagram
+  participant W as Web (Bắt đầu LIVE)
+  participant C as Cloud
+  participant A as Windows Agent
+  W->>C: Xác nhận sản phẩm → POST /live/sessions/{id}/prepare-media
+  C->>A: lệnh media_prepare {session_id} (lane background)
+  A->>C: GET /agent-media/manifest → tải từng video (resume, kiểm sha256/md5)
+  A-->>C: heartbeat media_cache {state, ready[id+revision], bytes_done…}
+  W->>C: GET /media-readiness (2 giây/lần) → thanh tiến trình
+  W->>C: Bắt đầu phát (chỉ bật khi READY)
+  C->>C: require_media_ready: mọi video của phiên, đúng revision, đúng Agent
+  C->>A: product_play (phát từ cache, vẫn chạy khi mất mạng)
+```
+
+| Quy tắc | Cách làm |
+|---|---|
+| Tải **toàn bộ** video của phiên | Manifest = mọi video AVAILABLE của mọi sản phẩm trong phiên (random có thể chọn bất kỳ) |
+| Chỉ phát khi đủ | `POST /start` trả 409 `MEDIA_NOT_READY` nếu thiếu; Web khóa nút "Bắt đầu phát" |
+| Không nhầm phiên/máy/bản cũ | Chỉ tính báo cáo của đúng Agent, đúng `session_id`, đúng `revision` (sha256/md5) |
+| Không tải lại | File đã có trong cache với checksum khớp được dùng lại; `.part` được tải tiếp |
+| Thêm sản phẩm giữa LIVE | `switch` sang sản phẩm chưa có trong cache: Cloud gửi `media_prepare`, trả 409 "Đang tải…", thử lại khi xong |
+| Riêng tư | Heartbeat chỉ mang id, revision, tiến trình; không mang đường dẫn file trên máy |
+| Hiển thị | Web: khung tiến trình trong hộp thoại Bắt đầu. Windows Agent: dòng "Video LIVE trên máy" |
+
+Chưa làm: dọn cache theo dung lượng tối đa, kiểm tra dung lượng ổ đĩa trước khi tải, khóa không xóa cache đang phát (hiện chưa có chức năng xóa nào).

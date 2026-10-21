@@ -75,6 +75,8 @@ p { margin: 0; }
 /* Switch rows */
 .row-item { padding: 11px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
 .row-item:last-child { border-bottom: 0; }
+.cache-bar { height: 5px; border-radius: 99px; background: var(--info-soft); overflow: hidden; }
+.cache-bar span { display: block; height: 100%; background: var(--info); transition: width .3s; }
 .row-main { display: flex; align-items: center; gap: 10px; }
 .row-icon { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0; background: var(--surface-3); }
 .row-icon.tone-ok { background: var(--ok-soft); }
