@@ -51,6 +51,9 @@ export default function LiveSessions(){
   const [confirm,setConfirm] = useState<Confirm>(null)
   const [startOpen,setStartOpen] = useState(false)
   const [startAgent,setStartAgent] = useState('')
+  const [consoleRows,setConsoleRows] = useState<Array<{product_id:string;seller_id:string;name:string;sarae_product_id:number|null;match_status:string}>|null>(null)
+  const [consoleSelection,setConsoleSelection] = useState<number[]>([])
+  const [consoleConfirmed,setConsoleConfirmed] = useState(false)
   /** Product chosen to open the LIVE with; any product of the session that has videos. */
   const [opener,setOpener] = useState<number|null>(null)
   const [dragIndex,setDragIndex] = useState<number|null>(null)
@@ -169,7 +172,43 @@ export default function LiveSessions(){
     {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
     {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/product-videos'},
   ]
-  const canStart = chosen?.status === 'DRAFT' && checks.every(c=>c.ok || !c.blocking)
+  const canStart = chosen?.status === 'DRAFT' && chosen.tiktok_account_id != null && !dirty
+
+  const syncConsole = async () => {
+    if (!chosen || !startAgent) return
+    setBusy(true)
+    try {
+      await sessionsApi.prepare(chosen,startAgent)
+      const snapshot=await apiRequest<{
+        account_user_id:string|null;scanned_at:string|null;
+        products:Array<{product_id:string;seller_id:string;name:string;sarae_product_id:number|null;match_status:string}>
+      }>(`/tiktok-products/${encodeURIComponent(startAgent)}`)
+      const expected=shops.find(a=>a.id===chosen.tiktok_account_id)?.user_id
+      if (!expected || snapshot.account_user_id!==expected)
+        throw new Error('Tài khoản LIVE Console không trùng TikTok Account của phiên. Kiểm tra đăng nhập.')
+      setConsoleRows(snapshot.products)
+      const validIds=new Set(snapshot.products.map(row=>row.sarae_product_id).filter((v):v is number=>v!=null))
+      setConsoleSelection(chosen.product_ids.filter(id=>validIds.has(id)&&!!productById.get(id)?.video_count))
+      setConsoleConfirmed(false)
+      toast.push({tone:'success',title:'Đã xác minh TikTok Account và đồng bộ giỏ sản phẩm'})
+    } catch(e) {
+      setConsoleRows(null);setConsoleConfirmed(false)
+      toast.push({tone:'danger',title:'Không thể đồng bộ LIVE Console',description:errorText(e,'')})
+    } finally {setBusy(false)}
+  }
+  const confirmConsole = async () => {
+    if (!chosen || !consoleRows || !consoleSelection.length) return
+    setBusy(true)
+    try {
+      await sessionsApi.saveProducts(chosen.id,consoleSelection)
+      setDraft(null)
+      await loadAll()
+      setConsoleConfirmed(true)
+      setOpener(consoleSelection[0])
+      toast.push({tone:'success',title:'Đã xác nhận danh sách sản phẩm LIVE'})
+    }catch(e){toast.push({tone:'danger',title:'Không lưu được sản phẩm',description:errorText(e,'')})}
+    finally{setBusy(false)}
+  }
 
   const switches = events.filter(e=>e.event_type === 'PRODUCT_SWITCHED').length
 
@@ -246,7 +285,7 @@ export default function LiveSessions(){
               {chosen.status === 'DRAFT' && <>
                 <Button variant="ghost" leftIcon={<Trash2 size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'delete', session:chosen})}>Xóa</Button>
                 <Button variant="outline" leftIcon={<Copy size={15}/>} disabled={busy} onClick={()=>void run(async ()=>{const c = await sessionsApi.duplicate(chosen.id);setSelected(c.id);setDraft(null)}, 'Đã nhân bản phiên')}>Nhân bản</Button>
-                <Button leftIcon={<Play size={16}/>} disabled={busy || !canStart} title={canStart ? undefined : 'Hoàn tất các mục kiểm tra bên dưới'} onClick={()=>{setOpener(null);setStartAgent(tabAgentId ?? agents.find(a=>a.online)?.id ?? '');setStartOpen(true)}}>Bắt đầu LIVE</Button>
+                <Button leftIcon={<Play size={16}/>} disabled={busy || !canStart} title={canStart ? undefined : 'Hoàn tất các mục kiểm tra bên dưới'} onClick={()=>{setOpener(null);setConsoleRows(null);setConsoleSelection([]);setConsoleConfirmed(false);setStartAgent(tabAgentId ?? agents.find(a=>a.online)?.id ?? '');setStartOpen(true)}}>Bắt đầu LIVE</Button>
               </>}
               {chosen.status === 'RUNNING' && (owner ? <>
                 <Button variant="danger" leftIcon={<Square size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'finish', session:chosen})}>Kết thúc phiên</Button>
@@ -383,12 +422,32 @@ export default function LiveSessions(){
 
     {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="md" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
-      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startId == null || !startAgent}
+      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startId == null || !startAgent || !consoleConfirmed || busy}
         onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startId);setStartOpen(false);window.location.hash = '/live'}, 'Đã bắt đầu LIVE')}>Bắt đầu LIVE</Button>
     </>}>
       <div className="ls-picker">
-        <Select label="Windows Agent thực thi" value={startAgent} onChange={setStartAgent} options={agents.map(a=>({value:a.id,label:a.hostname+(a.online?'':' (offline)')}))}/>
-        <Alert tone="info">Trước khi phát, hãy mở TikTok LIVE Console trên Agent này, bấm Đồng bộ sản phẩm và xác minh đúng TikTok Account.</Alert>
+        <Select label="Windows Agent thực thi" value={startAgent} onChange={v=>{setStartAgent(v);setConsoleRows(null);setConsoleConfirmed(false)}} options={agents.map(a=>({value:a.id,label:a.hostname+(a.online?'':' (offline)')}))}/>
+        <Alert tone="info">Mở TikTok LIVE Console trên máy này và đăng nhập đúng TikTok Account, sau đó nhấn Đồng bộ giỏ sản phẩm. Chỉ khi xác nhận danh sách mới được phát.</Alert>
+        <Button variant="outline" disabled={!startAgent || busy} loading={busy} onClick={()=>void syncConsole()}>Đồng bộ giỏ sản phẩm từ Agent</Button>
+        {consoleRows && <div className="ls-console-review">
+          <strong>Giỏ TikTok vừa đồng bộ: {consoleRows.length} sản phẩm</strong>
+          <p className="ls-muted">Tích những sản phẩm muốn phát. Sản phẩm chưa liên kết hoặc chưa có video không được chọn.</p>
+          <ul className="ls-picker-list">{consoleRows.map(row=>{
+            const id=row.sarae_product_id
+            const available=id!=null && !!productById.get(id)?.video_count
+            const checked=id!=null && consoleSelection.includes(id)
+            return <li key={row.seller_id+':'+row.product_id}>
+              <label style={{display:'flex',gap:10,alignItems:'center',padding:8}}>
+                <input type="checkbox" checked={checked} disabled={!available||busy||consoleConfirmed}
+                  onChange={e=>{if(id==null)return;setConsoleSelection(prev=>e.target.checked?[...prev,id]:prev.filter(v=>v!==id))}}/>
+                <span>{row.name} {available ? `(${productById.get(id!)?.video_count} video)` : '— Chưa có video hoặc sản phẩm chưa liên kết'}</span>
+              </label>
+            </li>
+          })}</ul>
+          {consoleConfirmed
+            ? <Alert tone="info">Danh sách đã được lưu. Có thể bắt đầu nếu Agent có đủ video.</Alert>
+            : <Button disabled={!consoleSelection.length||busy} loading={busy} onClick={()=>void confirmConsole()}>Xác nhận & lưu danh sách LIVE</Button>}
+        </div>}
         <p className="ls-muted">Chọn sản phẩm phát đầu tiên. Trong lúc LIVE bạn chuyển sang sản phẩm nào cũng được, kể cả sản phẩm chưa có trong danh sách.</p>
         <ul className="ls-picker-list">{lineup.map(pid=>{
           const p = productById.get(pid)
