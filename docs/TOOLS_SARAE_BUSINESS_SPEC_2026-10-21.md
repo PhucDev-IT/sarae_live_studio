@@ -121,3 +121,9 @@ flowchart TD
 - **P3:** LIVE scheduler/pin observer và nhiều phiên, concurrency locks.
 - **P4:** device recovery và kiểm thử LIVE thật.
 - Không tự diễn giải nghiệp vụ **CHƯA CHỐT** là đã chốt. Không sửa data production; hiện nhánh dev/test.
+
+## 11. Trạng thái triển khai (2026-10-21)
+- **Đã code P0 (chưa kiểm thử end-to-end):** migration cộng thêm `tiktok_accounts`, `user_tiktok_accounts`, `products.tiktok_seller_id`, `live_sessions.tiktok_account_id`; Agent theo dõi response `account_info/get` khi nhấn sync; gửi profile + sản phẩm trong một request; backend yêu cầu profile và upsert tài khoản; import sản phẩm không sinh `tiktok_shops` từ từng `seller_id` mới.
+- **Chưa hoàn tất P1:** giao diện tạo phiên và LIVE Session vẫn còn sử dụng `shop_id` từ mô hình cũ; cần chuyển UI/API theo `tiktok_account_id`, DRAFT không chọn Agent và workflow xác minh trước phát. Các sản phẩm mới của Affiliate chưa thể dùng với bộ lọc Shop cũ. **Không coi nhánh dev hiện tại là bản triển khai hoàn chỉnh/production-ready.**
+- **Chưa hoàn tất P2–P4:** Google Drive OAuth và folder sync, cache cloud, random/pin realtime, activation recovery.
+- **Chưa chạy build/test hoặc kiểm thử trong môi trường Windows/TikTok thật.**
