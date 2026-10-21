@@ -47,7 +47,7 @@ class CloudMediaCache:
         if session_id <= 0:
             raise AgentError("CACHE_SESSION_INVALID", "Session ID không hợp lệ")
         try:
-            response = self.client.get("/agent-media/manifest", params={"agent_id": self.agent_id, "session_id": session_id},
+            response = self.client.get("agent-media/manifest", params={"agent_id": self.agent_id, "session_id": session_id},
                                        headers=self._headers())
             self._check(response, "CACHE_MANIFEST_FAILED")
             payload = response.json()
@@ -118,7 +118,7 @@ class CloudMediaCache:
         headers = self._headers()
         if offset:
             headers["Range"] = f"bytes={offset}-"
-        with self.client.stream("GET", f"/agent-media/{item['media_id']}/content",
+        with self.client.stream("GET", f"agent-media/{item['media_id']}/content",
                                 params={"agent_id": self.agent_id}, headers=headers, timeout=120) as response:
             self._check(response, "CACHE_DOWNLOAD_FAILED")
             if offset:
