@@ -305,7 +305,8 @@ class AgentRuntime:
         account=scan.get("account_profile")
         if not snapshot.get("complete"):
             raise AgentError("TIKTOK_SCAN_PARTIAL",
-                             "Danh sách TikTok chưa quét đủ; chưa đồng bộ Cloud")
+                             "TikTok chưa trả danh sách sản phẩm kèm mã (chỉ đọc được tên trên trang); "
+                             "đợi LIVE Console tải xong rồi bấm Đồng bộ lại. Chưa gửi gì lên Cloud")
         if not account or not account.get("user_id"):
             raise AgentError("TIKTOK_ACCOUNT_UNVERIFIED", "Chưa xác minh được tài khoản TikTok đang đăng nhập")
         if expected_user_id is not None and account["user_id"] != expected_user_id:

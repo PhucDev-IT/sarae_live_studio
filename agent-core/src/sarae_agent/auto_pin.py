@@ -33,6 +33,11 @@ LIVE_ORIGINS = {"shop.tiktok.com", "livecenter.tiktok.com", "seller-vn.tiktok.co
 DEFAULT_URL = "https://shop.tiktok.com/streamer/live/product/dashboard"
 LOGIN_HOSTS = {"www.tiktok.com", "tiktok.com", "m.tiktok.com"}
 LOGIN_MARKERS = ("login", "signin", "sign_in", "sign-in", "verify", "verification", "passport", "captcha")
+SYNC_RELOADS = 2  # page loads tried before falling back to the visible rows
+SYNC_WAIT_MS = 20000  # per load: TikTok often answers its cart several seconds after the page
+SYNC_POLL_MS = 200
+SYNC_SETTLE_MS = 5000
+CONSOLE_NOT_READY = "TikTok chưa trả danh sách sản phẩm (trang tải chậm hoặc giỏ LIVE trống). Đợi trang hiện đủ sản phẩm rồi bấm Đồng bộ lại"
 RELOGIN = "TikTok yêu cầu đăng nhập lại: dùng bước 1 (Đăng nhập TikTok bằng Chrome thường)"
 LOGIN_CHROME_OPEN = "Chrome đăng nhập vẫn đang mở: bấm \"Đã đăng nhập xong\" hoặc đóng cửa sổ Chrome đó trước"
 MAX_PRODUCTS = 100
@@ -162,6 +167,8 @@ class AutoPinService:
         self._state = "idle"
         self._product_snapshot = None
         self._network_products = None
+        # Product responses whose body is still being read (the read yields to Playwright while it waits).
+        self._pending_product_reads = 0
         self._account_profile = None
         self._sync_capture_active = False
         self._observed_pages = set()
@@ -312,6 +319,7 @@ class AutoPinService:
         if urlsplit(response.url).path!="/api/v1/streamer_desktop/live_product/list":
             return
         if response.status!=200:return
+        self._pending_product_reads+=1
         try:
             body=response.json()
             if body.get("code")!=0:return
@@ -336,6 +344,8 @@ class AutoPinService:
                 log.info("TikTok Network captured %s products",len(result))
         except Exception as exc:
             log.warning("Không đọc được TikTok products response: %s",exc)
+        finally:
+            self._pending_product_reads-=1
 
     def _attach_response_listener(self,page):
         if id(page) not in self._observed_pages:
@@ -387,6 +397,21 @@ class AutoPinService:
         nothing: the pin list and the snapshot keep what they had."""
         return self._request("scan", expected_user_id)
 
+    def _wait_for_console(self, page) -> bool:
+        """Wait until the console's own account_info and product list responses were read (bodies included)."""
+        waited = 0
+        while waited < SYNC_WAIT_MS:
+            if self._network_products is not None and self._account_profile is not None and not self._pending_product_reads:
+                return True
+            page.wait_for_timeout(SYNC_POLL_MS)
+            waited += SYNC_POLL_MS
+        # A body read that started just before the deadline still counts once it finishes.
+        settle = 0
+        while self._pending_product_reads and settle < SYNC_SETTLE_MS:
+            page.wait_for_timeout(SYNC_POLL_MS)
+            settle += SYNC_POLL_MS
+        return self._network_products is not None and self._account_profile is not None
+
     def _scan_on_worker(self, expected_user_id: str | None = None) -> dict:
         """Read the console's own product response (or, on old consoles, visible DOM rows) — read-only."""
         page=self._page
@@ -406,11 +431,12 @@ class AutoPinService:
         self._attach_response_listener(page)
         self._sync_capture_active = True
         try:
-            page.reload(wait_until="domcontentloaded", timeout=30000)
-            for _ in range(25):
-                if self._network_products is not None and self._account_profile is not None:
+            # The console loads its cart a few seconds after the page itself; a slow answer gets one more reload.
+            for attempt in range(SYNC_RELOADS):
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                if self._wait_for_console(page):
                     break
-                page.wait_for_timeout(200)
+                log.info("TikTok chưa trả danh sách sản phẩm sau lần tải %s; tải lại trang", attempt + 1)
         finally:
             self._sync_capture_active = False
         if self._network_products is not None:
@@ -455,7 +481,7 @@ class AutoPinService:
             page.wait_for_timeout(120)
         rows=sorted(found.values(),key=lambda x:x.get("position") or 999999)
         if not rows:
-            raise RuntimeError("Không tìm thấy ô thứ tự sản phẩm (.pc_order_input) trên trang TikTok")
+            raise RuntimeError(CONSOLE_NOT_READY)
         if expected_user_id is not None:
             # Without account_info the logged-in account cannot be verified for a session sync.
             raise RuntimeError("Không đọc được account_info/get của TikTok; chưa xác minh được tài khoản để đồng bộ")

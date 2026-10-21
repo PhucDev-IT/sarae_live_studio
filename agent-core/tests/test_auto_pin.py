@@ -58,12 +58,21 @@ class FakePage:
         self.handlers.append(handler)
 
     def reload(self, **_options):
+        self.reloads = getattr(self, "reloads", 0) + 1
+        self.waits = 0
+        if not getattr(self, "late_after", None) and self.reloads >= getattr(self, "answer_on_reload", 1):
+            self._deliver()
+
+    def _deliver(self):
         for response in self.responses:
             for handler in self.handlers:
                 handler(response)
 
     def wait_for_timeout(self, _ms):
-        pass
+        # A console that answers its cart only after `late_after` polls (TikTok is often slower than the page).
+        self.waits = getattr(self, "waits", 0) + 1
+        if getattr(self, "late_after", None) and self.waits == self.late_after:
+            self._deliver()
 
     def evaluate(self, script):
         self.scripts.append(script)
@@ -213,6 +222,24 @@ class LoginFlowTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.pin.scan_products()
         self.assertEqual(self.pin.status()["state"], "login_required")
+        self.pin._context = None
+
+    def test_scan_waits_for_a_slow_console_and_reloads_once_if_needed(self):
+        self.pin._context = object()
+        slow = FakePage(CONSOLE, responses=console_responses())
+        slow.late_after = 40  # 8 s after the page loaded: the old 5 s wait gave up here
+        self.pin._page = slow
+        self.assertTrue(self.pin.scan_products()["product_snapshot"]["complete"])
+        silent_first = FakePage(CONSOLE, responses=console_responses())
+        silent_first.answer_on_reload = 2
+        self.pin._page = silent_first
+        self.assertTrue(self.pin.scan_products()["product_snapshot"]["complete"])
+        self.assertEqual(silent_first.reloads, 2)
+        never = FakePage(CONSOLE)
+        self.pin._page = never
+        with self.assertRaises(RuntimeError) as raised:
+            self.pin.scan_products()
+        self.assertIn("TikTok chưa trả danh sách sản phẩm", str(raised.exception))
         self.pin._context = None
 
     def test_scan_for_another_account_keeps_the_previous_list(self):
