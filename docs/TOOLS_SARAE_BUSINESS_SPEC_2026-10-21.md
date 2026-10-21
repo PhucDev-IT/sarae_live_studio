@@ -43,11 +43,16 @@ erDiagram
 ```
 Lưu ý: `WINDOWS_AGENT o|--o{ LIVE_SESSION` chỉ thể hiện quan hệ lịch sử; **UNIQUE agent đang chạy** và **UNIQUE account đang LIVE** cần cưỡng chế bằng ràng buộc/lock transaction, không suy từ sơ đồ.
 
-## 4. Google Drive & Media Library
-- **CHỐT:** Mỗi Sarae User **một tài khoản Google**, **nhiều thư mục** được chọn làm nguồn video; hỗ trợ upload/download, duyệt, quản lý, xem trước/phát trên Web, liên kết video N:N với sản phẩm.
-- **CHỐT:** Đồng bộ thủ công bằng nút và tự động; khi file biến mất khỏi Drive thì xóa khỏi **danh sách Media Library khả dụng**, nhưng phải bảo toàn lịch sử/audit và cache của phiên LIVE đang phát để không gián đoạn.
-- **CHỐT:** User **không phải cung cấp API key, mật khẩu hay public link**; hướng kết nối là Google OAuth với consent.
-- **CẦN KIỂM CHỨNG TRƯỚC KHI CODE:** Google Drive folder-scoped access cho file hiện có và file thêm sau; `drive.file` không mặc nhiên cho quyền tất cả file con trong folder. Nếu cần scope rộng hơn phải lập kế hoạch verification Google. Thiết kế token storage/refresh/revoke riêng, không công khai bearer token trong URL video.
+## 4. Media Library & Storage tập trung
+> **Thay đổi 2026-10-21 (Change Request của chủ dự án):** bỏ mô hình mỗi User kết nối Google Drive riêng. Các dòng gạch ngang bên dưới là quyết định cũ, giữ lại để truy vết. Thiết kế: `docs/CENTRALIZED_MEDIA_STORAGE.md`.
+
+- ~~**CHỐT:** Mỗi Sarae User **một tài khoản Google**, **nhiều thư mục** được chọn làm nguồn video…~~ → **CHỐT (CR 2026-10-21):** Storage **tập trung do chủ hệ thống quản lý**. Giai đoạn nội bộ dùng **một Google Drive của chủ hệ thống**; sau này chuyển được sang S3/R2 mà không viết lại Media Library/LIVE.
+- **CHỐT (CR):** Mỗi Sarae User có **Media Library riêng**, không thấy media của User khác. User **upload và quản lý video trên Sarae Web**; Backend giữ credential storage và thao tác với kho. Phân quyền ở Backend, không dựa vào đường dẫn folder.
+- **CHỐT (CR):** OAuth credential là **cấu hình hệ thống**, chủ hệ thống kết nối một lần qua luồng **admin-only**; scope mặc định **`drive.file`** (không dùng `drive.readonly`).
+- **CHỐT (CR):** Sarae Media ID độc lập với provider file ID; migrate sang provider khác theo từng media, kiểm checksum, chỉ đổi mapping sau khi copy thành công. Giữ dữ liệu LOCAL_LEGACY, migration additive.
+- ~~**CHỐT:** Đồng bộ thủ công bằng nút và tự động từ Drive…~~ → không còn áp dụng: mọi video vào kho qua Sarae (không có file do người dùng tự thêm trên Drive). Video bị User xóa trên Sarae chỉ ẩn khỏi thư viện; lịch sử/audit LIVE được giữ.
+- **CHỐT:** User **không phải cung cấp API key, mật khẩu hay public link**.
+- ~~**CẦN KIỂM CHỨNG TRƯỚC KHI CODE:** folder-scoped access với `drive.file`…~~ → Đã PoC (docs/GOOGLE_DRIVE_OAUTH_POC.md). Với storage tập trung, `drive.file` đủ vì Sarae tạo mọi file. **CẦN KIỂM CHỨNG:** chạy luồng admin-connect + upload thật với Google Drive của chủ hệ thống.
 - **CHỐT:** Agent tải **toàn bộ tập video dùng cho LIVE** về file cache local trước khi phát (random cần toàn bộ tập); kiểm tra checksum/dung lượng, không tải lại file không đổi, không xóa cache khi đang LIVE. Mất Cloud/Internet vẫn tiếp tục theo queue cache nếu OBS/Agent còn hoạt động.
 - **CẦN THIẾT KẾ:** quota đĩa, download lỗi, dung lượng thiếu, preview streaming/video range, đồng bộ file nhiều folder và trùng file.
 

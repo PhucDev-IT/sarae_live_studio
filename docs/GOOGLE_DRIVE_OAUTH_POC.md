@@ -1,5 +1,7 @@
 # Google Drive OAuth PoC — Phase 1
 
+> **Đã thay thế (2026-10-21):** chủ dự án chuyển sang Storage tập trung do hệ thống quản lý (`docs/CENTRALIZED_MEDIA_STORAGE.md`). Kết luận PoC vẫn dùng được: `drive.file` không thấy file người dùng tự thêm trên Drive → với storage tập trung mọi file đều do Sarae tạo nên `drive.file` là đủ, không cần `drive.readonly`.
+
 > Cập nhật: 2026-10-21 · Nhánh: `dev` · Trạng thái: **`drive.file` đã chạy 1 lần thật (C4 FAIL)**; PoC bổ sung và phép thử `drive.readonly` **chưa chạy**. Phase 2 **chưa bắt đầu**.
 > Quy ước: **THỰC NGHIỆM** = quan sát từ report PoC thật · **TÀI LIỆU GOOGLE** = trích tài liệu chính thức · **NGUỒN CỘNG ĐỒNG** = forum/issue · **SUY LUẬN** = chưa kiểm chứng.
 

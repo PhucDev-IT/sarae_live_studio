@@ -33,6 +33,21 @@ def _cipher() -> Fernet:
     return _fernet
 
 
+def encrypt(value: str) -> str:
+    """Encrypt a server-side secret (e.g. a Google refresh token) with the same key as the AI credentials."""
+    return _cipher().encrypt(value.encode()).decode()
+
+
+def decrypt(value: str | None) -> str | None:
+    """None when empty or when the key changed (the secret must then be obtained again)."""
+    if not value:
+        return None
+    try:
+        return _cipher().decrypt(value.encode()).decode()
+    except InvalidToken:
+        return None
+
+
 def _table(db):
     db.execute("""CREATE TABLE IF NOT EXISTS owner_credentials (
         owner_id TEXT NOT NULL, provider TEXT NOT NULL, secret TEXT NOT NULL, last4 TEXT NOT NULL,
