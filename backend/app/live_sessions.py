@@ -108,6 +108,34 @@ def serialize(db, item):
             "product_ids": ids_for(db, item.id), "current_product_id": item.current_product_id,
             "created_at": item.created_at, "started_at": item.started_at, "ended_at": item.ended_at}
 
+def acquire_live_claim(db, item, agent_id: str):
+    """Atomically reserve one broadcaster and one Agent before dispatching playback.
+
+    A claim is retained on ambiguous timeouts so another user cannot hijack
+    a possibly live account until its state is reconciled.
+    """
+    from sqlalchemy import text
+    db.execute(text("""
+        INSERT OR IGNORE INTO live_start_claims
+          (tiktok_account_id,session_id,agent_id,acquired_at)
+        VALUES (:account,:session,:agent,:time)
+    """),{"account":item.tiktok_account_id,"session":item.id,
+          "agent":agent_id,"time":datetime.now(timezone.utc).isoformat()})
+    rows=db.execute(text("""
+        SELECT tiktok_account_id,session_id,agent_id FROM live_start_claims
+        WHERE tiktok_account_id=:account OR agent_id=:agent OR session_id=:session
+    """),{"account":item.tiktok_account_id,"agent":agent_id,
+          "session":item.id}).mappings().all()
+    if len(rows)!=1 or rows[0]["session_id"]!=item.id or rows[0]["agent_id"]!=agent_id:
+        raise HTTPException(409,"Tài khoản TikTok hoặc Windows Agent đã được giữ cho phiên LIVE khác")
+
+
+def release_live_claim(db, session_id: int):
+    from sqlalchemy import text
+    db.execute(text("DELETE FROM live_start_claims WHERE session_id=:session"),
+               {"session":session_id})
+
+
 def event(db, sid, kind, pid=None, detail=""):
     db.add(SessionEvent(session_id=sid, event_type=kind, product_id=pid, detail=detail))
 
@@ -503,6 +531,7 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
             raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
         # Persist ownership of the selected Agent before dispatch: fast Agent ack
         # can arrive while the HTTP request is still waiting.
+        acquire_live_claim(db,item,agent["id"])
         item.agent_id=agent["id"]
         db.commit()
         try:
