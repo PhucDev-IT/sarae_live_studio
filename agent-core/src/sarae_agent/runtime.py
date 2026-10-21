@@ -83,7 +83,8 @@ class AgentRuntime:
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.voice = VoiceService(self.config, self.obs)
         self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
-        self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice)
+        self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
+                                    tiktok_sync=self.sync_tiktok_products)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
     def _restore_activated_cloud_url(self) -> None:
