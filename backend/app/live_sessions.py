@@ -263,7 +263,18 @@ def apply_command_outcome(command: dict, context: dict):
         item = db.get(LiveSession, sid)
         if item is None or item.agent_id != command["agent_id"]:
             return
+        if action == "finish":
+            if ok and item.status == "ENDED":
+                release_live_claim(db,sid)
+                event(db,sid,"AGENT_STOP_CONFIRMED",detail=f"command={command['command_id']}")
+            elif not ok:
+                event(db,sid,"AGENT_STOP_UNCONFIRMED",detail=command["error"] or command["status"])
+            db.commit()
+            return
         if not ok:
+            if action == "start" and command["status"] == "FAILED" and item.status == "DRAFT":
+                release_live_claim(db,sid)
+                item.agent_id=None
             reason = command["error"] or command["status"]
             event(db, sid, f"{(action or 'command').upper()}_{command['status']}", pid, f"command={command['command_id']};{reason}"[:500])
             db.commit()
@@ -534,19 +545,8 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         acquire_live_claim(db,item,agent["id"])
         item.agent_id=agent["id"]
         db.commit()
-        try:
-            view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
-        except Exception:
-            db.refresh(item)
-            if item.status == "DRAFT" and item.agent_id == agent["id"]:
-                item.agent_id=None
-                db.commit()
-            raise
-        if view.get("status") in ("FAILED","TIMEOUT","CANCELLED"):
-            db.refresh(item)
-            if item.status == "DRAFT" and item.agent_id == agent["id"]:
-                item.agent_id=None
-                db.commit()
+        # Do not release the claim on ambiguous transport timeouts.
+        view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
     return answer(view, owner, session_id)
 
 @router.post("/{session_id}/resume")
