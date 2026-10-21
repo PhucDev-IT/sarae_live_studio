@@ -138,7 +138,14 @@ class CommandRouter:
     def _tiktok_sync(self) -> dict:
         if self.tiktok_sync is None:
             raise AgentError("TIKTOK_SYNC_UNAVAILABLE", "Agent chưa hỗ trợ đồng bộ TikTok qua Cloud")
-        return self.tiktok_sync()
+        result=self.tiktok_sync()
+        # Cloud command ACK has a size limit; the full catalog is already stored
+        # by /tiktok-products/sync and fetched separately by the Web.
+        return {"agent_id":result.get("agent_id"),
+                "scanned_at":result.get("scanned_at"),
+                "account":result.get("account"),
+                "summary":result.get("summary"),
+                "imported":result.get("imported")}
 
     @property
     def kinds(self) -> list[str]:
