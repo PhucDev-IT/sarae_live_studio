@@ -224,7 +224,7 @@ export interface SystemStatus {
 export interface AgentConfigView {
   version: number
   cloud: { api_url: string; heartbeat_seconds: number; poll_seconds: number; request_timeout_seconds: number }
-  obs: { host: string; port: number; media_input: string; voice_input: string; auto_connect: boolean; password_set: boolean }
+  obs: { host: string; port: number; media_input: string; voice_input: string; dual_mode: boolean; source_a: string; source_b: string; auto_connect: boolean; password_set: boolean }
   media: { folders: string[]; rescan_minutes: number }
   monitor: MonitorConfig
   agent: { autostart: boolean }
