@@ -4,7 +4,7 @@ import { agentAction, apiRequest, onAgent, type AgentCommand } from './mediaApi'
 export type SessionStatus = 'DRAFT' | 'RUNNING' | 'ENDED'
 /** A LIVE session is bound to the Windows Agent it was created on; every action goes to that Agent, never another. */
 export type LiveSession = {
-  id:number; name:string; status:SessionStatus; agent_id:string; shop_id:number|null; product_ids:number[]; current_product_id:number|null
+  id:number; name:string; status:SessionStatus; agent_id:string|null; shop_id:number|null; tiktok_account_id:number|null; product_ids:number[]; current_product_id:number|null
   created_at:string; started_at:string|null; ended_at:string|null
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
@@ -70,7 +70,7 @@ export type SessionAction = { command?:AgentCommand; session?:LiveSession; uncha
 export const sessionsApi = {
   list:() => apiRequest<LiveSession[]>('/live/sessions'),
   events:(id:number) => apiRequest<SessionEvent[]>(`/live/sessions/${id}/events`),
-  create:(name:string, agentId:string, shopId:number) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], agent_id:agentId, shop_id:shopId})),
+  create:(name:string, accountId:number) => apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], tiktok_account_id:accountId})),
   rename:(id:number, name:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({name}, 'PATCH')),
   /** Only while DRAFT: a session never moves to another Agent once it has started. */
   moveToAgent:(id:number, agentId:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({agent_id:agentId}, 'PATCH')),
@@ -78,8 +78,8 @@ export const sessionsApi = {
   duplicate:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/duplicate`, {method:'POST'}),
   saveProducts:(id:number, productIds:number[]) => apiRequest<LiveSession>(`/live/sessions/${id}/products`, json({product_ids:productIds}, 'PUT')),
   // Sent to the session's own Agent; resolved once the Agent confirmed (or rejected with its error).
-  start:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/start`, json(productId ? {product_id:productId} : {})),
-  switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
+  start:(session:LiveSession, agentId:string, productId?:number) => agentAction<SessionAction>(agentId, `/live/sessions/${session.id}/start`, json({agent_id:agentId, ...(productId ? {product_id:productId} : {})})),
+  switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
   /** Plays a RUNNING session again on its Agent after playback was lost (Agent or OBS restarted). */
   resume:(session:LiveSession, productId?:number) => agentAction<SessionAction>(session.agent_id, `/live/sessions/${session.id}/resume`, json(productId ? {product_id:productId} : {})),
   finish:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/finish`, {method:'POST'}),
