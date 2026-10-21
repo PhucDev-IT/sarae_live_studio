@@ -58,18 +58,25 @@ export default function LiveSessions(){
   const loadSessions = useCallback(async ()=>{setSessions(await sessionsApi.list())},[])
   const loadAll = useCallback(async ()=>{setSessions(await sessionsApi.list());setLoaded(true)},[])
   useEffect(()=>{void loadAll().catch(e=>{setLoaded(true);toast.push({tone:'danger',title:'Không tải được phiên LIVE',description:errorText(e, '')})})},[loadAll,toast])
-  // Video readiness and playback belong to one Agent: the chosen session's own Agent.
-  const viewAgentId = sessions.find(s=>s.id === selected)?.agent_id ?? tabAgentId
+  // DRAFT catalog is owned by the User, not an Agent. RUNNING playback is Agent-specific.
+  const selectedSession = sessions.find(s=>s.id === selected)
+  const viewAgentId = selectedSession?.agent_id ?? tabAgentId
   useEffect(()=>{
+    let active=true
     setStatus(null)
-    if (!viewAgentId) {setProducts([]);return}
-    let active = true
-    const poll = () => void apiRequest<LiveStatus>(onAgent('/live/status', viewAgentId)).then(s=>{if (active) setStatus(s)}).catch(()=>{if (active) setStatus(null)})
-    void sessionsApi.products(viewAgentId).then(p=>{if (active) setProducts(p)}).catch(()=>{if (active) setProducts([])})
-    poll()
-    const t = window.setInterval(poll, POLL_MS)
-    return ()=>{active = false;window.clearInterval(t)}
-  },[viewAgentId])
+    if (selectedSession?.status === 'RUNNING' && selectedSession.agent_id) {
+      const agentId=selectedSession.agent_id
+      const poll=()=>void apiRequest<LiveStatus>(onAgent('/live/status',agentId))
+        .then(s=>{if(active)setStatus(s)}).catch(()=>{if(active)setStatus(null)})
+      void sessionsApi.products(agentId).then(p=>{if(active)setProducts(p)}).catch(()=>{if(active)setProducts([])})
+      poll()
+      const timer=window.setInterval(poll,POLL_MS)
+      return ()=>{active=false;window.clearInterval(timer)}
+    }
+    void apiRequest<LiveProduct[]>('/live/catalog-products')
+      .then(p=>{if(active)setProducts(p)}).catch(()=>{if(active)setProducts([])})
+    return ()=>{active=false}
+  },[selectedSession?.status,selectedSession?.agent_id,selected])
   // The running session's current product changes from the LIVE console; refresh when playback moves.
   useEffect(()=>{if (loaded) void loadSessions().catch(()=>{})},[loaded,loadSessions,status?.running,status?.session_id,status?.product_id,status?.pending_product_id])
   // Default selection: the running session, else the newest one.
@@ -324,12 +331,7 @@ export default function LiveSessions(){
                 {c.ok ? <CheckCircle2 size={16}/> : c.blocking ? <CircleDashed size={16}/> : <CircleAlert size={16}/>}
                 <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : 'Gán video'}</a></>}</span>
               </li>)}</ul>
-              {false && agents.length > 1 && <div className="ls-move-agent">
-                <Select label="Phát trên máy" value={chosen.agent_id ?? ''} disabled={busy || dirty}
-                  options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
-                  onChange={value=>{if (value && value !== chosen.agent_id) void run(()=>sessionsApi.moveToAgent(chosen.id, value), 'Đã chuyển phiên sang máy khác')}}/>
-                <small>Chỉ đổi được khi phiên chưa bắt đầu. Video gán cho sản phẩm là riêng của từng máy.</small>
-              </div>}
+        
             </Card>}
             {chosen.status !== 'DRAFT' && <Card className="ls-summary" title={<span className="ls-card-title"><Clock3 size={17}/>Tóm tắt</span>}>
               <dl className="ls-stats">
