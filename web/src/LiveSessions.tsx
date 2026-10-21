@@ -89,6 +89,9 @@ export default function LiveSessions(){
   },[sessions,selected])
 
   const chosen = sessions.find(s=>s.id === selected)
+  useEffect(()=>{
+    setLegacyShop(chosen?.tiktok_account_id != null ? String(chosen.tiktok_account_id) : '')
+  },[chosen?.id,chosen?.tiktok_account_id])
   const chosenKey = chosen ? `${chosen.id}:${chosen.status}:${chosen.current_product_id}:${chosen.product_ids.join(',')}` : ''
   useEffect(()=>{
     if (!chosen) {setEvents([]);return}
@@ -312,16 +315,17 @@ export default function LiveSessions(){
           </ol>
         </Card>
 
-        {chosen.tiktok_account_id == null && chosen.status==='DRAFT' && <Card>
-          <strong>Phiên cũ chưa chọn TikTok Account</strong>
-          <p className="ls-muted">Chọn tài khoản TikTok phát LIVE trước khi bắt đầu.</p>
+        {chosen.status==='DRAFT' && <Card>
+          <strong>TikTok Account của phiên</strong>
+          <p className="ls-muted">Có thể đổi tài khoản khi còn DRAFT. Danh sách sản phẩm sẽ được xác minh lại trước khi phát.</p>
           <div style={{display:'flex',gap:12,alignItems:'end',flexWrap:'wrap'}}>
             <div style={{flex:1,minWidth:200}}><Select label="TikTok Account" value={legacyShop} onChange={setLegacyShop}
               options={shops.map(sh=>({value:String(sh.id),label:sh.nick_name||sh.user_name||sh.user_id}))}/></div>
-            <Button disabled={!legacyShop||busy||chosen.product_ids.length>0} onClick={()=>void run(async()=>{
+            <Button disabled={!legacyShop||busy||Number(legacyShop)===chosen.tiktok_account_id} onClick={()=>void run(async()=>{
               await apiRequest('/live/sessions/'+chosen.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({tiktok_account_id:Number(legacyShop)})})
-            },'Đã liên kết TikTok Account')}>Lưu tài khoản</Button>
+              setConsoleConfirmed(false)
+            },'Đã cập nhật TikTok Account')}>Lưu tài khoản</Button>
           </div>
         </Card>}
         <div className="ls-detail-grid">
