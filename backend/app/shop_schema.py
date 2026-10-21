@@ -32,12 +32,6 @@ def upgrade():
             agent_id VARCHAR(80) NOT NULL UNIQUE,
             acquired_at VARCHAR(40) NOT NULL
         )"""))
-        # Preserve in-progress ownership when upgrading an installation with active LIVE.
-        conn.execute(text("""INSERT OR IGNORE INTO live_start_claims
-            (tiktok_account_id,session_id,agent_id,acquired_at)
-            SELECT tiktok_account_id,id,agent_id,COALESCE(started_at,created_at)
-              FROM live_sessions WHERE status='RUNNING'
-                AND tiktok_account_id IS NOT NULL AND agent_id IS NOT NULL"""))
         for table,columns in {
             "products":{"shop_id":"INTEGER","tiktok_product_id":"VARCHAR(80)","tiktok_seller_id":"VARCHAR(80)",
                         "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)"},
@@ -47,6 +41,12 @@ def upgrade():
             for name,kind in columns.items():
                 if name not in present:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {kind}"))
+        # Preserve in-progress ownership when upgrading an installation with active LIVE.
+        conn.execute(text("""INSERT OR IGNORE INTO live_start_claims
+            (tiktok_account_id,session_id,agent_id,acquired_at)
+            SELECT tiktok_account_id,id,agent_id,COALESCE(started_at,created_at)
+              FROM live_sessions WHERE status='RUNNING'
+                AND tiktok_account_id IS NOT NULL AND agent_id IS NOT NULL"""))
         conn.execute(text("""CREATE UNIQUE INDEX IF NOT EXISTS uq_tiktok_product_shop
                             ON products(shop_id,tiktok_product_id)
                             WHERE shop_id IS NOT NULL AND tiktok_product_id IS NOT NULL"""))
