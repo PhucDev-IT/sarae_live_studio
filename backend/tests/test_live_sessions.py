@@ -1,4 +1,5 @@
-"""LIVE sessions run on the session's Windows Agent through tracked commands.
+"""LIVE sessions: a DRAFT names its TikTok Account, the Windows Agent is chosen when it starts, then every action runs
+on that Agent through tracked commands.
 
 The web call answers 200 when the Agent confirmed in time, else 202 with the command; the session changes only when the
 command's outcome is applied (whenever the Agent acks). Waits are 0 here, so every action shows the 202 path; the
@@ -17,13 +18,11 @@ from support import SaasTestCase
 class LiveSessionTests(SaasTestCase):
     def setUp(self):
         super().setUp()
-        with self.Session() as db:
-            db.add_all([Product(name="Áo", sku="A1", owner_id=self.owner_a["id"]),
-                        Product(name="Quần", sku="Q1", owner_id=self.owner_a["id"]),
-                        Product(name="Váy", sku="V1", owner_id=self.owner_a["id"])])
-            db.commit()
+        self.tiktok_products(self.owner_a, "Áo", "Quần", "Váy")
         self.agent = self.activate_agent(self.owner_a, "PC-A")
         self.on_agent = {"agent_id": self.agent["agent_id"]}
+        # The account the shop goes LIVE with, verified by a Console sync on its Agent.
+        self.account = self.console_sync(self.agent, product_ids=(1, 2, 3))
         self.ao, self.quan = self.sync_videos(self.agent, "ao.mp4", "quan.mp4")
         self.client.put("/api/product-videos/1", json={"media_ids": [self.ao]}, params=self.on_agent)
         self.client.put("/api/product-videos/2", json={"media_ids": [self.quan]}, params=self.on_agent)
@@ -33,7 +32,10 @@ class LiveSessionTests(SaasTestCase):
             self.addCleanup(patcher.stop)
 
     def create(self, product_ids=(1, 2), name="Tối nay"):
-        return self.client.post("/api/live/sessions", json={"name": name, "product_ids": list(product_ids), **self.on_agent}).json()["id"]
+        created = self.client.post("/api/live/sessions", json={"name": name, "product_ids": list(product_ids),
+                                                                "tiktok_account_id": self.account})
+        self.assertEqual(created.status_code, 201, created.text)
+        return created.json()["id"]
 
     def playing(self, session_id, product_id=1, **extra):
         self.heartbeat(self.agent, {"running": True, "session_id": session_id, "product_id": product_id,
@@ -41,7 +43,7 @@ class LiveSessionTests(SaasTestCase):
 
     def start(self, product_ids=(1, 2)):
         sid = self.create(product_ids)
-        started = self.client.post(f"/api/live/sessions/{sid}/start", json={})
+        started = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent)
         self.assertEqual(started.status_code, 202, started.text)
         self.assertEqual(started.json()["session"]["status"], "DRAFT", "not RUNNING before the Agent confirms")
         self.run_agent(self.agent)
@@ -54,23 +56,28 @@ class LiveSessionTests(SaasTestCase):
     def events(self, sid):
         return [e["event_type"] for e in self.client.get(f"/api/live/sessions/{sid}/events").json()]
 
-    def test_draft_can_be_created_empty_but_not_started(self):
-        created = self.client.post("/api/live/sessions", json={"name": "Tối nay", **self.on_agent})
-        self.assertEqual((created.json()["product_ids"], created.json()["agent_id"]), ([], self.agent["agent_id"]))
-        self.assertEqual(self.client.post(f"/api/live/sessions/{created.json()['id']}/start", json={}).status_code, 409)
-        self.assertEqual(self.client.post("/api/live/sessions", json={"name": "Không Agent"}).status_code, 422)
+    def test_draft_names_an_account_not_an_agent(self):
+        created = self.client.post("/api/live/sessions", json={"name": "Tối nay", "tiktok_account_id": self.account})
+        self.assertEqual((created.json()["product_ids"], created.json()["agent_id"]), ([], None))
+        self.assertEqual(self.client.post(f"/api/live/sessions/{created.json()['id']}/start", json=self.on_agent).status_code, 409,
+                         "an empty lineup cannot start")
+        self.assertEqual(self.client.post("/api/live/sessions", json={"name": "Không tài khoản"}).status_code, 422)
+        self.assertEqual(self.client.post("/api/live/sessions", json={"name": "B", "tiktok_account_id": self.account},
+                                          headers=self.B).status_code, 422, "B has not verified this account")
+        sid = self.create()
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json={"product_id": 1}).status_code, 422, "the Agent is chosen at start")
 
     def test_rename_duplicate_and_delete(self):
         sid = self.create((2, 1), "A")
         self.assertEqual(self.client.patch(f"/api/live/sessions/{sid}", json={"name": "  B  "}).json()["name"], "B")
         copy = self.client.post(f"/api/live/sessions/{sid}/duplicate").json()
-        self.assertEqual((copy["product_ids"], copy["status"], copy["agent_id"]), ([2, 1], "DRAFT", self.agent["agent_id"]))
+        self.assertEqual((copy["product_ids"], copy["status"], copy["agent_id"], copy["tiktok_account_id"]), ([2, 1], "DRAFT", None, self.account))
         self.assertEqual(self.client.delete(f"/api/live/sessions/{sid}").status_code, 204)
         self.assertEqual(self.client.get(f"/api/live/sessions/{sid}").status_code, 404)
 
     def test_start_becomes_running_when_the_agent_confirms(self):
         sid = self.create()
-        self.client.post(f"/api/live/sessions/{sid}/start", json={})
+        self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent)
         (command,) = self.run_agent(self.agent)
         self.assertEqual(command["payload"], {"session_id": sid, "product_id": 1, "media_ids": [self.ao], "mode": "immediate"})
         session = self.session(sid)
@@ -82,9 +89,9 @@ class LiveSessionTests(SaasTestCase):
 
     def test_failed_start_keeps_the_draft_and_records_why(self):
         sid = self.create()
-        self.client.post(f"/api/live/sessions/{sid}/start", json={})
+        self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent)
         self.run_agent(self.agent, lambda c: (False, "OBS chưa kết nối"))
-        self.assertEqual(self.session(sid)["status"], "DRAFT")
+        self.assertEqual((self.session(sid)["status"], self.session(sid)["agent_id"]), ("DRAFT", None), "the Agent is free again")
         events = self.client.get(f"/api/live/sessions/{sid}/events").json()
         self.assertEqual(events[-1]["event_type"], "START_FAILED")
         self.assertIn("OBS chưa kết nối", events[-1]["detail"])
@@ -138,15 +145,15 @@ class LiveSessionTests(SaasTestCase):
 
     def test_double_click_never_starts_twice(self):
         sid = self.create()
-        first = self.client.post(f"/api/live/sessions/{sid}/start", json={}, headers={**self.A, "Idempotency-Key": "click-1"})
-        retry = self.client.post(f"/api/live/sessions/{sid}/start", json={}, headers={**self.A, "Idempotency-Key": "click-1"})
+        first = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent, headers={**self.A, "Idempotency-Key": "click-1"})
+        retry = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent, headers={**self.A, "Idempotency-Key": "click-1"})
         self.assertEqual(first.json()["command"]["command_id"], retry.json()["command"]["command_id"])
-        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json={}).status_code, 409, "a start is already on its way")
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).status_code, 409, "a start is already on its way")
         self.assertEqual(len(self.run_agent(self.agent)), 1)
 
     def test_product_without_videos_cannot_start(self):
         sid = self.create((3,))
-        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json={}).status_code, 409)
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).status_code, 409)
         self.assertEqual(self.session(sid)["status"], "DRAFT")
 
     def test_offline_agent_cannot_start(self):
@@ -155,7 +162,7 @@ class LiveSessionTests(SaasTestCase):
         with connection() as db:
             db.execute("UPDATE agent_status SET last_seen='2000-01-01T00:00:00+00:00'")
             db.commit()
-        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json={}).status_code, 409)
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).status_code, 409)
 
     def test_immediate_switch_outside_lineup_adds_and_records_it(self):
         sid = self.start(product_ids=(1,))
@@ -208,7 +215,8 @@ class LiveSessionTests(SaasTestCase):
 
     def test_interrupted_session_closes_or_resumes_on_its_own_agent(self):
         with self.Session() as db:
-            db.add(LiveSession(name="Treo", status="RUNNING", owner_id=self.owner_a["id"], agent_id=self.agent["agent_id"], current_product_id=2))
+            db.add(LiveSession(name="Treo", status="RUNNING", owner_id=self.owner_a["id"], agent_id=self.agent["agent_id"],
+                               tiktok_account_id=self.account, current_product_id=2))
             db.commit()
         self.heartbeat(self.agent, {"running": False})
         self.assertEqual(self.client.delete("/api/live/sessions/1").status_code, 409)
@@ -227,6 +235,91 @@ class LiveSessionTests(SaasTestCase):
             db.commit()
         self.assertEqual(self.client.patch("/api/live/sessions/1", json={"name": "X"}).status_code, 409)
         self.assertEqual(self.client.put("/api/live/sessions/1/products", json={"product_ids": [1]}).status_code, 409)
+
+    def claims(self):
+        from sqlalchemy import text
+        with self.Session() as db:
+            return [tuple(r) for r in db.execute(text("SELECT session_id,agent_id FROM live_start_claims ORDER BY session_id")).all()]
+
+    def test_one_account_one_live_across_agents(self):
+        first = self.start()
+        other = self.activate_agent(self.owner_a, "PC-B")
+        self.client.put("/api/product-videos/1", json={"media_ids": self.sync_videos(other, "ao-b.mp4")}, params={"agent_id": other["agent_id"]})
+        self.console_sync(other, product_ids=(1,))
+        second = self.create((1,))
+        refused = self.client.post(f"/api/live/sessions/{second}/start", json={"agent_id": other["agent_id"]})
+        self.assertEqual(refused.status_code, 409, "the same TikTok account is already LIVE through Sarae")
+        self.assertEqual(self.claims(), [(first, self.agent["agent_id"])])
+
+    def test_console_of_another_account_or_stale_cart_blocks_start(self):
+        sid = self.create((1,))
+        self.console_sync(self.agent, user_id="7495962653689350865", product_ids=(1,))
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).status_code, 409, "wrong account logged in")
+        self.console_sync(self.agent, product_ids=(1,))
+        from app.tiktok_products import connection
+        with connection() as db:
+            db.execute("UPDATE snapshots SET scanned_at='2000-01-01T00:00:00+00:00'")
+            db.commit()
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).status_code, 409, "cart read too long ago")
+        self.assertEqual(self.claims(), [])
+
+    def test_readiness_of_a_draft_is_checked_against_the_agent_about_to_start(self):
+        sid = self.create((1, 3))
+        unknown = self.client.get(f"/api/live/sessions/{sid}/readiness").json()
+        self.assertEqual((unknown["snapshot_state"], unknown["products"][0]["reasons"]), ("UNKNOWN", ["AGENT_NOT_SELECTED"]))
+        ready = self.client.get(f"/api/live/sessions/{sid}/readiness", params=self.on_agent).json()
+        self.assertEqual((ready["snapshot_state"], ready["account_match"]), ("FRESH", True))
+        self.assertEqual([p["ready"] for p in ready["products"]], [True, False], "Váy has no video on this PC")
+        self.console_sync(self.agent, user_id="7495962653689350865", product_ids=(1,))
+        self.assertEqual(self.client.get(f"/api/live/sessions/{sid}/readiness", params=self.on_agent).json()["snapshot_state"], "ACCOUNT_MISMATCH")
+
+    def test_lost_start_answer_is_adopted_when_the_agent_reports_playing(self):
+        sid = self.create()
+        self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent)
+        self.playing(sid)  # the Agent plays it, its ACK never arrived
+        self.assertEqual(self.session(sid)["status"], "RUNNING")
+        self.assertIn("adopted_from_heartbeat=true", self.client.get(f"/api/live/sessions/{sid}/events").json()[-1]["detail"])
+
+    def test_unstarted_draft_frees_account_and_agent_when_the_agent_is_idle(self):
+        sid = self.create()
+        command = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent).json()["command"]
+        self.heartbeat(self.agent, {"running": False})
+        self.assertEqual(len(self.claims()), 1, "kept while the start command is on its way")
+        self.client.post(f"/api/agents/{self.agent['agent_id']}/commands/{command['command_id']}/cancel")
+        self.heartbeat(self.agent, {"running": False})
+        self.assertEqual((self.claims(), self.session(sid)["agent_id"]), ([], None))
+        self.heartbeat(self.agent)  # a heartbeat without playback data frees nothing (and here there is nothing left)
+
+    def test_finishing_a_pending_start_cancels_it_and_frees_the_lock(self):
+        sid = self.create()
+        self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent)
+        abandoned = self.client.post(f"/api/live/sessions/{sid}/finish")
+        self.assertEqual((abandoned.status_code, abandoned.json()["status"], abandoned.json()["agent_id"]), (200, "DRAFT", None))
+        self.assertEqual((self.claims(), self.run_agent(self.agent)), ([], []), "the start never reaches the Agent")
+        self.assertEqual(self.events(sid)[-1], "START_ABANDONED")
+
+    def test_ended_session_keeps_the_lock_until_the_agent_is_seen_idle(self):
+        sid = self.start()
+        from app.cloud_agents import connection
+        with connection() as db:
+            db.execute("UPDATE agent_status SET last_seen='2000-01-01T00:00:00+00:00'")
+            db.commit()
+        self.client.post(f"/api/live/sessions/{sid}/finish")
+        self.assertEqual(len(self.claims()), 1, "Agent offline: TikTok may still be LIVE, the account stays locked")
+        self.heartbeat(self.agent, {"running": False})
+        self.assertEqual(self.claims(), [])
+
+    def test_a_retry_key_never_restarts_a_finished_session(self):
+        sid = self.create()
+        first = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent, headers={**self.A, "Idempotency-Key": "k1"})
+        self.run_agent(self.agent)
+        self.playing(sid)
+        self.client.post(f"/api/live/sessions/{sid}/finish")
+        self.assertEqual(self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent,
+                                          headers={**self.A, "Idempotency-Key": "k2"}).status_code, 409)
+        again = self.client.post(f"/api/live/sessions/{sid}/start", json=self.on_agent, headers={**self.A, "Idempotency-Key": "k1"})
+        self.assertEqual(again.json()["command"]["command_id"], first.json()["command"]["command_id"])
+        self.assertEqual(again.json()["session"]["status"], "ENDED")
 
     def test_playback_controls_are_tracked_commands_on_the_named_agent(self):
         paused = self.client.post("/api/live/pause", params=self.on_agent)

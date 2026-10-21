@@ -2,11 +2,13 @@
 from sqlalchemy import inspect,text
 from app.database import engine
 
-def upgrade():
+def upgrade(bind=None):
+    """Apply to the app database (default) or to `bind` (tests use an in-memory engine)."""
     from app.database import Base
-    if not {"products","live_sessions"}.issubset(set(inspect(engine).get_table_names())):
-        Base.metadata.create_all(bind=engine)
-    with engine.begin() as conn:
+    target = bind or engine
+    if not {"products","live_sessions"}.issubset(set(inspect(target).get_table_names())):
+        Base.metadata.create_all(bind=target)
+    with target.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS tiktok_shops (
             id INTEGER PRIMARY KEY,owner_id VARCHAR(64) NOT NULL,
             seller_id VARCHAR(80) NOT NULL,display_name VARCHAR(200) NOT NULL DEFAULT '',

@@ -44,25 +44,40 @@ class SaasGuardTests(SaasTestCase):
 
 class OwnerIsolationTests(SaasTestCase):
     def test_products_and_presenters_are_private(self):
-        product = self.client.post("/api/products", json={"name": "Áo của A", "sku": "AO-1"}).json()
+        (pid,) = self.tiktok_products(self.owner_a, "Áo của A")
+        product = self.client.get(f"/api/products/{pid}").json()
         presenter = self.client.post("/api/presenters", json={"name": "Lan"}).json()
-        for path, item in (("/api/products", product), ("/api/presenters", presenter)):
+        self.assertEqual(self.client.put(f"/api/tiktok-catalog/products/{pid}/description", json={"description": "x"},
+                                         headers=self.B).status_code, 404)
+        for path, item in (("/api/presenters", presenter), ("/api/products", product)):
             self.assertEqual(self.client.get(path, headers=self.B).json(), [])
             url = f"{path}/{item['id']}"
             self.assertEqual(self.client.get(url, headers=self.B).status_code, 404)
-            self.assertEqual(self.client.put(url, json={"name": "chiếm"}, headers=self.B).status_code, 404)
-            self.assertEqual(self.client.delete(url, headers=self.B).status_code, 404)
+            if path == "/api/presenters":  # products are read-only over this API (synced from TikTok)
+                self.assertEqual(self.client.put(url, json={"name": "chiếm"}, headers=self.B).status_code, 404)
+                self.assertEqual(self.client.delete(url, headers=self.B).status_code, 404)
             self.assertEqual(self.client.get(url).json()["name"], item["name"], "A's row is untouched")
 
-    def test_sku_is_unique_per_owner_only(self):
-        self.assertEqual(self.client.post("/api/products", json={"name": "A", "sku": "SAME"}).status_code, 201)
-        self.assertEqual(self.client.post("/api/products", json={"name": "B", "sku": "SAME"}, headers=self.B).status_code, 201)
-        self.assertEqual(self.client.post("/api/products", json={"name": "A2", "sku": "SAME"}).status_code, 409)
+    def test_same_tiktok_product_is_a_separate_row_per_owner(self):
+        a, b = self.activate_agent(self.owner_a, "PC-A"), self.activate_agent(self.owner_b, "PC-B")
+        cart = [{"name": "Áo", "seller_id": "111", "product_id": "1"}]
+        for agent in (a, b):
+            response = self.client.post("/api/tiktok-products/sync", headers={"X-Sarae-Agent-Key": agent["agent_credential"]},
+                                        json={"agent_id": agent["agent_id"], "complete": True, "products": cart,
+                                              "account": {"user_id": "7494647113328657914"}})
+            self.assertEqual(response.status_code, 200, response.text)
+        mine, theirs = self.client.get("/api/products").json(), self.client.get("/api/products", headers=self.B).json()
+        self.assertEqual((len(mine), len(theirs)), (1, 1))
+        self.assertNotEqual(mine[0]["id"], theirs[0]["id"])
+        # Both users verified the same broadcaster: one account, linked to each of them (N:N).
+        self.assertEqual(self.client.get("/api/tiktok-catalog/accounts").json()[0]["id"],
+                         self.client.get("/api/tiktok-catalog/accounts", headers=self.B).json()[0]["id"])
 
     def test_sessions_cannot_use_or_touch_another_owners_data(self):
         agent = self.activate_agent(self.owner_a, "PC-A")
-        theirs = self.client.post("/api/products", json={"name": "Áo của A"}).json()["id"]
-        session = self.client.post("/api/live/sessions", json={"name": "LIVE của A", "product_ids": [theirs], "agent_id": agent["agent_id"]}).json()
+        (theirs,) = self.tiktok_products(self.owner_a, "Áo của A")
+        account = self.console_sync(agent, product_ids=(theirs,))
+        session = self.client.post("/api/live/sessions", json={"name": "LIVE của A", "product_ids": [theirs], "tiktok_account_id": account}).json()
         self.assertEqual(self.client.get("/api/live/sessions", headers=self.B).json(), [])
         for method, suffix, body in (("get", "", None), ("patch", "", {"name": "x"}), ("delete", "", None),
                                      ("get", "/events", None), ("post", "/duplicate", None), ("put", "/products", {"product_ids": []})):
@@ -70,16 +85,19 @@ class OwnerIsolationTests(SaasTestCase):
             self.assertEqual(response.status_code, 404, f"{method} {suffix}")
         # B cannot put A's product into B's own session either.
         mine = self.activate_agent(self.owner_b, "PC-B")
-        created = self.client.post("/api/live/sessions", json={"name": "LIVE của B", "product_ids": [theirs], "agent_id": mine["agent_id"]}, headers=self.B)
+        b_account = self.console_sync(mine, user_id="7495962653689350865")
+        created = self.client.post("/api/live/sessions", json={"name": "LIVE của B", "product_ids": [theirs], "tiktok_account_id": b_account}, headers=self.B)
         self.assertEqual(created.status_code, 422)
-        # ...nor create a session on A's Agent.
-        on_a = self.client.post("/api/live/sessions", json={"name": "x", "agent_id": agent["agent_id"]}, headers=self.B)
-        self.assertEqual(on_a.status_code, 404)
+        # ...nor use A's TikTok account it never verified, nor start on A's Agent.
+        self.assertEqual(self.client.post("/api/live/sessions", json={"name": "x", "tiktok_account_id": account}, headers=self.B).status_code, 422)
+        b_products = [p["id"] for p in self.client.get("/api/products", headers=self.B).json()]
+        own = self.client.post("/api/live/sessions", json={"name": "y", "tiktok_account_id": b_account, "product_ids": b_products}, headers=self.B).json()
+        self.assertEqual(self.client.post(f"/api/live/sessions/{own['id']}/start", json={"agent_id": agent["agent_id"]}, headers=self.B).status_code, 404)
 
     def test_video_links_stay_within_owner(self):
         agent = self.activate_agent(self.owner_b, "PC-B")
         on = {"agent_id": agent["agent_id"]}
-        theirs = self.client.post("/api/products", json={"name": "Áo"}).json()["id"]
+        (theirs,) = self.tiktok_products(self.owner_a, "Áo")
         self.assertEqual(self.client.get(f"/api/product-videos/{theirs}", headers=self.B, params=on).status_code, 404)
         self.assertEqual(self.client.put(f"/api/product-videos/{theirs}", json={"media_ids": []}, headers=self.B, params=on).status_code, 404)
         self.assertEqual(self.client.get("/api/live/products", headers=self.B, params=on).json(), [])

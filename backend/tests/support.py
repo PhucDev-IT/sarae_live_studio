@@ -22,7 +22,8 @@ from app.media import get_db
 
 PASSWORD = "OwnerSecretPassword123!"
 # Modules that open sessions with SessionLocal() directly instead of the FastAPI dependency.
-SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.ai_live_batches"]
+SESSION_MODULES = ["app.live", "app.live_sessions", "app.product_videos", "app.ai_live_batches", "app.tiktok_catalog",
+                   "app.tiktok_products"]
 
 
 class SaasTestCase(unittest.TestCase):
@@ -33,7 +34,7 @@ class SaasTestCase(unittest.TestCase):
         self.identity_patch.start()
         # SaaS registries live in their own SQLite files; keep them in the temp folder too.
         self.saas_db_patches = [patch(f"app.{module}.DB", Path(self.tmp.name) / f"{module}.sqlite3")
-                                for module in ("cloud_agents", "agent_library", "agent_playlists", "captcha_templates")]
+                                for module in ("cloud_agents", "agent_library", "agent_playlists", "captcha_templates", "tiktok_products")]
         self.saas_db_patches.append(patch("app.captcha_templates.FILES", Path(self.tmp.name) / "captcha_templates"))
         for p in self.saas_db_patches:
             p.start()
@@ -49,6 +50,9 @@ class SaasTestCase(unittest.TestCase):
         self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         self.Session = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
         Base.metadata.create_all(bind=self.engine)
+        # TikTok accounts, LIVE claims and other tables created outside the ORM models.
+        from app.shop_schema import upgrade
+        upgrade(self.engine)
 
         def override():
             with self.Session() as session:
@@ -90,6 +94,31 @@ class SaasTestCase(unittest.TestCase):
         body = {"agent_id": agent["agent_id"], "hostname": hostname, "playback": playback}
         response = self.client.post("/api/agents/heartbeat", json=body, headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
         self.assertEqual(response.status_code, 200, response.text)
+
+    def tiktok_products(self, owner, *names, seller="5001"):
+        """Catalog products as a TikTok Console sync creates them (source seller + TikTok product id); returns ids."""
+        from app.catalog import Product
+        with self.Session() as db:
+            rows = [Product(name=name, sku=f"TK-{seller}-{i}", owner_id=owner["id"], tiktok_seller_id=seller,
+                            tiktok_product_id=str(9000 + i)) for i, name in enumerate(names, 1)]
+            db.add_all(rows)
+            db.commit()
+            return [row.id for row in rows]
+
+    def console_sync(self, agent, user_id="7494647113328657914", product_ids=(), user_name="shop.live"):
+        """The Agent posting a manual LIVE Console sync: the account logged in (account_info) and the cart products.
+        Returns the TikTok Account id the sync links to the Agent's owner."""
+        from sqlalchemy import text
+        from app.catalog import Product
+        with self.Session() as db:
+            products = [db.get(Product, pid) for pid in product_ids]
+            rows = [{"name": p.name, "seller_id": p.tiktok_seller_id, "product_id": p.tiktok_product_id} for p in products]
+        body = {"agent_id": agent["agent_id"], "complete": True, "products": rows or [{"name": "Khác", "seller_id": "1", "product_id": "1"}],
+                "account": {"user_id": user_id, "user_name": user_name, "nick_name": user_name, "user_type": 1}}
+        response = self.client.post("/api/tiktok-products/sync", json=body, headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        with self.Session() as db:
+            return db.execute(text("SELECT id FROM tiktok_accounts WHERE user_id=:u"), {"u": user_id}).scalar_one()
 
     def sync_videos(self, agent, *filenames):
         """The Agent syncing its library; returns the media ids (64-hex) in the given order."""

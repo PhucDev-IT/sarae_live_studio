@@ -136,6 +136,33 @@ def release_live_claim(db, session_id: int):
                {"session":session_id})
 
 
+def claims_of_agent(db, agent_id: str) -> list[int]:
+    from sqlalchemy import text
+    return [row[0] for row in db.execute(text("SELECT session_id FROM live_start_claims WHERE agent_id=:a"),
+                                         {"a": agent_id}).all()]
+
+
+def release_idle_claims(db, owner_id: str, agent_id: str):
+    """The Agent reports it plays nothing (fresh heartbeat): free the claims it still holds for sessions that
+    cannot be on air through Sarae any more — ENDED sessions, and DRAFT starts with no command still on its way.
+
+    A RUNNING session keeps its claim (it is "interrupted", resumed or finished by the operator), and nothing is
+    released while the Agent is offline: an unknown state never frees a TikTok account.
+    """
+    for sid in claims_of_agent(db, agent_id):
+        item = db.get(LiveSession, sid)
+        if item is None:
+            release_live_claim(db, sid)
+            continue
+        if item.owner_id != owner_id:
+            continue
+        if item.status == "ENDED" or (item.status == "DRAFT" and in_flight(sid, agent_id) is None):
+            release_live_claim(db, sid)
+            if item.status == "DRAFT":
+                item.agent_id = None
+            event(db, sid, "CLAIM_RELEASED", detail=f"agent={agent_id};agent_idle=true")
+
+
 def event(db, sid, kind, pid=None, detail=""):
     db.add(SessionEvent(session_id=sid, event_type=kind, product_id=pid, detail=detail))
 
@@ -205,6 +232,17 @@ def in_flight(session_id: int, agent_id: str, kind: str = "product_play"):
     with _db() as db:
         row = db.execute("""SELECT * FROM agent_commands WHERE agent_id=? AND session_id=? AND kind=?
             AND status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1""", (agent_id, session_id, kind)).fetchone()
+    return command_view(row) if row else None
+
+
+def command_for_key(session_id: int, idempotency_key: str | None):
+    """The command an earlier request of this session made with the same Idempotency-Key (a retried click)."""
+    from app.cloud_agents import _db, command_view
+    if not idempotency_key:
+        return None
+    with _db() as db:
+        row = db.execute("""SELECT * FROM agent_commands WHERE session_id=? AND idempotency_key=?
+            ORDER BY created_at DESC LIMIT 1""", (session_id, idempotency_key)).fetchone()
     return command_view(row) if row else None
 
 
@@ -324,10 +362,23 @@ def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
     from app.cloud_agents import create_command
     sid = playback.get("session_id") if playback.get("running") else None
     if not sid:
+        # Only an explicit "not running" frees claims; a heartbeat without playback data says nothing.
+        if playback.get("running") is False:
+            with SessionLocal() as db:
+                release_idle_claims(db, owner_id, agent_id)
+                db.commit()
         return
     with SessionLocal() as db:
         item = db.get(LiveSession, sid)
         foreign = item is None or item.owner_id != owner_id or item.agent_id != agent_id
+        if not foreign and item.status == "DRAFT" and sid in claims_of_agent(db, agent_id):
+            # The start reached the Agent although its answer was lost or late (TIMEOUT): the session is on air.
+            item.status = "RUNNING"
+            item.started_at = item.started_at or now()
+            item.current_product_id = playback.get("product_id") or item.current_product_id
+            event(db, sid, "STARTED", item.current_product_id, f"agent={agent_id};adopted_from_heartbeat=true")
+            db.commit()
+            return
         if foreign or item.status == "ENDED":
             if stop_sent_recently(agent_id, sid):
                 return
@@ -405,13 +456,26 @@ def session_detail(session_id: int, owner: Owner):
         return serialize(db, get_session(db, session_id, owner))
 
 @router.get("/{session_id}/readiness")
-def session_readiness(session_id:int,owner:Owner):
-    """Readiness and TikTok Console comparison, without modifying catalog/session."""
+def session_readiness(session_id:int,owner:Owner,agent_id:str|None=None):
+    """Readiness and TikTok Console comparison, without modifying catalog/session.
+
+    Videos and the Console snapshot belong to one Agent: a DRAFT has none yet, so the page passes the Agent the
+    user is about to start on (`agent_id`); a started session always uses its own Agent.
+    """
+    from sqlalchemy import text
+    from app.owner_agents import owned_agent
     from app.session_product_readiness import reconcile
     with SessionLocal() as db:
         item=get_session(db,session_id,owner)
-        return {"session_id":session_id,"agent_id":item.agent_id,
-                **reconcile(db,owner["id"],item.agent_id,ids_for(db,session_id),item.shop_id)}
+        target=item.agent_id or agent_id
+        if item.agent_id and agent_id and agent_id!=item.agent_id:
+            raise HTTPException(409,"Phiên đã gắn Agent khác")
+        if target:
+            target=owned_agent(owner,target)["id"]
+        expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
+                            {"a":item.tiktok_account_id}).scalar_one_or_none() if item.tiktok_account_id else None
+        return {"session_id":session_id,"agent_id":target,
+                **reconcile(db,owner["id"],target,ids_for(db,session_id),item.shop_id,expected_user_id=expected)}
 
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
@@ -478,8 +542,12 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
     (the session turns RUNNING when it succeeds). Retrying with the same Idempotency-Key never starts twice."""
     with SessionLocal() as db:
         item = get_session(db, session_id, owner)
-        if item.status != "DRAFT" and not idempotency_key:
-            raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
+        if item.status != "DRAFT":
+            # Only a retry of the very request that started it gets its answer again; any other start is refused.
+            prior = command_for_key(session_id, idempotency_key)
+            if prior is None:
+                raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
+            return answer(prior, owner, session_id)
         ids = ids_for(db, session_id)
         if item.tiktok_account_id is None:
             raise HTTPException(409,"Phiên chưa gắn TikTok Account")
@@ -561,8 +629,11 @@ def resume_session(session_id: int, body: StartInput, owner: Owner,
         item = get_session(db, session_id, owner)
         if item.status != "RUNNING":
             raise HTTPException(409, "Chỉ tiếp tục được phiên đang LIVE bị ngắt")
-        if is_running_owner(item) and not idempotency_key:
-            raise HTTPException(409, "Phiên đang phát bình thường")
+        if is_running_owner(item):
+            prior = command_for_key(session_id, idempotency_key)
+            if prior is None:
+                raise HTTPException(409, "Phiên đang phát bình thường")
+            return answer(prior, owner, session_id)
         ids = ids_for(db, session_id)
         pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
         if pid is None:
@@ -647,7 +718,7 @@ def duplicate_session(session_id: int, owner: Owner):
         source = get_session(db, session_id, owner)
         existing = set(db.scalars(select(Product.id).where(Product.owner_id == owner["id"])).all())
         ids = [pid for pid in ids_for(db, session_id) if pid in existing]
-        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT", owner_id=owner["id"], agent_id=None, shop_id=None, tiktok_account_id=source.tiktok_account_id
+        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT", owner_id=owner["id"], agent_id=None, shop_id=None, tiktok_account_id=source.tiktok_account_id)
         db.add(item)
         db.flush()
         replace_products(db, item.id, ids)
@@ -669,6 +740,8 @@ def finish_session(session_id: int, owner: Owner):
         item = get_session(db, session_id, owner)
         if item.status == "ENDED":
             return serialize(db, item)
+        if item.status == "DRAFT":
+            return abandon_start(db, owner, item)
         if item.status != "RUNNING":
             raise HTTPException(409, "Phiên chưa bắt đầu")
         playing = is_running_owner(item)
@@ -694,6 +767,27 @@ def finish_session(session_id: int, owner: Owner):
             release_live_claim(db,session_id)
             db.commit()
         return {**serialize(db, item), "command": stop}
+
+def abandon_start(db, owner: dict, item):
+    """Cancel a start whose outcome is unknown (DRAFT still holding the claim), when it is provably not on air."""
+    from app.cloud_agents import cancel_commands
+    from app.live import playback_of
+    if item.id not in claims_of_agent(db, item.agent_id or ""):
+        raise HTTPException(409, "Phiên chưa bắt đầu")
+    cancel_commands(item.agent_id, session_id=item.id)
+    agent = agent_by_id(owner["id"], item.agent_id)
+    playback = playback_of(agent)
+    if agent is None or not agent["online"]:
+        raise HTTPException(409, "Windows Agent đang offline; chưa xác nhận được phiên không phát nên vẫn giữ khóa tài khoản")
+    if in_flight(item.id, item.agent_id) is not None or (playback.get("running") and playback.get("session_id") == item.id):
+        raise HTTPException(409, "Agent đang thực hiện lệnh bắt đầu; chờ kết quả rồi thử lại")
+    agent_id = item.agent_id
+    release_live_claim(db, item.id)
+    item.agent_id = None
+    event(db, item.id, "START_ABANDONED", detail=f"agent={agent_id}")
+    db.commit()
+    return serialize(db, item)
+
 
 @router.get("/{session_id}/events")
 def list_events(session_id: int, owner: Owner):
