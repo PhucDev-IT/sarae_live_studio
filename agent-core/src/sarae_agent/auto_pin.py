@@ -158,6 +158,7 @@ class AutoPinService:
         self._state = "idle"
         self._product_snapshot = None
         self._network_products = None
+        self._sync_capture_active = False
         self._observed_pages = set()
 
     # --- status --------------------------------------------------------------------------
@@ -271,7 +272,9 @@ class AutoPinService:
         self._last_error = ""
 
     def _capture_product_response(self,response):
-        """Observe the page's own authenticated request; never copy cookies or signatures."""
+        """Observe product responses only during an explicit manual sync."""
+        if not self._sync_capture_active:
+            return
         from urllib.parse import urlsplit
         if urlsplit(response.url).path!="/api/v1/streamer_desktop/live_product/list":
             return
@@ -311,12 +314,12 @@ class AutoPinService:
             raise RuntimeError(LOGIN_CHROME_OPEN)
         self._url = url
         self._network_products = None
+        self._sync_capture_active = False
         if self._context is not None:
             try:
                 if self._page is None or self._page.is_closed():
                     pages = [p for p in self._context.pages if not p.is_closed()]
                     self._page = pages[0] if pages else self._context.new_page()
-                self._attach_response_listener(self._page)
                 self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 # A closed Chrome context cannot be reused.
@@ -335,7 +338,6 @@ class AutoPinService:
                 user_data_dir=str(self.profile_dir), channel="chrome", headless=False,
                 accept_downloads=False, viewport=None)
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
-            self._attach_response_listener(self._page)
             self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
             self._drop_context()
@@ -362,11 +364,16 @@ class AutoPinService:
         # A fresh scan must not reuse a prior shop's response. Refresh once to trigger
         # the console's own authenticated XHR; never reconstruct its signed URL.
         self._network_products = None
-        page.reload(wait_until="domcontentloaded", timeout=30000)
-        for _ in range(25):
-            if self._network_products is not None:
-                break
-            page.wait_for_timeout(200)
+        self._attach_response_listener(page)
+        self._sync_capture_active = True
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+            for _ in range(25):
+                if self._network_products is not None:
+                    break
+                page.wait_for_timeout(200)
+        finally:
+            self._sync_capture_active = False
         if self._network_products is not None:
             rows=list(self._network_products)
             with self._lock:
@@ -464,19 +471,13 @@ class AutoPinService:
             try:
                 if method == "open":
                     result = self._open_on_worker(*args)
-                    if not self._items:
-                        try:
-                            self._scan_on_worker()  # first connection: take the products from the page
-                            result = self.status()
-                        except Exception as exc:  # noqa: BLE001 - the operator can scan again later
-                            log.info("Chưa đọc được sản phẩm từ LIVE Console: %s", exc)
                 elif method == "scan":
                     result = self._scan_on_worker()
                 elif method == "start":
                     if self._context is None:
                         self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
                     if not self._items:
-                        self._scan_on_worker()  # no list yet: pin every product of the page
+                        raise RuntimeError("Hãy bấm Đồng bộ sản phẩm trước khi tự động ghim")
                     self._enabled = True
                     self._state = "running"
                     next_pin = time.monotonic()
