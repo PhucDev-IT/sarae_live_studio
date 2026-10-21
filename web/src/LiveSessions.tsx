@@ -32,8 +32,8 @@ export default function LiveSessions(){
   const [createAgent,setCreateAgent] = useState('')
   const [createShop,setCreateShop] = useState('')
   const [legacyShop,setLegacyShop] = useState('')
-  const [shops,setShops] = useState<Array<{id:number;seller_id:string;display_name:string}>>([])
-  useEffect(()=>{void apiRequest<Array<{id:number;seller_id:string;display_name:string}>>('/tiktok-catalog/shops').then(setShops).catch(()=>setShops([]))},[])
+  const [shops,setShops] = useState<Array<{id:number;user_id:string;user_name:string;nick_name:string;user_type:number|null}>>([])
+  useEffect(()=>{void apiRequest<Array<{id:number;user_id:string;user_name:string;nick_name:string;user_type:number|null}>>('/tiktok-catalog/accounts').then(setShops).catch(()=>setShops([]))},[])
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [products,setProducts] = useState<LiveProduct[]>([])
   const [status,setStatus] = useState<LiveStatus|null>(null)
@@ -51,6 +51,7 @@ export default function LiveSessions(){
   const [pickerOpen,setPickerOpen] = useState(false)
   const [confirm,setConfirm] = useState<Confirm>(null)
   const [startOpen,setStartOpen] = useState(false)
+  const [startAgent,setStartAgent] = useState('')
   /** Product chosen to open the LIVE with; any product of the session that has videos. */
   const [opener,setOpener] = useState<number|null>(null)
   const [dragIndex,setDragIndex] = useState<number|null>(null)
@@ -95,8 +96,8 @@ export default function LiveSessions(){
   const playingOnAgent = (s:LiveSession) => {const a = agentById.get(s.agent_id);return !!a?.playing && a.session_id === s.id}
   const stale = sessions.filter(s=>s.status === 'RUNNING' && !playingOnAgent(s))
   const live = sessions.filter(s=>s.status === 'RUNNING' && playingOnAgent(s))
-  const agentName = (id:string) => agentById.get(id)?.hostname ?? 'Agent đã thu hồi'
-  const chosenAgent:OwnerAgent|undefined = chosen ? agentById.get(chosen.agent_id) : undefined
+  const agentName = (id:string|null) => id ? agentById.get(id)?.hostname ?? 'Agent đã thu hồi' : 'Chưa chọn Agent'
+  const chosenAgent:OwnerAgent|undefined = chosen ? agentById.get(chosen.agent_id ?? startAgent) : undefined
   const counts = {ALL:sessions.length, DRAFT:0, RUNNING:0, ENDED:0} as Record<Filter,number>
   sessions.forEach(s=>{counts[s.status]++})
   const visible = sessions.filter(s=>(filter === 'ALL' || s.status === filter) && s.name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))
@@ -126,13 +127,13 @@ export default function LiveSessions(){
   }
   const onDrop = (event:DragEvent, to:number) => {event.preventDefault();if (dragIndex != null) move(dragIndex, to);setDragIndex(null)}
 
-  const openCreate = () => {setNameInput('');setCreateShop(shops.length===1?String(shops[0].id):'');setCreateAgent(tabAgentId ?? agents[0]?.id ?? '');setCreateOpen(true)}
+  const openCreate = () => {setNameInput('');setCreateShop(shops.length===1?String(shops[0].id):'');setCreateOpen(true)}
   const create = (event:FormEvent) => {
     event.preventDefault()
     const name = nameInput.trim()
     if (!name) return
     void run(async ()=>{
-      const created = await sessionsApi.create(name, createAgent, Number(createShop))
+      const created = await sessionsApi.create(name, Number(createShop))
       setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL');setPickerOpen(true)
     }, 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
   }
@@ -159,9 +160,7 @@ export default function LiveSessions(){
     {ok:lineup.length > 0, label:'Có ít nhất 1 sản phẩm trong danh sách', blocking:true},
     {ok:readyIds.length > 0, label:'Có ít nhất 1 sản phẩm đã có video để phát', blocking:true, href:'#/product-videos'},
     {ok:!dirty, label:'Đã lưu thay đổi danh sách', blocking:true},
-    {ok:!!chosenAgent?.online, label:chosenAgent ? `Máy ${chosenAgent.hostname} đang online` : 'Agent của phiên còn hiệu lực', blocking:true, href:'#/agents'},
-    {ok:!!status?.connected, label:'OBS trên máy này đã kết nối', blocking:true, href:'#/live'},
-    {ok:!status?.running, label:'Máy này không phát nội dung khác', blocking:true},
+    {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
     {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/product-videos'},
   ]
   const canStart = chosen?.status === 'DRAFT' && checks.every(c=>c.ok || !c.blocking)
@@ -190,7 +189,7 @@ export default function LiveSessions(){
     <div className="ls-layout">
       {/* Session list */}
       <Card className="ls-list" padding={false} title={<span className="ls-card-title"><CalendarClock size={17}/>Danh sách phiên</span>}
-        actions={<Button size="sm" leftIcon={<Plus size={15}/>} disabled={!agents.length} title={agents.length ? undefined : 'Cần kích hoạt Windows Agent trước'} onClick={openCreate}>Tạo phiên</Button>}>
+        actions={<Button size="sm" leftIcon={<Plus size={15}/>} disabled={!shops.length} title={shops.length ? undefined : 'Cần đồng bộ TikTok Account trước'} onClick={openCreate}>Tạo phiên</Button>}>
         <div className="ls-list-tools">
           <SegmentedControl<Filter> fullWidth value={filter} onChange={setFilter} items={[
             {value:'ALL', label:<>Tất cả<span className="ls-count">{counts.ALL}</span></>}, {value:'DRAFT', label:<>Chuẩn bị<span className="ls-count">{counts.DRAFT}</span></>},
@@ -220,7 +219,7 @@ export default function LiveSessions(){
       {!chosen ? <Card className="ls-detail-empty">
         <EmptyState icon={<CalendarClock size={30}/>} title={loaded ? 'Chưa chọn phiên LIVE' : 'Đang tải…'}
           description="Một phiên LIVE là danh sách sản phẩm sẽ bán, theo đúng thứ tự giới thiệu. Tạo phiên, thêm sản phẩm rồi bắt đầu phát."
-          actionLabel={loaded && agents.length ? 'Tạo phiên LIVE' : undefined} onAction={openCreate}/>
+          actionLabel={loaded && shops.length ? 'Tạo phiên LIVE' : undefined} onAction={openCreate}/>
       </Card> : <div className="ls-detail">
         <Card className="ls-head" padding={false}>
           <div className="ls-head-main">
@@ -241,7 +240,7 @@ export default function LiveSessions(){
               {chosen.status === 'DRAFT' && <>
                 <Button variant="ghost" leftIcon={<Trash2 size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'delete', session:chosen})}>Xóa</Button>
                 <Button variant="outline" leftIcon={<Copy size={15}/>} disabled={busy} onClick={()=>void run(async ()=>{const c = await sessionsApi.duplicate(chosen.id);setSelected(c.id);setDraft(null)}, 'Đã nhân bản phiên')}>Nhân bản</Button>
-                <Button leftIcon={<Play size={16}/>} disabled={busy || !canStart} title={canStart ? undefined : 'Hoàn tất các mục kiểm tra bên dưới'} onClick={()=>{setOpener(null);setStartOpen(true)}}>Bắt đầu LIVE</Button>
+                <Button leftIcon={<Play size={16}/>} disabled={busy || !canStart} title={canStart ? undefined : 'Hoàn tất các mục kiểm tra bên dưới'} onClick={()=>{setOpener(null);setStartAgent(tabAgentId ?? agents.find(a=>a.online)?.id ?? '');setStartOpen(true)}}>Bắt đầu LIVE</Button>
               </>}
               {chosen.status === 'RUNNING' && (owner ? <>
                 <Button variant="danger" leftIcon={<Square size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'finish', session:chosen})}>Kết thúc phiên</Button>
@@ -268,26 +267,26 @@ export default function LiveSessions(){
           </ol>
         </Card>
 
-        {chosen.shop_id == null && chosen.status==='DRAFT' && <Card>
-          <strong>Phiên cũ chưa chọn TikTok Shop</strong>
-          <p className="ls-muted">Chọn Shop trước khi thêm sản phẩm. Chỉ áp dụng cho phiên đang chuẩn bị và chưa có sản phẩm.</p>
+        {chosen.tiktok_account_id == null && chosen.status==='DRAFT' && <Card>
+          <strong>Phiên cũ chưa chọn TikTok Account</strong>
+          <p className="ls-muted">Chọn tài khoản TikTok phát LIVE trước khi bắt đầu.</p>
           <div style={{display:'flex',gap:12,alignItems:'end',flexWrap:'wrap'}}>
-            <div style={{flex:1,minWidth:200}}><Select label="TikTok Shop" value={legacyShop} onChange={setLegacyShop}
-              options={shops.map(sh=>({value:String(sh.id),label:sh.display_name||'Shop '+sh.seller_id}))}/></div>
+            <div style={{flex:1,minWidth:200}}><Select label="TikTok Account" value={legacyShop} onChange={setLegacyShop}
+              options={shops.map(sh=>({value:String(sh.id),label:sh.nick_name||sh.user_name||sh.user_id}))}/></div>
             <Button disabled={!legacyShop||busy||chosen.product_ids.length>0} onClick={()=>void run(async()=>{
               await apiRequest('/live/sessions/'+chosen.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({shop_id:Number(legacyShop)})})
-            },'Đã liên kết TikTok Shop')}>Lưu Shop cho phiên</Button>
+                body:JSON.stringify({tiktok_account_id:Number(legacyShop)})})
+            },'Đã liên kết TikTok Account')}>Lưu tài khoản</Button>
           </div>
         </Card>}
         <div className="ls-detail-grid">
           {/* Product lineup */}
           <Card className="ls-lineup" padding={false} title={<span className="ls-card-title"><Package size={17}/>Danh sách sản phẩm</span>}
             description={chosen.status === 'ENDED' ? `${lineup.length} sản phẩm đã dùng trong phiên` : 'Sản phẩm chuẩn bị sẵn cho phiên · khi LIVE có thể đưa bất kỳ sản phẩm nào lên, không theo thứ tự'}
-            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy||chosen.shop_id==null} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
+            actions={editable ? <Button size="sm" variant="outline" leftIcon={<ListPlus size={15}/>} disabled={busy||chosen.tiktok_account_id==null} onClick={()=>setPickerOpen(true)}>Thêm sản phẩm</Button> : undefined}>
             {!lineup.length
               ? <div className="ls-lineup-empty"><EmptyState icon={<Package size={28}/>} title="Chưa có sản phẩm" description="Thêm những sản phẩm dự định bán trong phiên này, theo thứ tự sẽ giới thiệu."
-                actionLabel={editable&&chosen.shop_id!=null ? 'Thêm sản phẩm' : undefined} onAction={()=>{if(chosen.shop_id!=null)setPickerOpen(true)}}/></div>
+                actionLabel={editable&&chosen.tiktok_account_id!=null ? 'Thêm sản phẩm' : undefined} onAction={()=>{if(chosen.tiktok_account_id!=null)setPickerOpen(true)}}/></div>
               : <ol className="ls-rows">{lineup.map((pid,i)=>{
                 const p = productById.get(pid)
                 const isLive = chosen.status === 'RUNNING' && pid === (owner ? status?.product_id : chosen.current_product_id)
@@ -326,7 +325,7 @@ export default function LiveSessions(){
                 {c.ok ? <CheckCircle2 size={16}/> : c.blocking ? <CircleDashed size={16}/> : <CircleAlert size={16}/>}
                 <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : 'Gán video'}</a></>}</span>
               </li>)}</ul>
-              {agents.length > 1 && <div className="ls-move-agent">
+              {false && agents.length > 1 && <div className="ls-move-agent">
                 <Select label="Phát trên máy" value={chosen.agent_id} disabled={busy || dirty}
                   options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
                   onChange={value=>{if (value && value !== chosen.agent_id) void run(()=>sessionsApi.moveToAgent(chosen.id, value), 'Đã chuyển phiên sang máy khác')}}/>
@@ -359,14 +358,11 @@ export default function LiveSessions(){
 
     <Modal open={createOpen} title="Tạo phiên LIVE" size="sm" onClose={()=>!busy && setCreateOpen(false)} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
-      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAgent || !createShop}>Tạo & thêm sản phẩm</Button>
+      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createShop}>Tạo & thêm sản phẩm</Button>
     </>}>
       <form id="ls-create-form" className="ls-create-form" onSubmit={create}>
         <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint="Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự."/>
-        <Select label="TikTok Shop" value={createShop} onChange={setCreateShop} options={shops.map(sh=>({value:String(sh.id),label:sh.display_name || ("Shop "+sh.seller_id)}))} hint="Chỉ sản phẩm thuộc shop này được chọn cho phiên LIVE."/>
-        <Select label="Phát trên máy Windows" value={createAgent} onChange={setCreateAgent}
-          options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
-          hint="Phiên luôn phát trên máy này (OBS và video của máy đó). Đổi được trước khi bắt đầu."/>
+        <Select label="TikTok Account" value={createShop} onChange={setCreateShop} options={shops.map(sh=>({value:String(sh.id),label:sh.nick_name || sh.user_name || sh.user_id}))} hint="Seller và Affiliate dùng chung TikTok Account. Agent chọn khi bắt đầu."/>
       </form>
     </Modal>
 
@@ -377,7 +373,7 @@ export default function LiveSessions(){
       <form id="ls-rename-form" onSubmit={rename}><Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)}/></form>
     </Modal>
 
-    {pickerOpen && chosen && <ProductPicker products={products.filter(p=>p.shop_id===chosen.shop_id)} exclude={lineup} onClose={()=>setPickerOpen(false)}
+    {pickerOpen && chosen && <ProductPicker products={products} exclude={lineup} onClose={()=>setPickerOpen(false)}
       onAdd={ids=>{edit([...lineup, ...ids]);setPickerOpen(false)}}/>}
 
     <ConfirmModal open={!!confirm} loading={busy} onClose={()=>setConfirm(null)} onConfirm={confirmAction}
@@ -386,10 +382,12 @@ export default function LiveSessions(){
 
     {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="md" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
-      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startId == null}
-        onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startId);setStartOpen(false);window.location.hash = '/live'}, 'Đã bắt đầu LIVE')}>Bắt đầu LIVE</Button>
+      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startId == null || !startAgent}
+        onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startId);setStartOpen(false);window.location.hash = '/live'}, 'Đã bắt đầu LIVE')}>Bắt đầu LIVE</Button>
     </>}>
       <div className="ls-picker">
+        <Select label="Windows Agent thực thi" value={startAgent} onChange={setStartAgent} options={agents.map(a=>({value:a.id,label:a.hostname+(a.online?'':' (offline)')}))}/>
+        <Alert tone="info">Trước khi phát, hãy mở TikTok LIVE Console trên Agent này, bấm Đồng bộ sản phẩm và xác minh đúng TikTok Account.</Alert>
         <p className="ls-muted">Chọn sản phẩm phát đầu tiên. Trong lúc LIVE bạn chuyển sang sản phẩm nào cũng được, kể cả sản phẩm chưa có trong danh sách.</p>
         <ul className="ls-picker-list">{lineup.map(pid=>{
           const p = productById.get(pid)
