@@ -1,0 +1,30 @@
+name: Sarae syntax guard
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python modules
+        run: python -m compileall -q backend/app agent-core/src
+
+  web-tsx-parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install standalone TSX parser
+        run: npm install --global esbuild@0.25.12
+      - name: Parse affected frontend files without bundling
+        run: |
+          esbuild web/src/LiveSessions.tsx web/src/LiveControl.tsx web/src/liveSessionsApi.ts desktop/src/features/tool/Settings.tsx --outdir=/tmp/sarae-syntax --format=esm
