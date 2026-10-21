@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, SearchInput, Select, useToast,
 } from './ui/core'
