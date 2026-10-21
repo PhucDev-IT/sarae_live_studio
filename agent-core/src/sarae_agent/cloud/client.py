@@ -166,9 +166,9 @@ class CloudClient:
         return self._request("POST", "/agent-library/sync", "sync", key=key,
                              json={"agent_id": agent_id, "videos": videos}, timeout=max(60.0, self._timeout))
 
-    def sync_tiktok_products(self, key: str, agent_id: str, products: list[dict]) -> dict:
+    def sync_tiktok_products(self, key: str, agent_id: str, products: list[dict], account: dict) -> dict:
         return self._request("POST", "/tiktok-products/sync", "tiktok_sync", key=key,
-                             json={"agent_id": agent_id, "products": products, "complete": True},
+                             json={"agent_id": agent_id, "products": products, "complete": True, "account": account},
                              timeout=max(60.0, self._timeout))
 
     def captcha_templates(self, key: str, agent_id: str) -> list[dict]:
