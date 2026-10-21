@@ -43,3 +43,11 @@ def upgrade():
                             WHERE tiktok_seller_id IS NOT NULL AND tiktok_product_id IS NOT NULL"""))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_products_owner_shop ON products(owner_id,shop_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sessions_owner_shop ON live_sessions(owner_id,shop_id)"))
+        # Backstop against duplicate RUNNING records. Pending-start command reservations
+        # still require a separate atomic claim before the Agent executes playback.
+        conn.execute(text("""CREATE UNIQUE INDEX IF NOT EXISTS uq_live_running_broadcaster
+             ON live_sessions(tiktok_account_id)
+             WHERE tiktok_account_id IS NOT NULL AND status='RUNNING'"""))
+        conn.execute(text("""CREATE UNIQUE INDEX IF NOT EXISTS uq_live_running_agent
+             ON live_sessions(agent_id)
+             WHERE agent_id IS NOT NULL AND status='RUNNING'"""))
