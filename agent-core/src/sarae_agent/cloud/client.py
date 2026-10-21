@@ -1,4 +1,4 @@
-"""HTTPS client for the Sarae Cloud Agent API (backend/app/cloud_agents.py, identity.py, agent_library.py).
+"""HTTPS client for the Sarae Cloud Agent API (backend/app/cloud_agents.py, identity.py, agent_media.py).
 
 Outbound only: the Agent never opens an inbound port. Every failure is mapped to a stable
 error code so the worker can decide between retry (transient) and stop (requires the user).
@@ -9,7 +9,6 @@ error code so the worker can decide between retry (transient) and stop (requires
                                                     attempt, expires_at} | null}
     POST /agents/commands/ack                       {agent_id, command_id, claim_token, success, result}
     POST /agents/events                             {agent_id, events: [{seq, type, session_id, product_id, detail}]}
-    POST /agent-library/sync                        {agent_id, videos: [...]} -> {synced, thumbs_missing}
     GET  /captcha-templates/agent?agent_id=          {templates: [{id, sha256, bytes}]} (set by SUPER_ADMIN)
     GET  /captcha-templates/agent/{id}/image?agent_id=   PNG/JPEG bytes
 Agent endpoints authenticate with the X-Sarae-Agent-Key header.
@@ -161,10 +160,6 @@ class CloudClient:
     def post_events(self, key: str, agent_id: str, events: list[dict]) -> dict:
         return self._request("POST", "/agents/events", "events", key=key,
                              json={"agent_id": agent_id, "events": events[:200]})
-
-    def sync_library(self, key: str, agent_id: str, videos: list[dict]) -> dict:
-        return self._request("POST", "/agent-library/sync", "sync", key=key,
-                             json={"agent_id": agent_id, "videos": videos}, timeout=max(60.0, self._timeout))
 
     def sync_tiktok_products(self, key: str, agent_id: str, products: list[dict], account: dict) -> dict:
         return self._request("POST", "/tiktok-products/sync", "tiktok_sync", key=key,

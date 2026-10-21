@@ -47,7 +47,7 @@ flowchart LR
 | Không lộ kho cho khách | Response không có provider file ID, folder ID, URL Drive, token |
 | Phân quyền ở Backend | Thư mục `owner-<id>` chỉ để sắp xếp; quyền đọc/ghi luôn kiểm tra trong DB |
 | Đổi provider được | `StorageProvider` (ABC) + registry; Media ID của Sarae không đổi khi đổi kho |
-| Dữ liệu cũ | Không đụng `agent_media`, `product_live_videos`, `video_tags` (= LOCAL_LEGACY) |
+| Dữ liệu cũ | Code thư viện video trên Agent đã gỡ (xem mục 9); bảng cũ `agent_media`, `product_live_videos`, `video_tags`, `media_presenters` vẫn còn nguyên trong DB, không bị xóa |
 
 ### Bố cục trong Google Drive (chỉ để tổ chức)
 
@@ -162,5 +162,18 @@ Những gì test bao phủ: chỉ admin kết nối được, state giả/dùng 
 | Không có thumbnail | Trình duyệt chụp khung hình từ file trước khi upload và lưu làm ảnh bìa; video cũ tự tạo ảnh bìa nền; có nút "Đặt khung hình đang xem làm ảnh bìa" |
 | Bố cục chưa đẹp | Card dọc 9:16, thanh tóm tắt + nút tải lên, kéo-thả toàn trang, bộ lọc sản phẩm/người/chưa gắn, sắp xếp |
 | Gán sản phẩm khó khi danh sách dài, thiếu người giới thiệu | Panel chi tiết 2 cột, tab Thông tin / Sản phẩm / Người giới thiệu với danh sách tìm kiếm (không dấu), ảnh, "Đã chọn" |
-| "Video trên Agent (cũ)" | Giữ lại vì LIVE vẫn phát từ video trên Agent; chuyển xuống nhóm menu "AGENT · CÁCH CŨ" cùng 2 trang liên quan, gỡ sau Phase 3–4 |
+| "Video trên Agent (cũ)" | (Đã thay bởi mục 9: gỡ hẳn.) Ban đầu chuyển xuống nhóm menu "AGENT · CÁCH CŨ" cùng 2 trang liên quan, gỡ sau Phase 3–4 |
 | Khối "Video theo sản phẩm" khó hiểu | Bỏ khỏi trang thư viện; gán sản phẩm làm trong chi tiết video. Thứ tự phát theo sản phẩm sẽ làm cùng tích hợp LIVE |
+
+## 9. Gỡ thư viện video trên Agent (2026-10-22, quyết định của chủ dự án)
+
+Chủ dự án chấp nhận LIVE tạm thời **không phát được** trên Agent thật cho đến khi Agent tự tải video từ Thư viện về cache trước LIVE.
+
+| Phần | Thay đổi |
+|---|---|
+| Web | Xóa trang "Video trên Agent", "Video LIVE theo sản phẩm (Agent)", "Video theo người (Agent)" và nhóm menu "AGENT · CÁCH CŨ". Gán sản phẩm/người làm trong Thư viện video |
+| Backend | Xóa `/api/media`, `/api/product-videos`, `/api/presenter-videos`, `/api/agent-library/{agent}` và thumbnail Agent. LIVE (`play_product`, readiness, số video của sản phẩm) lấy video từ `product_media` của Thư viện; lệnh `product_play` gửi Media ID 32-hex |
+| Tương thích | Giữ `POST /api/agent-library/sync` dạng nhận-rồi-bỏ (`agent_library_compat.py`) để Agent bản cũ không bị dừng kết nối Cloud (403) hay gửi lại liên tục (404). Xóa khi mọi Agent đã cập nhật |
+| Windows Agent | Gỡ chức năng "Thư mục video" (quét MP4, đồng bộ lên Cloud). Agent phát theo Media ID từ `cloud-media-cache`; video chưa tải về cache thì báo lỗi rõ ràng |
+| Dữ liệu | Không xóa bảng/tệp cũ trong DB hay trên máy Agent |
+| Còn thiếu | Tự tải cache khi bắt đầu LIVE (Phase 3): hiện chỉ tải được qua IPC `media.cloud_cache.prepare` |

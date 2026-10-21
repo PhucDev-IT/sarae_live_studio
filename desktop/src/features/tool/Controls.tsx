@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { open } from '@tauri-apps/plugin-dialog'
-import { ChevronDown, Clapperboard, Cloud, FolderPlus, Pin, RefreshCw, ScanEye, Video } from 'lucide-react'
+import { ChevronDown, Clapperboard, Cloud, Pin, ScanEye } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Input, Switch, type Tone } from '../../app/ui'
 import { call } from '../../services/core'
@@ -43,7 +42,6 @@ export function Controls() {
       <ObsRow />
       <CaptchaRow />
       <AutoPinRow />
-      <VideoRow />
     </section>
   )
 }
@@ -225,32 +223,5 @@ function AutoPinRow() {
             </ActionButton>}
       </div>}
     </Row>
-  )
-}
-
-function VideoRow() {
-  const { state, run, refresh, refreshFolders } = useApp()
-  const media = state.status?.media
-  if (!media) return null
-  const scanning = state.scan ?? media.scan
-  const addFolder = async () => {
-    const picked = await open({ directory: true, multiple: true, title: 'Chọn thư mục chứa video MP4' })
-    const paths = Array.isArray(picked) ? picked : picked ? [picked] : []
-    for (const path of paths) await run(() => call('media.folders.add', { path }), 'Đã thêm thư mục')
-    if (paths.length) {
-      await refreshFolders()
-      await run(() => call('media.scan'))
-    }
-  }
-  return (
-    <Row icon={<Video size={16} />} title="Thư mục video"
-      status={scanning ? `Đang quét… ${scanning.found} video`
-        : media.folder_count ? `${media.folder_count} thư mục · ${media.video_count} video` : 'Chưa chọn thư mục MP4'}
-      tone={media.folder_count ? 'ok' : 'warn'}
-      control={<>
-        <ActionButton variant="ghost" icon={<FolderPlus size={14} />} onAction={addFolder} aria-label="Thêm thư mục" />
-        <ActionButton variant="ghost" icon={<RefreshCw size={14} />} disabled={!media.folder_count || !!scanning}
-          onAction={() => run(() => call('media.scan')).then(refresh)} aria-label="Quét lại" />
-      </>} />
   )
 }

@@ -1,1 +1,1 @@
-"""Local MP4 folder management and metadata index (metadata only, never uploads video)."""
+"""Media Library videos for playback: verified cloud media cache (cloud_cache.py) and ffprobe helpers (probe.py)."""

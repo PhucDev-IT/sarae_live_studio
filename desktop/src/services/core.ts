@@ -24,7 +24,7 @@ function toCoreError(raw: unknown): CoreError {
   return new CoreError({ code: 'GUI_ERROR', message: String(raw) })
 }
 
-// Long-running work (scans) is async on the Core side and reported by events, so the
+// Long-running work (cloud media cache downloads) is async on the Core side and reported by events, so the
 // default timeout stays short; network-bound calls get more time.
 const SLOW_METHODS: Partial<Record<MethodName, number>> = {
   'autopin.open': 60_000,

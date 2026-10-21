@@ -300,10 +300,10 @@ def update_presenter(entity_id: int, body: PresenterInput, db: DB, owner: Owner)
 
 @router.delete("/presenters/{entity_id}", status_code=204)
 def delete_presenter(entity_id: int, db: DB, owner: Owner):
-    from app.media_presenters import MediaPresenter
+    from app.storage_models import MediaItemPresenter
     item = owned(db, Presenter, entity_id, owner, "Không tìm thấy người giới thiệu")
     # SQLite does not enforce ON DELETE CASCADE here; drop links so a reused id never inherits them.
-    db.execute(delete(MediaPresenter).where(MediaPresenter.presenter_id == item.id))
+    db.execute(delete(MediaItemPresenter).where(MediaItemPresenter.presenter_id == item.id))
     photo = item.avatar_url
     db.delete(item)
     db.commit()

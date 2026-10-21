@@ -1,4 +1,4 @@
-"""Cloud worker: heartbeat, command long-poll, journaled ACKs, playback events and media library sync.
+"""Cloud worker: heartbeat, command long-poll, journaled ACKs, playback events and CAPTCHA template sync.
 
 Protocol: backend/app/cloud_agents.py (the Cloud owns each command's lifecycle).
 
@@ -11,9 +11,9 @@ Threads (all outbound, no inbound port):
   * commands: long-polls GET /agents/commands/{agent_id}/next?wait=N and hands each command to its lane.
   * one executor per lane ("live", "background"), so a long TTS never blocks a product switch and each lane
     runs in the order the Cloud hands it out (the Cloud keeps at most one RUNNING command per lane).
-  * media: probes new videos (duration, JPEG thumbnail) and syncs the library metadata; never a file path.
-    It also mirrors the CAPTCHA reference images Sarae's SUPER_ADMIN publishes: they rarely change, so once each
-    time the worker connects (every app start) and then every TEMPLATE_SYNC_SECONDS.
+  * templates: mirrors the CAPTCHA reference images Sarae's SUPER_ADMIN publishes: they rarely change, so once
+    each time the worker connects (every app start) and then every TEMPLATE_SYNC_SECONDS.
+    (Videos are not synced from here: the Agent plays Media Library videos from its cloud media cache.)
 
 At-most-once: every outcome goes to the CommandJournal before its ack. A command delivered again is acked
 with the stored outcome (with the new claim token) instead of running twice. Acks are retried on network
@@ -61,18 +61,15 @@ def _now() -> str:
 
 class CloudWorker:
     HEARTBEAT_PLAYING_SECONDS = 2.0
-    MEDIA_SYNC_SECONDS = 60.0
-    MEDIA_RETRY_SECONDS = 5.0
     TEMPLATE_SYNC_SECONDS = 6 * 3600.0
     TEMPLATE_RETRY_SECONDS = 1800.0
-    THUMBS_PER_SYNC = 100
     RESULT_LIMIT = 60000
     ERROR_LIMIT = 1900
     ACK_RETRY_DELAYS = (1, 2, 4, 8, 15)
     POLL_RETRY_SECONDS = 3.0
 
     def __init__(self, *, agent_id: str, credential: str, api_url: str, timeouts: dict,
-                 router: CommandRouter, build_report: Callable[[], dict], library, outbox: EventOutbox,
+                 router: CommandRouter, build_report: Callable[[], dict], outbox: EventOutbox,
                  journal: CommandJournal, emit: Callable[[str, dict], None],
                  on_state: Callable[[str, dict | None], None], lock: CommandLock | None = None,
                  monitor=None, client_factory: Callable[..., CloudClient] = CloudClient):
@@ -82,7 +79,6 @@ class CloudWorker:
         self._timeouts = timeouts
         self._router = router
         self._build_report = build_report
-        self._library = library
         self._outbox = outbox
         self._journal = journal
         self._emit = emit
@@ -100,11 +96,9 @@ class CloudWorker:
         self._inflight: dict[str, dict] = {}
         self._pending_acks = 0
         self._fatal_error: dict | None = None
-        self._media_lock = threading.Lock()
-        self._need_thumbs: set[str] | None = None  # None = unknown: offer every cached thumbnail once
         self.recent: deque[dict] = deque(maxlen=50)
         self.connection = {"connected": False, "state": "idle", "last_ok": None, "last_error": None,
-                           "next_retry_seconds": None, "last_media_sync": None}
+                           "next_retry_seconds": None}
 
     # --- lifecycle -----------------------------------------------------------------------
     def start(self) -> None:
@@ -118,7 +112,7 @@ class CloudWorker:
         self._client = self._factory(self.api_url, timeout=self._timeouts["request"])
         self._threads = [threading.Thread(target=target, name=name, daemon=True)
                          for target, name in ((self._run, "cloud-worker"), (self._poll_loop, "cloud-commands"),
-                                              (self._media_loop, "cloud-media"))]
+                                              (self._template_loop, "cloud-templates"))]
         for thread in self._threads:
             thread.start()
 
@@ -338,9 +332,8 @@ class CloudWorker:
             with self._guard:
                 self._pending_acks -= 1
 
-    # --- media inventory -----------------------------------------------------------------
-    def _media_loop(self) -> None:
-        next_sync = 0.0
+    # --- CAPTCHA templates ---------------------------------------------------------------
+    def _template_loop(self) -> None:
         next_templates = 0.0
         while not self._stop.is_set():
             if self._monitor is not None and time.monotonic() >= next_templates and self._client is not None:
@@ -355,71 +348,12 @@ class CloudWorker:
                 except Exception:  # noqa: BLE001
                     log.exception("Cập nhật ảnh mẫu CAPTCHA lỗi")
                     next_templates = time.monotonic() + self.TEMPLATE_SYNC_SECONDS
-            if self._library.dirty or time.monotonic() >= next_sync:
-                client = self._client
-                if client is None:
-                    return
-                try:
-                    result = self._sync_media(client)
-                    pending = result["thumbs_pending"] or result["probe_pending"]
-                    next_sync = time.monotonic() + (self.MEDIA_RETRY_SECONDS if pending else self.MEDIA_SYNC_SECONDS)
-                except CloudError as exc:
-                    if exc.fatal:
-                        self._fatal(exc)
-                        return
-                    next_sync = time.monotonic() + self.MEDIA_RETRY_SECONDS
-                except Exception:  # noqa: BLE001
-                    log.exception("Đồng bộ thư viện video lỗi")
-                    next_sync = time.monotonic() + self.MEDIA_SYNC_SECONDS
             self._stop.wait(1.0)
-
-    def _sync_media(self, client: CloudClient) -> dict:
-        """Metadata + duration + JPEG thumbnails (up to THUMBS_PER_SYNC per call, only those the Cloud lacks)."""
-        with self._media_lock:
-            self._library.dirty = False
-            probe_pending = self._library.probe_pending()
-            videos = self._library.cloud_inventory()
-            sent = 0
-            for video in videos:
-                wanted = self._need_thumbs is None or video["media_id"] in self._need_thumbs
-                if wanted and sent < self.THUMBS_PER_SYNC:
-                    data = self._library.thumb_base64(video["media_id"])
-                    if data:
-                        video["thumb_jpeg_base64"] = data
-                        sent += 1
-            try:
-                reply = client.sync_library(self._credential, self.agent_id, videos)
-            except Exception:
-                self._library.dirty = True
-                raise
-            # Only ask again for thumbnails that exist locally; others are not probed yet or failed.
-            missing = set(reply.get("thumbs_missing") or [])
-            self._need_thumbs = {m for m in missing if self._library.thumb_base64(m) is not None}
-            self.connection["last_media_sync"] = _now()
-            result = {"count": len(videos), "thumbs_sent": sent, "thumbs_pending": len(self._need_thumbs),
-                      "probe_pending": probe_pending}
-        log.info("Đã đồng bộ metadata %s video lên Cloud", reply.get("synced", len(videos)))
-        self._emit("media.sync_finished", {"synced": reply.get("synced", len(videos)),
-                                           "at": self.connection["last_media_sync"], **result})
-        return result
 
     def sync_templates(self, client: CloudClient) -> dict:
         remote = client.captcha_templates(self._credential, self.agent_id)
         return self._monitor.sync_templates(
             remote, lambda template_id: client.captcha_template_image(self._credential, self.agent_id, template_id))
-
-    def rescan(self) -> dict:
-        """Cloud `media_rescan`: rescan the allowed folders, then sync the library right away."""
-        scan = self._library.scan_blocking()
-        if scan.get("state") == "failed":
-            error = scan.get("error") or {}
-            raise AgentError(error.get("code", "SCAN_FAILED"), error.get("message", "Quét thư viện thất bại"))
-        client = self._client
-        if client is None:
-            raise AgentError("AGENT_NOT_CONNECTED", "Agent chưa kết nối Cloud")
-        result = self._sync_media(client)
-        return {"count": result["count"], "thumbs_sent": result["thumbs_sent"],
-                "thumbs_pending": result["thumbs_pending"]}
 
     def status(self) -> dict:
         with self._guard:

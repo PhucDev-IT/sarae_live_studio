@@ -8,15 +8,15 @@
 │  ┌──────────────┐  invoke(core_request)  ┌────────────────┐                 │      │                     │
 │  │ React UI     │ ─────────────────────▶ │ CoreManager    │                 │      │ /api/identity/*     │
 │  │ (không shell)│ ◀── core://event ───── │ (Rust)         │                 │      │ /api/agents/*       │
-│  └──────────────┘    core://state        └───────┬────────┘                 │      │ /api/agent-library  │
+│  └──────────────┘    core://state        └───────┬────────┘                 │      │ /api/agent-media    │
 │                                stdin JSONL ▲     │ ▼ stdout JSONL           │      │ /api/agent-playlists│
 │  agent-core/  (Python sidecar, PyInstaller one-file, không UI)              │HTTPS │                     │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │◀────▶│ SQLite registries   │
 │  │ ipc · runtime · activation(DPAPI) · cloud(worker) · media · playback │   │ chỉ  │ (metadata, lệnh)    │
 │  │ obs · monitoring(CAPTCHA) · voice(TTS) · windows(ctypes Win32)       │   │ đi ra└─────────────────────┘
 │  └───────┬──────────────────────────┬────────────────────┬─────────────┘   │
-│          │ obs-websocket v5         │ chụp vùng cửa sổ   │ đọc metadata   │
-│     OBS Studio               TikTok LIVE Studio       Thư mục MP4 local     │
+│          │ obs-websocket v5         │ chụp vùng cửa sổ   │ tải + checksum │
+│     OBS Studio               TikTok LIVE Studio       Cache video Cloud     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -25,7 +25,7 @@
 | `backend/` | Python FastAPI | Identity, license, activation key, hàng đợi lệnh, metadata video, playlist, cảnh báo Telegram | Chứa runtime Windows, import `agent-core`, lưu/stream MP4 |
 | `agent-core/` | Python 3.12 | Toàn bộ nghiệp vụ trên máy: Cloud transport, DPAPI, quét MP4, OBS (PlaybackEngine), CAPTCHA, TTS | Có UI, import `backend/app`, mở cổng HTTP local |
 | `desktop/` (Rust) | Rust/Tauri 2 | Khởi chạy/dừng sidecar, chuyển request/response/event, cửa sổ, single-instance | Logic OBS/CAPTCHA/media |
-| `desktop/` (React) | TypeScript | Giao diện, chọn thư mục/ảnh qua dialog | Chạy shell, gọi Cloud/OBS trực tiếp, lưu credential |
+| `desktop/` (React) | TypeScript | Giao diện | Chạy shell, gọi Cloud/OBS trực tiếp, lưu credential |
 
 Ranh giới được giữ bằng **hợp đồng**, không bằng import: `backend/app/cloud_agents.py` là nguồn chuẩn của giao thức
 lệnh Cloud (`COMMAND_KINDS`, `validate_payload`, vòng đời lệnh), `agent-core/src/sarae_agent/cloud/commands.py` kiểm tra lại
@@ -37,11 +37,11 @@ cùng payload; `docs/WINDOWS_AGENT_IPC.md` + `desktop/src/types/ipc.ts` (IPC GUI
 |---|---|
 | `__main__.py` | Entrypoint: tách stdout cho IPC, singleton mutex, watchdog tiến trình cha, `--self-check` |
 | `config.py` | Đường dẫn `%LOCALAPPDATA%\SaraeAgent`, cấu hình có `version` + migration |
-| `runtime.py` | `AgentRuntime`: sở hữu mọi service, state machine Agent, watchdog OBS/rescan |
+| `runtime.py` | `AgentRuntime`: sở hữu mọi service, state machine Agent, watchdog OBS |
 | `ipc/` | `protocol.py` (khung JSON Lines), `server.py` (reader/writer/thread pool), `methods.py` (bảng method) |
 | `activation/` | `dpapi.py` (ctypes CryptProtectData), `secrets.py` (file bí mật), `service.py` (kích hoạt) |
-| `cloud/` | `client.py` (httpx + mã lỗi), `worker.py` (heartbeat, long-poll, lane, ACK, sự kiện, đồng bộ thư viện), `commands.py` (kind → hành động), `journal.py` (journal lệnh, khóa một tiến trình, outbox sự kiện) |
-| `media/library.py` | Thư mục được phép, quét MP4 nền, index `media_id ↔ path`, thời lượng + thumbnail JPEG (OpenCV), kiểm tra quyền phát |
+| `cloud/` | `client.py` (httpx + mã lỗi), `worker.py` (heartbeat, long-poll, lane, ACK, sự kiện, đồng bộ ảnh mẫu CAPTCHA), `commands.py` (kind → hành động), `journal.py` (journal lệnh, khóa một tiến trình, outbox sự kiện) |
+| `media/cloud_cache.py` | Cache video Media Library theo Agent (`cloud-media-cache\<agent_id>\<id>.mp4`/`.mov`): tải resume, kiểm checksum rồi mới công bố; `cached_path()` cho `PlaybackEngine` (bỏ qua `.part`) |
 | `playback/engine.py` | `PlaybackEngine` port từ `backend/app/playback_engine.py`: playlist, phiên sản phẩm (`product_play` immediate/after_current), dual A/B, watchdog chống đứng hình |
 | `playback/service.py` | Góc nhìn `PlaybackStatus` cho GUI + đánh dấu `needs_manual_resume` |
 | `obs/controller.py` | Một kết nối obs-websocket dùng chung (cả `PlaybackEngine` qua `ObsRequests`), tự kết nối lại, mật khẩu DPAPI |
@@ -109,19 +109,18 @@ Agent ──GET .../next?wait=25 (claim, claim_token mới)──▶ RUNNING ─
 
 | Đường dẫn | Nội dung | Bảo vệ |
 |---|---|---|
-| `config.json` | Cloud URL, OBS host/port/tên nguồn/dual A-B, thư mục, monitor (có `version`) | File thường, không có bí mật |
+| `config.json` | Cloud URL, OBS host/port/tên nguồn/dual A-B, monitor (có `version`) | File thường, không có bí mật |
 | `secrets\agent_credential.dpapi.json` | `agent_id`, `agent_credential`, Cloud đã kích hoạt | DPAPI theo Windows user + entropy riêng |
 | `secrets\obs.dpapi.json` | Mật khẩu OBS WebSocket | DPAPI |
-| `media_index.json` | `media_id → path, filename, size, mtime` | — |
-| `media_meta.json`, `thumbs\` | Thời lượng + thumbnail JPEG ≤ 40 KB theo (size, mtime) | Chỉ gửi metadata, không gửi đường dẫn |
+| `cloud-media-cache\<agent_id>\` | Video Media Library đã tải (`<id>.mp4/.mov`; `.part` = đang tải dở) | Chỉ file đã khớp size + checksum mới được phát |
 | `command_journal.json` | 500 lệnh Cloud gần nhất đã thực thi và kết quả | — |
 | `data\agent_commands.lock` | Khóa một tiến trình nhận lệnh | Khóa OS, tự nhả khi tiến trình thoát |
 | `playback_state.json` | Phiên phát cuối (chỉ để báo `needs_manual_resume`) | — |
 | `monitor\templates\`, `monitor\captures\` | Ảnh mẫu CAPTCHA (bản sao bộ ảnh SUPER_ADMIN đăng trên Cloud, `sarae_<id>.png`), ảnh lúc phát hiện (giữ 50) | sha256 khớp danh sách Cloud |
 | `voice\`, `logs\agent.log*`, `diagnostics\` | MP3 TTS (giữ 20), log xoay vòng 5×2 MB, gói zip | Log đã che bí mật |
 
-Nâng cấp từ Agent cũ (nhúng trong `backend/`): lần chạy đầu tự nhập `data\agent_gui_settings.json`, thư mục,
-index và **credential DPAPI cũ** → giữ nguyên `agent_id`.
+Nâng cấp từ Agent cũ (nhúng trong `backend/`): lần chạy đầu tự nhập Cloud URL từ `data\agent_gui_settings.json`
+và **credential DPAPI cũ** → giữ nguyên `agent_id`.
 
 ## 5. Bảo mật & multi-tenant
 
@@ -129,7 +128,7 @@ index và **credential DPAPI cũ** → giữ nguyên `agent_id`.
 |---|---|
 | Lộ credential thiết bị | DPAPI; không bao giờ trả về GUI/log; credential chỉ gửi tới Cloud đã kích hoạt (`CLOUD_URL_MISMATCH`) |
 | GUI bị chèn script | CSP chặt; capability chỉ `dialog:allow-open`, `opener:allow-reveal-item-in-dir`; không có quyền shell; Core chỉ nhận method trong bảng |
-| Phát file tuỳ ý | Chỉ nhận `media_id` (sha256 hex); phải nằm trong thư mục được phép, đúng `.mp4`, không theo junction ra ngoài |
+| Phát file tuỳ ý | Chỉ nhận `media_id` Media Library (32 hex); chỉ phát `<id>.mp4/.mov` đã kiểm checksum trong cache của Agent |
 | OWNER A điều khiển máy OWNER B | Mọi API OWNER tra `owner_id` từ registry, không tin client; test 2 OWNER |
 | SUPER_ADMIN can thiệp LIVE | API lệnh OWNER chặn SUPER_ADMIN (403) |
 | Agent giả mạo Agent khác | Header `X-Sarae-Agent-Key` phải khớp đúng `agent_id` đã đăng ký; ACK phải mang claim token Cloud đã cấp cho lệnh đó |

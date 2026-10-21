@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import { call, CoreError, coreProcess, isEvent, onCoreEvent, onCoreState } from '../services/core'
 import type {
-  AgentConfigView, CommandEntry, CoreEvents, CoreProcessState, LogEntry, MediaFolder, ScanFinished, SystemStatus,
+  AgentConfigView, CommandEntry, CoreEvents, CoreProcessState, LogEntry, SystemStatus,
 } from '../types/ipc'
 
 export interface Toast {
@@ -11,21 +11,10 @@ export interface Toast {
   detail?: string
 }
 
-interface ScanProgress {
-  job_id: string
-  scanned_files: number
-  found: number
-  folder: string
-}
-
 interface State {
   core: CoreProcessState
   status: SystemStatus | null
   config: AgentConfigView | null
-  folders: MediaFolder[]
-  scan: ScanProgress | null
-  lastScan: ScanFinished | null
-  lastSync: CoreEvents['media.sync_finished'] | null
   logs: LogEntry[]
   commands: CommandEntry[]
   captcha: CoreEvents['monitor.captcha_detected'] | null
@@ -37,10 +26,6 @@ type Action =
   | { type: 'status'; status: SystemStatus }
   | { type: 'patch'; patch: Partial<SystemStatus> }
   | { type: 'config'; config: AgentConfigView }
-  | { type: 'folders'; folders: MediaFolder[] }
-  | { type: 'scan'; scan: ScanProgress | null }
-  | { type: 'scanFinished'; result: ScanFinished }
-  | { type: 'sync'; sync: CoreEvents['media.sync_finished'] }
   | { type: 'logs'; logs: LogEntry[]; replace?: boolean }
   | { type: 'command'; entry: CommandEntry }
   | { type: 'captcha'; alert: CoreEvents['monitor.captcha_detected'] | null }
@@ -51,10 +36,6 @@ const initial: State = {
   core: { phase: 'starting', pid: null, generation: 0, version: null, last_error: null, exit_code: null, restarts: 0 },
   status: null,
   config: null,
-  folders: [],
-  scan: null,
-  lastScan: null,
-  lastSync: null,
   logs: [],
   commands: [],
   captcha: null,
@@ -73,14 +54,6 @@ function reducer(state: State, action: Action): State {
       return state.status ? { ...state, status: { ...state.status, ...action.patch } } : state
     case 'config':
       return { ...state, config: action.config }
-    case 'folders':
-      return { ...state, folders: action.folders }
-    case 'scan':
-      return { ...state, scan: action.scan }
-    case 'scanFinished':
-      return { ...state, scan: null, lastScan: action.result }
-    case 'sync':
-      return { ...state, lastSync: action.sync }
     case 'logs': {
       const logs = action.replace ? action.logs : [...state.logs, ...action.logs]
       return { ...state, logs: logs.slice(-MAX_LOGS) }
@@ -107,7 +80,6 @@ interface AppApi {
   ready: boolean
   refresh: () => Promise<void>
   refreshConfig: () => Promise<void>
-  refreshFolders: () => Promise<void>
   notify: (kind: Toast['kind'], title: string, detail?: string) => void
   dismiss: (id: number) => void
   /** Run a Core action with busy-safe error reporting. Returns undefined on failure. */
@@ -142,12 +114,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch { /* see refresh */ }
   }, [])
 
-  const refreshFolders = useCallback(async () => {
-    try {
-      dispatch({ type: 'folders', folders: (await call('media.folders.list')).folders })
-    } catch { /* see refresh */ }
-  }, [])
-
   const run = useCallback(async <T,>(action: () => Promise<T>, success?: string) => {
     try {
       const result = await action()
@@ -179,14 +145,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'patch', patch: { playback: frame.data } })
       } else if (isEvent(frame, 'monitor.status_changed')) {
         dispatch({ type: 'patch', patch: { monitor: frame.data } })
-      } else if (isEvent(frame, 'media.scan_progress')) {
-        dispatch({ type: 'scan', scan: frame.data })
-      } else if (isEvent(frame, 'media.scan_finished')) {
-        dispatch({ type: 'scanFinished', result: frame.data })
-        void refresh()
-        void refreshFolders()
-      } else if (isEvent(frame, 'media.sync_finished')) {
-        dispatch({ type: 'sync', sync: frame.data })
       } else if (isEvent(frame, 'command.received') || isEvent(frame, 'command.finished')) {
         dispatch({ type: 'command', entry: frame.data })
       } else if (isEvent(frame, 'monitor.captcha_detected')) {
@@ -201,24 +159,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       disposed = true
       unsubs.forEach((u) => u())
     }
-  }, [refresh, refreshFolders])
+  }, [refresh])
 
   // Initial load once the Core is ready, plus a slow safety refresh (events do the real work).
   useEffect(() => {
     if (!ready) return
     void refresh()
     void refreshConfig()
-    void refreshFolders()
     call('logs.recent', { limit: 300 }).then((r) => dispatch({ type: 'logs', logs: r.entries, replace: true })).catch(() => undefined)
     const timer = window.setInterval(() => void refresh(), 10_000)
     return () => window.clearInterval(timer)
-  }, [ready, state.core.generation, refresh, refreshConfig, refreshFolders])
+  }, [ready, state.core.generation, refresh, refreshConfig])
 
   const api = useMemo<AppApi>(() => ({
-    state, ready, refresh, refreshConfig, refreshFolders, notify, run,
+    state, ready, refresh, refreshConfig, notify, run,
     dismiss: (id) => dispatch({ type: 'dismiss', id }),
     clearCaptcha: () => dispatch({ type: 'captcha', alert: null }),
-  }), [state, ready, refresh, refreshConfig, refreshFolders, notify, run])
+  }), [state, ready, refresh, refreshConfig, notify, run])
 
   return <AppContext.Provider value={api}>{children}</AppContext.Provider>
 }

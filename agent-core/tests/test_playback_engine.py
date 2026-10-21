@@ -110,7 +110,7 @@ class EngineTestBase(unittest.TestCase):
         for name in ("p1a", "p1b", "p1c", "p2a", "p2b", "pl1", "pl2"):
             path = root / f"{name}.mp4"
             path.write_bytes(b"00")
-            self.files[name] = hashlib.sha256(str(path).casefold().encode()).hexdigest()
+            self.files[name] = hashlib.md5(str(path).casefold().encode()).hexdigest()  # 32-hex like Media Library ids
         self.paths = {mid: root / f"{name}.mp4" for name, mid in self.files.items()}
         self.obs = FakeObs(("Sarae Video A", "Sarae Video B") if self.dual else ("Sarae Video",))
         self.events = []
@@ -266,7 +266,7 @@ class SingleSourceTests(EngineTestBase):
             self.engine.product_play(8, 12, self.ids("p2a"), "immediate")
         self.assertEqual(ctx.exception.status_code, 409)
         with self.assertRaises(PlaybackError) as ctx:
-            self.engine.product_play(7, 13, ["f" * 64], "immediate")
+            self.engine.product_play(7, 13, ["f" * 32], "immediate")
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(self.engine.product_id, 11)
 

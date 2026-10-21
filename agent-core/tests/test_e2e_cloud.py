@@ -23,6 +23,15 @@ PASSWORD = "OwnerSecretPassword123!"
 pytestmark = [windows_only, pytest.mark.skipif(not Path(CLOUD_PYTHON).is_file(), reason="no Cloud venv")]
 
 
+def make_clip(path, seconds=1, fps=10):
+    import cv2
+    import numpy as np
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (320, 240))
+    for _ in range(seconds * fps):
+        writer.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    writer.release()
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -93,10 +102,7 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
     owner_auth = cloud.login("a@example.test", PASSWORD)
     key = httpx.post(f"{cloud.url}/identity/owners/{owner['id']}/activation-keys", headers=admin).json()["activation_key"]
     home = tmp_path / "agent-home"
-    videos = tmp_path / "videos"
-    videos.mkdir()
-    for name in ("intro.mp4", "product.mp4"):
-        (videos / name).write_bytes(b"\x00" * 32)
+    media_id = "a" * 32  # Media Library id; the Agent plays it from its cloud media cache
 
     core = CoreProcess(home)
     try:
@@ -123,15 +129,13 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
     try:
         core.wait_event("core.ready", 30)
         assert core.request("system.status")["result"]["agent"]["agent_id"] == agent_id
-        assert core.request("media.folders.add", {"path": str(videos)})["ok"]
-        core.request("media.scan")
-        assert core.wait_event("media.scan_finished", 30)["data"]["total"] == 2
+        # Stand-in for a file CloudMediaCache.prepare() published (local video folders are retired).
+        cached = home / "cloud-media-cache" / agent_id
+        cached.mkdir(parents=True, exist_ok=True)
+        make_clip(cached / f"{media_id}.mp4")  # a real clip: ffprobe passes, so the failure below is OBS
 
         assert core.request("agent.start")["ok"]
         core.wait_event("agent.status_changed", 30, lambda d: d["state"] == "running")
-        core.wait_event("media.sync_finished", 30)
-        library = httpx.get(f"{cloud.url}/agent-library/{agent_id}", headers=owner_auth).json()["videos"]
-        assert {v["filename"] for v in library} == {"intro.mp4", "product.mp4"}
         status = httpx.get(cloud.url + "/agents/status", headers=owner_auth).json()["agents"][0]
         assert status["online"] and status["playback"]["running"] is False
         assert status["playback"]["queue_ids"] == [] and "obs" in status["playback"]
@@ -153,7 +157,6 @@ def test_agent_full_flow_against_real_cloud(cloud, tmp_path):
         job = wait_for(lambda: (j := cloud_state(ok_id))["status"] == "SUCCESS" and j)
         assert job["result"] == {"ok": True, "cancelled_product_id": None}
 
-        media_id = library[0]["media_id"]
         fail_id = queue("product_play", {"session_id": 1, "product_id": 1, "media_ids": [media_id]})
         failed = core.wait_event("command.finished", 30, lambda d: d["command_id"] == fail_id)
         assert failed["data"]["status"] == "failed"

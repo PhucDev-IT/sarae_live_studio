@@ -10,12 +10,14 @@ from typing import Callable, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from sarae_agent.errors import AgentError
+from sarae_agent.media.cloud_cache import MEDIA_ID
 
-MediaId = Field(pattern=r"^[a-f0-9]{64}$")
+# Sarae Media Library ids (32-hex); the files come from the Agent cloud media cache.
+MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"tts_speak", "media_rescan", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
 
 
 def lane(kind: str) -> str:
@@ -40,7 +42,7 @@ class MediaIdsPayload(Payload):
     @field_validator("media_ids")
     @classmethod
     def _ids(cls, value: list[str]) -> list[str]:
-        if any(not (len(m) == 64 and all(c in "0123456789abcdef" for c in m)) for m in value):
+        if any(not (isinstance(m, str) and MEDIA_ID.fullmatch(m)) for m in value):
             raise ValueError("Danh sách media_ids không hợp lệ")
         return value
 
@@ -94,12 +96,11 @@ class MonitorConfigPayload(Payload):
 
 
 class CommandRouter:
-    def __init__(self, *, playback, monitor, voice, rescan: Callable[[], dict] | None = None, tiktok_sync: Callable[[], dict] | None = None):
-        """``playback`` is playback.engine.PlaybackEngine; ``rescan`` runs scan + Cloud library sync."""
+    def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None):
+        """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud."""
         self.playback = playback
         self.monitor = monitor
         self.voice = voice
-        self.rescan = rescan
         self.tiktok_sync = tiktok_sync
         p = playback
 
@@ -126,7 +127,6 @@ class CommandRouter:
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
             "playback_camera": (NoPayload, lambda _: p.use_camera()),
             "playback_video": (NoPayload, lambda _: p.use_video()),
-            "media_rescan": (NoPayload, lambda _: self._rescan()),
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
         }
@@ -137,11 +137,6 @@ class CommandRouter:
                               (("obs_previous", "playback_previous"), p.previous)):
             for kind in kinds:
                 self._table[kind] = (NoPayload, lambda _, act=action: act())
-
-    def _rescan(self) -> dict:
-        if self.rescan is None:
-            raise AgentError("AGENT_NOT_CONNECTED", "Agent chưa kết nối Cloud")
-        return self.rescan()
 
     def _tiktok_sync(self, expected_user_id: str) -> dict:
         if self.tiktok_sync is None:

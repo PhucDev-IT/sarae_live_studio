@@ -144,37 +144,27 @@ def stop_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = Id
 def catalog_products(owner: Owner):
     """Owner catalog independent of Windows Agent, for drafting future LIVE sessions.
 
-    Counts are existing video links across owned Agents; the selected Agent must
-    still verify availability at start. No cross-owner catalog exposure.
+    Counts are AVAILABLE videos of the owner's Media Library linked to each product. No cross-owner exposure.
     """
-    from app.product_videos import ProductLiveVideo
     from app.media_access import public_url
+    from app.media_library import product_video_counts
     with SessionLocal() as db:
         products=db.scalars(select(Product).where(Product.owner_id==owner["id"]).order_by(Product.id)).all()
-        links=db.scalars(select(ProductLiveVideo).where(ProductLiveVideo.owner_id==owner["id"])).all()
-        grouped={}
-        for link in links:
-            grouped.setdefault(link.product_id,set()).add(link.media_id)
+        counts=product_video_counts(db,owner["id"])
         return [{"id":p.id,"shop_id":p.shop_id,"name":p.name,"sku":p.sku,
                  "image_url":public_url(p.image_url,p.owner_id),"status":p.status,
-                 "price":p.price,"video_count":len(grouped.get(p.id,set()))} for p in products]
+                 "price":p.price,"video_count":counts.get(p.id,0)} for p in products]
 
 
 @router.get("/products")
 def available_products(owner: Owner, agent_id: AgentId):
-    """The owner's products with how many LIVE videos each has on that Agent (products are shared by all Agents)."""
-    from app.media import library
+    """The owner's products with how many Media Library videos each has (the same for every Agent)."""
     from app.media_access import public_url
-    from app.product_videos import ProductLiveVideo
-    agent = owned_agent(owner, agent_id)
-    present = {mid for mid, row in library(agent["id"]).items() if row["available"]}
+    from app.media_library import product_video_counts
+    owned_agent(owner, agent_id)
     with SessionLocal() as db:
         products = db.scalars(select(Product).where(Product.owner_id == owner["id"]).order_by(Product.id)).all()
-        counts = {}
-        for row in db.scalars(select(ProductLiveVideo).where(ProductLiveVideo.owner_id == owner["id"],
-                                                             ProductLiveVideo.agent_id == agent["id"])).all():
-            if row.media_id in present:
-                counts[row.product_id] = counts.get(row.product_id, 0) + 1
+        counts = product_video_counts(db, owner["id"])
         return [{"id": p.id, "shop_id": p.shop_id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
                  "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 

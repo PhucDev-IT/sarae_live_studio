@@ -6,7 +6,8 @@ import {
   CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
   MonitorPlay, Square, Undo2, Wifi, WifiOff,
 } from 'lucide-react'
-import { agentAction, apiRequest, durationLabel, errorText, listVideos, onAgent, type Media, type OwnerAgent } from './mediaApi'
+import { agentAction, apiRequest, durationLabel, errorText, onAgent, type OwnerAgent } from './mediaApi'
+import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import { sessionHref, sessionsApi, type LiveProduct, type LiveSession } from './liveSessionsApi'
 import { WithAgent, useAgent } from './agentContext'
 import VideoThumb from './VideoThumb'
@@ -54,7 +55,7 @@ function Console({agent}:{agent:OwnerAgent}){
   const [receivedAt,setReceivedAt] = useState(0)
   const [now,setNow] = useState(()=>Date.now())
   const [products,setProducts] = useState<LiveProduct[]>([])
-  const [videos,setVideos] = useState<Media[]>([])
+  const [videos,setVideos] = useState<CloudMedia[]>([])
   const [busy,setBusy] = useState(false)
   const [sessions,setSessions] = useState<LiveSession[]>([])
   const [target,setTarget] = useState<number|null>(null)
@@ -68,7 +69,7 @@ function Console({agent}:{agent:OwnerAgent}){
   const pollStatus = useCallback(async ()=>{try{applyStatus(await apiRequest<LiveStatus>(onAgent('/live/status', agentId)))}catch{/* keep last known status */}},[agentId])
   const loadAll = useCallback(async ()=>{
     const [s, p, v, ss] = await Promise.all([
-      apiRequest<LiveStatus>(onAgent('/live/status', agentId)), sessionsApi.products(agentId), listVideos(agentId), sessionsApi.list(),
+      apiRequest<LiveStatus>(onAgent('/live/status', agentId)), sessionsApi.products(agentId), listCloudMedia().then(r=>r.items), sessionsApi.list(),
     ])
     applyStatus(s);setProducts(p);setVideos(v);setSessions(ss)
   },[agentId])
@@ -224,7 +225,7 @@ function Console({agent}:{agent:OwnerAgent}){
                 {mediaState && <Badge tone={mediaState.tone}>{mediaState.label}</Badge>}
                 {status?.loop && running && <Badge tone="info">Lặp</Badge>}
               </div>
-              <h2 title={current?.filename}>{current?.filename ?? (running ? 'Video không có trong thư viện' : 'Chưa phát video nào')}</h2>
+              <h2 title={current?.display_name}>{current?.display_name ?? (running ? 'Video không có trong thư viện' : 'Chưa phát video nào')}</h2>
               <SeekBar cursor={cursor} duration={duration} disabled={busy || offline || !running} onSeek={seek}/>
             </div>
           </div>
@@ -252,7 +253,7 @@ function Console({agent}:{agent:OwnerAgent}){
               return <li key={`${id}-${i}`} className={isCurrent ? 'is-current' : ''}>
                 <span className="lc-q-index">{isCurrent ? <Radio size={14}/> : i + 1}</span>
                 <span className="lc-q-thumb"><VideoThumb src={video?.thumb_url}/></span>
-                <span className="lc-q-info"><strong title={video?.filename}>{video?.filename ?? 'Video không có trong thư viện'}</strong><small>{durationLabel(video?.duration_seconds) ?? '—'}{isCurrent ? ' · đang phát' : ''}</small></span>
+                <span className="lc-q-info"><strong title={video?.display_name}>{video?.display_name ?? 'Video không có trong thư viện'}</strong><small>{durationLabel(video?.duration_seconds) ?? '—'}{isCurrent ? ' · đang phát' : ''}</small></span>
                 {!isCurrent && <Button size="sm" variant="ghost" leftIcon={<Play size={14}/>} disabled={busy} onClick={()=>void act('/live/select', post({index:i}), 'Đã phát video được chọn')}>Phát</Button>}
               </li>
             })}</ol>}

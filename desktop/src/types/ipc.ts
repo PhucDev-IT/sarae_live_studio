@@ -54,7 +54,6 @@ export interface CloudStatus {
   last_ok?: string | null
   last_error?: AgentErrorInfo | null
   next_retry_seconds?: number | null
-  last_media_sync?: string | null
   server_time?: string
   pending_acks?: number
   commands_in_flight?: number
@@ -84,35 +83,18 @@ export interface ObsStatus {
   media?: ObsMediaStatus | null
 }
 
-export interface ScanJob {
-  job_id: string
-  state: string
-  scanned_files: number
-  found: number
-  started_at: string
+/** Cloud media cache job (media.cloud_cache.prepare): Media Library videos the Agent plays offline. */
+export interface CloudCacheStatus {
+  state: 'IDLE' | 'PREPARING' | 'READY' | 'FAILED'
+  session_id?: number
+  ready?: Array<{ media_id: string; size_bytes: number }>
+  failed?: Array<{ media_id?: string; error: string }>
+  products_without_video?: number[]
+  total?: number
 }
 
 export interface MediaSummary {
-  video_count: number
-  folder_count: number
-  scanned_at: string | null
-  scan: ScanJob | null
-}
-
-export interface MediaFolder {
-  path: string
-  exists: boolean
-  video_count: number
-}
-
-export interface MediaItem {
-  media_id: string
-  path: string
-  filename: string
-  size_bytes: number
-  modified_ns: number
-  folder: string
-  available: boolean
+  cloud_cache: CloudCacheStatus
 }
 
 export interface PlaybackStatus {
@@ -226,7 +208,6 @@ export interface AgentConfigView {
   version: number
   cloud: { api_url: string; heartbeat_seconds: number; poll_seconds: number; request_timeout_seconds: number }
   obs: { host: string; port: number; media_input: string; voice_input: string; dual_mode: boolean; source_a: string; source_b: string; camera_input: string; auto_connect: boolean; password_set: boolean }
-  media: { folders: string[]; rescan_minutes: number }
   monitor: MonitorConfig
   agent: { autostart: boolean }
   paths: { data_root: string; logs: string; templates: string }
@@ -239,19 +220,6 @@ export interface LogEntry {
   code: string
   correlation_id: string
   message: string
-}
-
-export interface ScanFinished {
-  job_id: string
-  state: 'succeeded' | 'cancelled' | 'failed'
-  scanned_files: number
-  duration_ms: number
-  total?: number
-  added?: number
-  removed?: number
-  truncated?: boolean
-  errors?: string[]
-  error?: AgentErrorInfo
 }
 
 export interface TemplateInfo {
@@ -284,7 +252,6 @@ export interface CoreMethods {
     obs?: Partial<Omit<AgentConfigView['obs'], 'password_set'>>
     monitor?: Partial<MonitorConfig>
     agent?: Partial<AgentConfigView['agent']>
-    media?: { rescan_minutes?: number }
     obs_password?: string
     clear_obs_password?: boolean
   }, AgentConfigView]
@@ -295,13 +262,8 @@ export interface CoreMethods {
   'agent.stop': [NoParams, AgentStatus]
   'agent.restart': [NoParams, AgentStatus]
   'agent.status': [NoParams, AgentStatus & { cloud: CloudStatus }]
-  'media.folders.list': [NoParams, { folders: MediaFolder[] }]
-  'media.folders.add': [{ path: string }, { folders: MediaFolder[] }]
-  'media.folders.remove': [{ path: string }, { folders: MediaFolder[] }]
-  'media.scan': [NoParams, { job_id: string; state: 'accepted' }]
-  'media.scan_cancel': [NoParams, { cancelling: boolean }]
-  'media.list': [{ offset?: number; limit?: number; query?: string }, { total: number; offset: number; items: MediaItem[] }]
-  'media.summary': [NoParams, MediaSummary]
+  'media.cloud_cache.prepare': [{ session_id: number }, CloudCacheStatus]
+  'media.cloud_cache.status': [NoParams, CloudCacheStatus]
   'obs.status': [NoParams, ObsStatus]
   'obs.connect': [{ host?: string; port?: number; password?: string }, ObsStatus]
   'obs.disconnect': [NoParams, ObsStatus]
@@ -337,9 +299,7 @@ export interface CoreEvents {
   'core.stopped': { reason: string }
   'agent.status_changed': AgentStatus
   'cloud.connection_changed': CloudStatus
-  'media.scan_progress': { job_id: string; scanned_files: number; found: number; folder: string }
-  'media.scan_finished': ScanFinished
-  'media.sync_finished': { synced: number; at: string }
+  'media.cache_changed': CloudCacheStatus
   'obs.status_changed': ObsStatus
   'playback.changed': PlaybackStatus
   'monitor.status_changed': MonitorStatus

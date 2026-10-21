@@ -1,4 +1,4 @@
-"""Private images (product / presenter photos, Agent thumbnails) open only through URLs signed for their real owner."""
+"""Private images (product / presenter photos) open only through URLs signed for their real owner."""
 import base64
 import tempfile
 import time
@@ -22,9 +22,6 @@ class PrivateImageTests(SaasTestCase):
             patcher = patch.object(catalog, target, Path(self.images.name))
             patcher.start()
             self.addCleanup(patcher.stop)
-        thumbs = patch("app.agent_library.THUMB_DIR", Path(self.images.name) / "thumbs")
-        thumbs.start()
-        self.addCleanup(thumbs.stop)
 
     def tearDown(self):
         super().tearDown()
@@ -85,20 +82,6 @@ class PrivateImageTests(SaasTestCase):
         person = self.client.post("/api/presenters", json={"name": "Lan", "avatar_url": uploaded["url"]}).json()
         self.assertEqual(self.client.get(person["avatar_url"]).status_code, 200)
         self.assertEqual(self.client.post("/api/presenters", json={"name": "B", "avatar_url": uploaded["url"]}, headers=self.B).status_code, 422)
-
-    def test_agent_thumbnails_are_signed_per_owner_and_close_on_revoke(self):
-        agent = self.activate_agent(self.owner_a, "PC-A")
-        video = {"media_id": "b" * 64, "filename": "a.mp4", "size_bytes": 1, "modified_ns": 1,
-                 "thumb_jpeg_base64": base64.b64encode(JPEG).decode()}
-        self.client.post("/api/agent-library/sync", json={"agent_id": agent["agent_id"], "videos": [video]},
-                         headers={"X-Sarae-Agent-Key": agent["agent_credential"]})
-        url = self.client.get("/api/media", params={"agent_id": agent["agent_id"]}).json()[0]["thumb_url"]
-        self.assertEqual(self.client.get(url, headers=self.ANON).status_code, 200)
-        name = urlsplit(url).path.rsplit("/", 1)[1]
-        forged = media_access.signed(f"/api/agent-library/thumbs/{name}", "thumb", name, self.owner_b["id"])
-        self.assertEqual(self.client.get(forged).status_code, 403)
-        self.client.delete(f"/api/identity/agents/{agent['agent_id']}")
-        self.assertEqual(self.client.get(url).status_code, 404, "a revoked Agent's thumbnails are gone")
 
     def test_heartbeat_keeps_no_absolute_path_of_the_pc(self):
         agent = self.activate_agent(self.owner_a, "PC-A")
