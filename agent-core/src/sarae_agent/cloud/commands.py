@@ -76,6 +76,10 @@ class ObsConfigurePayload(ObsConnectionPayload):
     source_b: str | None = Field(default="", max_length=200)
 
 
+class TikTokSyncPayload(Payload):
+    expected_user_id: str = Field(pattern=r"^[0-9]{1,80}$")
+
+
 class TtsPayload(Payload):
     text: str = Field(min_length=1, max_length=450)
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
@@ -119,7 +123,7 @@ class CommandRouter:
             "playback_select": (SelectPayload, lambda b: p.select(b.index)),
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
             "media_rescan": (NoPayload, lambda _: self._rescan()),
-            "tiktok_products_sync": (NoPayload, lambda _: self._tiktok_sync()),
+            "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
@@ -135,10 +139,10 @@ class CommandRouter:
             raise AgentError("AGENT_NOT_CONNECTED", "Agent chưa kết nối Cloud")
         return self.rescan()
 
-    def _tiktok_sync(self) -> dict:
+    def _tiktok_sync(self, expected_user_id: str) -> dict:
         if self.tiktok_sync is None:
             raise AgentError("TIKTOK_SYNC_UNAVAILABLE", "Agent chưa hỗ trợ đồng bộ TikTok qua Cloud")
-        result=self.tiktok_sync()
+        result=self.tiktok_sync(expected_user_id)
         # Cloud command ACK has a size limit; the full catalog is already stored
         # by /tiktok-products/sync and fetched separately by the Web.
         return {"agent_id":result.get("agent_id"),
