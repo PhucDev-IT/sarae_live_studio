@@ -400,7 +400,7 @@ class AutoPinService:
         try:
             page.reload(wait_until="domcontentloaded", timeout=30000)
             for _ in range(25):
-                if self._network_products is not None:
+                if self._network_products is not None and self._account_profile is not None:
                     break
                 page.wait_for_timeout(200)
         finally:
