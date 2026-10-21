@@ -138,7 +138,7 @@ def get_snapshot(agent_id:str,owner=Depends(current_owner)):
     with connection() as db:
         snap=db.execute("SELECT * FROM snapshots WHERE agent_id=? AND owner_id=?",(agent_id,owner["id"])).fetchone()
     if snap is None:
-        return {"agent_id":agent_id,"scanned_at":None,"products":[],
+        return {"agent_id":agent_id,"scanned_at":None,"account_user_id":None,"products":[],
                 **comparison(owner["id"],[])}
-    return {"agent_id":agent_id,"scanned_at":snap["scanned_at"],
+    return {"agent_id":agent_id,"scanned_at":snap["scanned_at"],"account_user_id":snap["account_user_id"],
             **comparison(owner["id"],json.loads(snap["products_json"]))}
