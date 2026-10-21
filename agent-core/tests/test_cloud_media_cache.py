@@ -54,6 +54,13 @@ class CacheTests(unittest.TestCase):
         matches = [r for r in self.requests if r.url.path.endswith("/content")]
         self.assertEqual(matches[0].headers["range"], "bytes=1000-")
 
+    def test_recover_complete_part_without_redownload(self):
+        dest = Path(self.tmp.name) / (MID + ".mp4.part")
+        dest.write_bytes(DATA)
+        self.assertEqual(self.cache.prepare(7)["state"], "READY")
+        self.assertFalse(dest.exists())
+        self.assertFalse(any(r.url.path.endswith("/content") for r in self.requests))
+
     def test_bad_checksum_not_published(self):
         self.corrupt = True
         result = self.cache.prepare(7)
