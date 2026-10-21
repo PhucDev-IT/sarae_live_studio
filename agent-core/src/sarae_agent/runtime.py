@@ -291,7 +291,7 @@ class AgentRuntime:
             "playback": play,
         }
 
-    def sync_tiktok_products(self) -> dict:
+    def sync_tiktok_products(self, expected_user_id: str | None = None) -> dict:
         """Scan browser on its worker, then send the verified complete snapshot to Cloud."""
         scan=self.auto_pin.scan_products()
         snapshot=scan.get("product_snapshot") or {}
@@ -301,6 +301,9 @@ class AgentRuntime:
                              "Danh sách TikTok chưa quét đủ; chưa đồng bộ Cloud")
         if not account or not account.get("user_id"):
             raise AgentError("TIKTOK_ACCOUNT_UNVERIFIED", "Chưa xác minh được tài khoản TikTok đang đăng nhập")
+        if expected_user_id is not None and account["user_id"] != expected_user_id:
+            raise AgentError("TIKTOK_ACCOUNT_MISMATCH",
+                             "TikTok LIVE Console đang đăng nhập tài khoản khác với phiên LIVE")
         identity=self.activation.require()
         from sarae_agent.cloud.client import CloudClient
         with CloudClient(identity.cloud_url or self.config.get().cloud.api_url) as client:
