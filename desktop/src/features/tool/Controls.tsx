@@ -88,7 +88,8 @@ function ObsRow() {
   let tone: Tone = 'muted'
   if (obs.connected) {
     status = playback?.active
-      ? `Đang phát ${playback.current_filename ?? ''} (${playback.index + 1}/${playback.count})${playback.paused ? ' · tạm dừng' : ''}`
+      ? playback.source_mode === 'camera' ? 'Đang dùng camera dự phòng' :
+        `Đang phát ${playback.current_filename ?? ''} (${playback.index + 1}/${playback.count})${playback.paused ? ' · tạm dừng' : ''}`
       : `Đã kết nối OBS ${obs.obs_version ?? ''}`
     tone = 'ok'
   } else if (obs.state === 'connecting') {
@@ -102,8 +103,14 @@ function ObsRow() {
   }
   return (
     <Row icon={<Clapperboard size={16} />} title="OBS" status={status} tone={tone}
-      control={<Switch checked={obs.auto_connect} label="OBS" onToggle={(value) =>
-        run(() => call(value ? 'obs.connect' : 'obs.disconnect')).then(refresh)} />} />
+      control={<>
+        {playback?.active && <ActionButton disabled={!state.config?.obs.camera_input} onAction={async () => {
+          await run(() => call(playback.source_mode === 'camera' ? 'playback.video' : 'playback.camera'))
+          await refresh()
+        }}>{playback.source_mode === 'camera' ? 'Về video' : 'Dùng camera'}</ActionButton>}
+        <Switch checked={obs.auto_connect} label="OBS" onToggle={(value) =>
+          run(() => call(value ? 'obs.connect' : 'obs.disconnect')).then(refresh)} />
+      </>} />
   )
 }
 

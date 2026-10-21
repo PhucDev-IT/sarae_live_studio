@@ -182,6 +182,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("playback.next", lambda _: rt.playback.next())
     reg("playback.previous", lambda _: rt.playback.previous())
     reg("playback.loop", lambda p: rt.playback.set_loop(p.loop), LoopParams)
+    reg("playback.camera", lambda _: rt.playback.use_camera())
+    reg("playback.video", lambda _: rt.playback.use_video())
 
     # CAPTCHA monitor
     reg("monitor.status", lambda _: rt.monitor.status())

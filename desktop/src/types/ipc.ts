@@ -116,6 +116,7 @@ export interface MediaItem {
 }
 
 export interface PlaybackStatus {
+  source_mode?: 'video' | 'camera'
   active: boolean
   paused: boolean
   loop: boolean
@@ -224,7 +225,7 @@ export interface SystemStatus {
 export interface AgentConfigView {
   version: number
   cloud: { api_url: string; heartbeat_seconds: number; poll_seconds: number; request_timeout_seconds: number }
-  obs: { host: string; port: number; media_input: string; voice_input: string; dual_mode: boolean; source_a: string; source_b: string; auto_connect: boolean; password_set: boolean }
+  obs: { host: string; port: number; media_input: string; voice_input: string; dual_mode: boolean; source_a: string; source_b: string; camera_input: string; auto_connect: boolean; password_set: boolean }
   media: { folders: string[]; rescan_minutes: number }
   monitor: MonitorConfig
   agent: { autostart: boolean }
@@ -313,6 +314,8 @@ export interface CoreMethods {
   'playback.next': [NoParams, PlaybackStatus]
   'playback.previous': [NoParams, PlaybackStatus]
   'playback.loop': [{ loop: boolean }, PlaybackStatus]
+  'playback.camera': [NoParams, PlaybackStatus]
+  'playback.video': [NoParams, PlaybackStatus]
   'monitor.status': [NoParams, MonitorStatus]
   'monitor.start': [NoParams, MonitorStatus]
   'monitor.stop': [NoParams, MonitorStatus]

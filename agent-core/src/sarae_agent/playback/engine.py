@@ -24,6 +24,8 @@ passed to ``on_event`` are dicts ``{type, session_id, product_id, detail}`` with
 PRODUCT_SWITCHED, PLAYBACK_ENDED or ERROR.
 """
 import json
+import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -33,6 +35,9 @@ from pydantic import BaseModel, Field
 
 from sarae_agent.config import paths
 from sarae_agent.errors import AgentError
+from sarae_agent.media.probe import obs_file, probe_media
+
+log = logging.getLogger("sarae.playback")
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 ERROR_CODES = {409: "PLAYBACK_CONFLICT", 422: "INVALID_REQUEST", 502: "OBS_REQUEST_FAILED", 503: "OBS_UNAVAILABLE"}
@@ -56,6 +61,7 @@ class ObsConfig(BaseModel):
     # A/B Media Source names for dual mode; empty falls back to "<input_name> A" / "<input_name> B".
     source_a: str = Field(default="", max_length=200)
     source_b: str = Field(default="", max_length=200)
+    camera_input: str = Field(default="", max_length=200)
 
 
 def load_obs_config(path: Path) -> ObsConfig:
@@ -129,6 +135,9 @@ class PlaybackEngine:
         self.slots: list[str] = []
         self.scene_item_ids: list[int] = []
         self.scene_name = ""
+        self.camera_mode = False
+        self.camera_scene_item_id: int | None = None
+        self._prepared: dict[str, tuple[int, int, str]] = {}
         self.loop = False
         self.retry_count = 0
         self.next_retry_at = 0.0
@@ -202,16 +211,135 @@ class PlaybackEngine:
         if path is None:
             raise PlaybackError(409, f"Thiếu file video {media_id[:12]}")
         path = path.resolve()
-        return str(path), path.name
+        stat = path.stat()
+        cached = self._prepared.get(str(path))
+        if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns) and Path(cached[2]).is_file():
+            return cached[2], path.name
+        try:
+            info = probe_media(path)
+            playable = obs_file(path, info)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise PlaybackError(409, f"Không kiểm tra/chuẩn hóa được {path.name}: {exc}") from exc
+        self._prepared[str(path)] = (stat.st_size, stat.st_mtime_ns, str(playable))
+        return str(playable), path.name
 
     def _stage(self, client, slot, index):
         path, _ = self._media(index)
+        self._stage_path(client, slot, path)
+
+    def _stage_path(self, client, slot, path):
         name = self.slots[slot]
         # Keep decoder open when hidden. Mute the stand-by source to avoid audio overlap.
         client.set_input_mute(name, True)
         client.set_input_settings(name, {"local_file": path, "is_local_file": True,
                                          "looping": False, "close_when_inactive": False}, overlay=True)
         client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+
+    def _verify_input(self, client, name: str, kind: str) -> tuple[str, int]:
+        scene = client.get_current_program_scene().current_program_scene_name
+        inputs = client.get_input_list().inputs
+        if not any(i.get("inputName") == name and
+                   (i.get("unversionedInputKind") or i.get("inputKind")) == kind for i in inputs):
+            raise PlaybackError(422, f"OBS chưa có nguồn {kind} '{name}'")
+        try:
+            item_id = client.get_scene_item_id(scene, name).scene_item_id
+        except Exception as exc:
+            raise PlaybackError(422, f"Nguồn '{name}' chưa nằm trong scene hiện tại") from exc
+        return scene, item_id
+
+    def _fit_video(self, client, scene: str, item_id: int):
+        """Use OBS fit-inside bounds, with no scene crop, rotation or mirror."""
+        canvas = client.get_video_settings()
+        width, height = canvas.base_width, canvas.base_height
+        if not isinstance(width, int) or not isinstance(height, int) or width < 1 or height < 1:
+            raise PlaybackError(503, "Không đọc được kích thước canvas OBS")
+        client.set_scene_item_transform(scene, item_id, {
+            "positionX": width / 2, "positionY": height / 2, "alignment": 0,
+            "rotation": 0, "scaleX": 1, "scaleY": 1,
+            "cropLeft": 0, "cropRight": 0, "cropTop": 0, "cropBottom": 0,
+            "boundsType": "OBS_BOUNDS_SCALE_INNER", "boundsAlignment": 0,
+            "boundsWidth": width, "boundsHeight": height,
+        })
+
+    def use_camera(self):
+        """Keep the LIVE session running while switching its visible source."""
+        with self.lock:
+            if not self.active:
+                raise PlaybackError(409, "Chưa có phiên video để chuyển sang camera")
+            if self.camera_mode:
+                return {"ok": True, "source_mode": "camera"}
+            name = self.config.camera_input.strip()
+            if not name or name in ([self.config.input_name] + self._sources()):
+                raise PlaybackError(422, "Cần cấu hình Video Capture Device riêng trong OBS")
+            client = self.client()
+            scene = None
+            camera_id = video_id = None
+            try:
+                scene, camera_id = self._verify_input(client, name, "dshow_input")
+                video_scene, video_id = self._verify_input(client, self.active_source(), "ffmpeg_source")
+                if scene != video_scene:
+                    raise PlaybackError(422, "Camera và video phải cùng scene")
+                camera_settings = client.get_input_settings(name).input_settings
+                if not camera_settings.get("video_device_id"):
+                    raise PlaybackError(422, "Camera OBS chưa chọn thiết bị hình ảnh")
+                # Keep the current video visible until OBS accepts the camera item.
+                client.set_input_mute(name, True)
+                client.set_scene_item_enabled(scene, camera_id, True)
+                client.set_input_mute(self.active_source(), True)
+                client.set_scene_item_enabled(scene, video_id, False)
+                client.set_input_mute(name, False)
+                self.camera_scene_item_id = camera_id
+                self.camera_mode = True
+                self.paused = False
+                self.last_status = "Đang dùng camera"
+                return {"ok": True, "source_mode": "camera"}
+            except Exception:
+                try:
+                    if scene is not None and video_id is not None:
+                        client.set_scene_item_enabled(scene, video_id, True)
+                    client.set_input_mute(self.active_source(), False)
+                    client.set_input_mute(name, True)
+                    if scene is not None and camera_id is not None:
+                        client.set_scene_item_enabled(scene, camera_id, False)
+                except Exception:
+                    pass
+                raise
+            finally:
+                _close(client)
+
+    def use_video(self):
+        with self.lock:
+            if not self.camera_mode:
+                return {"ok": True, "source_mode": "video"}
+            client = self.client()
+            try:
+                scene, video_id = self._verify_input(client, self.active_source(), "ffmpeg_source")
+                camera_id = self.camera_scene_item_id
+                if camera_id is None:
+                    raise PlaybackError(409, "Không rõ camera đang dùng")
+                client.set_input_mute(self.active_source(), True)
+                client.trigger_media_input_action(self.active_source(), "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+                client.set_scene_item_enabled(scene, video_id, True)
+                client.set_input_mute(self.config.camera_input, True)
+                client.set_input_mute(self.active_source(), False)
+                client.set_scene_item_enabled(scene, camera_id, False)
+                self.camera_mode = False
+                self.paused = False
+                self.last_progress_at = time.monotonic()
+                self.last_cursor = None
+                self.last_status = "Đã trở lại video"
+                return {"ok": True, "source_mode": "video"}
+            except Exception:
+                try:
+                    client.set_input_mute(self.active_source(), True)
+                    if 'scene' in locals() and 'video_id' in locals():
+                        client.set_scene_item_enabled(scene, video_id, False)
+                    client.set_input_mute(self.config.camera_input, False)
+                except Exception:
+                    pass
+                raise
+            finally:
+                _close(client)
 
     def _play_dual(self, client, index, initial=False):
         if initial:
@@ -220,6 +348,18 @@ class PlaybackEngine:
                 raise PlaybackError(422, "Cần có đủ hai Media Source " + " và ".join(self._sources()) + " trong scene OBS hiện tại")
             self.scene_name, self.slots, self.scene_item_ids = located
             self.active_slot = 0
+            for name in self.slots:
+                self._verify_input(client, name, "ffmpeg_source")
+            for item_id in self.scene_item_ids:
+                self._fit_video(client, self.scene_name, item_id)
+            if self.config.camera_input:
+                try:
+                    camera_scene, camera_id = self._verify_input(client, self.config.camera_input, "dshow_input")
+                    if camera_scene == self.scene_name:
+                        client.set_input_mute(self.config.camera_input, True)
+                        client.set_scene_item_enabled(camera_scene, camera_id, False)
+                except PlaybackError:
+                    pass
             for slot, name in enumerate(self.slots):
                 client.set_input_mute(name, True)
                 client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[slot], False)
@@ -237,8 +377,8 @@ class PlaybackEngine:
                 time.sleep(0.3)
             # Show the next video first: no empty frame between sources.
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[incoming], True)
-            client.set_input_mute(self.slots[incoming], False)
             client.set_input_mute(self.slots[self.active_slot], True)
+            client.set_input_mute(self.slots[incoming], False)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
             self.active_slot = incoming
         following = index + 1 if index + 1 < len(self.ids) else (0 if self.loop else None)
@@ -276,12 +416,12 @@ class PlaybackEngine:
                 "pending_product_id": self.pending_product_id, "session_id": self.session_id,
                 "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
-                "recovery_count": self.recovery_count,
+                "recovery_count": self.recovery_count, "source_mode": "camera" if self.camera_mode else "video",
                 "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0,
                 # Current connection settings (never the password) so the UI can show and prefill them.
                 "obs": {"host": self.config.host, "port": self.config.port, "input_name": self.config.input_name,
                         "dual_mode": self.dual_mode, "dual_sources": self._sources(),
-                        "has_password": bool(self.config.password)}}
+                        "has_password": bool(self.config.password), "camera_input": self.config.camera_input}}
 
     def status(self):
         """Same shape as GET /api/live/status."""
@@ -316,6 +456,8 @@ class PlaybackEngine:
 
     def play(self, index: int):
         with self.lock:
+            if self.camera_mode:
+                raise PlaybackError(409, "Đang dùng camera; hãy chuyển về video trước")
             if not self.ids:
                 raise PlaybackError(409, "Playlist rỗng")
             if not 0 <= index < len(self.ids):
@@ -327,9 +469,31 @@ class PlaybackEngine:
                     if self.dual_mode:
                         self._play_dual(client, index, initial=not self.active)
                     else:
-                        client.set_input_settings(self.config.input_name, {"local_file": path}, overlay=True)
+                        video_scene, video_id = self._verify_input(client, self.config.input_name, "ffmpeg_source")
+                        self._fit_video(client, video_scene, video_id)
+                        client.set_scene_item_enabled(video_scene, video_id, True)
+                        if self.config.camera_input:
+                            try:
+                                camera_scene, camera_id = self._verify_input(client, self.config.camera_input, "dshow_input")
+                                if camera_scene == video_scene:
+                                    client.set_input_mute(self.config.camera_input, True)
+                                    client.set_scene_item_enabled(camera_scene, camera_id, False)
+                            except PlaybackError:
+                                pass
+                        client.set_input_settings(self.config.input_name,
+                                                  {"local_file": path, "is_local_file": True, "looping": False,
+                                                   "close_when_inactive": False, "restart_on_activate": False},
+                                                  overlay=True)
+                        applied = client.get_input_settings(self.config.input_name).input_settings
+                        if applied.get("local_file") != path:
+                            raise PlaybackError(503, "OBS không nhận file mới")
                         client.trigger_media_input_action(self.config.input_name,
                                                           "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+                        client.set_input_mute(self.config.input_name, False)
+                    muted = client.get_input_mute(self.active_source()).input_muted
+                    log.info("OBS playback source=%s file=%s mute=%s", self.active_source(), name, muted)
+                    if muted:
+                        raise PlaybackError(503, "OBS vẫn mute nguồn video đang phát")
                 finally:
                     _close(client)
             except PlaybackError:
@@ -367,6 +531,7 @@ class PlaybackEngine:
         with self.lock:
             if self.active:
                 raise PlaybackError(409, "Hãy dừng playlist hiện tại trước")
+            self._refresh_config_when_idle()
             if not media_ids:
                 raise PlaybackError(422, "Playlist cần ít nhất 1 video")
             missing = [m for m in media_ids if self._path(m) is None]
@@ -403,6 +568,8 @@ class PlaybackEngine:
         if mode not in ("immediate", "after_current"):
             raise PlaybackError(422, "mode phải là immediate hoặc after_current")
         with self.lock:
+            if not self.active:
+                self._refresh_config_when_idle()
             if self.active and self.session_mode != "product":
                 raise PlaybackError(409, "Đang phát playlist; hãy dừng trước khi phát sản phẩm")
             if self.active and self.session_id != session_id:
@@ -432,6 +599,24 @@ class PlaybackEngine:
                 self.pending_product_id = None
                 return {"ok": True, "pending_product_id": None}
             self.pending_product_id = product_id
+            if self.dual_mode and self.slots:
+                # The pending product will be needed at the next boundary. Replace the
+                # ordinary next-video preload while its scene item is still hidden.
+                pending_first = self.product_queue(product_id)[0]
+                if self._path(pending_first) is not None:
+                    current_ids = self.ids
+                    try:
+                        self.ids = [pending_first]
+                        path, _ = self._media(0)
+                        client = self.client()
+                        try:
+                            self._stage_path(client, 1 - self.active_slot, path)
+                        finally:
+                            _close(client)
+                    except Exception as exc:
+                        log.warning("Không preload được sản phẩm #%s: %s", product_id, exc)
+                    finally:
+                        self.ids = current_ids
             self.last_status = f"Đã xếp sản phẩm #{product_id} sau video hiện tại"
             return {"ok": True, "pending_product_id": product_id}
 
@@ -446,6 +631,14 @@ class PlaybackEngine:
         with self.lock:
             pending = self.pending_product_id
             self.pending_product_id = None
+            if pending is not None and self.dual_mode and self.active and self.slots:
+                following = self.index + 1 if self.index + 1 < len(self.ids) else (0 if self.loop else None)
+                if following is not None:
+                    client = self.client()
+                    try:
+                        self._stage(client, 1 - self.active_slot, following)
+                    finally:
+                        _close(client)
             return {"ok": True, "cancelled_product_id": pending}
 
     def pause(self):
@@ -526,6 +719,16 @@ class PlaybackEngine:
 
     def stop(self):
         with self.lock:
+            if self.camera_mode:
+                client = self.client()
+                try:
+                    client.set_input_mute(self.config.camera_input, True)
+                    if self.camera_scene_item_id is not None:
+                        scene = client.get_current_program_scene().current_program_scene_name
+                        client.set_scene_item_enabled(scene, self.camera_scene_item_id, False)
+                finally:
+                    _close(client)
+                self.camera_mode = False
             self.active = False
             self.paused = False
             self.generation += 1
@@ -552,11 +755,12 @@ class PlaybackEngine:
     # ----- OBS configuration ----------------------------------------------------------------------
 
     def configure(self, host="127.0.0.1", port=4455, password="", input_name="Sarae Video",
-                  dual_mode=False, source_a="", source_b=""):
+                  dual_mode=False, source_a="", source_b="", camera_input=""):
         """Save the OBS connection locally. An empty password keeps the saved one."""
         try:
             body = ObsConfig(host=host, port=port, password=password or "", input_name=input_name,
-                             dual_mode=dual_mode, source_a=source_a or "", source_b=source_b or "")
+                             dual_mode=dual_mode, source_a=source_a or "", source_b=source_b or "",
+                             camera_input=camera_input or "")
         except Exception as exc:
             raise PlaybackError(422, f"Cấu hình OBS không hợp lệ: {exc}") from exc
         if body.host not in LOCAL_HOSTS:
@@ -568,18 +772,26 @@ class PlaybackEngine:
             if a == b:
                 raise PlaybackError(422, "Hai Media Source A và B phải khác tên nhau")
         with self.lock:
+            if self.active:
+                raise PlaybackError(409, "Dừng playback trước khi đổi cấu hình OBS")
             if not body.password:
                 body = body.model_copy(update={"password": self.config.password})
             self.active = False
             self.config = body
             self.dual_mode = body.dual_mode
             self.slots = []
+            self.camera_mode = False
             self.last_status = "Đã cập nhật cấu hình OBS"
             try:
                 self.store.save(body)
             except (OSError, AgentError) as exc:
                 self.last_status = f"Đã cập nhật cấu hình OBS nhưng không lưu được xuống đĩa: {exc}"
         return self.status()
+
+    def _refresh_config_when_idle(self):
+        self.config = self.store.load()
+        self.dual_mode = self.config.dual_mode
+        self.slots = []
 
     def list_inputs(self, host="127.0.0.1", port=4455, password=""):
         """List OBS inputs, marking those placed in the current program scene. Saved config is untouched."""
@@ -609,7 +821,7 @@ class PlaybackEngine:
     def tick(self):
         """One watchdog iteration: advance ended videos, recover stalls, retry OBS with backoff."""
         with self.lock:
-            if not self.active or self.paused or not self.ids or time.monotonic() < self.next_retry_at:
+            if not self.active or self.paused or self.camera_mode or not self.ids or time.monotonic() < self.next_retry_at:
                 return
             try:
                 client = self.client()

@@ -74,6 +74,7 @@ class ObsConfigurePayload(ObsConnectionPayload):
     dual_mode: bool = False
     source_a: str | None = Field(default="", max_length=200)
     source_b: str | None = Field(default="", max_length=200)
+    camera_input: str | None = Field(default="", max_length=200)
 
 
 class TikTokSyncPayload(Payload):
@@ -104,7 +105,8 @@ class CommandRouter:
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
             p.configure(host=b.host.strip(), port=b.port, password=b.password or "", input_name=b.input_name.strip(),
-                        dual_mode=b.dual_mode, source_a=(b.source_a or "").strip(), source_b=(b.source_b or "").strip())
+                        dual_mode=b.dual_mode, source_a=(b.source_a or "").strip(), source_b=(b.source_b or "").strip(),
+                        camera_input=(b.camera_input or "").strip())
             # Status carries has_password only; the password itself is never echoed back.
             return p.status()
 
@@ -122,6 +124,8 @@ class CommandRouter:
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_select": (SelectPayload, lambda b: p.select(b.index)),
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
+            "playback_camera": (NoPayload, lambda _: p.use_camera()),
+            "playback_video": (NoPayload, lambda _: p.use_video()),
             "media_rescan": (NoPayload, lambda _: self._rescan()),
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),

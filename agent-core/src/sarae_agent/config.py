@@ -132,6 +132,7 @@ class ObsConfig(BaseModel):
     dual_mode: bool = False
     source_a: str = Field(default="", max_length=200)
     source_b: str = Field(default="", max_length=200)
+    camera_input: str = Field(default="", max_length=200)
 
 
 class MediaConfig(BaseModel):
