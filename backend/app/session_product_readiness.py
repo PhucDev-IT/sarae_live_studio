@@ -53,33 +53,27 @@ def reconcile(db,owner_id:str,agent_id:str,selected:list[int],shop_id:int|None=N
         return {**readiness,"snapshot_at":None,"snapshot_state":"UNKNOWN",
                 "missing_on_tiktok":[],"unselected_on_sarae":[],"ambiguous":[]}
     all_source=json.loads(snap["products_json"])
-    if shop_id is not None:
-        seller=db.execute(text("SELECT seller_id FROM tiktok_shops WHERE id=:s AND owner_id=:o"),
-                          {"s":shop_id,"o":owner_id}).scalar_one_or_none()
-        observed={str(row.get("seller_id") or "") for row in all_source}
-        if seller is not None and str(seller) not in observed:
-            return {**readiness,"snapshot_at":snap["scanned_at"],
-                    "snapshot_state":"SHOP_MISMATCH","missing_on_tiktok":[],
-                    "unselected_on_sarae":[],"ambiguous":[],"matching_basis":"SELLER_ID_AND_PRODUCT_ID"}
-    source=all_source
     selected_products={p.id:p for p in db.scalars(select(Product).where(
         Product.owner_id==owner_id,Product.id.in_(selected))).all()} if selected else {}
-    shop_ids={shop_id} if shop_id is not None else {p.shop_id for p in selected_products.values() if p.shop_id is not None}
-    sellers={r[0] for r in db.execute(text("SELECT seller_id FROM tiktok_shops WHERE owner_id=:o AND id IN ("+
-            ",".join(str(int(x)) for x in shop_ids)+")"),{"o":owner_id})} if shop_ids else set()
-    source=[row for row in source if str(row.get("seller_id") or "") in sellers]
-    by_id={str(row.get("product_id")):row for row in source if row.get("product_id")}
-    chosen_ids={str(p.tiktok_product_id) for p in selected_products.values() if p.tiktok_product_id}
+    legacy_sellers={int(r[0]):str(r[1]) for r in db.execute(text(
+        "SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:o"),{"o":owner_id}).all()}
+    def identity(p):
+        seller=p.tiktok_seller_id or legacy_sellers.get(p.shop_id)
+        return (str(seller),str(p.tiktok_product_id)) if seller and p.tiktok_product_id else None
+    by_id={(str(row.get("seller_id") or ""),str(row.get("product_id") or "")):row
+           for row in all_source if row.get("seller_id") and row.get("product_id")}
+    chosen_ids={identity(p) for p in selected_products.values() if identity(p)}
     missing=[];ambiguous=[]
     for pid in selected:
         p=selected_products.get(pid)
         if not p:continue
-        if not p.tiktok_product_id:
+        key=identity(p)
+        if key is None:
             ambiguous.append({"product_id":pid,"name":p.name,"reason":"TIKTOK_ID_NOT_LINKED"})
-        elif str(p.tiktok_product_id) not in by_id:
+        elif key not in by_id:
             missing.append({"product_id":pid,"name":p.name})
-    unselected=[{"name":row["name"],"product_id":row.get("product_id")}
-                for row in source if str(row.get("product_id")) not in chosen_ids]
+    unselected=[{"name":row["name"],"product_id":row.get("product_id"),"seller_id":row.get("seller_id")}
+                for key,row in by_id.items() if key not in chosen_ids]
     try:
         ts=datetime.fromisoformat(snap["scanned_at"].replace("Z","+00:00"))
         if ts.tzinfo is None:ts=ts.replace(tzinfo=timezone.utc)
