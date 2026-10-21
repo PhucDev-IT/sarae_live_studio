@@ -398,6 +398,34 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         db.commit()
         return serialize(db, item)
 
+class PrepareInput(BaseModel):
+    agent_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
+
+
+@router.post("/{session_id}/prepare")
+def prepare_session(session_id: int, body: PrepareInput, owner: Owner):
+    """User explicitly requests a fresh Console sync before reviewing the lineup.
+
+    Does not claim the Agent or start playback. User confirms the synced products
+    separately before calling /start.
+    """
+    from app.owner_agents import owned_agent
+    from app.live import playback_of
+    from app.cloud_agents import run_command,respond
+    with SessionLocal() as db:
+        item=get_session(db,session_id,owner)
+        if item.status != "DRAFT":
+            raise HTTPException(409,"Chỉ chuẩn bị được phiên DRAFT")
+        if item.tiktok_account_id is None:
+            raise HTTPException(409,"Chưa gắn TikTok Account")
+        agent=owned_agent(owner,body.agent_id,online=True)
+        if playback_of(agent).get("running"):
+            raise HTTPException(409,"Agent đang vận hành phiên khác")
+    result=run_command(body.agent_id,owner["id"],"tiktok_products_sync",{},wait=8,
+                       context={"module":"tiktok_prepare","session_id":session_id})
+    return respond(result,session_id=session_id,agent_id=body.agent_id)
+
+
 @router.post("/{session_id}/start")
 def start_session(session_id: int, body: StartInput, owner: Owner,
                   idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
