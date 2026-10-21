@@ -130,9 +130,14 @@ class AgentRuntime:
         """OBS settings changed from the GUI: the engine uses them from its next request."""
         config = self.engine.store.load()
         with self.engine.lock:
-            self.engine.config = config
-            self.engine.dual_mode = config.dual_mode
-            self.engine.slots = []
+            if self.engine.active:
+                if not self.engine.camera_mode:
+                    self.engine.config = self.engine.config.model_copy(
+                        update={"camera_input": config.camera_input})
+            else:
+                self.engine.config = config
+                self.engine.dual_mode = config.dual_mode
+                self.engine.slots = []
 
     def _set_state(self, state: str, error: dict | None = None) -> None:
         # Separate from the lifecycle lock: the worker reports state while stop_agent() joins it.

@@ -279,6 +279,14 @@ class ObsRequests:
     def get_scene_item_list(self, scene: str):
         return _ns(scene_items=self._send("GetSceneItemList", {"sceneName": scene}).get("sceneItems") or [])
 
+    def get_video_settings(self):
+        data = self._send("GetVideoSettings")
+        return _ns(base_width=data.get("baseWidth"), base_height=data.get("baseHeight"))
+
+    def set_scene_item_transform(self, scene: str, item_id: int, transform: dict):
+        self._send("SetSceneItemTransform", {"sceneName": scene, "sceneItemId": item_id,
+                                              "sceneItemTransform": transform})
+
     def get_input_list(self):
         return _ns(inputs=self._send("GetInputList").get("inputs") or [])
 
@@ -290,6 +298,9 @@ class ObsRequests:
 
     def set_input_mute(self, name: str, muted: bool):
         self._send("SetInputMute", {"inputName": name, "inputMuted": muted})
+
+    def get_input_mute(self, name: str):
+        return _ns(input_muted=self._send("GetInputMute", {"inputName": name}).get("inputMuted"))
 
     def set_scene_item_enabled(self, scene: str, item_id: int, enabled: bool):
         self._send("SetSceneItemEnabled", {"sceneName": scene, "sceneItemId": item_id, "sceneItemEnabled": enabled})
@@ -318,13 +329,14 @@ class ObsSettingsStore:
         cfg = self._config.get().obs
         return EngineObsConfig(host=cfg.host, port=cfg.port, password=self._obs._password(),
                                input_name=cfg.media_input, dual_mode=cfg.dual_mode,
-                               source_a=cfg.source_a, source_b=cfg.source_b)
+                               source_a=cfg.source_a, source_b=cfg.source_b, camera_input=cfg.camera_input)
 
     def save(self, engine_config) -> None:
         before = self._config.get().obs
         self._config.update({"obs": {"host": engine_config.host, "port": engine_config.port,
                                      "media_input": engine_config.input_name, "dual_mode": engine_config.dual_mode,
-                                     "source_a": engine_config.source_a, "source_b": engine_config.source_b}})
+                                     "source_a": engine_config.source_a, "source_b": engine_config.source_b,
+                                     "camera_input": engine_config.camera_input}})
         password_changed = (engine_config.password or "") != self._obs._password()
         if password_changed:
             self._obs.set_password(engine_config.password or None)

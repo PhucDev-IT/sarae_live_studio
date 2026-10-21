@@ -39,6 +39,10 @@ class FakeWs:
             return {"sceneItemId": self.scene_items[name]}
         if request == "GetSceneItemList":
             return {"sceneItems": [{"sourceName": n} for n in self.scene_items]}
+        if request == "GetVideoSettings":
+            return {"baseWidth": 1080, "baseHeight": 1920}
+        if request == "SetSceneItemTransform":
+            return {}
         if request == "GetInputList":
             return {"inputs": [{"inputName": n, "inputKind": "ffmpeg_source"} for n in sorted(self.inputs)]}
         if request == "SetInputSettings" and self.apply:
@@ -57,6 +61,8 @@ class FakeWs:
                     "mediaCursor": self.cursor.get(name, 10)}
         if request == "SetInputMute":
             self.muted[name] = data["inputMuted"]
+        if request == "GetInputMute":
+            return {"inputMuted": self.muted.get(name, False)}
         if request == "SetSceneItemEnabled":
             self.enabled[data["sceneItemId"]] = data["sceneItemEnabled"]
         if request == "SetMediaInputCursor":

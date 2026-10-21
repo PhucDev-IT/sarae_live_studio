@@ -26,7 +26,7 @@ from sarae_agent.errors import AgentError
 log = logging.getLogger("sarae.media")
 
 MAX_VIDEOS = 10_000  # Cloud /agent-library/sync limit
-VIDEO_SUFFIXES = (".mp4",)
+VIDEO_SUFFIXES = (".mp4", ".mov")
 INDEX_VERSION = 1
 THUMB_WIDTH = 320
 THUMB_MAX_BYTES = 40 * 1024  # Cloud limit for thumb_jpeg_base64
@@ -389,7 +389,7 @@ class MediaLibrary:
             raise AgentError("MEDIA_OUTSIDE_ALLOWED", "Video nằm ngoài các thư mục đã cho phép",
                              {"media_id": media_id})
         if resolved.suffix.lower() not in VIDEO_SUFFIXES:
-            raise AgentError("MEDIA_NOT_ALLOWED", "Chỉ phát file .mp4")
+            raise AgentError("MEDIA_NOT_ALLOWED", "Chỉ phát file .mp4 hoặc .mov")
         return resolved
 
     def filename(self, media_id: str) -> str | None:

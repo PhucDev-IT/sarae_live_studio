@@ -55,6 +55,13 @@ def test_scan_finds_mp4_only_with_stable_legacy_ids(library, events):
     assert any(name == "media.scan_finished" for name, _ in events.captured)
 
 
+def test_scan_accepts_mov_for_rotation_metadata(library):
+    lib, _, videos = library
+    make_videos(videos, ["portrait.mov"])
+    lib.scan_blocking()
+    assert lib.resolve(ids(lib)["portrait.mov"]).suffix == ".mov"
+
+
 def test_folder_validation(library, tmp_path):
     lib, _, videos = library
     with pytest.raises(AgentError) as exc:
@@ -163,7 +170,10 @@ def test_probe_budget_spreads_work_and_drops_stale_thumbs(home, tmp_path, events
 
 # --- playback: ported PlaybackEngine on the Core's OBS connection ------------------------------
 @pytest.fixture()
-def player(library, events):
+def player(library, events, monkeypatch):
+    from sarae_agent.playback import engine as playback_engine
+    monkeypatch.setattr(playback_engine, "probe_media", lambda path: type("Info", (), {"rotation": 0})())
+    monkeypatch.setattr(playback_engine, "obs_file", lambda path, info: path)
     lib, store, videos = library
     ws = FakeWs()
     connections = []

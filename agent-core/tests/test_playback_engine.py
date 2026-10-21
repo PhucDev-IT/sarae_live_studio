@@ -24,11 +24,13 @@ class FakeObs:
         self.scene_items = {name: i + 1 for i, name in enumerate(scene_items)}
         self.enabled = {}
         self.muted = {}
+        self.mute_history = []
         self.settings = {}
         self.media_state = {}
         self.cursor = {}
         self.duration = {}
         self.actions = []
+        self.transforms = {}
         self.cursor_calls = []
         self.fail = False
         self.base_client = SimpleNamespace(ws=SimpleNamespace(close=lambda: None))
@@ -53,9 +55,16 @@ class FakeObs:
     def get_scene_item_list(self, scene):
         return SimpleNamespace(scene_items=[{"sourceName": n} for n in self.scene_items])
 
+    def get_video_settings(self):
+        return SimpleNamespace(base_width=1080, base_height=1920)
+
+    def set_scene_item_transform(self, scene, item_id, transform):
+        self.transforms[item_id] = transform
+
     def get_input_list(self):
         names = list(self.scene_items) + ["Mic"]
-        return SimpleNamespace(inputs=[{"inputName": n, "inputKind": "ffmpeg_source" if n != "Mic" else "wasapi_input_capture"}
+        return SimpleNamespace(inputs=[{"inputName": n, "inputKind": "dshow_input" if n == "Camera" else
+                                 "ffmpeg_source" if n != "Mic" else "wasapi_input_capture"}
                                        for n in names])
 
     def get_media_input_status(self, name):
@@ -79,6 +88,10 @@ class FakeObs:
 
     def set_input_mute(self, name, muted):
         self.muted[name] = muted
+        self.mute_history.append(dict(self.muted))
+
+    def get_input_mute(self, name):
+        return SimpleNamespace(input_muted=self.muted.get(name, False))
 
     def set_scene_item_enabled(self, scene, item_id, enabled):
         self.enabled[item_id] = enabled
@@ -109,6 +122,12 @@ class EngineTestBase(unittest.TestCase):
         sleep = mock.patch.object(playback_engine.time, "sleep", lambda s: None)
         sleep.start()
         self.addCleanup(sleep.stop)
+        media_probe = mock.patch.object(playback_engine, "probe_media", return_value=SimpleNamespace(rotation=0))
+        media_probe.start()
+        self.addCleanup(media_probe.stop)
+        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info: path)
+        media_file.start()
+        self.addCleanup(media_file.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -131,6 +150,59 @@ class EngineTestBase(unittest.TestCase):
 
 
 class SingleSourceTests(EngineTestBase):
+    def test_camera_fallback_and_return_keep_session(self):
+        self.obs.scene_items["Camera"] = 2
+        self.obs.settings["Camera"] = {"video_device_id": "device-1"}
+        self.engine.config = self.engine.config.model_copy(update={"camera_input": "Camera"})
+        self.engine.store.save(self.engine.config)
+        self.engine.start_playlist(self.ids("pl1", "pl2"))
+        session = self.engine.session_started_at
+        self.assertEqual(self.engine.use_camera()["source_mode"], "camera")
+        self.assertTrue(self.engine.active)
+        self.assertFalse(self.obs.enabled[1])
+        self.assertTrue(self.obs.enabled[2])
+        self.assertTrue(self.obs.muted["Sarae Video"])
+        self.obs.media_state["Sarae Video"] = ENDED
+        self.engine.tick()
+        self.assertEqual(self.engine.index, 0)
+        self.assertEqual(self.engine.use_video()["source_mode"], "video")
+        self.assertTrue(self.obs.enabled[1])
+        self.assertFalse(self.obs.enabled[2])
+        self.assertFalse(self.obs.muted["Sarae Video"])
+        self.assertEqual(self.engine.session_started_at, session)
+
+    def test_camera_missing_keeps_video_visible(self):
+        self.engine.config = self.engine.config.model_copy(update={"camera_input": "Missing"})
+        self.engine.store.save(self.engine.config)
+        self.engine.start_playlist(self.ids("pl1"))
+        with self.assertRaises(PlaybackError):
+            self.engine.use_camera()
+        self.assertFalse(self.engine.camera_mode)
+        self.assertFalse(self.obs.muted.get("Sarae Video", False))
+
+    def test_camera_without_device_keeps_video_visible(self):
+        self.obs.scene_items["Camera"] = 2
+        self.engine.config = self.engine.config.model_copy(update={"camera_input": "Camera"})
+        self.engine.store.save(self.engine.config)
+        self.engine.start_playlist(self.ids("pl1"))
+        with self.assertRaises(PlaybackError):
+            self.engine.use_camera()
+        self.assertFalse(self.engine.camera_mode)
+        self.assertFalse(self.obs.muted["Sarae Video"])
+
+    def test_stop_on_camera_then_restart_video(self):
+        self.obs.scene_items["Camera"] = 2
+        self.obs.settings["Camera"] = {"video_device_id": "device-1"}
+        self.engine.config = self.engine.config.model_copy(update={"camera_input": "Camera"})
+        self.engine.store.save(self.engine.config)
+        self.engine.start_playlist(self.ids("pl1"))
+        self.engine.use_camera()
+        self.engine.stop()
+        self.engine.start_playlist(self.ids("pl2"))
+        self.assertTrue(self.obs.enabled[1])
+        self.assertFalse(self.obs.enabled[2])
+        self.assertFalse(self.engine.camera_mode)
+
     def test_product_play_immediate_starts_and_switches(self):
         result = self.engine.product_play(7, 11, self.ids("p1a", "p1b"), "immediate")
         self.assertEqual(result["index"], 0)
@@ -139,6 +211,8 @@ class SingleSourceTests(EngineTestBase):
         self.assertEqual((status["session_mode"], status["session_id"], status["product_id"]), ("product", 7, 11))
         self.assertEqual(status["queue_ids"], self.ids("p1a", "p1b"))
         self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("p1a"))
+        self.assertEqual(self.obs.transforms[1]["boundsType"], "OBS_BOUNDS_SCALE_INNER")
+        self.assertEqual(self.obs.transforms[1]["rotation"], 0)
         self.engine.product_play(7, 12, self.ids("p2a"), "immediate")
         self.assertEqual(self.engine.product_id, 12)
         self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("p2a"))
@@ -254,7 +328,7 @@ class SingleSourceTests(EngineTestBase):
                     "count", "last_status", "retry_count", "error_count", "transition_count", "recovery_count",
                     "session_seconds", "session_id", "obs"):
             self.assertIn(key, status)
-        self.assertEqual(set(status["obs"]), {"host", "port", "input_name", "dual_mode", "dual_sources", "has_password"})
+        self.assertEqual(set(status["obs"]), {"host", "port", "input_name", "dual_mode", "dual_sources", "has_password", "camera_input"})
         self.obs.fail = True
         offline = self.engine.status()
         self.assertFalse(offline["connected"])
@@ -282,6 +356,14 @@ class SingleSourceTests(EngineTestBase):
 class DualModeTests(EngineTestBase):
     dual = True
 
+    def test_rapid_switches_never_unmute_both_video_sources(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        for _ in range(12):
+            self.engine.next()
+        a, b = "Sarae Video A", "Sarae Video B"
+        assert all(states.get(a, True) or states.get(b, True) for states in self.obs.mute_history)
+        self.assertEqual(self.engine.transition_count, 12)
+
     def test_dual_sources_stage_next_video_and_swap(self):
         self.engine.product_play(7, 11, self.ids("p1a", "p1b", "p1c"), "immediate")
         a, b = "Sarae Video A", "Sarae Video B"
@@ -305,9 +387,10 @@ class DualModeTests(EngineTestBase):
     def test_dual_after_current_switch_restages(self):
         self.engine.product_play(7, 11, self.ids("p1a", "p1b"), "immediate")
         self.engine.product_play(7, 12, self.ids("p2a", "p2b"), "after_current")
+        self.assertEqual(self.obs.settings["Sarae Video B"]["local_file"], self.path("p2a"))
         self.end_current()
         a, b = "Sarae Video A", "Sarae Video B"
-        # B held p1b; the switch must re-stage it with the new product's first video.
+        # B was already staged with the pending product before the current video ended.
         self.assertEqual(self.obs.settings[b]["local_file"], self.path("p2a"))
         self.assertEqual(self.obs.settings[a]["local_file"], self.path("p2b"))
         self.assertEqual(self.events[0]["type"], "PRODUCT_SWITCHED")

@@ -59,6 +59,12 @@ class PlaybackService:
     def set_loop(self, loop: bool) -> dict:
         return self._run(lambda: self.engine.set_loop(loop))
 
+    def use_camera(self) -> dict:
+        return self._run(self.engine.use_camera)
+
+    def use_video(self) -> dict:
+        return self._run(self.engine.use_video)
+
     # --- state ---------------------------------------------------------------------------
     def changed(self) -> None:
         """After a command or an engine event: persist the restart marker and notify the GUI."""

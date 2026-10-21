@@ -17,6 +17,7 @@ export function Settings() {
   const [dualMode, setDualMode] = useState(false)
   const [sourceA, setSourceA] = useState('')
   const [sourceB, setSourceB] = useState('')
+  const [cameraInput, setCameraInput] = useState('')
 
   useEffect(() => {
     if (!config) return
@@ -26,6 +27,7 @@ export function Settings() {
     setDualMode(config.obs.dual_mode)
     setSourceA(config.obs.source_a)
     setSourceB(config.obs.source_b)
+    setCameraInput(config.obs.camera_input ?? '')
   }, [config])
 
   if (!config || !agent) return null
@@ -59,8 +61,10 @@ export function Settings() {
           <Input value={sourceA} onChange={(e) => setSourceA(e.target.value)} placeholder={mediaInput + ' A'} />
           <Input value={sourceB} onChange={(e) => setSourceB(e.target.value)} placeholder={mediaInput + ' B'} />
         </div>}
+        <h4>Camera dự phòng (Video Capture Device trong cùng scene)</h4>
+        <Input value={cameraInput} onChange={(e) => setCameraInput(e.target.value)} placeholder="Tên nguồn camera trong OBS" />
         <ActionButton disabled={!host.trim() || !mediaInput.trim() || (dualMode && (sourceA.trim() || mediaInput.trim() + ' A') === (sourceB.trim() || mediaInput.trim() + ' B'))} onAction={async () => {
-          await setConfig({ obs: { host: host.trim(), port, media_input: mediaInput.trim(), dual_mode: dualMode, source_a: sourceA.trim(), source_b: sourceB.trim() }, ...(password ? { obs_password: password } : {}) })
+          await setConfig({ obs: { host: host.trim(), port, media_input: mediaInput.trim(), dual_mode: dualMode, source_a: sourceA.trim(), source_b: sourceB.trim(), camera_input: cameraInput.trim() }, ...(password ? { obs_password: password } : {}) })
           setPassword('')
           await run(() => call('obs.connect'), 'Đã kết nối OBS')
           await refresh()
