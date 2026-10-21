@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
-  Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, PasswordInput, SearchInput, Select, Switch, useToast,
+  Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, SearchInput, Select, useToast,
 } from './ui/core'
 import {
-  CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
+  CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, Settings2, SkipBack, SkipForward,
   MonitorPlay, Square, Undo2, Wifi, WifiOff,
 } from 'lucide-react'
 import { agentAction, apiRequest, durationLabel, errorText, listVideos, onAgent, type Media, type OwnerAgent } from './mediaApi'
@@ -14,8 +14,6 @@ import './media.css'
 import './live-control.css'
 
 type ObsSettings = { host:string; port:number; input_name:string; dual_mode:boolean; dual_sources?:string[]; has_password:boolean }
-type ObsInput = { name:string; kind:string; in_scene:boolean }
-type ObsInputs = { scene:string; inputs:ObsInput[] }
 type LiveStatus = {
   connected:boolean; error?:string; obs_version?:string; media_state?:string; media_cursor?:number|null; media_duration?:number|null
   running:boolean; paused?:boolean; loop?:boolean; session_mode?:string; playlist_id:number|null; product_id?:number|null; pending_product_id?:number|null; session_id?:number|null
@@ -68,9 +66,6 @@ function Console({agent}:{agent:OwnerAgent}){
   const [confirmStop,setConfirmStop] = useState(false)
 
   const [obsOpen,setObsOpen] = useState(false)
-  const [obsForm,setObsForm] = useState({host:'127.0.0.1', port:'4455', password:'', input_name:'Sarae Video', dual_mode:false, source_a:'', source_b:''})
-  const [obsInputs,setObsInputs] = useState<ObsInputs|null>(null)
-  const [inputsLoading,setInputsLoading] = useState(false)
   const [playlistId,setPlaylistId] = useState('')
 
   const applyStatus = (next:LiveStatus) => {setStatus(next);setReceivedAt(Date.now())}
@@ -185,40 +180,7 @@ function Console({agent}:{agent:OwnerAgent}){
     return ()=>window.removeEventListener('keydown', onKey)
   })
 
-  const openObs = () => {
-    const obs = status?.obs
-    if (obs) setObsForm(f=>({...f, host:obs.host, port:String(obs.port), input_name:obs.input_name, dual_mode:obs.dual_mode, source_a:obs.dual_sources?.[0] ?? '', source_b:obs.dual_sources?.[1] ?? ''}))
-    setObsOpen(true)
-  }
-  /** Reads the real input names from OBS with the connection typed in the form (empty password = the saved one). */
-  const loadObsInputs = async () => {
-    setInputsLoading(true)
-    try{setObsInputs(await apiRequest<ObsInputs>(onAgent('/live/obs/inputs', agentId), post({host:obsForm.host, port:Number(obsForm.port), password:obsForm.password})))}
-    catch(e){setObsInputs(null);toast.push({tone:'danger',title:'Không đọc được source từ OBS',description:errorText(e, '')})}
-    finally{setInputsLoading(false)}
-  }
-  const sameAB = obsForm.dual_mode && (obsForm.source_a.trim() || obsForm.input_name + ' A') === (obsForm.source_b.trim() || obsForm.input_name + ' B')
-  /** Hint under a source-name field telling whether OBS actually has that input in the live scene. */
-  const sourceHint = (name:string, fallback?:string) => {
-    const value = name.trim() || fallback || ''
-    if (!obsInputs) return fallback && !name.trim() ? `Để trống sẽ dùng “${fallback}”. Bấm “Lấy danh sách từ OBS” để chọn tên có sẵn.` : 'Bấm “Lấy danh sách từ OBS” để kiểm tra tên.'
-    const found = obsInputs.inputs.find(i=>i.name === value)
-    if (!found) return `⚠ OBS không có source “${value}”.`
-    if (!found.in_scene) return `⚠ “${value}” có trong OBS nhưng chưa nằm trong scene “${obsInputs.scene}”.`
-    return `✓ Có trong scene “${obsInputs.scene}”${found.kind === 'ffmpeg_source' ? '' : ` (loại ${found.kind}, nên dùng Media Source)`}.`
-  }
-  const saveObs = async (event:FormEvent) => {
-    event.preventDefault()
-    if (sameAB) return
-    setBusy(true)
-    try{
-      const result = await apiRequest<LiveStatus>(onAgent('/live/config', agentId), post({...obsForm, port:Number(obsForm.port)}))
-      applyStatus(result)
-      if (result.connected) {setObsOpen(false);toast.push({tone:'success',title:'Đã kết nối OBS',description:result.obs_version ? 'OBS ' + result.obs_version : undefined})}
-      else toast.push({tone:'danger',title:'Chưa kết nối được OBS',description:result.error})
-    }catch(e){toast.push({tone:'danger',title:'Không lưu được cấu hình',description:errorText(e, '')})}
-    finally{setBusy(false)}
-  }
+  const openObs = () => setObsOpen(true)
 
   const onAir = running && !status?.paused
 
@@ -245,7 +207,7 @@ function Console({agent}:{agent:OwnerAgent}){
         <Metric icon={<FastForward size={15}/>} label="Lần chuyển video" value={status?.transition_count ?? 0}/>
         <Metric icon={<CircleAlert size={15}/>} label="Lỗi / phục hồi" value={`${status?.error_count ?? 0} / ${status?.recovery_count ?? 0}`} warn={(status?.error_count ?? 0) > 0}/>
       </div>
-      <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs} title="Cấu hình kết nối OBS">
+      <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs} title="Xem trạng thái OBS và nơi cấu hình">
         {status?.connected ? <Wifi size={16}/> : <WifiOff size={16}/>}
         <span><strong>{status?.connected ? `OBS ${status.obs_version ?? ''}` : 'OBS chưa kết nối'}</strong><small>{status?.obs?.dual_mode ? `A/B: ${status.obs.dual_sources?.join(' · ') ?? ''}` : status?.obs?.input_name ?? 'Sarae Video'}</small></span>
         <Settings2 size={15}/>
@@ -255,7 +217,7 @@ function Console({agent}:{agent:OwnerAgent}){
     {status && !status.connected && <Alert tone="danger" title="OBS chưa kết nối">
       <div className="lc-alert">
         <span>{status.error || 'Không kết nối được OBS WebSocket.'}</span>
-        <Button size="sm" variant="outline" onClick={openObs}>Cấu hình kết nối</Button>
+        <Button size="sm" variant="outline" onClick={openObs}>Xem hướng dẫn</Button>
       </div>
     </Alert>}
 
@@ -382,36 +344,15 @@ function Console({agent}:{agent:OwnerAgent}){
     </Collapse>
     <p className="lc-disclaimer">Bản thử nghiệm chỉ điều khiển Media Source trong OBS; không tự bật Start Streaming. Kiểm tra trên OBS Preview trước khi phát thật.</p>
 
-    <Modal open={obsOpen} title="Kết nối OBS" size="md" onClose={()=>{if(!busy)setObsOpen(false)}} footer={<>
-      <Button variant="ghost" disabled={busy} onClick={()=>setObsOpen(false)}>Hủy</Button>
-      <Button type="submit" form="lc-obs-form" loading={busy} disabled={sameAB}>Kết nối / kiểm tra</Button>
-    </>}>
-      <form id="lc-obs-form" className="media-form" onSubmit={event=>void saveObs(event)}>
-        <Alert tone="info" title="Chuẩn bị trong OBS">OBS → Tools → WebSocket Server Settings: bật server (port mặc định 4455). Tạo Media Source trong scene đang phát và tắt Loop; đặt tên tùy ý rồi chọn lại ở dưới.</Alert>
-        <div className="lc-form-row">
-          <Input label="Host" value={obsForm.host} onChange={e=>setObsForm(f=>({...f, host:e.target.value}))} hint="Chỉ hỗ trợ OBS trên cùng máy"/>
-          <Input label="Port" type="number" value={obsForm.port} onChange={e=>setObsForm(f=>({...f, port:e.target.value}))}/>
-        </div>
-        <PasswordInput label="Mật khẩu WebSocket" autoComplete="off" value={obsForm.password} onChange={e=>setObsForm(f=>({...f, password:e.target.value}))}
-          hint={status?.obs?.has_password ? 'Đã lưu mật khẩu trên Backend; để trống để giữ nguyên.' : 'Để trống nếu OBS không bật xác thực.'}/>
-
-        <div className="lc-sources">
-          <div className="lc-sources-head">
-            <span><strong>Media Source phát video</strong><small>{obsInputs ? `Scene đang phát: ${obsInputs.scene} · ${obsInputs.inputs.filter(i=>i.kind === 'ffmpeg_source').length} Media Source` : 'Nhập tên hoặc lấy danh sách từ OBS'}</small></span>
-            <Button type="button" size="sm" variant="outline" leftIcon={<RefreshCw size={14}/>} loading={inputsLoading} onClick={()=>void loadObsInputs()}>Lấy danh sách từ OBS</Button>
-          </div>
-          <datalist id="lc-obs-inputs">{obsInputs?.inputs.map(i=><option key={i.name} value={i.name}>{i.in_scene ? 'Trong scene' : 'Ngoài scene'} · {i.kind}</option>)}</datalist>
-          <Switch label="Phát A/B (2 source luân phiên, giảm nháy khi chuyển video)" checked={obsForm.dual_mode} onChange={e=>setObsForm(f=>({...f, dual_mode:e.target.checked}))}/>
-          {obsForm.dual_mode
-            ? <div className="lc-form-row lc-form-row--even">
-              <Input label="Source A" list="lc-obs-inputs" value={obsForm.source_a} placeholder={obsForm.input_name + ' A'} onChange={e=>setObsForm(f=>({...f, source_a:e.target.value}))} hint={sourceHint(obsForm.source_a, obsForm.input_name + ' A')}/>
-              <Input label="Source B" list="lc-obs-inputs" value={obsForm.source_b} placeholder={obsForm.input_name + ' B'} onChange={e=>setObsForm(f=>({...f, source_b:e.target.value}))} hint={sourceHint(obsForm.source_b, obsForm.input_name + ' B')}
-                error={sameAB ? 'Source B phải khác Source A' : undefined}/>
-            </div>
-            : <Input label="Tên Media Source" list="lc-obs-inputs" required value={obsForm.input_name} onChange={e=>setObsForm(f=>({...f, input_name:e.target.value}))} hint={sourceHint(obsForm.input_name)}/>}
-        </div>
-        {running && <Alert tone="warning">Lưu cấu hình sẽ ngắt phiên phát hiện tại.</Alert>}
-      </form>
+    <Modal open={obsOpen} title="Trạng thái OBS" size="md" onClose={()=>setObsOpen(false)} footer={<Button onClick={()=>setObsOpen(false)}>Đóng</Button>}>
+      <div className="media-form">
+        <Alert tone="info" title="Kết nối OBS được quản lý tại Windows Agent">
+          Trên máy <strong>{agent.hostname}</strong>, mở Sarae Windows Agent → Cài đặt → OBS WebSocket để nhập Host, Port và mật khẩu rồi chọn “Lưu & kết nối”. Sarae Web chỉ theo dõi trạng thái và gửi lệnh điều khiển LIVE.
+        </Alert>
+        <p><strong>Trạng thái:</strong> {offline ? 'Agent offline' : status?.connected ? 'Đã kết nối OBS' : 'OBS chưa kết nối'}</p>
+        {status?.obs && <p><strong>Media Source:</strong> {status.obs.dual_mode ? status.obs.dual_sources?.join(' · ') || 'A/B' : status.obs.input_name}</p>}
+        {status?.error && <p className="muted small selectable">{status.error}</p>}
+      </div>
     </Modal>
 
     <ConfirmModal open={confirmStop} loading={busy}
