@@ -16,7 +16,6 @@ from app.verification_monitor import router as verification_monitor_router
 from app.cloud_agents import router as cloud_agents_router
 from app.identity import router as identity_router
 from app.agent_library import router as agent_library_router
-from app.agent_playlists import router as agent_playlists_router
 from app.owner_agents import router as owner_agents_router
 from app.captcha_templates import router as captcha_templates_router
 from app.tiktok_products import router as tiktok_products_router
@@ -49,7 +48,7 @@ async def saas_legacy_guard(request, call_next):
     """
     from fastapi.responses import JSONResponse
     path=request.url.path
-    safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/agent-playlists", "/api/owner",
+    safe=("/api/identity", "/api/agents", "/api/agent-library", "/api/owner",
           "/api/android-agents",
           "/api/products", "/api/presenters", "/api/product-videos", "/api/presenter-videos",
           "/api/media", "/api/live", "/api/tiktok-chat", "/api/ai", "/api/verification-monitor",
@@ -84,7 +83,6 @@ app.include_router(verification_monitor_router)
 app.include_router(cloud_agents_router)
 app.include_router(identity_router)
 app.include_router(agent_library_router)
-app.include_router(agent_playlists_router)
 app.include_router(owner_agents_router)
 app.include_router(captcha_templates_router)
 
