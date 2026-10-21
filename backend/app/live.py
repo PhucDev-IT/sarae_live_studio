@@ -140,6 +140,26 @@ def stop_video(owner: Owner, agent_id: AgentId, idempotency_key: str | None = Id
     return control(owner, agent_id, "playback_stop", idempotency_key=idempotency_key)
 
 
+@router.get("/catalog-products")
+def catalog_products(owner: Owner):
+    """Owner catalog independent of Windows Agent, for drafting future LIVE sessions.
+
+    Counts are existing video links across owned Agents; the selected Agent must
+    still verify availability at start. No cross-owner catalog exposure.
+    """
+    from app.product_videos import ProductLiveVideo
+    from app.media_access import public_url
+    with SessionLocal() as db:
+        products=db.scalars(select(Product).where(Product.owner_id==owner["id"]).order_by(Product.id)).all()
+        links=db.scalars(select(ProductLiveVideo).where(ProductLiveVideo.owner_id==owner["id"])).all()
+        grouped={}
+        for link in links:
+            grouped.setdefault(link.product_id,set()).add(link.media_id)
+        return [{"id":p.id,"shop_id":p.shop_id,"name":p.name,"sku":p.sku,
+                 "image_url":public_url(p.image_url,p.owner_id),"status":p.status,
+                 "price":p.price,"video_count":len(grouped.get(p.id,set()))} for p in products]
+
+
 @router.get("/products")
 def available_products(owner: Owner, agent_id: AgentId):
     """The owner's products with how many LIVE videos each has on that Agent (products are shared by all Agents)."""
