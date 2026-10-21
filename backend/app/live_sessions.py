@@ -1,4 +1,5 @@
 """Operator-managed LIVE sessions, product queues and history (Phase 1)."""
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -176,8 +177,7 @@ def in_flight(session_id: int, agent_id: str, kind: str = "product_play"):
 
 
 def play_product(db, owner, agent, item, product_id: int, mode: str, action: str, idempotency_key: str | None):
-    """Create the product_play command for the session's Agent and wait briefly; its outcome is applied by
-    apply_command_outcome (here if the Agent answers in time, otherwise when it does)."""
+    """Play a product on its Agent, refreshing a stale video index once if the Agent rejects every file."""
     from app.cloud_agents import run_command
     from app.media import product_media
     busy = in_flight(item.id, agent["id"])
@@ -186,11 +186,38 @@ def play_product(db, owner, agent, item, product_id: int, mode: str, action: str
     media_ids = product_media(db, owner["id"], agent["id"], product_id)
     if not media_ids:
         raise HTTPException(409, f"Sản phẩm chưa có video trên máy “{agent['hostname']}”")
-    return run_command(agent["id"], owner["id"], "product_play",
-                       {"session_id": item.id, "product_id": product_id, "media_ids": media_ids, "mode": mode},
+    payload = {"session_id": item.id, "product_id": product_id, "media_ids": media_ids, "mode": mode}
+    context = {"module": "live_sessions", "action": action, "session_id": item.id,
+               "product_id": product_id, "mode": mode}
+    view = run_command(agent["id"], owner["id"], "product_play", payload,
                        wait=LIVE_WAIT_SECONDS, idempotency_key=idempotency_key, session_id=item.id,
-                       context={"module": "live_sessions", "action": action, "session_id": item.id,
-                                "product_id": product_id, "mode": mode})
+                       context=context)
+    stale_index_error = f"Sản phẩm #{product_id} chưa có video hợp lệ"
+    if view.get("status") != "FAILED" or view.get("error") != stale_index_error:
+        return view
+
+    # The Cloud inventory is a recent Agent sync; a file can disappear or the local index can lag behind it.
+    # Rescan only after the Agent reports this exact stale-index error, then retry the playback once with the
+    # refreshed available media IDs. Stable derived keys make a retried HTTP request safe after a lost response.
+    action_identity = idempotency_key or view["command_id"]
+    rescan_key = hashlib.sha256(f"live-media-rescan:{action_identity}".encode()).hexdigest()
+    refreshed = run_command(agent["id"], owner["id"], "media_rescan", {}, wait=120,
+                            idempotency_key=rescan_key)
+    if refreshed.get("status") != "SUCCESS":
+        reason = refreshed.get("error") or refreshed.get("status", "Agent chưa phản hồi")
+        raise HTTPException(502, f"Không phát được video và chưa quét lại thư viện Agent được: {reason}")
+
+    db.expire_all()
+    media_ids = product_media(db, owner["id"], agent["id"], product_id)
+    if not media_ids:
+        raise HTTPException(409, f"Video của sản phẩm #{product_id} không còn khả dụng trên máy “{agent['hostname']}”. "
+                                  "Đã quét lại thư viện; hãy kiểm tra thư mục video và chọn lại video cho sản phẩm.")
+
+    retry_key = hashlib.sha256(f"live-product-retry:{action_identity}".encode()).hexdigest()
+    payload["media_ids"] = media_ids
+    return run_command(agent["id"], owner["id"], "product_play", payload,
+                       wait=LIVE_WAIT_SECONDS, idempotency_key=retry_key, session_id=item.id,
+                       context=context)
 
 
 def apply_command_outcome(command: dict, context: dict):

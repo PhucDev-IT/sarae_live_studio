@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
-  Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Input, Kbd, Modal, SearchInput, Select, useToast,
+  Alert, Badge, Button, Card, Collapse, ConfirmModal, EmptyState, Kbd, Modal, SearchInput, Select, useToast,
 } from './ui/core'
 import {
   CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,

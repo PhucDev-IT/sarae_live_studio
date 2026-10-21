@@ -7,8 +7,10 @@ simulated Agent (support.run_agent) then claims and acks through the real endpoi
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from app.catalog import Product
-from app.live_sessions import LiveSession
+from app.live_sessions import LiveSession, play_product
 from support import SaasTestCase
 
 
@@ -86,6 +88,53 @@ class LiveSessionTests(SaasTestCase):
         events = self.client.get(f"/api/live/sessions/{sid}/events").json()
         self.assertEqual(events[-1]["event_type"], "START_FAILED")
         self.assertIn("OBS chưa kết nối", events[-1]["detail"])
+
+    def test_stale_agent_video_index_rescans_then_retries_product_play(self):
+        sid = self.create((1,))
+        product_commands = []
+
+        def command(agent_id, owner_id, kind, payload=None, **options):
+            if kind == "media_rescan":
+                return {"status": "SUCCESS", "result": {"count": 1}}
+            product_commands.append((payload, options))
+            if len(product_commands) == 1:
+                return {"status": "FAILED", "command_id": "first", "error": "Sản phẩm #1 chưa có video hợp lệ"}
+            return {"status": "SUCCESS", "command_id": "retry", "result": {"ok": True}}
+
+        with self.Session() as db, patch("app.cloud_agents.run_command", side_effect=command):
+            item = db.get(LiveSession, sid)
+            result = play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"},
+                                  item, 1, "immediate", "start", "click-1")
+
+        self.assertEqual(result["command_id"], "retry")
+        self.assertEqual([payload["media_ids"] for payload, _ in product_commands], [[self.ao], [self.ao]])
+        self.assertNotEqual(product_commands[0][1]["idempotency_key"], product_commands[1][1]["idempotency_key"])
+
+    def test_stale_agent_video_index_reports_when_rescan_finds_no_file(self):
+        from app.agent_library import connection
+
+        sid = self.create((1,))
+        calls = []
+
+        def command(agent_id, owner_id, kind, payload=None, **options):
+            calls.append(kind)
+            if kind == "media_rescan":
+                with connection() as library_db:
+                    library_db.execute("UPDATE agent_media SET available=0 WHERE agent_id=?", (agent_id,))
+                    library_db.commit()
+                return {"status": "SUCCESS", "result": {"count": 0}}
+            return {"status": "FAILED", "command_id": "first", "error": "Sản phẩm #1 chưa có video hợp lệ"}
+
+        with self.Session() as db:
+            item = db.get(LiveSession, sid)
+            with patch("app.cloud_agents.run_command", side_effect=command):
+                with self.assertRaises(HTTPException) as raised:
+                    play_product(db, self.owner_a, {"id": self.agent["agent_id"], "hostname": "PC-A"},
+                                 item, 1, "immediate", "start", "click-2")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Đã quét lại thư viện", raised.exception.detail)
+        self.assertEqual(calls, ["product_play", "media_rescan"])
 
     def test_double_click_never_starts_twice(self):
         sid = self.create()
