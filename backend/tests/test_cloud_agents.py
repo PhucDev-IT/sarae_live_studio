@@ -15,6 +15,9 @@ from unittest.mock import patch
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app import agent_library, cloud_agents, identity
 
@@ -30,6 +33,16 @@ class AgentChannelBase(unittest.TestCase):
         cloud_agents.DB = root / "agents.sqlite3"
         agent_library.DB = root / "agent_library.sqlite3"
         agent_library.THUMB_DIR = root / "media_thumbs"
+        # Heartbeats reconcile LIVE sessions and their locks: give them an in-memory customer DB with the full schema
+        # (never the developer's real database).
+        import app.live_sessions  # noqa: F401  (registers the session models)
+        from app.database import Base
+        from app.shop_schema import upgrade
+        self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(bind=self.engine)
+        upgrade(self.engine)
+        self.session_patch = patch("app.live_sessions.SessionLocal", sessionmaker(bind=self.engine))
+        self.session_patch.start()
         identity.bootstrap_admin("admin@example.test", "AdminSecretPassword123!")
         self.admin = admin = "Bearer " + identity.login(identity.Login(
             email="admin@example.test", password="AdminSecretPassword123!"))["access_token"]
@@ -50,6 +63,8 @@ class AgentChannelBase(unittest.TestCase):
 
     def tearDown(self):
         identity.DB, cloud_agents.DB, agent_library.DB, agent_library.THUMB_DIR = self.saved
+        self.session_patch.stop()
+        self.engine.dispose()
         self.client.close()
         self.tmp.cleanup()
 
