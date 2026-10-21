@@ -29,7 +29,6 @@ export default function LiveSessions(){
   const {agents:allAgents, agentId:tabAgentId} = useAgent()
   const agents = useMemo(()=>allAgents.filter(agent=>agent.platform !== 'ANDROID'),[allAgents])
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
-  const [createAgent,setCreateAgent] = useState('')
   const [createShop,setCreateShop] = useState('')
   const [legacyShop,setLegacyShop] = useState('')
   const [shops,setShops] = useState<Array<{id:number;user_id:string;user_name:string;nick_name:string;user_type:number|null}>>([])
@@ -93,7 +92,7 @@ export default function LiveSessions(){
   const editable = !!chosen && chosen.status !== 'ENDED'
   const owner = chosen?.status === 'RUNNING' && !!status?.running && status?.session_id === chosen.id
   // Several Agents can be LIVE at once; each RUNNING session is checked against its own Agent's last heartbeat.
-  const playingOnAgent = (s:LiveSession) => {const a = agentById.get(s.agent_id);return !!a?.playing && a.session_id === s.id}
+  const playingOnAgent = (s:LiveSession) => {const a = agentById.get(s.agent_id ?? '');return !!a?.playing && a.session_id === s.id}
   const stale = sessions.filter(s=>s.status === 'RUNNING' && !playingOnAgent(s))
   const live = sessions.filter(s=>s.status === 'RUNNING' && playingOnAgent(s))
   const agentName = (id:string|null) => id ? agentById.get(id)?.hostname ?? 'Agent đã thu hồi' : 'Chưa chọn Agent'
@@ -104,7 +103,7 @@ export default function LiveSessions(){
 
   /** A RUNNING session resumes only on its own Agent, when that Agent is online, has OBS and plays nothing else. */
   const resumeBlock = (s:LiveSession) => {
-    const a = agentById.get(s.agent_id)
+    const a = agentById.get(s.agent_id ?? '')
     return !a ? 'Agent của phiên đã bị thu hồi' : !a.online ? `${a.hostname} đang offline` : a.playing ? `${a.hostname} đang phát nội dung khác`
       : !a.obs_connected ? `OBS trên ${a.hostname} chưa kết nối` : undefined
   }
@@ -326,7 +325,7 @@ export default function LiveSessions(){
                 <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : 'Gán video'}</a></>}</span>
               </li>)}</ul>
               {false && agents.length > 1 && <div className="ls-move-agent">
-                <Select label="Phát trên máy" value={chosen.agent_id} disabled={busy || dirty}
+                <Select label="Phát trên máy" value={chosen.agent_id ?? ''} disabled={busy || dirty}
                   options={agents.map(a=>({value:a.id, label:`${a.hostname}${a.online ? '' : ' (offline)'}`}))}
                   onChange={value=>{if (value && value !== chosen.agent_id) void run(()=>sessionsApi.moveToAgent(chosen.id, value), 'Đã chuyển phiên sang máy khác')}}/>
                 <small>Chỉ đổi được khi phiên chưa bắt đầu. Video gán cho sản phẩm là riêng của từng máy.</small>
