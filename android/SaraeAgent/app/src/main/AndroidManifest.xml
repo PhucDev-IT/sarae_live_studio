@@ -22,6 +22,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <receiver
+            android:name=".VcamInjectionStatusReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="co.sarae.agent.action.VCAM_INJECTION_STATUS" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".AndroidAgentService"
             android:exported="false"

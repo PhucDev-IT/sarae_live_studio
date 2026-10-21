@@ -20,3 +20,11 @@
 
 # Device-test binaries, logs, screenshots, and local credentials
 /test-results/
+/SaraeAgent/test-results/
+
+# Video fixtures/recordings stay local (large binaries); app launcher icons are kept
+*.mp4
+*.mov
+*.mkv
+*.webm
+**/ic_launcher-playstore.png

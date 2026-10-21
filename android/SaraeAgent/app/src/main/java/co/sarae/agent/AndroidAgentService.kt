@@ -15,9 +15,15 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class AndroidAgentService : Service() {
     private val executor = Executors.newScheduledThreadPool(3)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var socket: WebSocket? = null
     private var api: AgentApi? = null
     private var reconnectDelay = 1L
@@ -29,17 +35,20 @@ class AndroidAgentService : Service() {
         when (intent?.action) {
             ACTION_STOP -> { socket?.close(1000, "stop"); executor.shutdownNow(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY }
         }
-        val config = AgentConfigStore(this).load() ?: run { stopSelf(); return START_NOT_STICKY }
-        api = AgentApi(config, AgentApi.clientFor(this))
-        connect()
-        if (!workersStarted) {
-            workersStarted = true
-            executor.scheduleWithFixedDelay({ runtime.tick() }, 0, 500, TimeUnit.MILLISECONDS)
-            executor.scheduleWithFixedDelay({ runCatching { api?.heartbeat(runtime.current().json()) }
-                .onFailure { Log.w(TAG, "Heartbeat failed", it); update("Heartbeat lỗi: ${it.message?.take(60)}") } }, 0, 5, TimeUnit.SECONDS)
-            executor.scheduleWithFixedDelay({ runCatching { api?.syncVideos(this).orEmpty() }
-                .onSuccess { Log.i(TAG, "Sync complete: ${it.size} video") }
-                .onFailure { Log.w(TAG, "Video sync failed", it); api?.reportError("Video sync failed: ${it.message}") } }, 0, 60, TimeUnit.SECONDS)
+        serviceScope.launch {
+            val config = AgentConfigStore(this@AndroidAgentService).load()
+            if (config == null) { stopSelf(); return@launch }
+            api = AgentApi(config, AgentApi.clientFor(this@AndroidAgentService))
+            connect()
+            if (!workersStarted) {
+                workersStarted = true
+                executor.scheduleWithFixedDelay({ runtime.tick() }, 0, 500, TimeUnit.MILLISECONDS)
+                executor.scheduleWithFixedDelay({ runCatching { api?.heartbeat(runtime.current().json()) }
+                    .onFailure { Log.w(TAG, "Heartbeat failed", it); update("Heartbeat lỗi: ${it.message?.take(60)}") } }, 0, 5, TimeUnit.SECONDS)
+                executor.scheduleWithFixedDelay({ runCatching { api?.syncVideos(this@AndroidAgentService).orEmpty() }
+                    .onSuccess { Log.i(TAG, "Sync complete: ${it.size} video") }
+                    .onFailure { Log.w(TAG, "Video sync failed", it); api?.reportError("Video sync failed: ${it.message}") } }, 0, 60, TimeUnit.SECONDS)
+            }
         }
         return START_STICKY
     }
@@ -113,6 +122,6 @@ class AndroidAgentService : Service() {
         .setContentText(text).setOngoing(true).build()
     private fun update(text: String) { runCatching { getSystemService(NotificationManager::class.java).notify(7, notification(text)) } }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { socket?.close(1000, "service destroyed"); executor.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() { socket?.close(1000, "service destroyed"); serviceScope.cancel(); executor.shutdownNow(); super.onDestroy() }
     companion object { const val ACTION_STOP = "co.sarae.agent.STOP"; private const val CHANNEL = "sarae-agent"; private const val TAG = "SaraeAgent" }
 }

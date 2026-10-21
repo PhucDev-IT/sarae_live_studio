@@ -119,7 +119,9 @@ class AgentApi(val config: AgentConfig, private val client: OkHttpClient = defau
             val builder = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
                 .pingInterval(20, TimeUnit.SECONDS)
             if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return builder.build()
-            val caStream = runCatching { context.resources.openRawResource(co.sarae.agent.R.raw.sarae_test_ca) }.getOrNull()
+            val debugCaResourceId = context.resources.getIdentifier("sarae_test_ca", "raw", context.packageName)
+            if (debugCaResourceId == 0) return builder.build()
+            val caStream = runCatching { context.resources.openRawResource(debugCaResourceId) }.getOrNull()
                 ?: return builder.build()
             caStream.use { input ->
                 val testCa = CertificateFactory.getInstance("X.509").generateCertificate(input) as X509Certificate

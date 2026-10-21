@@ -18,39 +18,65 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import co.uns.vcammanager.VcamManagerScreen
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); maybeAskNotification(); setContent { SaraeAgentScreen() } }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); maybeAskNotification(); setContent { SaraeAgentNavigation() } }
     private fun maybeAskNotification() {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 
+@Composable
+private fun SaraeAgentNavigation() {
+    val navController = rememberNavController()
+    NavHost(navController = navController, startDestination = "agent") {
+        composable("agent") { SaraeAgentScreen(onOpenVcam = { navController.navigate("vcam") }) }
+        composable("vcam") { VcamManagerScreen(onBack = { navController.popBackStack() }) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun SaraeAgentScreen() {
+@Composable private fun SaraeAgentScreen(onOpenVcam: () -> Unit) {
     val context = LocalContext.current
-    val store = remember { AgentConfigStore(context) }
-    val runtime = remember { AgentRuntime.get(context) }
+    val agentModel: AgentViewModel = viewModel()
+    val playbackModel: PlaybackViewModel = viewModel()
+    val runtime = playbackModel.runtime
     val scope = rememberCoroutineScope()
-    var config by remember { mutableStateOf(store.load()) }
+    val config by agentModel.config.collectAsStateWithLifecycle()
+    val status by agentModel.status.collectAsStateWithLifecycle()
+    val busy by agentModel.busy.collectAsStateWithLifecycle()
     var apiUrl by remember { mutableStateOf(config?.apiUrl ?: "https://") }
     var activation by remember { mutableStateOf("") }
     var hostname by remember { mutableStateOf(Build.MODEL) }
     var videos by remember { mutableStateOf(runtime.videos()) }
-    var snapshot by remember { mutableStateOf(runtime.current()) }
-    var status by remember { mutableStateOf(if (config == null) "Chưa đăng ký" else "Đã đăng ký") }
-    var busy by remember { mutableStateOf(false) }
+    val snapshot by playbackModel.snapshot.collectAsStateWithLifecycle()
     var vcamStatus by remember { mutableStateOf("Chưa áp dụng nguồn VCAM từ Android Agent.") }
-    DisposableEffect(runtime) { val observer: (PlaybackSnapshot) -> Unit = { snapshot = it }; runtime.observe(observer); onDispose { runtime.remove(observer) } }
+    var vcamBusy by remember { mutableStateOf(false) }
+    var requestedCameraMode by remember { mutableStateOf(VcamModeController.requestedMode()) }
+    var injectionStatus by remember { mutableStateOf(VcamModeController.injectionStatus(context)) }
+
+    LaunchedEffect(context) {
+        while (true) {
+            injectionStatus = VcamModeController.injectionStatus(context)
+            delay(1_000)
+        }
+    }
 
     MaterialTheme {
         Scaffold(topBar = { TopAppBar(title = { Text("Sarae Android Agent V1") }) }) { padding ->
@@ -62,20 +88,12 @@ class MainActivity : ComponentActivity() {
                     if (config == null) OutlinedTextField(activation, { activation = it }, label = { Text("Mã kích hoạt") }, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(enabled = !busy && config == null && activation.isNotBlank(), onClick = {
-                            busy = true; status = "Đang kích hoạt…"
-                            scope.launch(Dispatchers.IO) {
-                                val result = runCatching { AgentApi.activate(apiUrl, activation, hostname, AgentApi.clientFor(context)) }
-                                launch(Dispatchers.Main) {
-                                    result.onSuccess { store.save(it); config = it; status = "Đã kích hoạt · ${it.agentId}" }
-                                        .onFailure { status = "Kích hoạt lỗi: ${it.message}" }
-                                    busy = false
-                                }
-                            }
+                            agentModel.activate(apiUrl, activation, hostname)
                         }) { Text("Kích hoạt Android Agent") }
                         if (config != null) {
-                            Button(onClick = { ContextCompat.startForegroundService(context, Intent(context, AndroidAgentService::class.java)); status = "Agent đang chạy nền" }) { Text("Kết nối") }
-                            OutlinedButton(onClick = { context.startService(Intent(context, AndroidAgentService::class.java).setAction(AndroidAgentService.ACTION_STOP)); status = "Đã dừng kết nối" }) { Text("Ngắt") }
-                            OutlinedButton(onClick = { store.clear(); config = null; status = "Đã xóa đăng ký trên máy" }) { Text("Xóa đăng ký") }
+                            Button(onClick = { ContextCompat.startForegroundService(context, Intent(context, AndroidAgentService::class.java)); agentModel.setStatus("Agent đang chạy nền") }) { Text("Kết nối") }
+                            OutlinedButton(onClick = { context.startService(Intent(context, AndroidAgentService::class.java).setAction(AndroidAgentService.ACTION_STOP)); agentModel.setStatus("Đã dừng kết nối") }) { Text("Ngắt") }
+                            OutlinedButton(onClick = { agentModel.clearRegistration() }) { Text("Xóa đăng ký") }
                         }
                     }
                 }
@@ -98,16 +116,57 @@ class MainActivity : ComponentActivity() {
                         OutlinedButton(onClick = { runtime.stop() }) { Text("Dừng") }
                     }
                 }
-                item { Button(onClick = {
-                    busy = true
-                    scope.launch(Dispatchers.IO) {
-                        val result = runCatching { config?.let { AgentApi(it, AgentApi.clientFor(context)).syncVideos(context) }.orEmpty() }
-                        launch(Dispatchers.Main) { result.onSuccess { videos = it; status = "Đã đồng bộ ${it.size} video" }.onFailure { status = "Đồng bộ lỗi: ${it.message}" }; busy = false }
-                    }
-                }, enabled = config != null && !busy) { Text(if (busy) "Đang xử lý…" else "Đồng bộ video từ backend") } }
+                item {
+                    Button(
+                        onClick = {
+                            agentModel.syncVideos { result -> result.onSuccess { videos = it } }
+                        },
+                        enabled = config != null && !busy
+                    ) { Text(if (busy) "Đang xử lý…" else "Đồng bộ video từ backend") }
+                }
                 item {
                     HorizontalDivider()
                     Text("Nguồn VCAM", style = MaterialTheme.typography.titleMedium)
+                    Text("TikTok pre-LIVE · yêu cầu: ${requestedCameraMode.name}", style = MaterialTheme.typography.bodyMedium)
+                    Text(injectionStatus, style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            enabled = !vcamBusy && VcamPlaylistBridge.canWriteSharedFolder(),
+                            onClick = {
+                                vcamBusy = true
+                                scope.launch(Dispatchers.IO) {
+                                    val result = runCatching { VcamModeController.writeRequestedMode(CameraSourceMode.REAL_CAMERA) }
+                                    launch(Dispatchers.Main) {
+                                        result.onSuccess {
+                                            requestedCameraMode = CameraSourceMode.REAL_CAMERA
+                                            vcamStatus = "REAL_CAMERA requested. TikTok preview sluiten en opnieuw openen voor veilige toepassing."
+                                        }.onFailure { vcamStatus = "Mode niet op te slaan: ${it.message}" }
+                                        vcamBusy = false
+                                    }
+                                }
+                            }
+                        ) { Text("REAL_CAMERA") }
+                        FilledTonalButton(
+                            enabled = !vcamBusy && VcamPlaylistBridge.canWriteSharedFolder(),
+                            onClick = {
+                                vcamBusy = true
+                                scope.launch(Dispatchers.IO) {
+                                    val result = runCatching { VcamModeController.writeRequestedMode(CameraSourceMode.VIRTUAL_VIDEO) }
+                                    launch(Dispatchers.Main) {
+                                        result.onSuccess {
+                                            requestedCameraMode = CameraSourceMode.VIRTUAL_VIDEO
+                                            vcamStatus = "VIRTUAL_VIDEO requested. TikTok preview sluiten en opnieuw openen voor veilige toepassing."
+                                        }.onFailure { vcamStatus = "Mode niet op te slaan: ${it.message}" }
+                                        vcamBusy = false
+                                    }
+                                }
+                            }
+                        ) { Text("VIRTUAL_VIDEO") }
+                    }
+                    Text("Mode được áp dụng khi TikTok mở camera/session mới. Không đổi output của Camera2 session đang chạy; đóng camera preview rồi mở lại để chuyển nguồn an toàn. Injection status chỉ được xác nhận qua callback từ process TikTok.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = onOpenVcam) {
+                        Text("Playlist & Audio Test Harness")
+                    }
                     Text("Áp dụng queue MP4 vào DCIM/Camera1 của VCAM hiện tại. Đây là thao tác chuẩn bị nguồn; không tự bắt đầu LIVE hay xác nhận TikTok đã nhận hình.")
                     Text(vcamStatus, style = MaterialTheme.typography.bodySmall)
                     if (!VcamPlaylistBridge.canWriteSharedFolder()) {
@@ -118,16 +177,16 @@ class MainActivity : ComponentActivity() {
                         }) { Text("Cấp quyền truy cập thư mục VCAM") }
                     }
                     Button(
-                        enabled = !busy && videos.isNotEmpty() && VcamPlaylistBridge.canWriteSharedFolder(),
+                        enabled = !vcamBusy && videos.isNotEmpty() && VcamPlaylistBridge.canWriteSharedFolder(),
                         onClick = {
-                            busy = true
+                            vcamBusy = true
                             val selectedIds = snapshot.queue.ifEmpty { videos.map { it.mediaId } }
                             val repeat = snapshot.loop
                             scope.launch(Dispatchers.IO) {
                                 val result = runCatching { VcamPlaylistBridge.apply(context, selectedIds, repeat) }
                                 launch(Dispatchers.Main) {
                                     vcamStatus = result.getOrElse { "Không áp dụng được VCAM: ${it.message}" }
-                                    busy = false
+                                    vcamBusy = false
                                 }
                             }
                         }
