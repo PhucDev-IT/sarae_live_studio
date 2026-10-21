@@ -140,7 +140,7 @@ function Console({agent}:{agent:OwnerAgent}){
   const picked = drafts.find(s=>s.id === pickSession) ?? drafts[0]
   const pickedReady = picked ? picked.product_ids.filter(id=>productById.get(id)?.video_count) : []
   const startId = startProduct != null && pickedReady.includes(startProduct) ? startProduct : pickedReady[0]
-  const startSession = (session:LiveSession, productId:number) => perform(()=>sessionsApi.start(session, productId), `Đã bắt đầu “${session.name}”`).then(ok=>{if (ok) void loadAll()})
+  const startSession = (session:LiveSession, productId:number) => perform(()=>sessionsApi.start(session, agentId, productId), `Đã bắt đầu “${session.name}”`).then(ok=>{if (ok) void loadAll()})
   const switchProduct = (id:number, mode:'immediate'|'after_current') => perform(
     async ()=>{if (activeSession) await sessionsApi.switchTo(activeSession, id, mode)},
     mode === 'immediate' ? 'Đã chuyển sản phẩm' : 'Sẽ chuyển sau video hiện tại',
