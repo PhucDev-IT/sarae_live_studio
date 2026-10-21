@@ -15,7 +15,7 @@ MediaId = Field(pattern=r"^[a-f0-9]{64}$")
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"tts_speak", "media_rescan", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "media_rescan", "tiktok_products_sync", "monitor_config", "monitor_start", "monitor_stop"}
 
 
 def lane(kind: str) -> str:
@@ -89,12 +89,13 @@ class MonitorConfigPayload(Payload):
 
 
 class CommandRouter:
-    def __init__(self, *, playback, monitor, voice, rescan: Callable[[], dict] | None = None):
+    def __init__(self, *, playback, monitor, voice, rescan: Callable[[], dict] | None = None, tiktok_sync: Callable[[], dict] | None = None):
         """``playback`` is playback.engine.PlaybackEngine; ``rescan`` runs scan + Cloud library sync."""
         self.playback = playback
         self.monitor = monitor
         self.voice = voice
         self.rescan = rescan
+        self.tiktok_sync = tiktok_sync
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -118,6 +119,7 @@ class CommandRouter:
             "playback_select": (SelectPayload, lambda b: p.select(b.index)),
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
             "media_rescan": (NoPayload, lambda _: self._rescan()),
+            "tiktok_products_sync": (NoPayload, lambda _: self._tiktok_sync()),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
@@ -132,6 +134,11 @@ class CommandRouter:
         if self.rescan is None:
             raise AgentError("AGENT_NOT_CONNECTED", "Agent chưa kết nối Cloud")
         return self.rescan()
+
+    def _tiktok_sync(self) -> dict:
+        if self.tiktok_sync is None:
+            raise AgentError("TIKTOK_SYNC_UNAVAILABLE", "Agent chưa hỗ trợ đồng bộ TikTok qua Cloud")
+        return self.tiktok_sync()
 
     @property
     def kinds(self) -> list[str]:
