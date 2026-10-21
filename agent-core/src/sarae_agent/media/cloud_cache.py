@@ -112,7 +112,10 @@ class CloudMediaCache:
         if self._valid(path, item):
             return path
         part = path.with_suffix(path.suffix + ".part")
-        if part.exists() and part.stat().st_size > length:
+        if self._valid(part, item):
+            os.replace(part, path)
+            return path
+        if part.exists() and part.stat().st_size >= length:
             part.unlink()
         offset = part.stat().st_size if part.exists() else 0
         headers = self._headers()
