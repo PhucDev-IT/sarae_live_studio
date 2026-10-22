@@ -26,6 +26,8 @@ OTHER_TOPICS = {
     "ASK_STOCK": ("con hang", "het hang", "con khong", "con size", "con mau", "may cai", "bao nhieu cai"),
     "ORDER": ("chot", "lay 1", "lay 2", "lay mot", "dat", "len don", "mua"),
     "COMPLAINT": ("loi", "doi tra", "hoan tien", "lua", "te qua", "xau", "bom hang"),
+    # "có giảm giá không" contains "giá" but asks about a promotion, not the price.
+    "PROMO": ("giam gia", "khuyen mai", "sale", "voucher", "ma giam", "freeship", "giam con", "uu dai"),
 }
 # References to something other than the product on air now.
 OTHER_PRODUCT = ("luc nay", "mau kia", "cai kia", "mau truoc", "cai truoc", "mau dau", "ao kia", "quan kia", "hoi nay",

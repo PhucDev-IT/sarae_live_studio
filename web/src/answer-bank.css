@@ -1,0 +1,42 @@
+/* "Hỏi đáp AI" page — layout only; colors come from @sarae/ui tokens. Reuses .pp-row-thumb / .pp-form from products.css. */
+.ab-page{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:16px;align-items:start}
+.ab-page>*{min-width:0}
+.ab-panel{border:1px solid var(--ui-border);border-radius:var(--ui-radius-card);background:var(--ui-surface);box-shadow:var(--ui-shadow-sm);min-width:0}
+.ab-products{display:flex;flex-direction:column;position:sticky;top:12px;max-height:calc(100vh - 140px)}
+.ab-search{padding:14px 14px 8px}
+.ab-count{padding:0 14px 10px;font-size:12.5px;color:var(--ui-text-muted)}
+.ab-list{overflow-y:auto;border-top:1px solid var(--ui-border);padding:6px}
+.ab-product{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:9px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ab-product:hover{background:var(--ui-surface-2)}
+.ab-product.is-active{background:color-mix(in srgb,var(--ui-primary) 12%,transparent)}
+.ab-product .pp-row-thumb{width:40px;height:40px}
+.ab-product-text,.ab-head-text{display:grid;gap:2px;min-width:0}
+.ab-product-text strong,.ab-head-text strong{font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ab-product-text small,.ab-head-text small{font-size:12px;color:var(--ui-text-muted)}
+.ab-empty{padding:28px 14px}
+.ab-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid var(--ui-border)}
+.ab-head-text{flex:1 1 200px}
+.ab-body{display:grid;gap:14px;padding:16px 18px 20px}
+.ab-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ab-muted{margin:0;font-size:12.5px;color:var(--ui-text-muted)}
+.ab-hint{margin:0;padding:10px 12px;border-radius:9px;font-size:12.5px;color:var(--ui-text-muted);background:var(--ui-surface-2)}
+.ab-group{display:grid;gap:10px}
+.ab-group-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.ab-card{display:grid;gap:8px;padding:12px 14px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}
+.ab-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.ab-question{font-weight:600;overflow-wrap:anywhere}
+.ab-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ab-line{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;overflow-wrap:anywhere}
+.ab-line>span:nth-child(2){flex:1;min-width:0}
+.ab-line.is-text{color:var(--ui-text-muted)}
+.ab-actions{display:flex;gap:6px;flex-wrap:wrap}
+.ab-samples{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ab-sample{padding:4px 10px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-surface-2);color:var(--ui-text);font:inherit;font-size:12.5px;cursor:pointer}
+.ab-sample:hover{border-color:var(--ui-primary);color:var(--ui-primary)}
+.ab-results{display:grid;gap:10px}
+.ab-viewers{display:grid;gap:2px;padding:8px 10px;border-radius:8px;background:var(--ui-surface-2);font-size:13px}
+.ab-reasons{margin:0;padding-left:20px;font-size:12.5px;color:var(--ui-warning)}
+.ab-error{display:grid;gap:4px;padding:10px 12px;border-radius:9px;border:1px solid color-mix(in srgb,var(--ui-warning) 45%,transparent);background:color-mix(in srgb,var(--ui-warning) 10%,transparent);font-size:13px}
+.ab-error small{color:var(--ui-text-muted)}
+.ab-skipped{display:grid;gap:2px;font-size:12px;color:var(--ui-text-subtle)}
+@media (max-width:900px){.ab-page{grid-template-columns:minmax(0,1fr)}.ab-products{position:static;max-height:320px}}

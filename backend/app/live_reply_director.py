@@ -63,7 +63,7 @@ def route(reply: dict, options: ReplyOptions) -> tuple[str, str]:
     """(channel, why): channel is review, voice, comment or both."""
     if reply["review_reasons"]:
         return "review", "; ".join(reply["review_reasons"])
-    if reply["intent"] in NEVER_AUTO:
+    if reply["intent"] == "COMPLAINT" or (reply["intent"] in NEVER_AUTO and not reply.get("approved")):
         return "review", "Loại câu hỏi này luôn cần người duyệt"
     if reply["confidence"] < options.min_confidence:
         return "review", f"Độ tự tin {reply['confidence']:.2f} thấp hơn ngưỡng {options.min_confidence:.2f}"

@@ -84,6 +84,17 @@ def batch_options(owner_id: str) -> BatchOptions:
 executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sarae-ai-live")
 
 
+def snapshot(product: Product, session_id: int | None = None) -> dict:
+    """What a reply may rely on about `product`, and its version (fingerprint of everything that can change)."""
+    details = {"id": product.id, "name": product.name, "price": product.price, "origin_price": product.origin_price,
+               "stock": product.stock_num, "description": product.description[:950], "status": product.status,
+               "facts": parse_facts(product.ai_facts)}
+    fingerprint = sha256(json.dumps(details, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+    # The shop's own Q&A is context for the AI; adding one does not retire the answers already learned.
+    details["shop_qa"] = answer_bank.shop_context(product.owner_id, product.id)
+    return {"session_id": session_id, "product": details, "version": fingerprint}
+
+
 def context(owner_id: str, agent_id: str):
     """The product live in the RUNNING session on that Agent, snapshotted when the comment arrives."""
     from app.live_sessions import LiveSession
@@ -96,11 +107,7 @@ def context(owner_id: str, agent_id: str):
         product = db.get(Product, session.current_product_id)
         if not product or product.owner_id != owner_id or product.status != "ACTIVE":
             return None
-        details = {"id": product.id, "name": product.name, "price": product.price, "origin_price": product.origin_price,
-                   "stock": product.stock_num, "description": product.description[:950], "status": product.status,
-                   "facts": parse_facts(product.ai_facts)}
-        fingerprint = sha256(json.dumps(details, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
-        return {"session_id": session.id, "product": details, "version": fingerprint}
+        return snapshot(product, session.id)
 
 
 def flush(st: BatchState, key):
@@ -130,6 +137,7 @@ QUY TẮC
 5. Bình luận nhắc sản phẩm khác hoặc trước đó ("lúc nãy", "mẫu kia", "cái trước") hoặc không rõ hỏi sản phẩm nào: other_product=true, needs_review=true.
 6. Khiếu nại, đổi trả, hàng lỗi, chửi bới: intent COMPLAINT, needs_review=true.
 7. Một bình luận hỏi nhiều ý (vd giá và size) thì trả lời đủ các ý trong cùng câu.
+8. PRODUCT.shop_qa là câu hỏi đáp do shop viết: câu hỏi giống hoặc gần giống thì trả lời theo đúng nội dung đó.
 VĂN PHONG
 - say: để ĐỌC TO trên LIVE. Một câu, tối đa 18 từ, như người bán đang nói chuyện thật, dùng "nha", "nè", "luôn á", "nhé". Không mở đầu bằng "Dạ", "Chào", "Xin chào", "Cảm ơn". Không gọi tên người hỏi (hệ thống tự thêm). Không emoji, không viết tắt.
 - text: để COMMENT. Tối đa 90 ký tự, giọng chat tự nhiên, được viết tắt nhẹ (200k, sz). Không chào hỏi.
@@ -147,8 +155,11 @@ slots (chỉ khi câu hỏi có): weight_kg, height_cm, size, color, place, quan
 def product_data(product: dict) -> dict:
     """What the AI may know about the product: TikTok data, the AI description and the structured facts."""
     facts = {k: v for k, v in (product.get("facts") or {}).items() if v}
-    return {"name": product["name"], "price": product.get("price"), "original_price": product.get("origin_price"),
+    data = {"name": product["name"], "price": product.get("price"), "original_price": product.get("origin_price"),
             "stock": product.get("stock"), "description": product.get("description") or "", **facts}
+    if product.get("shop_qa"):
+        data["shop_qa"] = product["shop_qa"]  # answers written by the shop: the AI follows them
+    return data
 
 
 def batch_prompt(product: dict, questions: list[dict], persona: str = "") -> str:
@@ -194,10 +205,10 @@ def clean_answer(raw: dict) -> dict:
             "other_product": bool(raw.get("other_product"))}
 
 
-def ask_ai(st: BatchState, product: dict, questions: list[dict], persona: str) -> tuple[dict[int, dict], dict]:
+def ask_ai(owner_id: str, log_key: str, product: dict, questions: list[dict], persona: str) -> tuple[dict[int, dict], dict]:
     """One provider call for `questions`; returns ({qid: answer} for the qids it answered, usage)."""
     parsed, usage, config = ai_service.complete_json(
-        st.owner_id, batch_prompt(product, questions, persona), log_key=st.key, username="live-batch",
+        owner_id, batch_prompt(product, questions, persona), log_key=log_key, username="live-batch",
         log_text=" | ".join(q["text"] for q in questions)[:300], max_output_tokens=110 * len(questions) + 80)
     wanted = {q["qid"] for q in questions}
     answers = {}
@@ -212,13 +223,13 @@ def ask_ai(st: BatchState, product: dict, questions: list[dict], persona: str) -
     return answers, usage
 
 
-# ----- batch -> replies --------------------------------------------------------------------------------
+# ----- comments -> replies -----------------------------------------------------------------------------
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def make_reply(st: BatchState, batch_id: int, ctx: dict, question: dict, answer: dict | None, source: str,
+def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: dict | None, source: str,
                error: str = "") -> dict:
     """One reply unit: the answer to one question (possibly asked by several viewers with the same words)."""
     product = ctx["product"]
@@ -235,15 +246,13 @@ def make_reply(st: BatchState, batch_id: int, ctx: dict, question: dict, answer:
         reasons.append("Chưa có câu trả lời")
     reasons += safety_issues(f"{answer['say']} {answer['text']}", allowed_amounts(product))
     items = question["items"]
-    with st.lock:
-        st.reply_seq += 1
-        reply_id = st.reply_seq
     return {"id": reply_id, "batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
             "product_name": product["name"], "version": ctx["version"], "question": question["text"],
             "comments": [{"id": i["id"], "username": i["username"], "nickname": i.get("nickname") or "",
                           "comment": i["comment"]} for i in items],
             "intent": answer["intent"], "slots": answer["slots"], "say": answer["say"], "text": answer["text"],
-            "confidence": answer["confidence"], "source": source, "review_reasons": list(dict.fromkeys(reasons)),
+            "confidence": answer["confidence"], "source": source, "approved": bool(answer.get("approved")),
+            "review_reasons": list(dict.fromkeys(reasons)),
             "asked_at": items[0]["asked_iso"], "_asked": min(i["asked_at"] for i in items), "_product": product,
             "route": None, "voice": None, "comment": None, "note": "", "spoken_text": "", "command_id": None,
             "updated_at": _now_iso()}
@@ -268,16 +277,16 @@ def merge_replies(replies: list[dict]) -> list[dict]:
         first["_asked"] = min(first["_asked"], reply["_asked"])
         first["question"] = f"{first['question']} / {reply['question']}"
         if reply["confidence"] > first["confidence"]:
-            first.update({k: reply[k] for k in ("say", "text", "confidence", "source")})
+            first.update({k: reply[k] for k in ("say", "text", "confidence", "source", "approved")})
     return out
 
 
-def run_batch(st: BatchState, batch_id, items):
-    from app import live_reply_director as director
-    monitor = monitors(st.key)
-    ctx = items[0]["context"]
+def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log_key: str, batch_id: int,
+                    next_id, learn: bool = True) -> tuple[list[dict], dict]:
+    """Comments about one product version -> (replies, batch summary). Used by LIVE batches and by the playground.
+    `learn` saves checked AI answers in the answer bank (the playground does not)."""
+    monitor = monitors(log_key)
     product = ctx["product"]
-    options = director.reply_options(st.owner_id)
     batch = {"batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
              "product_name": product["name"], "comments": len(items), "questions": 0, "skipped": [],
              "sources": {"rule": 0, "bank": 0, "ai": 0}, "usage": [], "status": "processing", "error": None,
@@ -291,6 +300,7 @@ def run_batch(st: BatchState, batch_id, items):
         key = reply_rules.normalize(item["comment"])
         questions.setdefault(key, {"qid": len(questions) + 1, "text": item["comment"], "items": []})["items"].append(item)
     batch["questions"] = len(questions)
+    allowed = allowed_amounts(product)
     answers: dict[int, tuple[dict | None, str, str]] = {}
     for q in questions.values():
         rule = (reply_rules.price_answer(product) if reply_rules.price_only(q["text"])
@@ -299,19 +309,19 @@ def run_batch(st: BatchState, batch_id, items):
             answers[q["qid"]] = (rule, "rule", "")
             continue
         if not reply_rules.mentions_other_product(q["text"]):
-            known = answer_bank.find(st.owner_id, product["id"], ctx["version"], q["text"])
+            known = answer_bank.find(owner_id, product["id"], ctx["version"], q["text"], allowed=allowed)
             if known:
                 answers[q["qid"]] = (known, "bank", "")
     remaining = [q for q in questions.values() if q["qid"] not in answers]
     if remaining:
         try:
-            got, usage = ask_ai(st, product, remaining, options.persona)
+            got, usage = ask_ai(owner_id, log_key, product, remaining, options.persona)
             batch["usage"].append(usage)
             missing = [q for q in remaining if q["qid"] not in got]
             if missing:
                 # The AI left some questions out: ask once more for exactly those, never drop them.
                 monitor.record("BATCH", "retry_missing", f"#{batch_id}: AI bỏ sót {len(missing)} câu, hỏi lại riêng")
-                more, usage = ask_ai(st, product, missing, options.persona)
+                more, usage = ask_ai(owner_id, log_key, product, missing, options.persona)
                 batch["usage"].append(usage)
                 got.update(more)
             for q in remaining:
@@ -326,10 +336,12 @@ def run_batch(st: BatchState, batch_id, items):
     for q in questions.values():
         answer, source, error = answers[q["qid"]]
         batch["sources"][source] += 1
-        reply = make_reply(st, batch_id, ctx, q, answer, source, error)
+        reply = make_reply(next_id(), batch_id, ctx, q, answer, source, error)
         replies.append(reply)
-        if source == "ai" and answer and not reply["review_reasons"] and answer["confidence"] >= 0.6                 and answer["intent"] not in ("COMPLAINT", "OTHER", "GREETING"):
-            answer_bank.save(st.owner_id, product["id"], ctx["version"], q["text"], answer["intent"], answer["slots"],
+        learnable = (source == "ai" and answer and not reply["review_reasons"] and answer["confidence"] >= 0.6
+                     and answer["intent"] not in ("COMPLAINT", "OTHER", "GREETING"))
+        if learn and learnable:
+            answer_bank.save(owner_id, product["id"], ctx["version"], q["text"], answer["intent"], answer["slots"],
                              [answer["say"]], [answer["text"]], "ai")
     replies = merge_replies(replies)
     batch["reply_ids"] = [r["id"] for r in replies]
@@ -337,6 +349,20 @@ def run_batch(st: BatchState, batch_id, items):
     monitor.record("BATCH", "answered", f"#{batch_id}: {len(items)} bình luận → {len(questions)} câu hỏi → "
                    f"{len(replies)} câu trả lời (luật {batch['sources']['rule']}, kho {batch['sources']['bank']}, "
                    f"AI {batch['sources']['ai']}, bỏ qua {len(batch['skipped'])})")
+    return replies, batch
+
+
+def run_batch(st: BatchState, batch_id, items):
+    from app import live_reply_director as director
+    ctx = items[0]["context"]
+    options = director.reply_options(st.owner_id)
+
+    def next_id() -> int:
+        with st.lock:
+            st.reply_seq += 1
+            return st.reply_seq
+    replies, batch = answer_comments(st.owner_id, ctx, items, options, log_key=st.key, batch_id=batch_id,
+                                     next_id=next_id)
     with st.lock:
         for reply in replies:
             st.replies[reply["id"]] = reply
@@ -597,7 +623,7 @@ def list_answers(owner: Owner, agent_id: AgentId):
         return {"product_id": None, "product_name": "", "answers": []}
     product = ctx["product"]
     return {"product_id": product["id"], "product_name": product["name"],
-            "answers": answer_bank.list_for(owner["id"], product["id"], ctx["version"])}
+            "answers": answer_bank.list_product(owner["id"], product["id"], ctx["version"])}
 
 
 @router.delete("/answers/{entry_id}")

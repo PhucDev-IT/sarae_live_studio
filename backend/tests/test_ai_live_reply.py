@@ -57,7 +57,8 @@ class RuleTests(unittest.TestCase):
     def test_only_plain_price_questions_skip_the_ai(self):
         for text in ("giá bn shop", "Áo này bao nhiêu vậy?", "cái này nhiêu tiền"):
             self.assertTrue(reply_rules.price_only(text), text)
-        for text in ("giá bn, có size L k", "55kg mặc size gì", "cái lúc nãy giá sao", "còn bao nhiêu cái"):
+        for text in ("giá bn, có size L k", "55kg mặc size gì", "cái lúc nãy giá sao", "còn bao nhiêu cái",
+                     "có giảm giá không", "giá sale bao nhiêu"):
             self.assertFalse(reply_rules.price_only(text), text)
 
     def test_noise_is_not_a_question(self):
@@ -355,7 +356,8 @@ class LiveReplyTests(SaasTestCase):
                               json={"say": "Cotton mặc mát lắm luôn á"})
         self.assertEqual(ok.status_code, 200, ok.text)
         version = context(self.owner_a["id"], self.agent_id)["version"]
-        entry = [a for a in answer_bank.list_for(self.owner_a["id"], self.product_id, version) if a["question"] == "vải gì vậy"][0]
+        entry = [a for a in answer_bank.list_product(self.owner_a["id"], self.product_id, version)
+                 if a["question"] == "vải gì vậy" and a["scope"] == "shop"][0]
         self.assertEqual((entry["source"], entry["approved"], entry["say"]), ("operator", True, ["Cotton mặc mát lắm luôn á"]))
         answer_bank.save(self.owner_a["id"], self.product_id, version, "vải gì vậy", "ASK_MATERIAL", {}, ["khác"], [], "ai")
         again = self.batch(("b", "", "vải gì vậy"))[0]

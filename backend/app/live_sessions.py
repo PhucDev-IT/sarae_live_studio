@@ -312,7 +312,13 @@ def apply_command_outcome(command: dict, context: dict):
             else:
                 item.current_product_id = pid
                 event(db, sid, "PRODUCT_SWITCHED", pid, f"trigger=immediate{late}")
+        follow = action in ("start", "resume") and item.status == "RUNNING"
+        owner_id, agent_id, account_id = item.owner_id, item.agent_id, item.tiktok_account_id
         db.commit()
+    if follow:
+        # The session reads its own TikTok chat from now on (AI replies need the comments).
+        from app.tiktok_chat import follow_session
+        follow_session(owner_id, agent_id, account_id)
 
 
 RECONCILE_STOP_SECONDS = 60
@@ -787,6 +793,8 @@ def finish_session(session_id: int, owner: Owner):
                   f"recoveries={counters.get('recovery_count', 0)}")
         event(db, session_id, "ENDED", item.current_product_id, detail)
         db.commit()
+        from app.tiktok_chat import release_session
+        release_session(owner["id"], item.agent_id)
         if item.agent_id:
             cancel_commands(item.agent_id, session_id=session_id)
         stop = None

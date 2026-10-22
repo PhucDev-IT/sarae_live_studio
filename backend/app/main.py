@@ -20,6 +20,8 @@ from app.tiktok_catalog import router as tiktok_catalog_router
 from app.android_agents import router as android_agents_router
 from app.storage_admin import router as storage_admin_router
 from app.media_library import products_router as media_library_products_router, router as media_library_router
+from app.tiktok_chat import session_router as tiktok_chat_session_router
+from app.ai_answers import router as ai_answers_router
 from app.agent_media import router as agent_media_router
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -70,9 +72,11 @@ app.include_router(catalog_router)
 app.include_router(live_router)
 app.include_router(live_sessions_router)
 app.include_router(tiktok_chat_router)
+app.include_router(tiktok_chat_session_router)
 app.include_router(ai_router)
 app.include_router(ai_live_router)
 app.include_router(ai_voice_router)
+app.include_router(ai_answers_router)
 app.include_router(verification_monitor_router)
 app.include_router(cloud_agents_router)
 app.include_router(identity_router)

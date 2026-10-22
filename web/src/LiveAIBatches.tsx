@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react'
 import {apiRequest,errorText,onAgent,type OwnerAgent} from './mediaApi'
 import {Copy,Mic,OctagonX,Volume2,X} from 'lucide-react'
+import './live-ai.css'
 type Options={enabled:boolean;window_seconds:number;max_comments:number}
 type ReplyOptions={mode:'manual'|'semi_auto'|'auto';channel:'voice'|'comment'|'both';voice:string;rate:number;veto_seconds:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;call_names:boolean;duck_video:boolean;persona:string;auto_prepare:boolean}
 type Reply={id:number;batch_id:number;product_name:string;question:string;comments:{id:number;username:string;nickname:string;comment:string}[];intent:string;slots:Record<string,string|number>;say:string;text:string;confidence:number;source:'rule'|'bank'|'cache'|'ai';review_reasons:string[];route:string|null;voice:string|null;comment:string|null;note:string;spoken_text:string;comment_text?:string;speak_at?:number;dismissed?:boolean;asked_at:string}
@@ -15,7 +16,6 @@ const ANSWER_SOURCE:Record<Answer['source'],string>={ai:'AI',pregen:'Chuẩn b�
 const VOICE_LABEL:Record<string,string>={review:'Cần duyệt',ready:'Chờ bấm phát',scheduled:'Sắp nói',queued:'Chờ lượt nói',sent:'Đã gửi giọng',skipped:'Không nói'}
 const COMMENT_LABEL:Record<string,string>={ready:'Comment chờ gửi',done:'Đã comment',dismissed:'Bỏ qua'}
 const SOURCE_LABEL:Record<Reply['source'],string>={rule:'Luật · 0 token',bank:'Kho câu · 0 token',cache:'Cache · 0 token',ai:'AI'}
-const chip=(tone:string)=>({fontSize:11,fontWeight:700,padding:'3px 8px',borderRadius:20,background:tone==='warn'?'#fff1d6':tone==='ok'?'#d8f8e5':tone==='bad'?'#ffe4e4':'var(--soft)',color:tone==='warn'?'#8a5a00':tone==='ok'?'#187347':tone==='bad'?'#bc3535':'var(--ink)'})
 /** AI replies of one LIVE desk (the Agent): one answer per question, spoken on OBS or offered as a comment. */
 export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const [options,setOptions]=useState<Options>({enabled:false,window_seconds:2.5,max_comments:8})
@@ -62,82 +62,100 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const replies=(status?.replies??[]).filter(r=>!r.dismissed)
  const av=status?.agent_voice
  const prep=status?.prepared
- return <section className="tc-panel">
-  <div className="tc-chat-title"><h3><Mic size={18}/> AI trả lời LIVE</h3>
-   <div className="tc-meta"><span>Chờ gom: <b>{status?.pending??0}</b></span><span>Chờ nói: <b>{status?.voice_queue??0}</b></span><span>Chưa trả lời: <b style={{color:(status?.unanswered??0)>0?'#bc3535':undefined}}>{status?.unanswered??0}</b></span>
-    <button type="button" onClick={()=>void stop()} style={{background:'#bc3535',borderColor:'#bc3535',color:'white'}}><OctagonX size={15}/> Dừng giọng nói</button></div></div>
-  <div className="tc-meta" style={{marginTop:6,fontSize:12}}>
-   <span>Agent giọng nói: <b style={{color:av?.online?'#187347':'#bc3535'}}>{av?.online?'online':'offline'}</b></span>
-   {av?.online&&<><span>{av.speaking?<>đang đọc “<b>{av.speaking}</b>”</>:'rảnh'}</span><span>chờ <b>{av.queue}</b> câu</span>{av.prepare_pending>0&&<span>đang chuẩn bị âm thanh <b>{av.prepare_pending}</b></span>}</>}
-   {av?.last?.status==='failed'&&<span style={{color:'#bc3535'}}>Lỗi phát: {av.last.message||av.last.code||'không rõ'}</span>}
-   {prep&&prep.state!=='none'&&<span style={{color:prep.state==='error'?'#bc3535':undefined}}>{prep.state==='ready'?`Đã chuẩn bị ${prep.count} câu trả lời cho ${prep.product_name}`:prep.state==='running'?`Đang chuẩn bị câu trả lời cho ${prep.product_name}…`:`Chuẩn bị câu trả lời lỗi: ${prep.error||'không rõ'}`}</span>}
+ const modeLabel=reply.mode==='manual'?'Thủ công':reply.mode==='semi_auto'?'Bán tự động':'Tự động'
+ const channelLabel=reply.channel==='voice'?'Giọng nói':reply.channel==='comment'?'Comment':'Giọng nói + comment'
+ const voiceLabel=reply.voice==='vi-VN-NamMinhNeural'?'Nam Minh':'Hoài My'
+ const unanswered=status?.unanswered??0
+ const stat=(label:string,value:number,tone?:string)=><div className={'lai-stat'+(tone?' is-'+tone:'')}><b>{value}</b><span>{label}</span></div>
+ return <section className="lai">
+  <div className="lai-top">
+   <label className="lai-switch"><input type="checkbox" disabled={busy} checked={options.enabled} onChange={e=>void save({...options,enabled:e.target.checked})}/><span><b>{options.enabled?'AI đang trả lời':'AI đang tắt'}</b><small>{options.enabled?'Sarae soạn câu trả lời cho từng câu hỏi của người xem':'Bật để Sarae tự soạn câu trả lời'}</small></span></label>
+   <button type="button" className="lai-stop" onClick={()=>void stop()}><OctagonX size={16}/> Dừng giọng nói</button>
   </div>
-  <p className="tc-note">Mỗi câu hỏi có câu trả lời riêng. Câu hỏi giá được trả lời từ dữ liệu sản phẩm (không tốn token); câu giống hệt đã hỏi dùng lại cache. Chỉ gộp nhiều người khi cùng ý và cùng chi tiết (vd cùng cân nặng). Giọng nói phát qua nguồn <b>Sarae Voice</b> trong OBS; comment chưa tự gửi lên TikTok, bấm Copy rồi dán.</p>
-  <div className="tc-meta" style={{marginTop:10}}>
-   <label style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" disabled={busy} checked={options.enabled} onChange={e=>void save({...options,enabled:e.target.checked})}/> Bật AI realtime</label>
-   <label>Gom (giây) <input style={{width:58}} type="number" min={1} max={10} step={0.5} value={options.window_seconds} onChange={e=>setOptions(x=>({...x,window_seconds:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
-   <label>Tối đa/lượt <input style={{width:58}} type="number" min={1} max={30} value={options.max_comments} onChange={e=>setOptions(x=>({...x,max_comments:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
+  <div className="lai-voice">
+   <span className={'lai-dot'+(av?.online?' is-on':'')}/>
+   <span>Giọng nói trên OBS: <b>{av?.online?(av.speaking?<>đang đọc “{av.speaking}”</>:'sẵn sàng'):'chưa kết nối'}</b></span>
+   {av?.online&&av.queue>0&&<span>· chờ <b>{av.queue}</b> câu</span>}
+   {av?.online&&av.prepare_pending>0&&<span>· đang chuẩn bị âm thanh <b>{av.prepare_pending}</b></span>}
+   {av?.last?.status==='failed'&&<span className="is-bad">· Lỗi phát: {av.last.message||av.last.code||'không rõ'}</span>}
+   {prep&&prep.state!=='none'&&<span className={prep.state==='error'?'is-bad':undefined}>· {prep.state==='ready'?`Đã chuẩn bị ${prep.count} câu trả lời cho ${prep.product_name}`:prep.state==='running'?`Đang chuẩn bị câu trả lời cho ${prep.product_name}…`:`Chuẩn bị câu trả lời lỗi: ${prep.error||'không rõ'}`}</span>}
   </div>
-  <div className="tc-meta" style={{marginTop:10}}>
-   <label>Chế độ <select disabled={busy} value={reply.mode} onChange={e=>setMode(e.target.value as ReplyOptions['mode'])}><option value="manual">Thủ công (bấm phát)</option><option value="semi_auto">Bán tự động (tự nói nếu không huỷ)</option><option value="auto">Tự động</option></select></label>
-   <label>Kênh <select disabled={busy} value={reply.channel} onChange={e=>void saveReply({...reply,channel:e.target.value as ReplyOptions['channel']})}><option value="voice">Giọng nói</option><option value="comment">Comment</option><option value="both">Cả hai (thông minh)</option></select></label>
-   <label>Giọng <select disabled={busy} value={reply.voice} onChange={e=>void saveReply({...reply,voice:e.target.value})}><option value="vi-VN-HoaiMyNeural">Hoài My (nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (nam)</option></select></label>
-   <label>Tốc độ % <input style={{width:52}} type="number" min={-30} max={50} value={reply.rate} onChange={e=>setReply(x=>({...x,rate:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
-   {reply.mode==='semi_auto'&&<label>Thời gian huỷ (giây) <input style={{width:52}} type="number" min={1} max={15} value={reply.veto_seconds} onChange={e=>setReply(x=>({...x,veto_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>}
+  <div className="lai-stats">
+   {stat('Chờ gom',status?.pending??0)}{stat('Chờ nói',status?.voice_queue??0)}{stat('Chưa trả lời',unanswered,unanswered>0?'bad':undefined)}
+   {stat('Đã nhận',s.received??0)}{stat('Bỏ qua',s.noise??0)}{stat('Luật',s.rule??0)}{stat('Kho câu',s.cached??0)}{stat('Hỏi AI',s.ai_questions??0)}{stat('Đã nói',s.spoken??0,'ok')}{stat('Cần duyệt',s.review??0,(s.review??0)>0?'warn':undefined)}
   </div>
-  <details style={{marginTop:8}}><summary className="tc-note" style={{cursor:'pointer',margin:0}}>Tuỳ chỉnh nâng cao</summary>
-   <div className="tc-meta" style={{marginTop:8}}>
-    <label>Quá hạn nói (giây) <input style={{width:52}} type="number" min={5} max={120} value={reply.max_age_seconds} onChange={e=>setReply(x=>({...x,max_age_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
-    <label>Không lặp chủ đề trong (giây) <input style={{width:52}} type="number" min={0} max={600} value={reply.topic_cooldown_seconds} onChange={e=>setReply(x=>({...x,topic_cooldown_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
-    <label>Ngưỡng tự tin <input style={{width:52}} type="number" min={0.3} max={1} step={0.05} value={reply.min_confidence} onChange={e=>setReply(x=>({...x,min_confidence:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
-    <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={reply.call_names} onChange={e=>void saveReply({...reply,call_names:e.target.checked})}/> Gọi tên người hỏi</label>
-    <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={reply.duck_video} onChange={e=>void saveReply({...reply,duck_video:e.target.checked})}/> Giảm âm video khi AI nói</label>
-    <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={reply.auto_prepare} onChange={e=>void saveReply({...reply,auto_prepare:e.target.checked})}/> Tự chuẩn bị câu trả lời khi đổi sản phẩm</label>
-   </div>
-   <label className="tc-note" style={{display:'grid',gap:6}}>Phong cách của shop (AI sẽ nói theo)<textarea rows={2} maxLength={300} placeholder="vd: xưng em, gọi khách là chị, vui vẻ, hay dùng 'nha'" value={reply.persona} onChange={e=>setReply(x=>({...x,persona:e.target.value}))} onBlur={()=>void saveReply(reply)}/></label>
-  </details>
-  <div className="tc-meta" style={{marginTop:10}}><span>Nhận: <b>{s.received??0}</b></span><span>Bỏ qua (nhiễu): <b>{s.noise??0}</b></span><span>Luật: <b>{s.rule??0}</b></span><span>Kho câu: <b>{s.cached??0}</b></span><span>Gọi AI: <b>{s.ai_questions??0}</b> câu</span><span>Đã nói: <b>{s.spoken??0}</b></span><span>Cần duyệt: <b>{s.review??0}</b></span></div>
-  <details style={{marginTop:8}} onToggle={e=>setBankOpen(e.currentTarget.open)}><summary className="tc-note" style={{cursor:'pointer',margin:0}}>Kho câu trả lời của sản phẩm đang phát</summary>
-   <div className="tc-meta" style={{marginTop:8}}><span>{bank?.product_id?<>Sản phẩm: <b>{bank.product_name}</b> · {bank.answers.length} câu</>:bank?'Chưa có sản phẩm đang phát':'Đang tải…'}</span>
-    <button type="button" disabled={bankBusy} onClick={()=>void prepare()}>{bankBusy?'Đang chuẩn bị…':'Chuẩn bị lại câu trả lời'}</button></div>
-   <div style={{display:'grid',gap:8,marginTop:8}}>
-    {bank?.answers.map(a=><div key={a.id} style={{border:'1px solid var(--border)',borderRadius:10,padding:10,display:'grid',gap:5}}>
-     <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}><b style={{fontSize:13}}>{a.question}</b>
-      <span style={chip(a.source==='ai'?'':'ok')}>{ANSWER_SOURCE[a.source]??a.source}</span>{a.approved&&<span style={chip('ok')}>✓ Đã duyệt</span>}<span style={chip('')}>Dùng {a.uses} lần</span>
-      <button type="button" style={{marginLeft:'auto'}} onClick={()=>void removeAnswer(a)}><X size={14}/> Xoá</button></div>
-     {a.say.map((v,i)=><div key={i} style={{fontSize:12.5,padding:'5px 8px',borderRadius:6,background:'var(--soft)'}}>🔊 {v}</div>)}
-    </div>)}
-    {bank&&bank.answers.length===0&&<p className="tc-note" style={{margin:0}}>Kho đang trống. Bấm “Chuẩn bị lại câu trả lời” để AI soạn sẵn.</p>}
-   </div>
-  </details>
-  {error&&<p className="tc-error">{error}</p>}
-  <div style={{display:'grid',gap:10,marginTop:14}}>
-   {replies.length===0?<p className="tc-note">Chưa có câu trả lời. Bắt đầu phiên phát sản phẩm, kết nối TikTok Chat rồi bật AI realtime.</p>:replies.map(r=>{
-    const left=r.voice==='scheduled'&&r.speak_at?Math.max(0,Math.ceil(r.speak_at-now/1000)):null
-    return <div key={r.id} style={{border:'1px solid var(--border)',borderRadius:12,padding:12,display:'grid',gap:7,borderLeft:r.voice==='review'?'4px solid #e0a100':undefined}}>
-     <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
-      <span style={chip(r.source==='ai'?'':'ok')}>{SOURCE_LABEL[r.source]}</span><span style={chip('')}>{r.intent}</span><span style={chip(r.confidence<reply.min_confidence?'warn':'')}>{Math.round(r.confidence*100)}%</span>
-      {r.voice&&<span style={chip(r.voice==='review'?'warn':r.voice==='sent'?'ok':r.voice==='skipped'?'bad':'')}>{VOICE_LABEL[r.voice]??r.voice}{left!==null?` · ${left}s`:''}</span>}
-      {r.comment&&<span style={chip(r.comment==='done'?'ok':'')}>{COMMENT_LABEL[r.comment]??r.comment}</span>}
-      <small style={{marginLeft:'auto',color:'var(--muted)'}}>#{r.id} · {r.product_name}</small>
+  <details className="lai-block">
+   <summary><span className="lai-block-title">Cài đặt AI</span><span className="lai-block-sum">{modeLabel} · {channelLabel} · {voiceLabel}</span></summary>
+   <div className="lai-block-body">
+    <div className="lai-fields">
+     <label>Cách phát<select disabled={busy} value={reply.mode} onChange={e=>setMode(e.target.value as ReplyOptions['mode'])}><option value="manual">Thủ công (bấm phát)</option><option value="semi_auto">Bán tự động (tự nói nếu không huỷ)</option><option value="auto">Tự động</option></select></label>
+     <label>Trả lời bằng<select disabled={busy} value={reply.channel} onChange={e=>void saveReply({...reply,channel:e.target.value as ReplyOptions['channel']})}><option value="voice">Giọng nói</option><option value="comment">Comment</option><option value="both">Cả hai (thông minh)</option></select></label>
+     <label>Giọng<select disabled={busy} value={reply.voice} onChange={e=>void saveReply({...reply,voice:e.target.value})}><option value="vi-VN-HoaiMyNeural">Hoài My (nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (nam)</option></select></label>
+     <label>Tốc độ %<input type="number" min={-30} max={50} value={reply.rate} onChange={e=>setReply(x=>({...x,rate:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
+     {reply.mode==='semi_auto'&&<label>Thời gian huỷ (giây)<input type="number" min={1} max={15} value={reply.veto_seconds} onChange={e=>setReply(x=>({...x,veto_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>}
+     <label>Gom bình luận (giây)<input type="number" min={1} max={10} step={0.5} value={options.window_seconds} onChange={e=>setOptions(x=>({...x,window_seconds:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
+     <label>Tối đa mỗi lượt<input type="number" min={1} max={30} value={options.max_comments} onChange={e=>setOptions(x=>({...x,max_comments:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
+    </div>
+    <p className="lai-hint">Mỗi câu hỏi có câu trả lời riêng. Câu hỏi giá được trả lời từ dữ liệu sản phẩm (không tốn token); câu giống hệt đã hỏi dùng lại câu cũ. Chỉ gộp nhiều người khi cùng ý và cùng chi tiết (vd cùng cân nặng). Giọng nói phát qua nguồn <b>Sarae Voice</b> trong OBS; comment chưa tự gửi lên TikTok, bấm Copy rồi dán.</p>
+    <details className="lai-sub"><summary>Tuỳ chỉnh nâng cao</summary>
+     <div className="lai-fields">
+      <label>Quá hạn nói (giây)<input type="number" min={5} max={120} value={reply.max_age_seconds} onChange={e=>setReply(x=>({...x,max_age_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
+      <label>Không lặp chủ đề trong (giây)<input type="number" min={0} max={600} value={reply.topic_cooldown_seconds} onChange={e=>setReply(x=>({...x,topic_cooldown_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
+      <label>Ngưỡng tự tin<input type="number" min={0.3} max={1} step={0.05} value={reply.min_confidence} onChange={e=>setReply(x=>({...x,min_confidence:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
      </div>
-     <div style={{fontSize:13}}>{r.comments.map(c=><div key={c.id}><b>{c.nickname||c.username}</b>: {c.comment}</div>)}</div>
-     {r.review_reasons.length>0&&<div style={{fontSize:12,color:'#8a5a00'}}>⚠ {r.review_reasons.join(' · ')}</div>}
-     {r.note&&<div style={{fontSize:12,color:'var(--muted)'}}>{r.note}</div>}
-     {editing[r.id]!==undefined?<textarea rows={2} maxLength={300} value={editing[r.id]} onChange={e=>setEditing(x=>({...x,[r.id]:e.target.value}))}/>:r.say&&<div style={{padding:9,borderRadius:8,background:'var(--soft)',fontSize:13}}><b>🔊 </b>{r.spoken_text||r.say}</div>}
-     {(r.comment_text||r.text)&&<div style={{padding:9,borderRadius:8,border:'1px dashed var(--border)',fontSize:13}}><b>💬 </b>{r.comment_text||r.text}</div>}
-     <div className="tc-meta">
-      {left!==null&&<button type="button" onClick={()=>void act(r,'cancel')}><X size={14}/> Huỷ phát</button>}
-      {r.say&&<button type="button" onClick={()=>speak(r)}><Mic size={14}/> {r.voice==='sent'?'Phát lại':'Phát giọng'}</button>}
-      {r.say&&r.voice!=='sent'&&<button type="button" onClick={()=>toggleEdit(r)}>{editing[r.id]!==undefined?'Bỏ sửa':'Sửa câu'}</button>}
-      {r.say&&<button type="button" onClick={()=>preview(editing[r.id]??r.say)}><Volume2 size={14}/> Nghe thử</button>}
-      {(r.comment_text||r.text)&&r.comment!=='done'&&<button type="button" onClick={()=>void copy(r)}><Copy size={14}/> Copy comment</button>}
-      {r.voice!=='sent'&&r.comment!=='done'&&<button type="button" onClick={()=>void act(r,'dismiss')}>Bỏ qua</button>}
+     <div className="lai-checks">
+      <label><input type="checkbox" checked={reply.call_names} onChange={e=>void saveReply({...reply,call_names:e.target.checked})}/> Gọi tên người hỏi</label>
+      <label><input type="checkbox" checked={reply.duck_video} onChange={e=>void saveReply({...reply,duck_video:e.target.checked})}/> Giảm âm video khi AI nói</label>
+      <label><input type="checkbox" checked={reply.auto_prepare} onChange={e=>void saveReply({...reply,auto_prepare:e.target.checked})}/> Tự chuẩn bị câu trả lời khi đổi sản phẩm</label>
+     </div>
+     <label className="lai-persona">Phong cách của shop (AI sẽ nói theo)<textarea rows={2} maxLength={300} placeholder="vd: xưng em, gọi khách là chị, vui vẻ, hay dùng 'nha'" value={reply.persona} onChange={e=>setReply(x=>({...x,persona:e.target.value}))} onBlur={()=>void saveReply(reply)}/></label>
+    </details>
+   </div>
+  </details>
+  <details className="lai-block" onToggle={e=>setBankOpen(e.currentTarget.open)}>
+   <summary><span className="lai-block-title">Kho câu trả lời</span><span className="lai-block-sum">{bank?.product_id?`${bank.product_name} · ${bank.answers.length} câu`:'Của sản phẩm đang phát'}</span></summary>
+   <div className="lai-block-body">
+    <div className="lai-row"><span>{bank?.product_id?<>Sản phẩm: <b>{bank.product_name}</b> · {bank.answers.length} câu</>:bank?'Chưa có sản phẩm đang phát':'Đang tải…'}</span>
+     <button type="button" className="lai-btn" disabled={bankBusy} onClick={()=>void prepare()}>{bankBusy?'Đang chuẩn bị…':'Chuẩn bị lại câu trả lời'}</button></div>
+    <div className="lai-list">
+     {bank?.answers.map(a=><div key={a.id} className="lai-card">
+      <div className="lai-chips"><b className="lai-q">{a.question}</b>
+       <span className={'lai-chip'+(a.source==='ai'?'':' is-ok')}>{ANSWER_SOURCE[a.source]??a.source}</span>{a.approved&&<span className="lai-chip is-ok">✓ Đã duyệt</span>}<span className="lai-chip">Dùng {a.uses} lần</span>
+       <button type="button" className="lai-btn lai-push" onClick={()=>void removeAnswer(a)}><X size={14}/> Xoá</button></div>
+      {a.say.map((v,i)=><div key={i} className="lai-say">🔊 {v}</div>)}
+     </div>)}
+     {bank&&bank.answers.length===0&&<p className="lai-hint">Kho đang trống. Bấm “Chuẩn bị lại câu trả lời” để AI soạn sẵn.</p>}
+    </div>
+   </div>
+  </details>
+  {error&&<p className="lai-error" role="alert">{error}</p>}
+  <div className="lai-list">
+   {replies.length===0?<div className="lai-empty"><strong>Chưa có câu trả lời</strong><span>{options.enabled?'Khi người xem hỏi, câu trả lời sẽ hiện ở đây để bạn phát hoặc copy.':'Bật công tắc “AI đang tắt” ở trên để Sarae bắt đầu soạn câu trả lời.'}</span></div>:replies.map(r=>{
+    const left=r.voice==='scheduled'&&r.speak_at?Math.max(0,Math.ceil(r.speak_at-now/1000)):null
+    return <div key={r.id} className={'lai-card lai-reply'+(r.voice==='review'?' is-review':'')}>
+     <div className="lai-chips">
+      <span className={'lai-chip'+(r.source==='ai'?'':' is-ok')}>{SOURCE_LABEL[r.source]}</span><span className="lai-chip">{r.intent}</span><span className={'lai-chip'+(r.confidence<reply.min_confidence?' is-warn':'')}>{Math.round(r.confidence*100)}%</span>
+      {r.voice&&<span className={'lai-chip'+(r.voice==='review'?' is-warn':r.voice==='sent'?' is-ok':r.voice==='skipped'?' is-bad':'')}>{VOICE_LABEL[r.voice]??r.voice}{left!==null?` · ${left}s`:''}</span>}
+      {r.comment&&<span className={'lai-chip'+(r.comment==='done'?' is-ok':'')}>{COMMENT_LABEL[r.comment]??r.comment}</span>}
+      <small className="lai-push lai-muted">#{r.id} · {r.product_name}</small>
+     </div>
+     <div className="lai-asks">{r.comments.map(c=><div key={c.id}><b>{c.nickname||c.username}</b>: {c.comment}</div>)}</div>
+     {r.review_reasons.length>0&&<div className="lai-warn">⚠ {r.review_reasons.join(' · ')}</div>}
+     {r.note&&<div className="lai-muted">{r.note}</div>}
+     {editing[r.id]!==undefined?<textarea rows={2} maxLength={300} value={editing[r.id]} onChange={e=>setEditing(x=>({...x,[r.id]:e.target.value}))}/>:r.say&&<div className="lai-say"><b>🔊 </b>{r.spoken_text||r.say}</div>}
+     {(r.comment_text||r.text)&&<div className="lai-say is-comment"><b>💬 </b>{r.comment_text||r.text}</div>}
+     <div className="lai-actions">
+      {left!==null&&<button type="button" className="lai-btn" onClick={()=>void act(r,'cancel')}><X size={14}/> Huỷ phát</button>}
+      {r.say&&<button type="button" className="lai-btn is-primary" onClick={()=>speak(r)}><Mic size={14}/> {r.voice==='sent'?'Phát lại':'Phát giọng'}</button>}
+      {r.say&&r.voice!=='sent'&&<button type="button" className="lai-btn" onClick={()=>toggleEdit(r)}>{editing[r.id]!==undefined?'Bỏ sửa':'Sửa câu'}</button>}
+      {r.say&&<button type="button" className="lai-btn" onClick={()=>preview(editing[r.id]??r.say)}><Volume2 size={14}/> Nghe thử</button>}
+      {(r.comment_text||r.text)&&r.comment!=='done'&&<button type="button" className="lai-btn" onClick={()=>void copy(r)}><Copy size={14}/> Copy comment</button>}
+      {r.voice!=='sent'&&r.comment!=='done'&&<button type="button" className="lai-btn is-ghost" onClick={()=>void act(r,'dismiss')}>Bỏ qua</button>}
      </div>
     </div>})}
   </div>
-  {batches.length>0&&<details style={{marginTop:14}}><summary className="tc-note" style={{cursor:'pointer',margin:0}}>Lượt gọi gần đây (token)</summary>
-   {batches.slice().reverse().map(b=><div key={b.batch_id} className="tc-note" style={{margin:'6px 0 0'}}>#{b.batch_id} · {b.product_name}: {b.comments} bình luận → {b.questions} câu hỏi (luật {b.sources.rule}, kho câu {b.sources.bank??b.sources.cache??0}, AI {b.sources.ai}){b.usage.map((u,i)=><span key={i}> · {u.input_tokens} in / {u.output_tokens} out · {u.latency_ms}ms</span>)}{b.skipped.length>0&&<span> · bỏ qua {b.skipped.length}: {b.skipped.map(x=>x.comment).join(', ')}</span>}{b.error&&<span style={{color:'#bc3535'}}> · {b.error}</span>}</div>)}
+  {batches.length>0&&<details className="lai-block lai-quiet"><summary><span className="lai-block-title">Lượt gọi gần đây (token)</span></summary>
+   <div className="lai-block-body">{batches.slice().reverse().map(b=><div key={b.batch_id} className="lai-hint">#{b.batch_id} · {b.product_name}: {b.comments} bình luận → {b.questions} câu hỏi (luật {b.sources.rule}, kho câu {b.sources.bank??b.sources.cache??0}, AI {b.sources.ai}){b.usage.map((u,i)=><span key={i}> · {u.input_tokens} in / {u.output_tokens} out · {u.latency_ms}ms</span>)}{b.skipped.length>0&&<span> · bỏ qua {b.skipped.length}: {b.skipped.map(x=>x.comment).join(', ')}</span>}{b.error&&<span className="is-bad"> · {b.error}</span>}</div>)}</div>
   </details>}
  </section>
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEve
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
   CalendarClock, Check, CheckCircle2, CircleAlert, CircleDashed, Clock3, Copy, GripVertical, History, ListPlus,
-  Link2, MonitorPlay, Package, Pencil, Play, Plus, Radio, RefreshCw, RotateCcw, Square, Star, Trash2, Video,
+  Link2, MessagesSquare, MonitorPlay, Package, Pencil, Play, Plus, Radio, RefreshCw, RotateCcw, Square, Star, Trash2, Video,
 } from 'lucide-react'
 import { apiRequest, assetUrl, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { useAgent } from './agentContext'
@@ -11,6 +11,7 @@ import {
   type LiveProduct, type LiveSession, type SessionEvent, type SessionStatus,
 } from './liveSessionsApi'
 import MediaPrepare from './MediaPrepare'
+import SessionLiveChat from './SessionLiveChat'
 import './live-sessions.css'
 
 type LiveStatus = { connected:boolean; running:boolean; session_id?:number|null; product_id?:number|null; pending_product_id?:number|null }
@@ -355,6 +356,8 @@ export default function LiveSessions(){
           </ol>
         </Card>
 
+        {chosen.status === 'RUNNING' && chosen.agent_id && <SessionLiveChat key={chosen.id} sessionId={chosen.id} handle={account?.user_name ?? ''} agent={agentById.get(chosen.agent_id)}/>}
+        {chosen.status === 'DRAFT' && chosen.tiktok_account_id != null && <p className="slc-note"><MessagesSquare size={16}/>Khi bắt đầu phiên, Sarae tự nhận bình luận của @{account?.user_name || account?.nick_name || 'tài khoản phiên'} và gợi ý câu trả lời.</p>}
         {chosen.status==='DRAFT' && <Card>
           <strong>{chosen.tiktok_account_id == null ? 'Phiên chưa chọn TikTok Account' : 'TikTok Account phát LIVE'}</strong>
           <p className="ls-muted">Phiên khóa theo tài khoản này: không phiên nào khác (của bạn hay User khác) phát cùng tài khoản đồng thời. Khi bắt đầu, Agent sẽ kiểm tra đúng tài khoản đang đăng nhập trên LIVE Console.</p>

@@ -47,6 +47,7 @@ def speak_on_agent(body: SpeakBody, owner: Owner):
 class PreviewBody(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     voice: str = Field(default=VOICE, pattern=r"^vi-VN-(HoaiMy|NamMinh)Neural$")
+    rate: int = Field(default=0, ge=-30, le=50)
 
 @router.post("/preview")
 def preview(body: PreviewBody, owner: Owner):
@@ -62,7 +63,7 @@ def preview(body: PreviewBody, owner: Owner):
             raise HTTPException(503, "Chưa cài edge-tts: python -m pip install edge-tts") from exc
         async def synthesize():
             chunks = []
-            async for chunk in edge_tts.Communicate(body.text, body.voice).stream():
+            async for chunk in edge_tts.Communicate(body.text, body.voice, rate=f"{body.rate:+d}%").stream():
                 if chunk["type"] == "audio":
                     chunks.append(chunk["data"])
             return b"".join(chunks)

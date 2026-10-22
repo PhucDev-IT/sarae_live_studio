@@ -16,6 +16,21 @@ shipping, notes. With a size chart, "50kg mặc gì", "có màu đen không", "v
 AI call. Facts are part of the product version: editing them retires earlier answers.
 In Products, only enter **name, sale price, description, status**. An internal SKU is generated automatically when creating a product; existing SKUs and product-video relationships remain intact. Put accurate material, size, color and shipping claims in description if they should influence the answer.
 
+## 2b. Hỏi đáp AI (Q&A per product) and Thử AI (no LIVE needed)
+- Web page **Hỏi đáp AI** (backend/app/ai_answers.py): pick a product, see its answers (the shop's own first, then those
+  the AI learned for the current product version), add/edit/delete answers with several spoken and comment phrasings.
+  The shop's answers are approved, kept when the product is edited, reused for the same or closely worded questions,
+  sent to the AI as `shop_qa` context for related questions, and re-checked against the current price at each use.
+- Tab **Thử AI**: type comments (one per line, `Tên: nội dung` sets the viewer name) and see exactly what a LIVE would
+  produce: source (rule / answer bank / AI), route (voice, comment, review + reasons), the spoken sentence (with a play
+  button, edge-tts on the server) and the comment text. Nothing is spoken on OBS, posted or learned.
+
+## 2c. Chat follows the LIVE session
+A session's TikTok Account handle (`tiktok_accounts.user_name`) is read automatically: the chat reader starts when the
+session starts or resumes and stops when it ends (backend/app/tiktok_chat.py follow_session / release_session). The
+session screen shows **Bình luận & AI trả lời** (comments, AI replies, processing log) with Kết nối lại / Ngắt. The old
+TikTok Chat page only points to Phiên LIVE.
+
 ## 3. LIVE: one answer per question
 1. Start an OBS product LIVE session and connect public TikTok chat.
 2. In AI Assistant, enable and save your API provider first. The batch request raises the output token limit itself (about 110 tokens per question).

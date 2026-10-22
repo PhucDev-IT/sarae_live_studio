@@ -1,0 +1,74 @@
+/* AI replies of a LIVE desk (LiveAIBatches). Calm layout; colors from @sarae/ui tokens. */
+.lai{display:grid;gap:12px;min-width:0;font-size:13px;color:var(--ui-text)}
+.lai-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.lai-switch{display:flex;align-items:center;gap:10px;cursor:pointer;min-width:0}
+.lai-switch input{width:18px;height:18px;accent-color:var(--ui-primary);flex:none}
+.lai-switch span{display:grid;min-width:0}
+.lai-switch b{font-size:14px}
+.lai-switch small{color:var(--ui-text-muted);font-size:12px}
+.lai-stop{display:inline-flex;align-items:center;gap:7px;padding:9px 14px;border:1px solid var(--ui-danger);border-radius:var(--ui-radius-control);background:var(--ui-danger);color:#fff;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}
+.lai-stop:hover{filter:brightness(.95)}
+.lai-voice{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--ui-text-muted);font-size:12px}
+.lai-voice b{color:var(--ui-text)}
+.lai-dot{width:8px;height:8px;border-radius:50%;background:var(--ui-danger);flex:none}
+.lai-dot.is-on{background:var(--ui-success)}
+.lai .is-bad{color:var(--ui-danger)}
+
+/* Stat tiles */
+.lai-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:6px}
+.lai-stat{display:grid;gap:1px;padding:7px 10px;border-radius:8px;background:var(--ui-surface-2);min-width:0}
+.lai-stat b{font-size:16px;line-height:1.2;font-variant-numeric:tabular-nums}
+.lai-stat span{font-size:11px;color:var(--ui-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lai-stat.is-ok b{color:var(--ui-success)}
+.lai-stat.is-warn b{color:var(--ui-warning)}
+.lai-stat.is-bad{background:color-mix(in srgb,var(--ui-danger) 10%,var(--ui-surface))}
+.lai-stat.is-bad b{color:var(--ui-danger)}
+
+/* Collapsible blocks (settings, answer bank, token log) */
+.lai-block{border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}
+.lai-block>summary{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;list-style:none;min-width:0}
+.lai-block>summary::-webkit-details-marker{display:none}
+.lai-block>summary::before{content:'';width:7px;height:7px;flex:none;border-right:2px solid var(--ui-text-muted);border-bottom:2px solid var(--ui-text-muted);transform:rotate(-45deg);transition:transform .15s}
+.lai-block[open]>summary::before{transform:rotate(45deg)}
+.lai-block-title{font-weight:700}
+.lai-block-sum{margin-left:auto;color:var(--ui-text-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.lai-block-body{display:grid;gap:10px;padding:2px 12px 12px;border-top:1px solid var(--ui-border);padding-top:12px}
+.lai-quiet{background:transparent}
+.lai-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.lai-fields label,.lai-persona{display:grid;gap:4px;font-size:12px;font-weight:600;color:var(--ui-text-muted)}
+.lai select,.lai input[type=number],.lai textarea{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control);background:var(--ui-surface);color:var(--ui-text);font:inherit;font-size:13px;font-weight:400}
+.lai textarea{resize:vertical}
+.lai-checks{display:flex;gap:8px 18px;flex-wrap:wrap}
+.lai-checks label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.lai-sub>summary{cursor:pointer;color:var(--ui-text-muted);font-size:12.5px;font-weight:600}
+.lai-sub[open]{display:grid;gap:10px}
+.lai-hint{margin:0;color:var(--ui-text-muted);font-size:12px;line-height:1.55}
+.lai-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--ui-text-muted)}
+.lai-row b{color:var(--ui-text)}
+.lai-error{margin:0;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--ui-danger) 10%,var(--ui-surface));color:var(--ui-danger);overflow-wrap:anywhere}
+
+/* Reply / answer cards */
+.lai-list{display:grid;gap:10px}
+.lai-empty{display:grid;justify-items:center;gap:4px;padding:30px 16px;text-align:center;color:var(--ui-text-muted);border:1px dashed var(--ui-border);border-radius:10px}
+.lai-empty strong{color:var(--ui-text);font-size:14px}
+.lai-card{display:grid;gap:8px;padding:12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface);min-width:0}
+.lai-reply.is-review{border-left:4px solid var(--ui-warning)}
+.lai-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.lai-q{font-size:13px}
+.lai-chip{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:var(--ui-surface-2);color:var(--ui-text);white-space:nowrap}
+.lai-chip.is-ok{background:color-mix(in srgb,var(--ui-success) 15%,var(--ui-surface));color:var(--ui-success)}
+.lai-chip.is-warn{background:color-mix(in srgb,var(--ui-warning) 18%,var(--ui-surface));color:var(--ui-warning)}
+.lai-chip.is-bad{background:color-mix(in srgb,var(--ui-danger) 12%,var(--ui-surface));color:var(--ui-danger)}
+.lai-push{margin-left:auto}
+.lai-muted{color:var(--ui-text-muted);font-size:12px}
+.lai-asks{display:grid;gap:2px;line-height:1.5;overflow-wrap:anywhere}
+.lai-warn{font-size:12px;color:var(--ui-warning)}
+.lai-say{padding:9px 10px;border-radius:8px;background:var(--ui-surface-2);line-height:1.5;overflow-wrap:anywhere}
+.lai-say.is-comment{background:transparent;border:1px dashed var(--ui-border)}
+.lai-actions{display:flex;gap:6px;flex-wrap:wrap}
+.lai-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control);background:var(--ui-surface);color:var(--ui-text);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.lai-btn:hover:not(:disabled){background:var(--ui-surface-2)}
+.lai-btn:disabled{opacity:.55;cursor:not-allowed}
+.lai-btn.is-primary{background:var(--ui-primary);border-color:var(--ui-primary);color:#fff}
+.lai-btn.is-primary:hover{filter:brightness(.95);background:var(--ui-primary)}
+.lai-btn.is-ghost{border-color:transparent;background:transparent;color:var(--ui-text-muted)}
