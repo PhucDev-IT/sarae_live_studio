@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent, type ReactNode } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
   CalendarClock, Check, CheckCircle2, CircleAlert, CircleDashed, Clock3, Copy, GripVertical, History, ListPlus,
-  MonitorPlay, Package, Pencil, Play, Plus, Radio, RotateCcw, Square, Trash2, Video,
+  Link2, MonitorPlay, Package, Pencil, Play, Plus, Radio, RefreshCw, RotateCcw, Square, Star, Trash2, Video,
 } from 'lucide-react'
 import { apiRequest, assetUrl, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { useAgent } from './agentContext'
@@ -15,6 +15,8 @@ import './live-sessions.css'
 
 type LiveStatus = { connected:boolean; running:boolean; session_id?:number|null; product_id?:number|null; pending_product_id?:number|null }
 type Filter = 'ALL' | SessionStatus
+/** A product of the TikTok LIVE cart as the Agent just read it (GET /tiktok-products/{agent}). */
+type ConsoleRow = { product_id:string; seller_id:string; name:string; image_url?:string|null; price_text?:string|null; sarae_product_id:number|null; match_status:string }
 type TikTokAccount = { id:number; user_id:string; user_name:string; nick_name:string; user_type:number|null }
 type Confirm = null | {kind:'finish'|'delete'|'close-stale'|'discard'; session:LiveSession; next?:number|null}
 
@@ -60,7 +62,8 @@ export default function LiveSessions(){
   const [startAgent,setStartAgent] = useState('')
   /** Products with their video count on the Agent chosen in the start dialog (videos live on each PC). */
   const [startProducts,setStartProducts] = useState<LiveProduct[]>([])
-  const [consoleRows,setConsoleRows] = useState<Array<{product_id:string;seller_id:string;name:string;sarae_product_id:number|null;match_status:string}>|null>(null)
+  const [consoleRows,setConsoleRows] = useState<ConsoleRow[]|null>(null)
+  const [syncedAt,setSyncedAt] = useState<string|null>(null)
   const [consoleSelection,setConsoleSelection] = useState<number[]>([])
   const [consoleConfirmed,setConsoleConfirmed] = useState(false)
   // Every video of the session is on the chosen Agent (MediaPrepare); playback may only start then.
@@ -206,14 +209,11 @@ export default function LiveSessions(){
     setBusy(true)
     try {
       await sessionsApi.prepare(chosen,startAgent)
-      const snapshot=await apiRequest<{
-        account_user_id:string|null;scanned_at:string|null;
-        products:Array<{product_id:string;seller_id:string;name:string;sarae_product_id:number|null;match_status:string}>
-      }>(`/tiktok-products/${encodeURIComponent(startAgent)}`)
+      const snapshot=await apiRequest<{account_user_id:string|null;scanned_at:string|null;products:ConsoleRow[]}>(`/tiktok-products/${encodeURIComponent(startAgent)}`)
       const expected=accounts.find(a=>a.id===chosen.tiktok_account_id)?.user_id
       if (!expected || snapshot.account_user_id!==expected)
         throw new Error('Tài khoản LIVE Console không trùng TikTok Account của phiên. Kiểm tra đăng nhập.')
-      setConsoleRows(snapshot.products)
+      setConsoleRows(snapshot.products);setSyncedAt(snapshot.scanned_at)
       // A sync can import new cart products and change video readiness: reload them for this Agent.
       const fresh = await sessionsApi.products(startAgent)
       setStartProducts(fresh)
@@ -236,7 +236,7 @@ export default function LiveSessions(){
       setDraft(null)
       await loadAll()
       setConsoleConfirmed(true)
-      setOpener(consoleSelection[0])
+      setOpener(opener != null && consoleSelection.includes(opener) ? opener : consoleSelection[0])
       toast.push({tone:'success',title:'Đã xác nhận danh sách sản phẩm LIVE'})
     }catch(e){toast.push({tone:'danger',title:'Không lưu được sản phẩm',description:errorText(e,'')})}
     finally{setBusy(false)}
@@ -244,6 +244,11 @@ export default function LiveSessions(){
 
   // Prepared products the confirmed selection would remove: shown and confirmed explicitly, never dropped silently.
   const dropped = chosen ? chosen.product_ids.filter(id=>!consoleSelection.includes(id)) : []
+  /** Video counts change while the dialog is open (videos linked in the library tab): reload them on demand. */
+  const refreshVideos = () => void loadStartProducts(startAgent)
+  const toggleRow = (id:number) => setConsoleSelection(prev=>prev.includes(id) ? prev.filter(v=>v !== id) : [...prev, id])
+  const selectable = (consoleRows ?? []).map(r=>r.sarae_product_id).filter((id):id is number=>id != null && !!startById.get(id)?.video_count)
+  const account = accounts.find(a=>a.id === chosen?.tiktok_account_id)
   const productName = (id:number) => startById.get(id)?.name ?? productById.get(id)?.name ?? `Sản phẩm #${id}`
   const switches = events.filter(e=>e.event_type === 'PRODUCT_SWITCHED').length
 
@@ -460,57 +465,84 @@ export default function LiveSessions(){
       tone={confirm?.kind === 'discard' ? 'primary' : 'danger'}
       {...(confirm ? confirmText(confirm) : {})}/>
 
-    {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="md" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
+    {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="lg" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
+      {consoleRows && !consoleConfirmed && <span className="ls-picker-count">Đã chọn {consoleSelection.length}/{consoleRows.length}{dropped.length ? ` · bỏ ${dropped.length} khỏi phiên` : ''}</span>}
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
-      <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startOpener == null || !startAgent || !consoleConfirmed || !mediaReady || busy}
-        onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startOpener ?? undefined);setStartOpen(false);openConsole(startAgent)}, 'Sarae đã bắt đầu phát')}>Bắt đầu phát</Button>
+      {!consoleConfirmed
+        ? <Button leftIcon={<Check size={16}/>} loading={busy} disabled={!consoleRows || !consoleSelection.length || busy} onClick={()=>void confirmConsole()}>Xác nhận {consoleSelection.length || ''} sản phẩm</Button>
+        : <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startOpener == null || !startAgent || !mediaReady || busy}
+            onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startOpener ?? undefined);setStartOpen(false);openConsole(startAgent)}, 'Sarae đã bắt đầu phát')}>Bắt đầu phát</Button>}
     </>}>
-      <div className="ls-picker">
-        {chosen.agent_id
-          ? <Alert tone="warning">Phiên đang giữ máy <b>{agentName(chosen.agent_id)}</b> từ lần bắt đầu trước (chưa rõ kết quả). Tiếp tục trên máy này, hoặc đóng hộp thoại và bấm Kết thúc để hủy lần bắt đầu đó.</Alert>
-          : freeAgents.length
-            ? <Select label="Windows Agent thực thi" value={startAgent} onChange={v=>{setStartAgent(v);setConsoleRows(null);setConsoleConfirmed(false)}}
-                options={[{value:'',label:'Chọn máy…'},...freeAgents.map(a=>({value:a.id,label:a.hostname}))]}
-                hint={agents.length > freeAgents.length ? `${agents.length - freeAgents.length} máy khác đang offline, chưa kết nối OBS hoặc đang phát nên không chọn được.` : undefined}/>
-            : <Alert tone="danger">Không có máy Windows nào rảnh (online, đã kết nối OBS, không phát nội dung khác).</Alert>}
-        <Alert tone="info">Mở TikTok LIVE Console trên máy này và đăng nhập đúng TikTok Account, sau đó nhấn Đồng bộ giỏ sản phẩm. Chỉ khi xác nhận danh sách mới được phát.</Alert>
-        <Button variant="outline" disabled={!startAgent || busy} loading={busy} onClick={()=>void syncConsole()}>Đồng bộ giỏ sản phẩm từ Agent</Button>
-        {consoleRows && <div className="ls-console-review">
-          <strong>Giỏ TikTok vừa đồng bộ: {consoleRows.length} sản phẩm</strong>
-          <p className="ls-muted">Tích những sản phẩm muốn phát. Sản phẩm chưa liên kết hoặc chưa có video không được chọn.</p>
-          <ul className="ls-picker-list">{consoleRows.map(row=>{
-            const id=row.sarae_product_id
-            const available=id!=null && !!startById.get(id)?.video_count
-            const checked=id!=null && consoleSelection.includes(id)
-            return <li key={row.seller_id+':'+row.product_id}>
-              <label style={{display:'flex',gap:10,alignItems:'center',padding:8}}>
-                <input type="checkbox" checked={checked} disabled={!available||busy||consoleConfirmed}
-                  onChange={e=>{if(id==null)return;setConsoleSelection(prev=>e.target.checked?[...prev,id]:prev.filter(v=>v!==id))}}/>
-                <span>{row.name} {available ? `(${startById.get(id!)?.video_count} video trong Thư viện)` : id == null ? '— chưa có trong Sarae' : '— chưa có video trong Thư viện'}</span>
-              </label>
+      <div className="ls-start">
+        <StartStep n={1} title="Máy phát" done={!!startAgent}>
+          {chosen.agent_id
+            ? <Alert tone="warning">Phiên đang giữ máy <b>{agentName(chosen.agent_id)}</b> từ lần bắt đầu trước. Tiếp tục trên máy này hoặc bấm Kết thúc để hủy.</Alert>
+            : freeAgents.length
+              ? <Select aria-label="Windows Agent" value={startAgent} onChange={v=>{setStartAgent(v);setConsoleRows(null);setConsoleConfirmed(false)}}
+                  options={[{value:'',label:'Chọn máy…'},...freeAgents.map(a=>({value:a.id,label:a.hostname}))]}
+                  hint={agents.length > freeAgents.length ? `${agents.length - freeAgents.length} máy khác chưa sẵn sàng (offline, chưa có OBS hoặc đang phát).` : undefined}/>
+              : <Alert tone="danger">Không có máy nào rảnh: cần online, đã kết nối OBS và không phát nội dung khác.</Alert>}
+        </StartStep>
+
+        <StartStep n={2} title="Giỏ sản phẩm TikTok" done={!!consoleRows}
+          hint={consoleRows ? undefined : `Mở LIVE Console trên máy, đăng nhập @${account?.user_name || account?.nick_name || 'tài khoản của phiên'} rồi bấm Đồng bộ.`}
+          action={<Button size="sm" variant={consoleRows ? 'ghost' : 'primary'} leftIcon={<RefreshCw size={14}/>} disabled={!startAgent || busy || consoleConfirmed} loading={busy && !consoleRows} onClick={()=>void syncConsole()}>{consoleRows ? 'Đồng bộ lại' : 'Đồng bộ'}</Button>}>
+          {consoleRows && <p className="ls-start-ok"><CheckCircle2 size={15}/>Đúng tài khoản @{account?.user_name || account?.nick_name} · {consoleRows.length} sản phẩm · {timeOnly(syncedAt)}</p>}
+        </StartStep>
+
+        {consoleRows && <StartStep n={3} title="Chọn sản phẩm sẽ phát" done={consoleConfirmed}
+          hint={consoleConfirmed ? undefined : selectable.length ? 'Bấm vào sản phẩm để chọn. ★ là sản phẩm phát đầu tiên.' : 'Chưa sản phẩm nào có video: gắn video trong Thư viện rồi bấm Tải lại.'}
+          action={!consoleConfirmed && <span className="ls-start-tools">
+            {selectable.length > 0 && <Button size="sm" variant="ghost" onClick={()=>setConsoleSelection(selectable)}>Chọn tất cả có video</Button>}
+            <Button size="sm" variant="ghost" leftIcon={<RefreshCw size={14}/>} onClick={refreshVideos} title="Cập nhật số video sau khi gắn trong Thư viện">Tải lại</Button>
+          </span>}>
+          <ul className="ls-cart">{consoleRows.map(row=>{
+            const id = row.sarae_product_id
+            const videos = id != null ? startById.get(id)?.video_count ?? 0 : 0
+            const picked = id != null && consoleSelection.includes(id)
+            const image = row.image_url || (id != null ? startById.get(id)?.image_url : undefined)
+            const usable = id != null && videos > 0 && !consoleConfirmed
+            return <li key={row.seller_id + ':' + row.product_id} className={'ls-cart-item' + (picked ? ' is-picked' : '') + (videos ? '' : ' is-blocked')}>
+              <button type="button" className="ls-cart-main" disabled={!usable} aria-pressed={picked} onClick={()=>{if (id != null) toggleRow(id)}}>
+                <span className="ls-cart-check">{picked && <Check size={14}/>}</span>
+                <span className="ls-cart-thumb"><Package size={20}/>{image && <img src={assetUrl(image) ?? undefined} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display = "none"}}/>}</span>
+                <span className="ls-cart-text">
+                  <strong title={row.name}>{row.name}</strong>
+                  <small>{row.price_text || '—'}</small>
+                </span>
+              </button>
+              <span className="ls-cart-side">
+                {id == null ? <Badge tone="warning">Chưa có trong Sarae</Badge>
+                  : videos ? <Badge tone="success"><Video size={12}/>{videos} video</Badge>
+                  : <a className="ls-cart-link" href="#/cloud-media" target="_blank" rel="noreferrer"><Link2 size={13}/>Gắn video</a>}
+                {picked && <button type="button" className={'ls-cart-star' + (startOpener === id || (opener == null && consoleSelection[0] === id) ? ' is-on' : '')}
+                  title="Phát sản phẩm này đầu tiên" aria-label="Phát đầu tiên" onClick={()=>setOpener(id)}><Star size={15}/></button>}
+              </span>
             </li>
           })}</ul>
-          {!consoleConfirmed && dropped.length > 0 && <Alert tone="warning" title={`${dropped.length} sản phẩm đã chuẩn bị sẽ bị bỏ khỏi phiên`}>
-            {dropped.map(productName).join(', ')} — không có trong giỏ LIVE vừa đồng bộ, chưa có video trong Thư viện, hoặc bạn đã bỏ tích.
-          </Alert>}
-          {consoleConfirmed
-            ? <MediaPrepare key={`${chosen.id}:${startAgent}`} sessionId={chosen.id} agentId={startAgent} hostname={agentName(startAgent)} onReady={setMediaReady}/>
-            : <Button disabled={!consoleSelection.length||busy} loading={busy} onClick={()=>void confirmConsole()}>{dropped.length ? `Xác nhận (bỏ ${dropped.length} sản phẩm) & lưu danh sách` : 'Xác nhận & lưu danh sách LIVE'}</Button>}
-        </div>}
-        {consoleConfirmed && <p className="ls-muted">Chọn sản phẩm phát đầu tiên. Trong lúc LIVE bạn chuyển sang sản phẩm nào cũng được, kể cả sản phẩm chưa có trong danh sách.</p>}
-        {consoleConfirmed && <ul className="ls-picker-list">{lineup.map(pid=>{
-          const p = startById.get(pid)
-          return <li key={pid}><button type="button" className={startOpener === pid ? 'is-picked' : ''} disabled={!p?.video_count} aria-pressed={startOpener === pid} onClick={()=>setOpener(pid)}>
-            <span className="ls-check ls-radio">{startOpener === pid && <Check size={13}/>}</span>
-            <ProductImage product={p}/>
-            <span className="ls-row-text"><strong>{p?.name ?? `Sản phẩm #${pid}`}</strong><small>{p?.sku || '—'}</small></span>
-            {p?.video_count ? <Badge tone="success">{p.video_count} video</Badge> : <Badge tone="warning">Chưa có video</Badge>}
-          </button></li>
-        })}</ul>}
-        <Alert tone="info">Sarae bắt đầu phát video trên OBS; việc TikTok có đang LIVE thật hay không được theo dõi riêng. Ghim sản phẩm trên TikTok LIVE. Sau khi bắt đầu bạn sẽ được chuyển sang màn Điều khiển LIVE của đúng máy này.</Alert>
+          {!consoleConfirmed && dropped.length > 0 && <p className="ls-start-warn"><CircleAlert size={14}/>Sẽ bỏ khỏi phiên: {dropped.map(productName).join(', ')}</p>}
+        </StartStep>}
+
+        {consoleConfirmed && <StartStep n={4} title="Tải video về máy" done={mediaReady}>
+          <MediaPrepare key={`${chosen.id}:${startAgent}`} sessionId={chosen.id} agentId={startAgent} hostname={agentName(startAgent)} onReady={setMediaReady}/>
+          <p className="ls-muted">Sarae phát video trên OBS; trạng thái TikTok LIVE thật được theo dõi riêng.</p>
+        </StartStep>}
       </div>
     </Modal>}
   </div>
+}
+
+/** One numbered step of the start dialog. */
+function StartStep({n, title, done, hint, action, children}:{n:number; title:string; done?:boolean; hint?:string; action?:ReactNode; children?:ReactNode}){
+  return <section className={'ls-step-card' + (done ? ' is-done' : '')}>
+    <div className="ls-step-head">
+      <span className="ls-step-num">{done ? <Check size={14}/> : n}</span>
+      <strong>{title}</strong>
+      {action && <span className="ls-step-action">{action}</span>}
+    </div>
+    {hint && <p className="ls-step-hint">{hint}</p>}
+    {children}
+  </section>
 }
 
 function confirmText({kind, session}:NonNullable<Confirm>){

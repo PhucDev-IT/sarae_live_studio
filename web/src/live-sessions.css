@@ -168,3 +168,36 @@
 .ls-media-bar span{display:block;height:100%;background:var(--ui-primary);transition:width .3s}
 .ls-media-failed{margin:0;padding-left:18px;font-size:13px;color:var(--ui-danger,#d33)}
 .ls-media-actions{display:flex;gap:8px;margin-top:4px}
+
+/* Start dialog: numbered steps, TikTok cart as product cards */
+.ls-start{display:grid;gap:12px}
+.ls-step-card{border:1px solid var(--ui-border);border-radius:12px;padding:12px 14px;display:grid;gap:10px}
+.ls-step-card.is-done{border-color:color-mix(in srgb,var(--ui-success,#2f9e66) 40%,var(--ui-border))}
+.ls-step-head{display:flex;align-items:center;gap:10px;min-height:28px;padding:0;border:0;margin:0}
+.ls-step-head strong{font-size:14px;margin:0;text-align:left}
+.ls-step-num{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:800;background:var(--ui-surface-muted,var(--soft));color:var(--ui-text-muted,var(--muted));flex-shrink:0}
+.ls-step-card.is-done .ls-step-num{background:var(--ui-success,#2f9e66);color:#fff}
+.ls-step-action{margin-left:auto;display:flex;gap:6px}
+.ls-step-hint{margin:-4px 0 0 34px;font-size:12px;color:var(--ui-text-muted,var(--muted))}
+.ls-start-ok{display:flex;align-items:center;gap:6px;margin:0 0 0 34px;font-size:12px;color:var(--ui-success,#2f9e66);font-weight:600}
+.ls-start-tools{display:flex;gap:4px}
+.ls-start-warn{display:flex;align-items:center;gap:6px;margin:0;font-size:12px;color:var(--ui-warning,#c27a1a)}
+.ls-cart{list-style:none;margin:0;padding:0;display:grid;gap:8px;max-height:46vh;overflow:auto}
+.ls-cart-item{display:flex;align-items:center;gap:8px;border:1px solid var(--ui-border);border-radius:12px;padding:6px 10px 6px 6px;background:var(--ui-surface)}
+.ls-cart-item.is-picked{border-color:var(--ui-primary,#6553d7);box-shadow:0 0 0 2px color-mix(in srgb,var(--ui-primary,#6553d7) 22%,transparent)}
+.ls-cart-item.is-blocked .ls-cart-main{opacity:.62}
+.ls-cart-main{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;text-align:left;padding:2px;cursor:pointer;border-radius:8px}
+.ls-cart-main:disabled{cursor:not-allowed}
+.ls-cart-check{width:20px;height:20px;border-radius:6px;border:2px solid var(--ui-border-strong,var(--ui-border));display:grid;place-items:center;flex-shrink:0;color:#fff}
+.ls-cart-item.is-picked .ls-cart-check{background:var(--ui-primary,#6553d7);border-color:var(--ui-primary,#6553d7)}
+.ls-cart-item.is-blocked .ls-cart-check{border-style:dashed}
+.ls-cart-thumb{width:52px;height:52px;border-radius:9px;overflow:hidden;background:var(--ui-surface-muted,var(--soft));display:grid;place-items:center;flex-shrink:0;color:var(--ui-text-muted,var(--muted))}
+.ls-cart-thumb{position:relative}.ls-cart-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ls-cart-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ls-cart-text strong{font-size:13px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ls-cart-text small{font-size:12px;color:var(--ui-text-muted,var(--muted))}
+.ls-cart-side{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.ls-cart-link{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:var(--ui-primary,#6553d7);text-decoration:none;padding:5px 9px;border:1px solid currentColor;border-radius:8px;white-space:nowrap}
+.ls-cart-star{border:0;background:transparent;color:var(--ui-text-muted,var(--muted));padding:5px;border-radius:7px;cursor:pointer}
+.ls-cart-star.is-on{color:#e6a700}
+.ls-cart-star.is-on svg{fill:currentColor}

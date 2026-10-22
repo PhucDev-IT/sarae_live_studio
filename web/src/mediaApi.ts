@@ -9,7 +9,7 @@ import { authHeaders, clearAuth } from './authToken'
 
 export const api = ((import.meta.env.VITE_API_URL as string|undefined) || 'http://127.0.0.1:8000').replace(/\/$/, '')
 /** Absolute URL for a server-relative asset path such as an Agent thumbnail. */
-export const assetUrl = (path?:string|null) => !path ? null : /^https?:/.test(path) ? path : api + path
+export const assetUrl = (path?:string|null) => !path ? null : /^(https?|data|blob):/.test(path) ? path : api + path
 
 export const sizeLabel = (bytes:number) => bytes >= 1024 ** 3 ? (bytes / 1024 ** 3).toFixed(2) + ' GB' : (bytes / 1024 ** 2).toFixed(1) + ' MB'
 export const durationLabel = (seconds?:number|null) => seconds == null || !Number.isFinite(seconds) ? null : `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
