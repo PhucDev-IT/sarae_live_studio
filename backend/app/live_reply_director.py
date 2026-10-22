@@ -7,9 +7,9 @@ Voice is the main channel. Airtime is limited and a spoken sentence cannot be ta
 - pacing (pump): one sentence at a time, most useful first (orders, then price/size...), a question older than
   max_age is no longer spoken, and a topic just spoken is not repeated within the cooldown. Neither is dropped: the
   reply falls back to the comment channel so the viewer can still be answered;
-- the spoken sentence (compose_speech) is an intro (the askers' cleaned names and, if the product on air changed
-  since the question, the product it is about) plus the answer body. The Agent speaks them as two clips: the body
-  repeats across viewers, so its audio (often rendered in advance by preparation) is reused.
+- the spoken sentence (compose_speech) goes straight to the answer, without viewer names. Only when the product on
+  air changed since the question does an intro name the product it is about. The Agent speaks intro and body as two
+  clips: the body is the same every time, so its audio (often rendered in advance by preparation) is reused.
 Comments are not posted automatically (TikTok has no API for it): the operator copies the prepared text.
 """
 import json
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from app.identity import owner_settings
 from app.comment_processing import monitors
 from app import answer_bank, reply_rules
-from app.speech_text import allowed_amounts, blocked_words, clip, safety_issues, spoken, spoken_name, strip_openers
+from app.speech_text import allowed_amounts, blocked_words, clip, safety_issues, spoken, strip_openers
 
 VOICES = ("vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural")
 
@@ -37,7 +37,6 @@ class ReplyOptions(BaseModel):
     max_age_seconds: float = Field(default=25, ge=5, le=120)
     topic_cooldown_seconds: float = Field(default=40, ge=0, le=600)
     min_confidence: float = Field(default=0.75, ge=0.3, le=1)
-    call_names: bool = True
     duck_video: bool = True
     # How the shop talks ("xưng em, gọi khách là chị, vui vẻ"), added to every AI request.
     persona: str = Field(default="", max_length=300)
@@ -88,26 +87,21 @@ def topic(reply: dict) -> str:
     return json.dumps([reply["intent"], reply["slots"], reply["product_id"]], sort_keys=True, ensure_ascii=False)
 
 
+def spoken_text(intro: str | None, body: str) -> str:
+    """Intro and body as one line for the screen ("Lan ơi, mẫu này…")."""
+    if not intro:
+        return body
+    return f"{intro} {body[:1].lower() + body[1:] if body[1:2].islower() else body}"
+
+
 def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | None,
                    say: str | None = None) -> tuple[str | None, str]:
-    """(intro, body) the voice reads: intro = askers' names and the product if it is no longer on air (None when
-    there is nothing to say first); body = the answer, read the same way for everyone so its audio is reused."""
-    names: list[str] = []
-    if options.call_names:
-        for c in reply["comments"]:
-            name = spoken_name(c.get("nickname"), c.get("username"))
-            if name and name not in names:
-                names.append(name)
-    askers = len(reply["comments"])
-    if len(names) >= 2:
-        prefix = f"{names[0]}, {names[1]} với mấy bạn nữa ơi, " if askers > 2 else f"{names[0]} với {names[1]} ơi, "
-    elif names:
-        prefix = f"{names[0]} với mấy bạn nữa ơi, " if askers > 1 else f"{names[0]} ơi, "
-    else:
-        prefix = "Mấy bạn hỏi nè, " if askers > 1 else ""
-    drift = "" if product_on_air == reply["product_id"] else f"còn {reply['product_name']} lúc nãy thì "
+    """(intro, body) the voice reads. The answer goes straight to the point: no viewer names or "mấy bạn hỏi nè".
+    The only intro is the product, when the question was about one no longer on air ("còn Áo A lúc nãy thì");
+    body = the answer, read the same way every time so its audio is reused."""
+    drift = None if product_on_air == reply["product_id"] else f"Còn {reply['product_name']} lúc nãy thì"
     body = clip(spoken((say if say is not None else reply["say"]).strip()), 440)
-    intro = clip(spoken(prefix + drift, end=False), 120).rstrip() if prefix or drift else None
+    intro = clip(spoken(drift, end=False), 120).rstrip() if drift else None
     return intro or None, body
 
 
@@ -207,7 +201,7 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
     """Send one sentence to the desk's Agent (its OBS 'Sarae Voice' source). Raises HTTPException only if `manual`."""
     from app.cloud_agents import create_command
     intro, body = compose_speech(reply, options, product_on_air, say)
-    speech = f"{intro} {body}" if intro else body
+    speech = spoken_text(intro, body)
     # Prices are checked on the sentence as written (digits) against the question's product snapshot; words on
     # the whole spoken sentence, names included.
     issues = safety_issues(say if say is not None else reply["say"], allowed_amounts(reply["_product"]))

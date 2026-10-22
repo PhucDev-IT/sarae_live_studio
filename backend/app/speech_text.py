@@ -105,12 +105,12 @@ _URL = re.compile(r"(https?://\S+|www\.\S+|\b\S+\.(?:com|vn|net|shop|me|ly)\S*)"
 _PHONE = re.compile(r"(?<!\d)(?:\+?84|0)\d(?:[\s.-]?\d){7,9}(?!\d)")
 _OPENERS = re.compile(r"^\s*(?:dạ+|vâng|xin chào|chào(?:\s+(?:anh chị|anh/chị|a/c|ac|các bạn|cả nhà|mọi người|bạn|shop|nhé|nha))*"
                       r"|cảm ơn[^,.!?]{0,40}|hello|hi)\b[\s,.!:;-]*", re.IGNORECASE)
-_SIZE = {"XS": "ích ét", "S": "ét", "M": "em", "L": "eo", "XL": "ích eo", "XXL": "hai ích eo", "XXXL": "ba ích eo",
-         "2XL": "hai ích eo", "3XL": "ba ích eo", "FREESIZE": "phri sai"}
+# Size letters read the Vietnamese way: "size L" -> "size Lờ", "XL" -> "ích Lờ".
+_SIZE = {"XS": "ích Ét", "S": "Ét", "M": "Mờ", "L": "Lờ", "XL": "ích Lờ", "XXL": "hai ích Lờ", "XXXL": "ba ích Lờ",
+         "2XL": "hai ích Lờ", "3XL": "ba ích Lờ", "FREESIZE": "free size"}
 # Short forms a seller types; only whole words are replaced, never inside other words.
-# "size" is said "sai" by Vietnamese sellers; the Vietnamese voices spell the English word otherwise.
 _WORDS = {"ko": "không", "k": "không", "kh": "không", "hok": "không", "dc": "được", "đc": "được", "sp": "sản phẩm",
-          "ib": "nhắn riêng", "inbox": "nhắn riêng", "sz": "sai", "size": "sai", "hn": "Hà Nội", "hcm": "Sài Gòn",
+          "ib": "nhắn riêng", "inbox": "nhắn riêng", "sz": "size", "hn": "Hà Nội", "hcm": "Sài Gòn",
           "tphcm": "Sài Gòn", "sg": "Sài Gòn", "freeship": "miễn phí ship", "cod": "thanh toán khi nhận hàng"}
 
 
@@ -238,12 +238,18 @@ def allowed_amounts(product: dict) -> set[int]:
 
 # ----- viewer names ------------------------------------------------------------------------------------
 
+# Words that are not a person's name: placeholders ("Khách 1"), TikTok's default "user123456", shop words.
+_NOT_NAMES = {"khach", "user", "users", "guest", "viewer", "nguoi", "xem", "tiktok", "tiktoker", "shop", "admin", "acc",
+              "account", "official", "store", "ban", "anh", "chi", "em", "test", "unknown", "customer", "live",
+              "me", "bo", "ba", "co", "chu", "di", "bac", "ong", "cau", "mo", "thim", "be", "nha", "fan", "clone"}
+
+
 def spoken_name(nickname: str | None, username: str | None) -> str | None:
-    """A short name the voice can say ("Lan"), or None when there is nothing safe and readable to say."""
+    """A short name the voice can say ("Lan"), or None when there is nothing safe, readable and personal to say."""
     for raw in (nickname, re.sub(r"[_.\d]+", " ", username or "")):
         t = unicodedata.normalize("NFC", raw or "")
         t = _EMOJI.sub(" ", t)
-        words = [w for w in re.findall(r"[A-Za-zÀ-ỹ]+", t) if 2 <= len(w) <= 12]
+        words = [w for w in re.findall(r"[A-Za-zÀ-ỹ]+", t) if 2 <= len(w) <= 12 and fold(w) not in _NOT_NAMES]
         if not words:
             continue
         name = words[0]

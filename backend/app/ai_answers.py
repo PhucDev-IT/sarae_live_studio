@@ -16,7 +16,7 @@ from app.ai_live_batches import answer_comments, public_reply, snapshot
 from app.catalog import Product
 from app.database import SessionLocal
 from app.identity import current_owner
-from app.live_reply_director import comment_text, compose_speech, reply_options, route
+from app.live_reply_director import comment_text, compose_speech, reply_options, route, spoken_text
 from app.ownership import Owner
 from app.speech_text import allowed_amounts, blocked_words, clip, safety_issues, strip_openers
 
@@ -142,7 +142,7 @@ def playground(body: PlaygroundBody, owner: Owner):
         channel, why = route(reply, options)
         intro, body_text = compose_speech(reply, options, product.id) if reply["say"] else (None, "")
         out.append({**public_reply(reply), "route": channel, "note": why, "intro": intro, "body": body_text,
-                    "spoken_text": f"{intro} {body_text}" if intro else body_text,
+                    "spoken_text": spoken_text(intro, body_text),
                     "comment_text": comment_text(reply) if reply["text"] else ""})
     return {"product": product_view(product), "replies": out, "skipped": batch["skipped"], "usage": batch["usage"],
             "error": batch["error"]}

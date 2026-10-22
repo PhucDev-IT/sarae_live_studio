@@ -3,7 +3,7 @@ import {apiRequest,errorText,onAgent,type OwnerAgent} from './mediaApi'
 import {Copy,Mic,OctagonX,Volume2,X} from 'lucide-react'
 import './live-ai.css'
 type Options={enabled:boolean;window_seconds:number;max_comments:number}
-type ReplyOptions={mode:'manual'|'semi_auto'|'auto';channel:'voice'|'comment'|'both';voice:string;rate:number;veto_seconds:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;call_names:boolean;duck_video:boolean;persona:string;auto_prepare:boolean}
+type ReplyOptions={mode:'manual'|'semi_auto'|'auto';channel:'voice'|'comment'|'both';voice:string;rate:number;veto_seconds:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;duck_video:boolean;persona:string;auto_prepare:boolean}
 type Reply={id:number;batch_id:number;product_name:string;question:string;comments:{id:number;username:string;nickname:string;comment:string}[];intent:string;slots:Record<string,string|number>;say:string;text:string;confidence:number;source:'rule'|'bank'|'cache'|'ai';review_reasons:string[];route:string|null;voice:string|null;comment:string|null;note:string;spoken_text:string;comment_text?:string;speak_at?:number;dismissed?:boolean;asked_at:string}
 type Batch={batch_id:number;product_name:string;comments:number;questions:number;skipped:{username:string;comment:string;reason:string}[];sources:{rule:number;bank?:number;cache?:number;ai:number};usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
 type AgentVoice={online:boolean;queue:number;speaking:string|null;ducked:boolean;stats:Record<string,number>;last:{status:string;code?:string;message?:string}|null;prepare_pending:number}
@@ -11,7 +11,7 @@ type Prepared={product_id:number;product_name:string;state:'none'|'running'|'rea
 type Status={stats:Record<string,number>;pending:number;voice_queue:number;unanswered:number;batches:Batch[];replies:Reply[];agent_voice?:AgentVoice|null;prepared?:Prepared|null}
 type Answer={id:number;question:string;intent:string;say:string[];text:string[];source:'ai'|'pregen'|'operator';approved:boolean;uses:number;last_used_at:string|null}
 type Answers={product_id:number|null;product_name:string;answers:Answer[]}
-const DEFAULT_REPLY:ReplyOptions={mode:'manual',channel:'voice',voice:'vi-VN-HoaiMyNeural',rate:5,veto_seconds:4,max_age_seconds:25,topic_cooldown_seconds:40,min_confidence:0.75,call_names:true,duck_video:true,persona:'',auto_prepare:true}
+const DEFAULT_REPLY:ReplyOptions={mode:'manual',channel:'voice',voice:'vi-VN-HoaiMyNeural',rate:5,veto_seconds:4,max_age_seconds:25,topic_cooldown_seconds:40,min_confidence:0.75,duck_video:true,persona:'',auto_prepare:true}
 const ANSWER_SOURCE:Record<Answer['source'],string>={ai:'AI',pregen:'Chuẩn bị sẵn',operator:'Bạn sửa'}
 const VOICE_LABEL:Record<string,string>={review:'Cần duyệt',ready:'Chờ bấm phát',scheduled:'Sắp nói',queued:'Chờ lượt nói',sent:'Đã gửi giọng',skipped:'Không nói'}
 const COMMENT_LABEL:Record<string,string>={ready:'Comment chờ gửi',done:'Đã comment',dismissed:'Bỏ qua'}
@@ -104,7 +104,6 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
       <label>Ngưỡng tự tin<input type="number" min={0.3} max={1} step={0.05} value={reply.min_confidence} onChange={e=>setReply(x=>({...x,min_confidence:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
      </div>
      <div className="lai-checks">
-      <label><input type="checkbox" checked={reply.call_names} onChange={e=>void saveReply({...reply,call_names:e.target.checked})}/> Gọi tên người hỏi</label>
       <label><input type="checkbox" checked={reply.duck_video} onChange={e=>void saveReply({...reply,duck_video:e.target.checked})}/> Giảm âm video khi AI nói</label>
       <label><input type="checkbox" checked={reply.auto_prepare} onChange={e=>void saveReply({...reply,auto_prepare:e.target.checked})}/> Tự chuẩn bị câu trả lời khi đổi sản phẩm</label>
      </div>

@@ -26,9 +26,9 @@ class SpeechTextTests(unittest.TestCase):
 
     def test_reply_is_written_for_the_ear(self):
         self.assertEqual(spoken("Mẫu này 200k thôi nha 😍"), "Mẫu này hai trăm nghìn thôi nha.")
-        self.assertEqual(spoken("55kg mặc size M là vừa"), "Năm mươi lăm ký mặc sai em là vừa.")
+        self.assertEqual(spoken("55kg mặc size M là vừa"), "Năm mươi lăm ký mặc size Mờ là vừa.")
         self.assertEqual(spoken("Giá 1tr2, freeship HN"), "Giá một triệu hai, miễn phí ship Hà Nội.")
-        self.assertEqual(spoken("Cao 1m6 lấy L nha"), "Cao một mét sáu lấy eo nha.")
+        self.assertEqual(spoken("Cao 1m6 lấy L nha"), "Cao một mét sáu lấy Lờ nha.")
 
     def test_robotic_openers_are_removed(self):
         self.assertEqual(strip_openers("Dạ chào anh chị, áo này 200k ạ"), "Áo này 200k ạ")
@@ -202,7 +202,8 @@ class LiveReplyTests(SaasTestCase):
         director.promote(self.st, second["id"])
         self.assertEqual(len(self.sent), 1)
         payload = self.sent[0]["payload"]
-        self.assertEqual((payload["intro"], payload["text"]), ("Lan ơi,", "Năm mươi lăm ký mặc em là vừa nha."))
+        self.assertEqual(payload["text"], "Năm mươi lăm ký mặc Mờ là vừa nha.")
+        self.assertNotIn("intro", payload, "no 'Lan ơi,': the voice goes straight to the answer")
         self.assertEqual((payload["rate"], payload["duck"], payload["voice"]), (10, True, "vi-VN-HoaiMyNeural"))
         self.assertEqual((first["voice"], second["voice"], second["comment"]), ("sent", "skipped", "ready"),
                          "a cancelled reply stays answerable by comment")
@@ -249,17 +250,15 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(personal["comment_text"], "@lan 55kg lấy M nha")
         self.assertEqual((order["route"], order["voice"], order["comment"]), ("both", "sent", "ready"))
 
-    def test_speech_names_the_product_when_it_is_no_longer_on_air(self):
-        reply = {"comments": [{"username": "lan", "nickname": "Lan"}, {"username": "hoa", "nickname": "Hoa"},
-                              {"username": "an", "nickname": "An"}],
+    def test_speech_goes_straight_to_the_answer_and_names_a_product_no_longer_on_air(self):
+        reply = {"comments": [{"username": "lan", "nickname": "Lan"}, {"username": "hoa", "nickname": "Hoa"}],
                  "product_id": 1, "product_name": "Áo thun trắng", "say": "Mẫu này 200k nha."}
         options = director.ReplyOptions()
         body = "Mẫu này hai trăm nghìn nha."
-        self.assertEqual(director.compose_speech(reply, options, 1), ("Lan, Hoa với mấy bạn nữa ơi,", body))
-        self.assertEqual(director.compose_speech(reply, options.model_copy(update={"call_names": False}), 2),
-                         ("Mấy bạn hỏi nè, còn Áo thun trắng lúc nãy thì", body))
-        single = {**reply, "comments": [{"username": "x1", "nickname": "🔥"}]}
-        self.assertEqual(director.compose_speech(single, options, 1), (None, body), "the same body for everyone")
+        self.assertEqual(director.compose_speech(reply, options, 1), (None, body), "no names, no 'mấy bạn hỏi nè'")
+        self.assertEqual(director.compose_speech(reply, options, 2), ("Còn Áo thun trắng lúc nãy thì", body))
+        self.assertEqual(director.spoken_text("Còn Áo thun trắng lúc nãy thì", body),
+                         "Còn Áo thun trắng lúc nãy thì mẫu này hai trăm nghìn nha.")
 
     # --- operator API ------------------------------------------------------------------------------------
 
@@ -270,8 +269,8 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(bad.status_code, 422, "a price the product does not have is refused")
         ok = self.client.post(f"/api/ai/live/replies/{reply['id']}/speak", params=on, json={"say": "Mẫu này 200k thôi nha"})
         self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertEqual((self.sent[-1]["payload"]["intro"], self.sent[-1]["payload"]["text"]),
-                         ("An ơi,", "Mẫu này hai trăm nghìn thôi nha."))
+        self.assertEqual(self.sent[-1]["payload"]["text"], "Mẫu này hai trăm nghìn thôi nha.")
+        self.assertNotIn("intro", self.sent[-1]["payload"], "straight to the answer, no viewer name")
         self.assertNotIn("_asked", ok.json())
         self.options(mode="semi_auto", veto_seconds=10)
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.")]]
