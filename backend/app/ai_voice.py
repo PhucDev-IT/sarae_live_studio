@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/ai/voice", tags=["AI LIVE Voice"], dependencies=
 
 VOICE_SOURCE = "Sarae Voice"
 VOICE = "vi-VN-HoaiMyNeural"
+SYNTH_ATTEMPTS = 4
 # Previews are generated on the shared server; one at a time per OWNER.
 preview_locks = PerOwner(lambda _owner_id: RLock())
 
@@ -54,7 +55,8 @@ def preview(body: PreviewBody, owner: Owner):
     """Generate a Vietnamese MP3 for browser playback; OBS and LIVE are not required."""
     monitor = monitors(owner["id"])
     voice_lock = preview_locks(owner["id"])
-    if not voice_lock.acquire(blocking=False):
+    # Previews of one owner wait for their turn (several "Nghe" clicks in a row) instead of failing.
+    if not voice_lock.acquire(timeout=40):
         raise HTTPException(409, "Một yêu cầu tạo giọng nói khác đang chạy")
     try:
         try:
@@ -62,11 +64,19 @@ def preview(body: PreviewBody, owner: Owner):
         except ImportError as exc:
             raise HTTPException(503, "Chưa cài edge-tts: python -m pip install edge-tts") from exc
         async def synthesize():
-            chunks = []
-            async for chunk in edge_tts.Communicate(body.text, body.voice, rate=f"{body.rate:+d}%").stream():
-                if chunk["type"] == "audio":
-                    chunks.append(chunk["data"])
-            return b"".join(chunks)
+            # The Edge service now and then answers with no audio (NoAudioReceived, about 1 request in 10 for the
+            # Vietnamese voices); the same request a moment later works, so it is retried a few times.
+            for attempt in range(SYNTH_ATTEMPTS):
+                try:
+                    chunks = []
+                    async for chunk in edge_tts.Communicate(body.text, body.voice, rate=f"{body.rate:+d}%").stream():
+                        if chunk["type"] == "audio":
+                            chunks.append(chunk["data"])
+                    return b"".join(chunks)
+                except edge_tts.exceptions.NoAudioReceived:
+                    if attempt == SYNTH_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
         try:
             audio = asyncio.run(synthesize())
             if not audio:

@@ -1,58 +1,24 @@
-import {useEffect,useRef,useState} from 'react'
-import {Bot,Play,Save,AlertCircle,Volume2,VolumeX,KeyRound,Trash2} from 'lucide-react'
-import {api,apiRequest,errorText} from './mediaApi'
-import {authHeaders} from './authToken'
+import {useEffect,useState} from 'react'
+import {Bot,Save,AlertCircle,KeyRound,MessageSquareText,Trash2} from 'lucide-react'
+import {apiRequest,errorText} from './mediaApi'
 import './ai-settings.css'
 type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean;key_source?:'owner'|'platform'|null}
 /** What the server tells about a stored key: never the key itself, only whether it exists and its last 4 characters. */
 type Credential={provider:'gemini'|'openai';configured:boolean;last4:string|null;updated_at:string|null}
 type Usage={requests:number;input_tokens:number;output_tokens:number}
-type Answer={provider:string;model:string;result:{intent:string;confidence:number;reply:string;needs_review:boolean;reason:string};usage:{input_tokens:number;output_tokens:number;latency_ms:number};action_executed:boolean}
 const defaults:Settings={provider:'gemini',model:'gemini-3.5-flash-lite',enabled:false,max_output_tokens:220,max_requests_per_session:100,has_api_key:false,key_source:null}
 const PROVIDER_NAME:Record<Credential['provider'],string>={gemini:'Google Gemini',openai:'OpenAI'}
 const JSONbody=(value:unknown,method='POST'):RequestInit=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(value)})
 export default function AISettings(){
  const [settings,setSettings]=useState<Settings>(defaults)
  const [usage,setUsage]=useState<Usage|null>(null)
- const [comment,setComment]=useState('Shop ơi áo này mặc có nóng không?')
- const [product,setProduct]=useState('')
- const [details,setDetails]=useState('')
- const [answer,setAnswer]=useState<Answer|null>(null)
  const [loading,setLoading]=useState(false)
- const [voiceEnabled,setVoiceEnabled]=useState(true)
- const [ttsVoice,setTtsVoice]=useState('vi-VN-HoaiMyNeural')
- const audioRef=useRef<HTMLAudioElement|null>(null)
- const urlRef=useRef<string|null>(null)
- const [ttsLoading,setTtsLoading]=useState(false)
- const [rate,setRate]=useState(1)
- const [speaking,setSpeaking]=useState(false)
- const [spokenText,setSpokenText]=useState('')
  const [notice,setNotice]=useState('')
  const [credentials,setCredentials]=useState<Credential[]>([])
  const [keyInput,setKeyInput]=useState('')
  const [error,setError]=useState('')
  const reload=async()=>{const [s,u,c]=await Promise.all([apiRequest<Settings>('/ai/config'),apiRequest<Usage>('/ai/usage'),apiRequest<{credentials:Credential[]}>('/ai/credentials')]);setSettings(s);setUsage(u);setCredentials(c.credentials)}
  useEffect(()=>{void reload().catch(e=>setError(errorText(e,'Không tải được cấu hình AI')))},[])
- useEffect(()=>()=>{audioRef.current?.pause();if(urlRef.current)URL.revokeObjectURL(urlRef.current)},[])
- const stopVoice=()=>{audioRef.current?.pause();audioRef.current=null;setSpeaking(false)}
- const speak=async(text:string)=>{
-  if(!text.trim())return
-  stopVoice()
-  setTtsLoading(true)
-  try{
-   const response=await fetch(api+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({text,voice:ttsVoice})})
-   if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'TTS HTTP '+response.status)}
-   const blob=await response.blob()
-   if(urlRef.current)URL.revokeObjectURL(urlRef.current)
-   const url=URL.createObjectURL(blob);urlRef.current=url
-   const audio=new Audio(url);audioRef.current=audio;audio.playbackRate=rate
-   audio.onended=()=>setSpeaking(false)
-   audio.onerror=()=>setSpeaking(false)
-   await audio.play()
-   setSpeaking(true)
-  }catch(e){setError(errorText(e,'Không tạo được giọng Việt. Kiểm tra edge-tts ở Backend.'))}
-  finally{setTtsLoading(false)}
- }
  const exec=async(job:()=>Promise<void>)=>{setLoading(true);setError('');setNotice('');try{await job()}catch(e){setError(errorText(e,'Thao tác lỗi'))}finally{setLoading(false)}}
  const update=(v:Partial<Settings>)=>setSettings(old=>({...old,...v}))
  return <div className="ais-layout">
@@ -65,7 +31,7 @@ export default function AISettings(){
  <label>Giới hạn output tokens<input type="number" min={60} max={1000} value={settings.max_output_tokens} onChange={e=>update({max_output_tokens:Number(e.target.value)})}/></label>
  <label>Giới hạn lượt gọi mỗi lần chạy Backend<input type="number" min={1} max={10000} value={settings.max_requests_per_session} onChange={e=>update({max_requests_per_session:Number(e.target.value)})}/></label>
  </div>
- <label className="ais-toggle"><input type="checkbox" checked={settings.enabled} onChange={e=>update({enabled:e.target.checked})}/> Bật AI (chỉ xử lý khi bấm Test AI; chưa tự động đọc toàn bộ comment)</label>
+ <label className="ais-toggle"><input type="checkbox" checked={settings.enabled} onChange={e=>update({enabled:e.target.checked})}/> Bật AI (dùng cho trả lời LIVE và trang Hỏi đáp AI)</label>
  <p className="ais-key">API key đang dùng: <strong>{settings.key_source==='owner'?'Key của tài khoản bạn':settings.key_source==='platform'?'Key chung của nền tảng':'Chưa có'}</strong>{settings.key_source==='platform'?' · nhập key riêng ở khung “API key” để dùng hạn mức của bạn.':''}</p>
  <button disabled={loading} onClick={()=>void exec(async()=>{const s=await apiRequest<Settings>('/ai/config',JSONbody({provider:settings.provider,model:settings.model,enabled:settings.enabled,max_output_tokens:settings.max_output_tokens,max_requests_per_session:settings.max_requests_per_session},'PUT'));setSettings(s);setNotice('Đã lưu cấu hình')})}><Save size={16}/> Lưu cấu hình</button>
  </section>
@@ -82,14 +48,9 @@ export default function AISettings(){
  </form>
  </section>
  <section className="ais-panel">
- <h3>AI Playground</h3><p>Thử từng bình luận thực tế. Không gửi trả lời lên TikTok hoặc điều khiển OBS.</p>
- <label>Bình luận<textarea value={comment} onChange={e=>setComment(e.target.value)} rows={3}/></label>
- <label>Tên sản phẩm (không bắt buộc)<input value={product} onChange={e=>setProduct(e.target.value)} placeholder="Áo trễ vai trắng"/></label>
- <label>Thông tin sản phẩm (không bắt buộc)<textarea value={details} onChange={e=>setDetails(e.target.value)} rows={2} placeholder="Chất liệu, giá, size thực tế..."/></label>
- <button disabled={loading||!comment.trim()} onClick={()=>void exec(async()=>{const result=await apiRequest<Answer>('/ai/analyze',JSONbody({comment,username:'playground',product_name:product||null,product_details:details||null}));setAnswer(result);setSpokenText(result.result.reply||'');setNotice('AI đã phân tích xong');if(voiceEnabled&&result.result.reply)void speak(result.result.reply);await reload()})}><Play size={16}/> {loading?'Đang xử lý…':'Test AI'}</button>
- <div className="ais-voice-options"><label className="ais-toggle"><input type="checkbox" checked={voiceEnabled} onChange={e=>setVoiceEnabled(e.target.checked)}/> Tự đọc khi Test AI trả kết quả</label><label>Giọng tiếng Việt<select value={ttsVoice} onChange={e=>setTtsVoice(e.target.value)}><option value="vi-VN-HoaiMyNeural">Hoài My — nữ, tiếng Việt</option><option value="vi-VN-NamMinhNeural">Nam Minh — nam, tiếng Việt</option></select></label><label>Tốc độ đọc<select value={rate} onChange={e=>setRate(Number(e.target.value))}><option value={0.85}>Chậm</option><option value={1}>Bình thường</option><option value={1.15}>Nhanh</option></select></label></div>
- <p className="ais-voice-hint">Đọc bằng Edge TTS giọng Việt qua Backend, không dùng giọng mặc định của trình duyệt. Không cần OBS.</p>
- {answer&&<div className="ais-answer"><strong>{answer.result.intent} · {Math.round(answer.result.confidence*100)}%</strong><p>{answer.result.reply}</p><small>{answer.result.reason} · {answer.result.needs_review?'Cần xác nhận':'Không yêu cầu xác nhận'}</small><small>{answer.usage.input_tokens} input / {answer.usage.output_tokens} output tokens · {answer.usage.latency_ms}ms · Không thực hiện hành động LIVE</small><label>Câu trả lời để đọc thử<textarea rows={3} maxLength={1000} value={spokenText} onChange={e=>setSpokenText(e.target.value)}/></label><div className="ais-voice-actions"><button type="button" disabled={!spokenText.trim()||ttsLoading} onClick={()=>void speak(spokenText)}><Volume2 size={16}/> {ttsLoading?"Đang tạo âm thanh…":"Đọc lại"}</button><button type="button" disabled={!speaking} onClick={stopVoice}><VolumeX size={16}/> Dừng đọc</button></div></div>}
+ <h3><MessageSquareText size={19}/> Thử AI trả lời</h3>
+ <p>Thử bình luận theo từng sản phẩm, xem câu comment và nghe giọng đọc ở trang <strong>Hỏi đáp AI</strong> (không cần LIVE).</p>
+ <button type="button" onClick={()=>{window.location.hash='/ai-answers'}}><MessageSquareText size={16}/> Mở Hỏi đáp AI</button>
  {usage&&<div className="ais-usage">Đã gọi: {usage.requests} · Input: {usage.input_tokens} tokens · Output: {usage.output_tokens} tokens</div>}
  </section>
  {(error||notice)&&<div className={'ais-alert '+(error?'is-error':'')}><AlertCircle size={17}/>{error||notice}</div>}

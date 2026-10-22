@@ -41,6 +41,7 @@ MAX_PREPARE_TEXTS = 40
 
 class VoiceService:
     GENERATE_TIMEOUT = 25.0
+    SYNTH_ATTEMPTS = 4
     MAX_QUEUE = 4
     DEFAULT_TTL = 120.0
     DUCK_DB = 12.0
@@ -80,8 +81,17 @@ class VoiceService:
             raise AgentError("TTS_UNAVAILABLE", "Thiếu thư viện edge-tts trong Agent Core") from exc
 
         async def run() -> None:
-            await asyncio.wait_for(edge_tts.Communicate(text, voice, rate=rate).save(output),
-                                   timeout=self.GENERATE_TIMEOUT)
+            # The Edge service now and then answers with no audio at all (edge_tts.exceptions.NoAudioReceived,
+            # roughly 1 request in 10 for the Vietnamese voices); the same request a moment later works.
+            for attempt in range(self.SYNTH_ATTEMPTS):
+                try:
+                    await asyncio.wait_for(edge_tts.Communicate(text, voice, rate=rate).save(output),
+                                           timeout=self.GENERATE_TIMEOUT)
+                    return
+                except edge_tts.exceptions.NoAudioReceived:
+                    if attempt == self.SYNTH_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
 
         try:
             asyncio.run(run())
