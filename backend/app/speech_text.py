@@ -139,8 +139,9 @@ def _size(match: re.Match) -> str:
     return f"{match.group(1)}{_SIZE.get(code, ' '.join(code))}"
 
 
-def spoken(text: str) -> str:
-    """The reply as the voice should read it: no emoji, links or symbols, numbers and short forms in words."""
+def spoken(text: str, end: bool = True) -> str:
+    """The reply as the voice should read it: no emoji, links or symbols, numbers and short forms in words.
+    `end` adds the final period a full sentence needs (not for an intro like "Lan ơi,")."""
     t = unicodedata.normalize("NFC", text or "")
     t = _EMOJI.sub(" ", t)
     t = _URL.sub(" ", t)
@@ -160,7 +161,7 @@ def spoken(text: str) -> str:
     t = re.sub(r"([!?.,])\1+", r"\1", t)
     t = re.sub(r"\s+([,.!?])", r"\1", t)
     t = " ".join(t.split())
-    if t and t[-1] not in ".!?":
+    if end and t and t[-1] not in ".!?":
         t += "."
     return t[:1].upper() + t[1:]
 

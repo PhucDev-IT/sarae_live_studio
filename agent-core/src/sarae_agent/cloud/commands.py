@@ -17,7 +17,7 @@ MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 
 
 def lane(kind: str) -> str:
@@ -94,6 +94,22 @@ class TtsPayload(Payload):
     rate: int = Field(default=0, ge=-30, le=50)
     ttl_seconds: float | None = Field(default=None, ge=3, le=300)
     duck: bool = True
+    # Viewer names said before `text` ("Lan với Hoa ơi,"): changes per viewer, while `text` repeats and is cached.
+    intro: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class TtsPreparePayload(Payload):
+    """Answers generated into the voice cache before they are needed (nothing is played)."""
+    texts: list[str] = Field(min_length=1, max_length=40)
+    voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    rate: int = Field(default=0, ge=-30, le=50)
+
+    @field_validator("texts")
+    @classmethod
+    def _texts(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(t) <= 450 for t in value):
+            raise ValueError("Mỗi câu TTS từ 1 đến 450 ký tự")
+        return value
 
 
 class MonitorConfigPayload(Payload):
@@ -141,7 +157,8 @@ class CommandRouter:
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "media_prepare": (MediaPreparePayload, lambda b: self._media_prepare(b.session_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice, rate=b.rate, ttl_seconds=b.ttl_seconds,
-                                                            duck=b.duck)),
+                                                            duck=b.duck, intro=b.intro)),
+            "tts_prepare": (TtsPreparePayload, lambda b: voice.prepare(b.texts, b.voice, b.rate)),
             "tts_clear": (NoPayload, lambda _: voice.clear()),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),

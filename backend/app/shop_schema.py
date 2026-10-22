@@ -8,6 +8,8 @@ def upgrade(bind=None):
     target = bind or engine
     if not {"products","live_sessions"}.issubset(set(inspect(target).get_table_names())):
         Base.metadata.create_all(bind=target)
+    from app.answer_bank import ensure_schema as answer_bank_schema
+    answer_bank_schema(target)
     with target.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS tiktok_shops (
             id INTEGER PRIMARY KEY,owner_id VARCHAR(64) NOT NULL,
@@ -36,7 +38,8 @@ def upgrade(bind=None):
         )"""))
         for table,columns in {
             "products":{"shop_id":"INTEGER","tiktok_product_id":"VARCHAR(80)","tiktok_seller_id":"VARCHAR(80)",
-                        "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)"},
+                        "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)",
+                        "ai_facts":"TEXT"},
             "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER"},
         }.items():
             present={c["name"] for c in inspect(conn).get_columns(table)}

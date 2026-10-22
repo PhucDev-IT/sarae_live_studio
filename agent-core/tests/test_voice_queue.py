@@ -46,10 +46,13 @@ class Synth:
         self.calls: list = []
         self.gate = threading.Event()
         self.gate.set()
+        self.fail: set = set()
 
     def __call__(self, text, voice, output, rate):
         self.calls.append((text, voice, rate))
         assert self.gate.wait(5)
+        if text in self.fail:
+            raise AgentError("TTS_FAILED", "fake failure", retryable=True)
         with open(output, "wb") as f:
             f.write(b"ID3fake-mp3")
 
@@ -156,3 +159,83 @@ def test_invalid_input_is_rejected(setup):
     for kwargs in ({"text": ""}, {"text": "x" * 451}, {"text": "hi", "voice": "en-US"}, {"text": "hi", "rate": 80}):
         with pytest.raises(AgentError):
             voice.speak(**kwargs)
+    with pytest.raises(AgentError):
+        voice.speak("hi", intro="x" * 121)
+
+
+ANSWER = "Mẫu này hai trăm nghìn nha."
+
+
+def test_intro_then_body_and_body_cached_across_viewers(setup):
+    voice, ws, synth, _ = setup
+    first = voice.speak(ANSWER, intro="Lan với Hoa ơi,")
+    assert first["chars"] == len(ANSWER) + len("Lan với Hoa ơi,")
+    voice.speak(ANSWER, intro="Mai ơi,")
+    status = wait_idle(voice, lambda s: s["stats"]["spoken"] == 2)
+    assert [c[0] for c in synth.calls] == ["Lan với Hoa ơi,", ANSWER, "Mai ơi,"], "the body is generated once"
+    assert len(ws.played) == 4
+    intro1, body1, intro2, body2 = ws.played
+    assert body1 == body2 and len({intro1, intro2, body1}) == 3
+    assert status["stats"]["cache_hits"] == 1
+    assert status["last"]["chars"] == len(ANSWER) + len("Mai ơi,")
+
+
+def test_intro_failure_still_speaks_the_body(setup):
+    voice, ws, synth, _ = setup
+    synth.fail.add("Lan ơi,")
+    voice.speak(ANSWER, intro="Lan ơi,")
+    status = wait_idle(voice, lambda s: s["stats"]["spoken"] == 1)
+    assert len(ws.played) == 1 and status["stats"]["failed"] == 0
+    assert status["last"]["status"] == "spoken" and status["last"]["intro_failed"] is True
+
+
+def wait_prepared(voice, count, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        status = voice.status()
+        if status["prepare_pending"] == 0 and status["stats"]["prepared"] + status["stats"]["prepare_failed"] >= count:
+            return status
+        time.sleep(0.01)
+    raise AssertionError(f"prepare not done: {voice.status()}")
+
+
+def test_prepare_returns_at_once_and_fills_the_cache(setup):
+    voice, ws, synth, _ = setup
+    synth.gate.clear()
+    started = time.monotonic()
+    result = voice.prepare([ANSWER, "  Năm mươi   lăm ký.  ", "Câu lỗi."], rate=5)
+    assert time.monotonic() - started < 0.5 and result == {"accepted": 3, "already_cached": 0}
+    synth.fail.add("Câu lỗi.")
+    synth.gate.set()
+    status = wait_prepared(voice, 3)
+    assert status["stats"]["prepared"] == 2 and status["stats"]["prepare_failed"] == 1
+    assert ws.played == [], "prepare never plays"
+    voice.speak("Năm mươi lăm ký.", rate=5)
+    status = wait_idle(voice, lambda s: s["stats"]["spoken"] == 1)
+    assert status["stats"]["cache_hits"] == 1 and len(synth.calls) == 3, "spoken from the prepared cache"
+
+
+def test_prepare_skips_cached_texts(setup):
+    voice, _, synth, _ = setup
+    voice.prepare([ANSWER])
+    wait_prepared(voice, 1)
+    assert voice.prepare([ANSWER, "Câu mới."]) == {"accepted": 1, "already_cached": 1}
+    wait_prepared(voice, 2)
+    assert [c[0] for c in synth.calls] == [ANSWER, "Câu mới."]
+
+
+def test_prepare_pending_is_bounded(setup):
+    voice, _, synth, _ = setup
+    voice.MAX_PREPARE_PENDING = 5
+    synth.gate.clear()
+    voice.prepare(["Câu đầu."])
+    deadline = time.monotonic() + 2
+    while not synth.calls and time.monotonic() < deadline:  # the thread is busy with the first text
+        time.sleep(0.01)
+    result = voice.prepare([f"Câu số {i}." for i in range(8)])
+    assert result["accepted"] == 8 and voice.status()["prepare_pending"] == 5
+    synth.gate.set()
+    wait_prepared(voice, 6)
+    assert [c[0] for c in synth.calls] == ["Câu đầu."] + [f"Câu số {i}." for i in range(3, 8)], "oldest dropped"
+    with pytest.raises(AgentError):
+        voice.prepare([])

@@ -64,7 +64,7 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | `monitor.status` / `.start` / `.stop` | — | `{state, config, events, templates}` |
 | `monitor.config` | `{interval_seconds?,threshold?,telegram_enabled?,telegram_chat_id?,autostart?}` | Cấu hình monitor |
 | `monitor.templates.list` | — | Ảnh mẫu đang có (chỉ đọc: ảnh do SUPER_ADMIN cung cấp qua Cloud, GUI không thêm/xoá) |
-| `voice.speak` | `{text≤450, voice?, rate?(-30..50), duck?}` | `{status:"queued",id,position,source,voice,chars}` (vào hàng đợi, trả về ngay) |
+| `voice.speak` | `{text≤450, voice?, rate?(-30..50), duck?, intro?≤120}` | `{status:"queued",id,position,source,voice,chars}` (vào hàng đợi, trả về ngay) |
 | `voice.clear` | — | `{cleared,stopped}` (xoá hàng đợi, dừng câu đang đọc) |
 | `voice.status` | — | `{queue,speaking,ducked,stats,last}` |
 | `diagnostics.export` | — | `{path, folder, bytes}` |

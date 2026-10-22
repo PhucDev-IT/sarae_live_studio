@@ -7,8 +7,9 @@ Voice is the main channel. Airtime is limited and a spoken sentence cannot be ta
 - pacing (pump): one sentence at a time, most useful first (orders, then price/size...), a question older than
   max_age is no longer spoken, and a topic just spoken is not repeated within the cooldown. Neither is dropped: the
   reply falls back to the comment channel so the viewer can still be answered;
-- the spoken sentence (compose_speech) adds the askers' names (cleaned) and, if the product on air changed since the
-  question, names the product it is about.
+- the spoken sentence (compose_speech) is an intro (the askers' cleaned names and, if the product on air changed
+  since the question, the product it is about) plus the answer body. The Agent speaks them as two clips: the body
+  repeats across viewers, so its audio (often rendered in advance by preparation) is reused.
 Comments are not posted automatically (TikTok has no API for it): the operator copies the prepared text.
 """
 import json
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from app.identity import owner_settings
 from app.comment_processing import monitors
+from app import answer_bank, reply_rules
 from app.speech_text import allowed_amounts, blocked_words, clip, safety_issues, spoken, spoken_name, strip_openers
 
 VOICES = ("vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural")
@@ -39,6 +41,8 @@ class ReplyOptions(BaseModel):
     duck_video: bool = True
     # How the shop talks ("xưng em, gọi khách là chị, vui vẻ"), added to every AI request.
     persona: str = Field(default="", max_length=300)
+    # Prepare answers and their audio as soon as a new product is on air (one AI call per product version).
+    auto_prepare: bool = True
 
 
 def reply_options(owner_id: str) -> ReplyOptions:
@@ -84,8 +88,10 @@ def topic(reply: dict) -> str:
     return json.dumps([reply["intent"], reply["slots"], reply["product_id"]], sort_keys=True, ensure_ascii=False)
 
 
-def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | None, say: str | None = None) -> str:
-    """The sentence the voice reads: askers' names, the product if it is no longer on air, then the answer."""
+def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | None,
+                   say: str | None = None) -> tuple[str | None, str]:
+    """(intro, body) the voice reads: intro = askers' names and the product if it is no longer on air (None when
+    there is nothing to say first); body = the answer, read the same way for everyone so its audio is reused."""
     names: list[str] = []
     if options.call_names:
         for c in reply["comments"]:
@@ -100,10 +106,9 @@ def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | Non
     else:
         prefix = "Mấy bạn hỏi nè, " if askers > 1 else ""
     drift = "" if product_on_air == reply["product_id"] else f"còn {reply['product_name']} lúc nãy thì "
-    body = (say if say is not None else reply["say"]).strip()
-    if (prefix or drift) and body[1:2].islower():  # "Mẫu này..." continues the sentence; "XL..." keeps its case
-        body = body[:1].lower() + body[1:]
-    return clip(spoken(prefix + drift + body), 440)
+    body = clip(spoken((say if say is not None else reply["say"]).strip()), 440)
+    intro = clip(spoken(prefix + drift, end=False), 120).rstrip() if prefix or drift else None
+    return intro or None, body
 
 
 def comment_text(reply: dict, text: str | None = None) -> str:
@@ -201,7 +206,8 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
                ttl: float = 120, manual: bool = False):
     """Send one sentence to the desk's Agent (its OBS 'Sarae Voice' source). Raises HTTPException only if `manual`."""
     from app.cloud_agents import create_command
-    speech = compose_speech(reply, options, product_on_air, say)
+    intro, body = compose_speech(reply, options, product_on_air, say)
+    speech = f"{intro} {body}" if intro else body
     # Prices are checked on the sentence as written (digits) against the question's product snapshot; words on
     # the whole spoken sentence, names included.
     issues = safety_issues(say if say is not None else reply["say"], allowed_amounts(reply["_product"]))
@@ -212,8 +218,10 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
             raise HTTPException(422, "Không phát được: " + "; ".join(issues))
         _touch(reply, voice="review", note="; ".join(issues))
         return
-    payload = {"text": speech, "voice": options.voice, "rate": options.rate,
+    payload = {"text": body, "voice": options.voice, "rate": options.rate,
                "ttl_seconds": round(max(5.0, min(300.0, ttl)), 1), "duck": options.duck_video}
+    if intro:
+        payload["intro"] = intro
     try:
         command = create_command(st.agent_id, st.owner_id, "tts_speak", payload)
     except HTTPException as exc:
@@ -258,7 +266,12 @@ def speak_now(st, reply_id: int, say: str | None):
         send_voice(st, reply, options, on_air["product"]["id"] if on_air else None, say=say, manual=True)
         if say is not None:
             _touch(reply, say=say)
-        return reply
+    # Spoken by the operator's decision: the answer is approved and reused for the same question from now on.
+    if reply["intent"] not in ("COMPLAINT", "OTHER", "GREETING") and not reply_rules.mentions_other_product(reply["question"]):
+        for question in reply["question"].split(" / "):
+            answer_bank.save(st.owner_id, reply["product_id"], reply["version"], question, reply["intent"], reply["slots"],
+                             [reply["say"]], [reply["text"]], "operator", approved=True)
+    return reply
 
 
 def cancel(st, reply_id: int):

@@ -94,3 +94,14 @@
   .pp-form-row{grid-template-columns:1fr}
 }
 .pp-badge-link{text-decoration:none}
+
+/* AI facts (size table) */
+.pp-facts{display:grid;gap:12px;padding:14px;border:1px solid var(--ui-border);border-radius:10px}
+.pp-facts-hint{margin:0;font-size:12.5px;color:var(--ui-text-muted)}
+.pp-size-table{display:grid;gap:6px;justify-items:start}
+.pp-size-row{display:grid;grid-template-columns:64px 128px 128px minmax(0,1fr) 30px;gap:6px;align-items:center;width:100%}
+.pp-size-row.is-head{font-size:12px;font-weight:600;color:var(--ui-text-muted)}
+.pp-size-row input{width:100%;min-width:0;height:32px;padding:0 8px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface);color:var(--ui-text);font:inherit;font-size:13px}
+.pp-size-row input:focus{outline:0;border-color:var(--ui-primary)}
+.pp-range{display:flex;align-items:center;gap:3px;color:var(--ui-text-muted)}
+@media(max-width:620px){.pp-size-row{grid-template-columns:56px 1fr 1fr 30px}.pp-size-row>:nth-child(4){grid-column:1/-2}.pp-size-row.is-head>:nth-child(4){display:none}}

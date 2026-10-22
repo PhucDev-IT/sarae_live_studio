@@ -294,6 +294,7 @@ class AgentRuntime:
                                "needs_manual_resume": False},
             "playback": play,
             "media_cache": self.media_cache_report(),
+            "voice": self.voice.status(),  # queue, stats, last sentence; no file paths
         }
 
     def sync_tiktok_products(self, expected_user_id: str | None = None) -> dict:

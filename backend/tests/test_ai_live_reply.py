@@ -180,7 +180,7 @@ class LiveReplyTests(SaasTestCase):
         first = self.batch(("a", "", "vải gì vậy shop"))[0]
         self.assertEqual(first["say"], "Vải cotton ạ.")
         again = self.batch(("b", "", "Vải gì vậy shop?"))[0]
-        self.assertEqual((again["source"], len(self.prompts)), ("cache", 1), "same question, same product: no new call")
+        self.assertEqual((again["source"], len(self.prompts)), ("bank", 1), "same question, same product: no new call")
 
     def test_noise_is_skipped_with_a_reason(self):
         self.batch(("a", "", "hi"), ("b", "", "❤️"))
@@ -201,7 +201,7 @@ class LiveReplyTests(SaasTestCase):
         director.promote(self.st, second["id"])
         self.assertEqual(len(self.sent), 1)
         payload = self.sent[0]["payload"]
-        self.assertEqual(payload["text"], "Lan ơi, năm mươi lăm ký mặc em là vừa nha.")
+        self.assertEqual((payload["intro"], payload["text"]), ("Lan ơi,", "Năm mươi lăm ký mặc em là vừa nha."))
         self.assertEqual((payload["rate"], payload["duck"], payload["voice"]), (10, True, "vi-VN-HoaiMyNeural"))
         self.assertEqual((first["voice"], second["voice"], second["comment"]), ("sent", "skipped", "ready"),
                          "a cancelled reply stays answerable by comment")
@@ -253,10 +253,12 @@ class LiveReplyTests(SaasTestCase):
                               {"username": "an", "nickname": "An"}],
                  "product_id": 1, "product_name": "Áo thun trắng", "say": "Mẫu này 200k nha."}
         options = director.ReplyOptions()
-        self.assertEqual(director.compose_speech(reply, options, 1),
-                         "Lan, Hoa với mấy bạn nữa ơi, mẫu này hai trăm nghìn nha.")
+        body = "Mẫu này hai trăm nghìn nha."
+        self.assertEqual(director.compose_speech(reply, options, 1), ("Lan, Hoa với mấy bạn nữa ơi,", body))
         self.assertEqual(director.compose_speech(reply, options.model_copy(update={"call_names": False}), 2),
-                         "Mấy bạn hỏi nè, còn Áo thun trắng lúc nãy thì mẫu này hai trăm nghìn nha.")
+                         ("Mấy bạn hỏi nè, còn Áo thun trắng lúc nãy thì", body))
+        single = {**reply, "comments": [{"username": "x1", "nickname": "🔥"}]}
+        self.assertEqual(director.compose_speech(single, options, 1), (None, body), "the same body for everyone")
 
     # --- operator API ------------------------------------------------------------------------------------
 
@@ -267,7 +269,8 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(bad.status_code, 422, "a price the product does not have is refused")
         ok = self.client.post(f"/api/ai/live/replies/{reply['id']}/speak", params=on, json={"say": "Mẫu này 200k thôi nha"})
         self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertEqual(self.sent[-1]["payload"]["text"], "An ơi, mẫu này hai trăm nghìn thôi nha.")
+        self.assertEqual((self.sent[-1]["payload"]["intro"], self.sent[-1]["payload"]["text"]),
+                         ("An ơi,", "Mẫu này hai trăm nghìn thôi nha."))
         self.assertNotIn("_asked", ok.json())
         self.options(mode="semi_auto", veto_seconds=10)
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.")]]
@@ -291,6 +294,113 @@ class LiveReplyTests(SaasTestCase):
         self.batch(("a", "", "vải gì"))
         self.assertIn("PHONG CÁCH CỦA SHOP: xưng em, gọi khách là chị", self.prompts[0])
 
+    # --- structured facts, answer bank, preparation -------------------------------------------------------
+
+    def set_facts(self, facts):
+        response = self.client.put(f"/api/tiktok-catalog/products/{self.product_id}/ai-facts", json=facts)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["ai_facts"]
+
+    def test_size_color_material_are_answered_from_product_facts(self):
+        facts = self.set_facts({"sizes": [{"size": "m", "weight_min": 45, "weight_max": 55},
+                                          {"size": "L", "weight_min": 56, "weight_max": 65}],
+                                "colors": ["trắng", "đen"], "material": "cotton 100%"})
+        self.assertEqual(facts["sizes"][0]["size"], "M")
+        self.assertEqual(self.client.get(f"/api/products/{self.product_id}").json()["ai_facts"]["colors"], ["trắng", "đen"])
+        replies = self.batch(("a", "", "50kg mặc size gì"), ("b", "", "có màu đen không"), ("c", "", "vải gì vậy shop"),
+                             ("d", "", "có màu xanh ko"))
+        self.assertEqual(self.prompts, [], "all four answered without the AI")
+        self.assertEqual([r["source"] for r in replies], ["rule"] * 4)
+        self.assertIn("M", replies[0]["say"])
+        self.assertEqual(replies[0]["slots"], {"weight_kg": 50.0})
+        self.assertIn("trắng", replies[3]["say"], "a color not in the list: says what there is")
+        self.assertEqual(self.client.put(f"/api/tiktok-catalog/products/{self.product_id}/ai-facts",
+                                         json={"sizes": [{"size": "M", "weight_min": 60, "weight_max": 50}]}).status_code, 422)
+        self.assertEqual(self.client.put(f"/api/tiktok-catalog/products/{self.product_id}/ai-facts", json={},
+                                         headers=self.B).status_code, 404)
+
+    def test_facts_change_the_product_version(self):
+        before = context(self.owner_a["id"], self.agent_id)["version"]
+        self.set_facts({"material": "lụa"})
+        after = context(self.owner_a["id"], self.agent_id)
+        self.assertNotEqual(before, after["version"])
+        self.assertEqual(after["product"]["facts"]["material"], "lụa")
+
+    def test_answer_bank_survives_and_matches_close_wording_but_never_other_numbers(self):
+        from app import answer_bank
+        version = context(self.owner_a["id"], self.agent_id)["version"]
+        answer_bank.save(self.owner_a["id"], self.product_id, version, "vải có nhăn không shop", "ASK_MATERIAL", {},
+                         ["Vải ít nhăn lắm nha."], ["ít nhăn nha"], "ai")
+        answer_bank.save(self.owner_a["id"], self.product_id, version, "70kg mặc vừa không", "ASK_SIZE",
+                         {"weight_kg": 70}, ["70kg thì hơi chật nha."], [""], "ai")
+        self.ai_answers = [[answer(2, "ASK_SIZE", "55kg mặc vừa nha.", slots={"weight_kg": 55})]]
+        close, other = self.batch(("a", "", "vải này có nhăn không vậy"), ("b", "", "55kg mặc vừa không"))
+        self.assertEqual((close["source"], close["say"]), ("bank", "Vải ít nhăn lắm nha."))
+        self.assertEqual(other["source"], "ai", "55kg never reuses the 70kg answer")
+        self.assertFalse(answer_bank.similar("vải có nhăn không", "vải không nhăn"), "negation must match")
+        listed = self.client.get("/api/ai/live/answers", params={"agent_id": self.agent_id}).json()
+        self.assertEqual(listed["product_id"], self.product_id)
+        questions = {a["question"]: a for a in listed["answers"]}
+        self.assertEqual(questions["vải có nhăn không shop"]["uses"], 1)
+        self.assertIn("55kg mặc vừa không", questions, "a checked AI answer is saved for next time")
+        entry = questions["70kg mặc vừa không"]["id"]
+        self.assertEqual(self.client.delete(f"/api/ai/live/answers/{entry}", params={"agent_id": self.agent_id}, headers=self.B).status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/ai/live/answers/{entry}", params={"agent_id": self.agent_id}).json(), {"ok": True})
+
+    def test_operator_answer_is_approved_and_wins(self):
+        from app import answer_bank
+        self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.")]]
+        reply = self.batch(("a", "", "vải gì vậy"))[0]
+        ok = self.client.post(f"/api/ai/live/replies/{reply['id']}/speak", params={"agent_id": self.agent_id},
+                              json={"say": "Cotton mặc mát lắm luôn á"})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        version = context(self.owner_a["id"], self.agent_id)["version"]
+        entry = [a for a in answer_bank.list_for(self.owner_a["id"], self.product_id, version) if a["question"] == "vải gì vậy"][0]
+        self.assertEqual((entry["source"], entry["approved"], entry["say"]), ("operator", True, ["Cotton mặc mát lắm luôn á"]))
+        answer_bank.save(self.owner_a["id"], self.product_id, version, "vải gì vậy", "ASK_MATERIAL", {}, ["khác"], [], "ai")
+        again = self.batch(("b", "", "vải gì vậy"))[0]
+        self.assertEqual(again["say"], "Cotton mặc mát lắm luôn á", "the AI never overwrites the operator")
+
+    def test_product_on_air_is_prepared_once_with_audio(self):
+        from app.ai_live_batches import prepare
+        self.options(mode="manual")
+        self.ai_answers = [[]]
+        prepared_items = [{"question": "áo này bn", "intent": "ASK_PRICE", "slots": {},
+                           "say": ["Mẫu này 200k thôi nha.", "Dạ chào anh chị, giá 200k ạ.", "Giá 250k nha."],
+                           "text": ["200k nha"]},
+                          {"question": "vải gì", "intent": "ASK_MATERIAL", "say": ["Vải cotton mát nha."], "text": []},
+                          {"question": "hàng lỗi đổi sao", "intent": "COMPLAINT", "say": ["Nhắn shop nha."]}]
+
+        def fake_prepare_ai(config, text, key):
+            self.prompts.append(text)
+            return json.dumps({"items": prepared_items}), 300, 200
+        ctx = context(self.owner_a["id"], self.agent_id)
+        state = {"state": "running", "count": 0, "version": ctx["version"]}
+        with patch.object(ai_service, "call_openai", fake_prepare_ai):
+            prepare(self.st, ctx, False, state)
+            prepare(self.st, ctx, False, state)
+        self.assertEqual(len(self.prompts), 1, "a version is prepared once")
+        self.assertEqual((state["state"], state["count"]), ("ready", 2), "complaints are never prepared")
+        listed = self.client.get("/api/ai/live/answers", params={"agent_id": self.agent_id}).json()["answers"]
+        price = [a for a in listed if a["intent"] == "ASK_PRICE"][0]
+        self.assertEqual(price["say"], ["Mẫu này 200k thôi nha.", "Giá 200k ạ."], "openers cut, wrong price dropped")
+        audio = [c for c in self.sent if c["kind"] == "tts_prepare"]
+        self.assertEqual(len(audio), 2)
+        self.assertIn("Mẫu này hai trăm nghìn thôi nha.", audio[0]["payload"]["texts"])
+        found = self.batch(("x", "", "áo này bn vậy"))[0]
+        self.assertEqual(found["source"], "rule", "plain price questions still use the rule")
+        material = self.batch(("y", "", "vải gì"))[0]
+        self.assertEqual((material["source"], material["say"]), ("bank", "Vải cotton mát nha."))
+
+    def test_status_reports_preparation_and_agent_voice(self):
+        self.client.put("/api/ai/live/config", json={"enabled": True, "window_seconds": 2, "max_comments": 8})
+        with patch("app.ai_live_batches.executor.submit") as submit:
+            status = self.client.get("/api/ai/live/status", params={"agent_id": self.agent_id}).json()
+            self.client.get("/api/ai/live/status", params={"agent_id": self.agent_id})
+        self.assertEqual(submit.call_count, 1, "started once per product version")
+        self.assertEqual((status["prepared"]["state"], status["prepared"]["product_id"]), ("running", self.product_id))
+        self.assertIsNone(status["agent_voice"], "no voice report from this Agent yet")
+
     def test_tts_payload_options_are_validated_for_the_agent(self):
         from app.cloud_agents import validate_payload
         self.assertEqual(validate_payload("tts_speak", {"text": "hi", "rate": 5, "ttl_seconds": 20, "duck": False}),
@@ -299,6 +409,12 @@ class LiveReplyTests(SaasTestCase):
             with self.assertRaises(Exception):
                 validate_payload("tts_speak", bad)
         self.assertEqual(validate_payload("tts_clear", {}), {})
+        self.assertEqual(validate_payload("tts_speak", {"text": "hi", "intro": "Lan ơi,"})["intro"], "Lan ơi,")
+        self.assertEqual(validate_payload("tts_prepare", {"texts": ["a", "b"], "rate": 5}),
+                         {"texts": ["a", "b"], "voice": "vi-VN-HoaiMyNeural", "rate": 5})
+        for bad in ({"texts": []}, {"texts": ["x" * 451]}, {"texts": ["a"] * 41}):
+            with self.assertRaises(Exception):
+                validate_payload("tts_prepare", bad)
 
 
 if __name__ == "__main__":

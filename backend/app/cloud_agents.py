@@ -63,7 +63,7 @@ RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "tiktok_products
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
                    "android_mock_live_start", "android_mock_live_stop"}
-BACKGROUND_KINDS = {"tts_speak", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 MAX_ATTEMPTS = 3
 DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
 SLOW_TTL_SECONDS = 180
@@ -164,6 +164,8 @@ class Heartbeat(BaseModel):
     playback:dict|None=None
     # Media cache job (ids, revisions, progress; never file paths): see agent_media.media_readiness.
     media_cache:dict|None=None
+    # VoiceService.status() on the Agent: queue, sentence being spoken, last result.
+    voice:dict|None=None
 
 def _media_cache(report:dict|None)->dict|None:
     """Keep only what readiness needs from the Agent's cache report, with bounded sizes."""
@@ -178,6 +180,18 @@ def _media_cache(report:dict|None)->dict|None:
             "total":number(report.get("total")),"bytes_total":number(report.get("bytes_total")),
             "bytes_done":number(report.get("bytes_done")),
             "ready":items("ready",("media_id","revision"),300),"failed":items("failed",("media_id","error"),50)}
+
+def _voice(report:dict|None)->dict|None:
+    """Bounded view of the Agent's voice queue for the web."""
+    if not isinstance(report,dict):
+        return None
+    number=lambda v:int(v) if isinstance(v,(int,float)) and not isinstance(v,bool) and v>=0 else 0
+    last=report.get("last") if isinstance(report.get("last"),dict) else None
+    return {"queue":number(report.get("queue")),"prepare_pending":number(report.get("prepare_pending")),
+            "speaking":str(report["speaking"])[:120] if report.get("speaking") else None,
+            "ducked":bool(report.get("ducked")),
+            "stats":{str(k)[:30]:number(v) for k,v in list((report.get("stats") or {}).items())[:12]} if isinstance(report.get("stats"),dict) else {},
+            "last":{k:str(last[k])[:200] for k in ("status","code","message") if last.get(k) is not None} if last else None}
 
 def _without_paths(verification:dict)->dict:
     """Drop absolute file paths of the Agent's PC before storing (the watched program's name is enough)."""
@@ -240,7 +254,7 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     at=_now()
     verification=_without_paths(body.verification)
     sanitized={"verification":verification,"obs":body.obs,"local_playback":body.local_playback,
-               "playback":body.playback,"media_cache":_media_cache(body.media_cache)}
+               "playback":body.playback,"media_cache":_media_cache(body.media_cache),"voice":_voice(body.voice)}
     with _db() as db:
         db.execute("BEGIN IMMEDIATE")
         row=db.execute("SELECT captcha_alert FROM agent_status WHERE agent_id=?",(body.agent_id,)).fetchone()
@@ -283,7 +297,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
-COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
+COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","tts_prepare","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
@@ -364,7 +378,16 @@ def validate_payload(kind:str,payload:dict|None)->dict:
                 raise HTTPException(422,"ttl_seconds từ 3 đến 300")
             out["ttl_seconds"]=float(ttl)
         if "duck" in payload:out["duck"]=_bool(payload["duck"],"duck")
+        if payload.get("intro") is not None:out["intro"]=_text(payload["intro"],"intro",1,120)
         return out
+    if kind=="tts_prepare":
+        texts=payload.get("texts")
+        if not isinstance(texts,list) or not 1<=len(texts)<=40 or any(not isinstance(t,str) or not 1<=len(t)<=450 for t in texts):
+            raise HTTPException(422,"texts: 1-40 câu, mỗi câu 1-450 ký tự")
+        voice=payload.get("voice","vi-VN-HoaiMyNeural")
+        if voice not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
+            raise HTTPException(422,"Giọng không được hỗ trợ")
+        return {"texts":texts,"voice":voice,"rate":_int(payload.get("rate",0),"rate",-30,50)}
     if kind=="local_playlist_start":
         return {"media_ids":_media_ids(payload.get("media_ids")),"loop":_bool(payload.get("loop",True),"loop")}
     if kind=="local_media_play":

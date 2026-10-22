@@ -53,6 +53,8 @@ class Product(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     image_url: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    # Sarae's own structured facts for the AI (app/product_facts.py), JSON; TikTok never writes it.
+    ai_facts: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -128,9 +130,16 @@ class ProductOut(ProductInput):
     stock_num: int | None = None
     origin_price: float | None = None
     tiktok_category: str | None = None
+    ai_facts: dict = Field(default_factory=dict)
     model_config = ConfigDict(from_attributes=True)
     id: int
     created_at: datetime
+
+    @field_validator("ai_facts", mode="before")
+    @classmethod
+    def facts(cls, value):
+        from app.product_facts import parse
+        return parse(value)
 
 
 class PresenterOut(PresenterInput):

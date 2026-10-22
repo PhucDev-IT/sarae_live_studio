@@ -2,9 +2,13 @@
 
 Batching is about the API call only: questions that arrive in the same window go to the AI in ONE request, but every
 question gets its own answer. Sources, cheapest first:
-  1. rules (app/reply_rules): chat noise is skipped, a plain price question is answered from the product price;
-  2. the answer cache: the same question about the same product version already answered by the same model;
+  1. rules (app/reply_rules): chat noise is skipped; plain price, size-by-weight, color and material questions are
+     answered from the product data and its structured facts (app/product_facts);
+  2. the answer bank (app/answer_bank, in the database): the same or a closely worded question about the same product
+     version, answered before by the AI, prepared when the product went on air, or written by the operator;
   3. the AI, once per batch, with a single retry for questions it left out.
+When a product goes on air, `prepare` asks the AI once for the questions viewers usually ask about it, stores the
+answers in the bank and has the Agent render their audio in advance, so most questions are answered at once.
 Several viewers share one answer only when CODE finds the same intent with the same details (slots) about the same
 product version; the AI never decides that. Every comment ends in a visible state (answered, needs review, skipped with
 a reason). What happens to an answer next (voice, comment, review) is app/live_reply_director's job.
@@ -28,9 +32,10 @@ from app.per_owner import PerOwner, live_key
 from app.catalog import Product
 from app.database import SessionLocal
 from app.comment_processing import monitors
-from app import ai_service, reply_rules
+from app import ai_service, answer_bank, reply_rules
+from app.product_facts import parse as parse_facts
 from app.live_reply_director import ReplyOptions
-from app.speech_text import allowed_amounts, clip, safety_issues, strip_openers
+from app.speech_text import allowed_amounts, clip, price_short, safety_issues, spoken, strip_openers
 
 router = APIRouter(prefix="/api/ai/live", tags=["AI LIVE Batching"], dependencies=[Depends(current_owner)])
 
@@ -52,8 +57,9 @@ class BatchState:
         self.results = deque(maxlen=150)
         self.replies: OrderedDict[int, dict] = OrderedDict()
         self.reply_seq = 0
-        self.cache = {}
         self.sequence = 0
+        # Latest preparation of the product on air: {product_id, product_name, version, state, count, error}.
+        self.prepared: dict | None = None
         self.timers = {}
         # Voice pacing (app/live_reply_director): replies waiting to be spoken, when the voice is free again,
         # when each topic was last spoken.
@@ -66,7 +72,6 @@ class BatchState:
 
 states = PerOwner(BatchState)
 MAX_REPLIES = 300
-MAX_CACHE = 400
 # Intents whose answer does not depend on who asks: viewers asking the same thing with the same details share one.
 MERGEABLE = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_STOCK", "ASK_SHIPPING", "SHOW_PRODUCT"}
 SLOTS = {"weight_kg": (float, 20, 200), "height_cm": (float, 90, 230), "quantity": (int, 1, 99),
@@ -92,7 +97,8 @@ def context(owner_id: str, agent_id: str):
         if not product or product.owner_id != owner_id or product.status != "ACTIVE":
             return None
         details = {"id": product.id, "name": product.name, "price": product.price, "origin_price": product.origin_price,
-                   "stock": product.stock_num, "description": product.description[:950], "status": product.status}
+                   "stock": product.stock_num, "description": product.description[:950], "status": product.status,
+                   "facts": parse_facts(product.ai_facts)}
         fingerprint = sha256(json.dumps(details, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
         return {"session_id": session.id, "product": details, "version": fingerprint}
 
@@ -138,9 +144,15 @@ slots (chỉ khi câu hỏi có): weight_kg, height_cm, size, color, place, quan
 """
 
 
+def product_data(product: dict) -> dict:
+    """What the AI may know about the product: TikTok data, the AI description and the structured facts."""
+    facts = {k: v for k, v in (product.get("facts") or {}).items() if v}
+    return {"name": product["name"], "price": product.get("price"), "original_price": product.get("origin_price"),
+            "stock": product.get("stock"), "description": product.get("description") or "", **facts}
+
+
 def batch_prompt(product: dict, questions: list[dict], persona: str = "") -> str:
-    data = {"name": product["name"], "price": product.get("price"), "original_price": product.get("origin_price"),
-            "stock": product.get("stock"), "description": product.get("description") or ""}
+    data = product_data(product)
     return (RULES + (f"PHONG CÁCH CỦA SHOP: {persona}\n" if persona.strip() else "")
             + "PRODUCT: " + json.dumps(data, ensure_ascii=False) + "\n"
             + "QUESTIONS: " + json.dumps([{"qid": q["qid"], "text": q["text"]} for q in questions], ensure_ascii=False))
@@ -201,11 +213,6 @@ def ask_ai(st: BatchState, product: dict, questions: list[dict], persona: str) -
 
 
 # ----- batch -> replies --------------------------------------------------------------------------------
-
-def cache_key(config, version: str, text: str) -> str:
-    return sha256(json.dumps([config.provider, config.model, version, reply_rules.normalize(text)],
-                             ensure_ascii=False).encode()).hexdigest()
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -271,10 +278,9 @@ def run_batch(st: BatchState, batch_id, items):
     ctx = items[0]["context"]
     product = ctx["product"]
     options = director.reply_options(st.owner_id)
-    config = ai_service.load_config(st.owner_id)
     batch = {"batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
              "product_name": product["name"], "comments": len(items), "questions": 0, "skipped": [],
-             "sources": {"rule": 0, "cache": 0, "ai": 0}, "usage": [], "status": "processing", "error": None,
+             "sources": {"rule": 0, "bank": 0, "ai": 0}, "usage": [], "status": "processing", "error": None,
              "reply_ids": [], "created_at": _now_iso()}
     # Same words (after teencode/marks normalization) are one question with all its askers; noise is skipped.
     questions: dict[str, dict] = {}
@@ -287,14 +293,15 @@ def run_batch(st: BatchState, batch_id, items):
     batch["questions"] = len(questions)
     answers: dict[int, tuple[dict | None, str, str]] = {}
     for q in questions.values():
-        rule = reply_rules.price_answer(product) if reply_rules.price_only(q["text"]) else None
+        rule = (reply_rules.price_answer(product) if reply_rules.price_only(q["text"])
+                else reply_rules.fact_answer(q["text"], product.get("facts") or {}))
         if rule:
             answers[q["qid"]] = (rule, "rule", "")
             continue
-        with st.lock:
-            cached = st.cache.get(cache_key(config, ctx["version"], q["text"]))
-        if cached:
-            answers[q["qid"]] = (dict(cached), "cache", "")
+        if not reply_rules.mentions_other_product(q["text"]):
+            known = answer_bank.find(st.owner_id, product["id"], ctx["version"], q["text"])
+            if known:
+                answers[q["qid"]] = (known, "bank", "")
     remaining = [q for q in questions.values() if q["qid"] not in answers]
     if remaining:
         try:
@@ -321,16 +328,14 @@ def run_batch(st: BatchState, batch_id, items):
         batch["sources"][source] += 1
         reply = make_reply(st, batch_id, ctx, q, answer, source, error)
         replies.append(reply)
-        if source == "ai" and answer and not reply["review_reasons"] and answer["confidence"] >= 0.6:
-            with st.lock:
-                st.cache[cache_key(config, ctx["version"], q["text"])] = {k: answer[k] for k in answer}
-                while len(st.cache) > MAX_CACHE:
-                    st.cache.pop(next(iter(st.cache)))
+        if source == "ai" and answer and not reply["review_reasons"] and answer["confidence"] >= 0.6                 and answer["intent"] not in ("COMPLAINT", "OTHER", "GREETING"):
+            answer_bank.save(st.owner_id, product["id"], ctx["version"], q["text"], answer["intent"], answer["slots"],
+                             [answer["say"]], [answer["text"]], "ai")
     replies = merge_replies(replies)
     batch["reply_ids"] = [r["id"] for r in replies]
     batch["status"] = "error" if batch["error"] else "ready"
     monitor.record("BATCH", "answered", f"#{batch_id}: {len(items)} bình luận → {len(questions)} câu hỏi → "
-                   f"{len(replies)} câu trả lời (luật {batch['sources']['rule']}, cache {batch['sources']['cache']}, "
+                   f"{len(replies)} câu trả lời (luật {batch['sources']['rule']}, kho {batch['sources']['bank']}, "
                    f"AI {batch['sources']['ai']}, bỏ qua {len(batch['skipped'])})")
     with st.lock:
         for reply in replies:
@@ -340,7 +345,7 @@ def run_batch(st: BatchState, batch_id, items):
         st.stats["processed"] += len(items)
         st.stats["noise"] += len(batch["skipped"])
         st.stats["rule"] += batch["sources"]["rule"]
-        st.stats["cached"] += batch["sources"]["cache"]
+        st.stats["cached"] += batch["sources"]["bank"]
         st.stats["ai_questions"] += batch["sources"]["ai"]
         st.stats["replies"] += len(replies)
         st.results.append(batch)
@@ -358,6 +363,7 @@ def enqueue(owner_id: str, agent_id: str, message):
         with st.lock:
             st.stats["skipped"] += 1
         return
+    maybe_prepare(st, ctx)
     key = (ctx["session_id"], ctx["product"]["id"], ctx["version"])
     item = {"id": message.get("id"), "username": message.get("username") or "", "nickname": message.get("nickname") or "",
             "comment": message.get("comment") or "", "context": ctx, "asked_at": time.monotonic(), "asked_iso": _now_iso()}
@@ -373,6 +379,107 @@ def enqueue(owner_id: str, agent_id: str, message):
         full = len(queue) >= options.max_comments
     if full:
         flush(st, key)
+
+
+# ----- preparation when a product goes on air ---------------------------------------------------------
+
+PREPARE_RULES = """Bạn chuẩn bị sẵn câu trả lời cho người bán đang LIVE trên TikTok, trước khi người xem hỏi.
+Từ PRODUCT, liệt kê tối đa 15 câu người xem hay hỏi nhất về sản phẩm này mà PRODUCT CÓ ĐỦ dữ liệu để trả lời (giá, size theo cân nặng, màu, chất liệu, vận chuyển, cách giặt, phối đồ...). Không tạo câu hỏi mà dữ liệu không trả lời được; không bịa.
+Mỗi mục:
+- question: cách người xem hay gõ (ngắn, có thể viết tắt, vd "áo này bn", "vải gì v shop").
+- intent: ASK_PRICE, ASK_SIZE, ASK_COLOR, ASK_MATERIAL, ASK_STOCK, ASK_SHIPPING, SHOW_PRODUCT.
+- slots: chỉ khi câu hỏi có (weight_kg, height_cm, size, color, place, quantity).
+- say: 3 cách nói KHÁC NHAU để đọc to, mỗi cách một câu tối đa 18 từ, giọng người bán tự nhiên ("nha", "nè", "luôn á"), không mở đầu bằng "Dạ", "Chào", "Cảm ơn", không gọi tên, không emoji.
+- text: 2 cách viết comment, tối đa 90 ký tự, giọng chat tự nhiên.
+Viết số bằng chữ số (200k, 55kg). Giá phải đúng giá trong PRODUCT.
+OUTPUT: chỉ một JSON object {"items":[{"question":"...","intent":"...","slots":{},"say":["...","...","..."],"text":["...","..."]}]}
+"""
+PREPARE_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_STOCK", "ASK_SHIPPING", "SHOW_PRODUCT"}
+
+
+def _variants(values, limit: int, allowed: set[int]) -> list[str]:
+    out = []
+    for value in values if isinstance(values, list) else [values]:
+        line = clip(strip_openers(str(value or "")), limit)
+        if line and not safety_issues(line, allowed) and line not in out:
+            out.append(line)
+    return out
+
+
+def maybe_prepare(st: BatchState, ctx: dict | None, force: bool = False) -> dict | None:
+    """Start preparing the product on air if it is new for this desk (or `force`). Returns the preparation state."""
+    from app.live_reply_director import reply_options
+    if ctx is None:
+        return st.prepared
+    product = ctx["product"]
+    with st.lock:
+        current = st.prepared
+        same = bool(current and current["version"] == ctx["version"])
+        if same and (not force or current["state"] == "running"):
+            return current
+        if not force and not reply_options(st.owner_id).auto_prepare:
+            return current
+        st.prepared = {"product_id": product["id"], "product_name": product["name"], "version": ctx["version"],
+                       "state": "running", "count": 0, "error": None}
+        state = st.prepared
+    executor.submit(prepare, st, ctx, force and same, state)
+    return state
+
+
+def prepare(st: BatchState, ctx: dict, regenerate: bool, state: dict):
+    """One AI call for the usual questions about the product on air -> answer bank; then audio rendered on the Agent.
+    Answers prepared earlier for the same version (e.g. before a restart) are reused unless `regenerate`."""
+    from app.live_reply_director import reply_options
+    monitor = monitors(st.key)
+    product = ctx["product"]
+    options = reply_options(st.owner_id)
+    allowed = allowed_amounts(product)
+    try:
+        if regenerate:
+            answer_bank.remove_source(st.owner_id, product["id"], ctx["version"], "pregen")
+        count = answer_bank.has_source(st.owner_id, product["id"], ctx["version"], "pregen")
+        if not count:
+            text = (PREPARE_RULES + (f"PHONG CÁCH CỦA SHOP: {options.persona}\n" if options.persona.strip() else "")
+                    + "PRODUCT: " + json.dumps(product_data(product), ensure_ascii=False))
+            parsed, _usage, _config = ai_service.complete_json(st.owner_id, text, log_key=st.key, username="prepare",
+                                                               log_text=f"Chuẩn bị câu trả lời: {product['name']}",
+                                                               max_output_tokens=1800)
+            items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
+            for raw in items[:15]:
+                if not isinstance(raw, dict):
+                    continue
+                question = " ".join(str(raw.get("question") or "").split())[:200]
+                intent = str(raw.get("intent") or "").upper()
+                say, comment = _variants(raw.get("say"), 160, allowed), _variants(raw.get("text"), 120, allowed)
+                if question and intent in PREPARE_INTENTS and (say or comment):
+                    if answer_bank.save(st.owner_id, product["id"], ctx["version"], question, intent,
+                                        clean_slots(raw.get("slots")), say, comment, "pregen"):
+                        count += 1
+        with st.lock:
+            state.update(state="ready", count=count)
+        monitor.record("PREPARE", "ready", f"{product['name']}: {count} câu trả lời chuẩn bị sẵn")
+    except HTTPException as exc:
+        with st.lock:
+            state.update(state="error", error=str(exc.detail)[:200])
+        monitor.record("PREPARE", "failed", f"{product['name']}: {state['error']}")
+        return
+    if options.channel != "comment":
+        prerender(st, product, ctx["version"], options)
+
+
+def prerender(st: BatchState, product: dict, version: str, options) -> None:
+    """Have the Agent synthesize the prepared sentences now, so they play without waiting for the TTS service."""
+    from app.cloud_agents import create_command
+    lines = [spoken(s) for entry in answer_bank.list_for(st.owner_id, product["id"], version) for s in entry["say"]]
+    if product.get("price"):
+        lines += [spoken(t.format(p=price_short(product["price"]))) for t in reply_rules.PRICE_SAY]
+    texts = list(dict.fromkeys(t for t in lines if t))[:40]
+    if not texts:
+        return
+    try:
+        create_command(st.agent_id, st.owner_id, "tts_prepare", {"texts": texts, "voice": options.voice, "rate": options.rate})
+    except HTTPException as exc:
+        monitors(st.key).record("PREPARE", "audio_skipped", f"Không gửi được tới Agent: {exc.detail}")
 
 
 # ----- API ---------------------------------------------------------------------------------------------
@@ -405,10 +512,23 @@ def get_status(owner: Owner, agent_id: AgentId, after: int = 0):
         open_states = ("review", "ready", "scheduled", "queued")
         unanswered = sum(1 for r in st.replies.values() if not r.get("dismissed") and r["voice"] != "sent"
                          and r["comment"] != "done" and (r["voice"] in open_states or r["comment"] == "ready"))
-        return {"stats": st.stats.copy(), "last_id": st.results[-1]["batch_id"] if st.results else 0,
-                "batches": [b for b in list(st.results)[-20:] if b["batch_id"] > after],
-                "pending": sum(map(len, st.pending.values())), "voice_queue": len(st.voice_queue),
-                "unanswered": unanswered, "replies": replies}
+        result = {"stats": st.stats.copy(), "last_id": st.results[-1]["batch_id"] if st.results else 0,
+                  "batches": [b for b in list(st.results)[-20:] if b["batch_id"] > after],
+                  "pending": sum(map(len, st.pending.values())), "voice_queue": len(st.voice_queue),
+                  "unanswered": unanswered, "replies": replies}
+    if batch_options(owner["id"]).enabled:
+        maybe_prepare(st, context(st.owner_id, st.agent_id))
+    with st.lock:
+        result["prepared"] = dict(st.prepared) if st.prepared else None
+    result["agent_voice"] = agent_voice(owner, agent_id)
+    return result
+
+
+def agent_voice(owner: dict, agent_id: str) -> dict | None:
+    """The desk Agent's voice queue as of its last heartbeat."""
+    agent = owned_agent(owner, agent_id)
+    voice = (agent.get("status") or {}).get("voice")
+    return {**voice, "online": agent["online"]} if isinstance(voice, dict) else None
 
 
 class SpeakBody(BaseModel):
@@ -466,3 +586,41 @@ def stop_voice(owner: Owner, agent_id: AgentId):
     monitors(st.key).record("TTS_STOP", "operator", f"Dừng khẩn cấp: huỷ {cancelled} câu chờ nói")
     return {"cancelled": cancelled, "agent": "sent", "command_id": command.get("command_id")}
 
+
+
+@router.get("/answers")
+def list_answers(owner: Owner, agent_id: AgentId):
+    """The answer bank of the product on air at this desk (its current version)."""
+    st = desk(owner, agent_id)
+    ctx = context(st.owner_id, st.agent_id)
+    if ctx is None:
+        return {"product_id": None, "product_name": "", "answers": []}
+    product = ctx["product"]
+    return {"product_id": product["id"], "product_name": product["name"],
+            "answers": answer_bank.list_for(owner["id"], product["id"], ctx["version"])}
+
+
+@router.delete("/answers/{entry_id}")
+def delete_answer(entry_id: int, owner: Owner, agent_id: AgentId):
+    desk(owner, agent_id)
+    if not answer_bank.delete_entry(owner["id"], entry_id):
+        raise HTTPException(404, "Không tìm thấy câu trả lời")
+    return {"ok": True}
+
+
+class PrepareBody(BaseModel):
+    force: bool = False
+
+
+@router.post("/prepare")
+def prepare_now(body: PrepareBody, owner: Owner, agent_id: AgentId):
+    """Prepare the answers of the product on air at this desk now; `force` asks the AI again for a fresh set."""
+    st = desk(owner, agent_id)
+    ctx = context(st.owner_id, st.agent_id)
+    if ctx is None:
+        raise HTTPException(409, "Chưa có sản phẩm đang phát trong phiên LIVE")
+    with st.lock:
+        current = st.prepared
+        done = bool(current and current["version"] == ctx["version"] and current["state"] in ("running", "ready"))
+    state = current if done and not body.force else maybe_prepare(st, ctx, force=True)
+    return dict(state) if state else None

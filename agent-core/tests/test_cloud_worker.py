@@ -10,7 +10,7 @@ import pytest
 
 from fake_obs import FakeWs
 from sarae_agent.cloud.client import CloudClient, CloudError
-from sarae_agent.cloud.commands import CommandRouter
+from sarae_agent.cloud.commands import CommandRouter, lane
 from sarae_agent.cloud.journal import CommandJournal, CommandLock, EventOutbox
 from sarae_agent.cloud.worker import CloudWorker
 from sarae_agent.errors import AgentError
@@ -319,9 +319,19 @@ def test_router_reaches_engine(router):
         r.execute(kind, {})
         getattr(engine, method).assert_called()
     r.execute("tts_speak", {"text": "Xin chào", "voice": "vi-VN-NamMinhNeural"})
-    voice.speak.assert_called_once_with("Xin chào", "vi-VN-NamMinhNeural", rate=0, ttl_seconds=None, duck=True)
+    voice.speak.assert_called_once_with("Xin chào", "vi-VN-NamMinhNeural", rate=0, ttl_seconds=None, duck=True,
+                                        intro=None)
     r.execute("tts_speak", {"text": "Xin chào", "rate": 10, "ttl_seconds": 20, "duck": False})
-    voice.speak.assert_called_with("Xin chào", "vi-VN-HoaiMyNeural", rate=10, ttl_seconds=20, duck=False)
+    voice.speak.assert_called_with("Xin chào", "vi-VN-HoaiMyNeural", rate=10, ttl_seconds=20, duck=False, intro=None)
+    r.execute("tts_speak", {"text": "Mẫu này hai trăm nghìn nha.", "intro": "Lan với Hoa ơi,"})
+    voice.speak.assert_called_with("Mẫu này hai trăm nghìn nha.", "vi-VN-HoaiMyNeural", rate=0, ttl_seconds=None,
+                                   duck=True, intro="Lan với Hoa ơi,")
+    r.execute("tts_prepare", {"texts": ["Một.", "Hai."], "rate": 5})
+    voice.prepare.assert_called_once_with(["Một.", "Hai."], "vi-VN-HoaiMyNeural", 5)
+    assert lane("tts_prepare") == "background"
+    for bad in ({"texts": []}, {"texts": ["x" * 451]}, {"texts": ["a"] * 41}):
+        with pytest.raises(AgentError):
+            r.execute("tts_prepare", bad)
     r.execute("tts_clear", {})
     voice.clear.assert_called_once_with()
     r.execute("monitor_config", {"interval_seconds": 3, "threshold": 0.9})
@@ -423,7 +433,9 @@ def test_heartbeat_report_matches_cloud_and_has_no_paths(home, events):
                                                       "exe_path": "C:\\Users\\me\\AppData\\TikTok LIVE Studio.exe"}}
     rt.monitor.heartbeat_view = lambda: view
     report = rt.build_report()
-    assert set(report) == {"agent_id", "hostname", "verification", "obs", "local_playback", "playback", "media_cache"}
+    assert set(report) == {"agent_id", "hostname", "verification", "obs", "local_playback", "playback", "media_cache",
+                           "voice"}
+    assert report["voice"]["queue"] == 0 and "prepare_pending" in report["voice"]
     assert report["playback"]["connected"] is True and report["playback"]["queue_ids"] == []
     assert report["verification"]["state"]["window_info"] == {"exe_name": "TikTok LIVE Studio.exe"}
     assert "C:\\Users" not in json.dumps(report)

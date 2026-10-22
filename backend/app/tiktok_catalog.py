@@ -9,6 +9,8 @@ from pydantic import BaseModel,Field
 from app.database import SessionLocal
 from app.catalog import Product
 from app.identity import current_owner
+from app.product_facts import ProductFacts,parse
+import json
 
 router=APIRouter(prefix="/api/tiktok-catalog",tags=["TikTok Catalog"],dependencies=[Depends(current_owner)])
 
@@ -93,6 +95,16 @@ def shops(owner=Depends(current_owner)):
 
 class DescriptionUpdate(BaseModel):
     description:str=Field(max_length=10000)
+
+@router.put("/products/{product_id}/ai-facts")
+def update_ai_facts(product_id:int,body:ProductFacts,owner=Depends(current_owner)):
+    """Size chart, colors, material, shipping: what the AI and the zero-token rules may state about the product."""
+    with SessionLocal() as db:
+        p=db.scalar(select(Product).where(Product.id==product_id,Product.owner_id==owner["id"]))
+        if not p:raise HTTPException(404,"Không tìm thấy sản phẩm")
+        p.ai_facts=json.dumps(body.model_dump(),ensure_ascii=False)
+        db.commit()
+        return {"id":p.id,"ai_facts":parse(p.ai_facts)}
 
 @router.put("/products/{product_id}/description")
 def update_description(product_id:int,body:DescriptionUpdate,owner=Depends(current_owner)):
