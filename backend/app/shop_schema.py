@@ -9,7 +9,9 @@ def upgrade(bind=None):
     if not {"products","live_sessions"}.issubset(set(inspect(target).get_table_names())):
         Base.metadata.create_all(bind=target)
     from app.answer_bank import ensure_schema as answer_bank_schema
+    from app.sales_brain import ensure_schema as sales_brain_schema
     answer_bank_schema(target)
+    sales_brain_schema(target)
     with target.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS tiktok_shops (
             id INTEGER PRIMARY KEY,owner_id VARCHAR(64) NOT NULL,

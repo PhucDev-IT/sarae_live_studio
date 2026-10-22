@@ -1,0 +1,30 @@
+{"type":"meta","format":"sarae-knowledge","version":1,"name":"Ví dụ: shop thời trang nữ","language":"vi"}
+
+// ===== Chính sách shop (10 khóa chuẩn). Giá trị là CỤM TỪ ghép được vào câu mẫu. =====
+{"type":"policy","key":"ship_time","value":"2-4 ngày","note":"Toàn quốc, nội thành 1-2 ngày"}
+{"type":"policy","key":"ship_fee","value":"30k","note":"Đồng giá toàn quốc"}
+{"type":"policy","key":"freeship_min","value":"299k","note":"Tính trên tổng đơn"}
+{"type":"policy","key":"return_policy","value":"cho đổi size trong 7 ngày, còn tem mác là được","note":"Đọc sau chữ 'Shop'"}
+{"type":"policy","key":"payment","value":"COD, chuyển khoản hoặc ví TikTok","note":"Đọc sau 'Thanh toán'"}
+{"type":"policy","key":"cod","value":"có COD, nhận hàng rồi mới trả tiền","note":"Đọc sau 'Bên mình'"}
+{"type":"policy","key":"promo","value":"giảm 10% khi mua từ 2 món","note":"Đổi theo từng đợt LIVE"}
+{"type":"policy","key":"warranty","value":"hàng lỗi do shop thì đổi mới trong 7 ngày","note":"Đọc sau 'Yên tâm nha,'"}
+{"type":"policy","key":"order_how","value":"bấm giỏ hàng góc trái, chọn màu size rồi đặt","note":"Câu bắt đầu bằng động từ"}
+{"type":"policy","key":"shop_hours","value":"từ 8h tới 11h tối mỗi ngày","note":"Giờ lên LIVE"}
+
+// ===== Mẫu riêng của shop =====
+{"type":"template","id":"shop.dress.lining","intent":"ASK_MATERIAL","category":"váy","when":null,"patterns":["váy có lót k","có lót trong k","mặc có lộ k","váy mỏng k","có cần mặc quần trong k"],"say":["Váy {product.lining} nha, mặc tự tin luôn.","Có nè, {product.lining} nha.","Yên tâm nha, váy {product.lining}."],"text":["váy {product.lining} nha","{product.lining} nè, yên tâm"]}
+{"type":"template","id":"shop.pants.waist","intent":"ASK_SIZE","category":"quần","when":null,"patterns":["lưng quần sao","eo to mặc vừa k","quần lưng thun k","cạp quần sao shop"],"say":["Quần {product.waist} nha, mặc thoải mái lắm.","Lưng {product.waist} nè, eo hơi to vẫn vừa nha.","Mẫu này {product.waist} nha."],"text":["quần {product.waist} nha","lưng {product.waist} nè"]}
+{"type":"template","id":"shop.gift","intent":"ASK_PROMO","category":null,"when":null,"patterns":["có quà k","có tặng gì k","mua có quà k","có quà tặng ko shop","chốt có quà k"],"say":["Chốt trong LIVE là có quà nhỏ kèm theo nha.","Có quà nè, đơn trong LIVE shop gửi kèm luôn.","Đơn LIVE có quà nha, chốt lẹ nè."],"text":["đơn trong live có quà kèm nha","có quà nè, chốt lẹ nha"]}
+{"type":"template","id":"shop.pack","intent":"ASK_SHIPPING","category":null,"when":null,"patterns":["gói hàng kỹ k","đóng gói sao","có hộp k","gói quà đc k","có túi zip k"],"say":["Shop gói túi zip kỹ lắm nha, yên tâm.","Gói kỹ lắm nè, nhận là mặc liền được.","Đóng gói cẩn thận nha, không lo nhăn đâu."],"text":["gói túi zip kỹ lắm nha","đóng gói cẩn thận nè"]}
+{"type":"template","id":"shop.weight.fit_tip.ao","intent":"ASK_SIZE","category":"áo","when":null,"patterns":["{ask.weight} mặc áo này rộng k","{ask.weight} mặc oversize k","{ask.weight} thích rộng lấy sz j","{ask.weight} mặc thùng thình k"],"say":["{ask.weight} mặc {calc.size_for_weight} nha, {product.fit_tip}.","Áo form {product.form}, {ask.weight} lấy {calc.size_for_weight} là đẹp nha."],"text":["{ask.weight} lấy {calc.size_for_weight}, {product.fit_tip} nha","form {product.form}, {ask.weight} mặc {calc.size_for_weight} nè"]}
+
+// ===== Dữ liệu sản phẩm (không viết câu, chỉ dữ liệu) =====
+{"type":"product_facts","product":{"sku":"SR-AO-THUN-01"},"facts":{"category":"áo","material":"cotton 100%","colors":["trắng","đen","be"],"sizes":[{"size":"M","weight_min":40,"weight_max":50},{"size":"L","weight_min":50,"weight_max":60},{"size":"XL","weight_min":60,"weight_max":70}],"extras":{"form":"rộng","fit_tip":"thích mặc ôm thì lùi 1 size","care":"giặt máy chế độ nhẹ, lộn trái khi phơi","thickness":"dày vừa, mặc màu trắng không lộ","stretch":"co giãn nhẹ","mix_tip":"phối quần jean hay chân váy đều xinh","occasion":"đi chơi, đi học đều hợp","origin":"Việt Nam, xưởng nhà may","for_who":"nam nữ đều mặc được"}}}
+{"type":"product_facts","product":{"sku":"SR-VAY-HOA-02"},"facts":{"category":"váy","material":"voan lụa","colors":["xanh","hồng"],"sizes":[{"size":"S","weight_min":38,"weight_max":45},{"size":"M","weight_min":45,"weight_max":52},{"size":"L","weight_min":52,"weight_max":58}],"extras":{"form":"xòe nhẹ, chiết eo","fit_tip":"vòng eo to thì lên 1 size","care":"giặt tay nước lạnh, không vắt mạnh","lining":"có lót trong, không lộ","length":"dài qua gối","closure":"kéo khóa sau lưng","occasion":"đi tiệc, đi biển đều đẹp","mix_tip":"đi sandal hay giày búp bê là xinh"}}}
+{"type":"product_facts","product":{"sku":"SR-QUAN-JEAN-03"},"facts":{"category":"quần","material":"jean cotton","colors":["xanh nhạt","xanh đậm"],"sizes":[{"size":"S","weight_min":40,"weight_max":47},{"size":"M","weight_min":47,"weight_max":54},{"size":"L","weight_min":54,"weight_max":62}],"extras":{"form":"ống suông, lưng cao","fit_tip":"thích mặc thoải mái thì lên 1 size","care":"giặt lộn trái, không ngâm lâu","stretch":"co giãn nhẹ","waist":"lưng cao, có thun nhẹ phía sau","pockets":"có 4 túi, túi trước sâu","length":"dài chấm mắt cá","origin":"Việt Nam"}}}
+
+// ===== Hỏi đáp chỉ dành cho 1 sản phẩm =====
+{"type":"product_qa","product":{"sku":"SR-AO-THUN-01"},"question":"in hình có bong k","intent":"ASK_QUALITY","say":["Hình in lụa nha, giặt lộn trái là không bong đâu.","In lụa bền lắm nè, nhớ giặt lộn trái nha."],"text":["in lụa, giặt lộn trái là bền nha"]}
+{"type":"product_qa","product":{"sku":"SR-VAY-HOA-02"},"question":"váy có dây buộc eo k","intent":"GENERAL","say":["Có dây buộc eo rời nha, chỉnh eo thoải mái luôn.","Có nè, dây buộc eo tháo ra được nha."],"text":["có dây buộc eo rời nha"]}
+{"type":"product_qa","product":{"name":"Quần jean ống suông lưng cao"},"question":"quần có rách gối k","intent":"GENERAL","say":["Mẫu này trơn nha, không rách gối đâu.","Không rách nha, quần trơn dễ mặc lắm."],"text":["quần trơn, không rách nha"]}

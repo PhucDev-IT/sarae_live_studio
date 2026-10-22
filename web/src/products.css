@@ -105,3 +105,17 @@
 .pp-size-row input:focus{outline:0;border-color:var(--ui-primary)}
 .pp-range{display:flex;align-items:center;gap:3px;color:var(--ui-text-muted)}
 @media(max-width:620px){.pp-size-row{grid-template-columns:56px 1fr 1fr 30px}.pp-size-row>:nth-child(4){grid-column:1/-2}.pp-size-row.is-head>:nth-child(4){display:none}}
+
+/* AI facts: extra key/value facts */
+.pp-extras{display:grid;gap:8px}
+.pp-extra-row{display:grid;grid-template-columns:150px minmax(0,1fr) 30px;gap:6px;align-items:start}
+.pp-extra-cell{display:grid;gap:2px;min-width:0}
+.pp-extra-cell small{font-size:11.5px;color:var(--ui-text-subtle)}
+.pp-extra-cell small.is-error{color:var(--ui-danger)}
+.pp-extra-row input{width:100%;min-width:0;height:32px;padding:0 8px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface);color:var(--ui-text);font:inherit;font-size:13px}
+.pp-extra-row input:focus{outline:0;border-color:var(--ui-primary)}
+.pp-extra-row input.is-error{border-color:var(--ui-danger)}
+.pp-extra-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pp-chip{padding:4px 10px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-surface-2);color:var(--ui-text);font:inherit;font-size:12.5px;cursor:pointer}
+.pp-chip:hover:not(:disabled){border-color:var(--ui-primary);color:var(--ui-primary)}
+.pp-chip:disabled{opacity:.5;cursor:default}

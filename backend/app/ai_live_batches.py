@@ -32,7 +32,7 @@ from app.per_owner import PerOwner, live_key
 from app.catalog import Product
 from app.database import SessionLocal
 from app.comment_processing import monitors
-from app import ai_service, answer_bank, reply_rules
+from app import ai_service, answer_bank, reply_rules, sales_brain
 from app.product_facts import parse as parse_facts
 from app.live_reply_director import ReplyOptions
 from app.speech_text import allowed_amounts, clip, price_short, safety_issues, spoken, strip_openers
@@ -73,7 +73,8 @@ class BatchState:
 states = PerOwner(BatchState)
 MAX_REPLIES = 300
 # Intents whose answer does not depend on who asks: viewers asking the same thing with the same details share one.
-MERGEABLE = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_STOCK", "ASK_SHIPPING", "SHOW_PRODUCT"}
+MERGEABLE = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_STOCK", "ASK_SHIPPING", "ASK_RETURN",
+             "ASK_PAYMENT", "ASK_PROMO", "ASK_CARE", "ASK_STYLE", "ASK_QUALITY", "SHOW_PRODUCT"}
 SLOTS = {"weight_kg": (float, 20, 200), "height_cm": (float, 90, 230), "quantity": (int, 1, 99),
          "size": (str, 1, 8), "color": (str, 1, 30), "place": (str, 1, 40)}
 
@@ -90,8 +91,9 @@ def snapshot(product: Product, session_id: int | None = None) -> dict:
                "stock": product.stock_num, "description": product.description[:950], "status": product.status,
                "facts": parse_facts(product.ai_facts)}
     fingerprint = sha256(json.dumps(details, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
-    # The shop's own Q&A is context for the AI; adding one does not retire the answers already learned.
+    # The shop's own Q&A and policies are context for the AI; adding one does not retire the answers already learned.
     details["shop_qa"] = answer_bank.shop_context(product.owner_id, product.id)
+    details["policies"] = sales_brain.policies_of(product.owner_id)
     return {"session_id": session_id, "product": details, "version": fingerprint}
 
 
@@ -137,7 +139,8 @@ QUY TẮC
 5. Bình luận nhắc sản phẩm khác hoặc trước đó ("lúc nãy", "mẫu kia", "cái trước") hoặc không rõ hỏi sản phẩm nào: other_product=true, needs_review=true.
 6. Khiếu nại, đổi trả, hàng lỗi, chửi bới: intent COMPLAINT, needs_review=true.
 7. Một bình luận hỏi nhiều ý (vd giá và size) thì trả lời đủ các ý trong cùng câu.
-8. PRODUCT.shop_qa là câu hỏi đáp do shop viết: câu hỏi giống hoặc gần giống thì trả lời theo đúng nội dung đó.
+8. PRODUCT.shop_qa là câu hỏi đáp do shop viết: câu hỏi giống hoặc gần giống thì trả lời theo đúng nội dung đó. PRODUCT.shop_policies là chính sách chung của shop (ship, đổi trả, thanh toán...).
+9. Nếu câu trả lời dùng được cho sản phẩm khác (chỉ dựa vào dữ liệu chung, không phải chi tiết riêng), thêm "template": {"say": "...", "text": "..."} là CHÍNH câu đó nhưng thay giá trị bằng placeholder trong PLACEHOLDERS (vd "Mẫu này {product.price} thôi nha."). Chỉ dùng placeholder có trong danh sách; không tổng quát được thì bỏ "template".
 VĂN PHONG
 - say: để ĐỌC TO trên LIVE. Một câu, tối đa 18 từ, như người bán đang nói chuyện thật, dùng "nha", "nè", "luôn á", "nhé". Không mở đầu bằng "Dạ", "Chào", "Xin chào", "Cảm ơn". Không gọi tên người hỏi, không "bạn ơi", không "mấy bạn hỏi"; vào thẳng câu trả lời. Không emoji, không viết tắt.
 - text: để COMMENT. Tối đa 90 ký tự, giọng chat tự nhiên, được viết tắt nhẹ (200k, sz). Không chào hỏi.
@@ -146,8 +149,8 @@ VÍ DỤ (giá trong PRODUCT là 200000, mô tả có "M 45-55kg, L 55-65kg", kh
 "55kg mặc sz j" -> say "55 ký mặc M là vừa xinh luôn." | text "55kg lấy M vừa đẹp nha"
 "có màu đen k" -> say "Màu đen để mình kiểm tra lại rồi báo nha." | text "màu đen để shop check lại báo bạn nha"
 SAI: "Dạ chào anh chị, sản phẩm có giá 200.000 VND ạ."
-OUTPUT: chỉ một JSON object {"answers":[{"qid":1,"intent":"...","slots":{},"say":"...","text":"...","confidence":0.0,"needs_review":false,"other_product":false}]}
-intent: ASK_PRICE, ASK_SIZE, ASK_COLOR, ASK_MATERIAL, ASK_STOCK, ASK_SHIPPING, SHOW_PRODUCT, ORDER, COMPLAINT, GREETING, GENERAL, OTHER.
+OUTPUT: chỉ một JSON object {"answers":[{"qid":1,"intent":"...","slots":{},"say":"...","text":"...","confidence":0.0,"needs_review":false,"other_product":false,"template":{"say":"...","text":"..."}}]}
+intent: ASK_PRICE, ASK_SIZE, ASK_COLOR, ASK_MATERIAL, ASK_STOCK, ASK_SHIPPING, ASK_RETURN, ASK_PAYMENT, ASK_PROMO, ASK_CARE, ASK_STYLE, ASK_QUALITY, SHOW_PRODUCT, ORDER, COMPLAINT, GREETING, GENERAL, OTHER.
 slots (chỉ khi câu hỏi có): weight_kg, height_cm, size, color, place, quantity.
 """
 
@@ -159,6 +162,8 @@ def product_data(product: dict) -> dict:
             "stock": product.get("stock"), "description": product.get("description") or "", **facts}
     if product.get("shop_qa"):
         data["shop_qa"] = product["shop_qa"]  # answers written by the shop: the AI follows them
+    if product.get("policies"):
+        data["shop_policies"] = product["policies"]
     return data
 
 
@@ -166,6 +171,7 @@ def batch_prompt(product: dict, questions: list[dict], persona: str = "") -> str
     data = product_data(product)
     return (RULES + (f"PHONG CÁCH CỦA SHOP: {persona}\n" if persona.strip() else "")
             + "PRODUCT: " + json.dumps(data, ensure_ascii=False) + "\n"
+            + "PLACEHOLDERS: " + ", ".join("{" + p + "}" for p in sales_brain.placeholders_for(product, product.get("policies") or {})) + "\n"
             + "QUESTIONS: " + json.dumps([{"qid": q["qid"], "text": q["text"]} for q in questions], ensure_ascii=False))
 
 
@@ -202,7 +208,8 @@ def clean_answer(raw: dict) -> dict:
             "say": clip(strip_openers(str(raw.get("say") or "")), 160),
             "text": clip(strip_openers(str(raw.get("text") or "")), 120),
             "confidence": confidence, "needs_review": bool(raw.get("needs_review")),
-            "other_product": bool(raw.get("other_product"))}
+            "other_product": bool(raw.get("other_product")),
+            "template": raw.get("template") if isinstance(raw.get("template"), dict) else None}
 
 
 def ask_ai(owner_id: str, log_key: str, product: dict, questions: list[dict], persona: str) -> tuple[dict[int, dict], dict]:
@@ -252,6 +259,7 @@ def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: 
                           "comment": i["comment"]} for i in items],
             "intent": answer["intent"], "slots": answer["slots"], "say": answer["say"], "text": answer["text"],
             "confidence": answer["confidence"], "source": source, "approved": bool(answer.get("approved")),
+            "template_id": answer.get("template_id"),
             "review_reasons": list(dict.fromkeys(reasons)),
             "asked_at": items[0]["asked_iso"], "_asked": min(i["asked_at"] for i in items), "_product": product,
             "route": None, "voice": None, "comment": None, "note": "", "spoken_text": "", "command_id": None,
@@ -267,7 +275,9 @@ def merge_replies(replies: list[dict]) -> list[dict]:
         if reply["intent"] not in MERGEABLE or reply["review_reasons"]:
             out.append(reply)
             continue
-        key = json.dumps([reply["intent"], reply["slots"], reply["version"]], sort_keys=True, ensure_ascii=False)
+        # Two template answers of the same intent can say different things (price vs discount): same template only.
+        key = json.dumps([reply["intent"], reply["slots"], reply["version"], reply.get("template_id")],
+                         sort_keys=True, ensure_ascii=False)
         first = merged.get(key)
         if first is None:
             merged[key] = reply
@@ -289,8 +299,8 @@ def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log
     product = ctx["product"]
     batch = {"batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
              "product_name": product["name"], "comments": len(items), "questions": 0, "skipped": [],
-             "sources": {"rule": 0, "bank": 0, "ai": 0}, "usage": [], "status": "processing", "error": None,
-             "reply_ids": [], "created_at": _now_iso()}
+             "sources": {"rule": 0, "template": 0, "bank": 0, "ai": 0}, "usage": [], "status": "processing",
+             "error": None, "reply_ids": [], "created_at": _now_iso()}
     # Same words (after teencode/marks normalization) are one question with all its askers; noise is skipped.
     questions: dict[str, dict] = {}
     for item in items:
@@ -303,6 +313,12 @@ def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log
     allowed = allowed_amounts(product)
     answers: dict[int, tuple[dict | None, str, str]] = {}
     for q in questions.values():
+        # The shop's templates and the template library first (their wording is the shop's choice), then the
+        # built-in rules as a fallback.
+        general = sales_brain.answer(owner_id, product, q["text"], allowed)
+        if general:
+            answers[q["qid"]] = (general, "template", "")
+            continue
         rule = (reply_rules.price_answer(product) if reply_rules.price_only(q["text"])
                 else reply_rules.fact_answer(q["text"], product.get("facts") or {}))
         if rule:
@@ -343,11 +359,15 @@ def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log
         if learn and learnable:
             answer_bank.save(owner_id, product["id"], ctx["version"], q["text"], answer["intent"], answer["slots"],
                              [answer["say"]], [answer["text"]], "ai")
+            # The generalized form serves every product from now on.
+            learned = sales_brain.learn(owner_id, q["text"], answer["intent"], answer.get("template"), product, allowed)
+            if learned:
+                monitor.record("BRAIN", "learned", f"Mẫu mới {learned}: {q['text']}")
     replies = merge_replies(replies)
     batch["reply_ids"] = [r["id"] for r in replies]
     batch["status"] = "error" if batch["error"] else "ready"
     monitor.record("BATCH", "answered", f"#{batch_id}: {len(items)} bình luận → {len(questions)} câu hỏi → "
-                   f"{len(replies)} câu trả lời (luật {batch['sources']['rule']}, kho {batch['sources']['bank']}, "
+                   f"{len(replies)} câu trả lời (luật {batch['sources']['rule']}, mẫu {batch['sources']['template']}, kho {batch['sources']['bank']}, "
                    f"AI {batch['sources']['ai']}, bỏ qua {len(batch['skipped'])})")
     return replies, batch
 
@@ -371,6 +391,7 @@ def run_batch(st: BatchState, batch_id, items):
         st.stats["processed"] += len(items)
         st.stats["noise"] += len(batch["skipped"])
         st.stats["rule"] += batch["sources"]["rule"]
+        st.stats["template"] = st.stats.get("template", 0) + batch["sources"]["template"]
         st.stats["cached"] += batch["sources"]["bank"]
         st.stats["ai_questions"] += batch["sources"]["ai"]
         st.stats["replies"] += len(replies)
@@ -496,9 +517,15 @@ def prepare(st: BatchState, ctx: dict, regenerate: bool, state: dict):
 def prerender(st: BatchState, product: dict, version: str, options) -> None:
     """Have the Agent synthesize the prepared sentences now, so they play without waiting for the TTS service."""
     from app.cloud_agents import create_command
-    lines = [spoken(s) for entry in answer_bank.list_for(st.owner_id, product["id"], version) for s in entry["say"]]
+    lines = [spoken(s) for entry in answer_bank.list_product(st.owner_id, product["id"], version) for s in entry["say"]]
     if product.get("price"):
         lines += [spoken(t.format(p=price_short(product["price"]))) for t in reply_rules.PRICE_SAY]
+    # Template answers that do not depend on the question (price, colors, shipping...) for this product.
+    templates, policies = sales_brain.library(st.owner_id)
+    values = sales_brain.variables(product, policies, {})
+    for t in templates:
+        if t["enabled"] and not t["when"]:
+            lines += [spoken(r) for r in (sales_brain.render(s, values) for s in t["say"]) if r]
     texts = list(dict.fromkeys(t for t in lines if t))[:40]
     if not texts:
         return

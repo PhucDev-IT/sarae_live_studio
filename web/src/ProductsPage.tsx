@@ -7,7 +7,13 @@ import {Stat,Thumb} from './CatalogParts'
 
 type Product={id:number;shop_id:number|null;tiktok_seller_id:string|null;tiktok_product_id:string|null;name:string;sku:string;description:string;price:number|null;origin_price:number|null;stock_num:number|null;image_url:string;status:'ACTIVE'|'INACTIVE';created_at:string;ai_facts?:AiFacts}
 type SizeRow={size:string;weight_min:number|null;weight_max:number|null;height_min:number|null;height_max:number|null;note:string}
-type AiFacts={sizes:SizeRow[];colors:string[];material:string;shipping:string;notes:string}
+type AiFacts={sizes:SizeRow[];colors:string[];material:string;shipping:string;notes:string;category?:string;extras?:Record<string,string>}
+type ExtraRow={key:string;value:string}
+const EXTRA_KEY=/^[a-z][a-z0-9_]{1,30}$/
+const MAX_EXTRAS=30, EXTRA_LEN=200
+const CATEGORIES=['áo','váy','quần','đầm','set','phụ kiện']
+const COMMON_EXTRAS:[string,string][]=[['form','Form dáng'],['care','Cách giặt'],['fit_tip','Gợi ý mặc'],['origin','Xuất xứ'],['thickness','Độ dày'],['stretch','Co giãn']]
+const extraLabel=(key:string)=>COMMON_EXTRAS.find(([k])=>k===key)?.[1]
 /** Form copy of a size row: numbers stay as typed text until saved. */
 type SizeForm={size:string;weight_min:string;weight_max:string;height_min:string;height_max:string;note:string}
 const EMPTY_SIZE:SizeForm={size:'',weight_min:'',weight_max:'',height_min:'',height_max:'',note:''}
@@ -41,6 +47,8 @@ export default function ProductsPage(){
   const [material,setMaterial]=useState('')
   const [shipping,setShipping]=useState('')
   const [notes,setNotes]=useState('')
+  const [category,setCategory]=useState('')
+  const [extras,setExtras]=useState<ExtraRow[]>([])
 
   const load=useCallback(async()=>{
     const [items,available,shopList,currentSnapshot]=await Promise.all([
@@ -64,15 +72,26 @@ export default function ProductsPage(){
   const missing=products.filter(p=>p.status==='ACTIVE'&&!videoCounts[p.id]).length
   const open=(p:Product)=>{const f=p.ai_facts;setEditing(p);setDescription(p.description||'')
     setSizes((f?.sizes??[]).map(r=>({size:r.size,weight_min:numText(r.weight_min),weight_max:numText(r.weight_max),height_min:numText(r.height_min),height_max:numText(r.height_max),note:r.note||''})))
-    setColors((f?.colors??[]).join(', '));setMaterial(f?.material??'');setShipping(f?.shipping??'');setNotes(f?.notes??'')}
+    setColors((f?.colors??[]).join(', '));setMaterial(f?.material??'');setShipping(f?.shipping??'');setNotes(f?.notes??'')
+    setCategory(f?.category??'');setExtras(Object.entries(f?.extras??{}).map(([key,value])=>({key,value})))}
+  const setExtra=(i:number,patch:Partial<ExtraRow>)=>setExtras(rows=>rows.map((r,j)=>j===i?{...r,...patch}:r))
+  const extraError=(r:ExtraRow)=>{const k=r.key.trim()
+    if(!k)return r.value.trim()?'Cần đặt tên':''
+    if(!EXTRA_KEY.test(k))return 'Chữ thường không dấu, ví dụ fit_tip'
+    if(extras.filter(x=>x.key.trim()===k).length>1)return 'Tên bị trùng'
+    return r.value.length>EXTRA_LEN?'Tối đa '+EXTRA_LEN+' ký tự':''}
+  const extrasInvalid=extras.some(r=>extraError(r))
   const setSize=(i:number,key:keyof SizeForm,value:string)=>setSizes(rows=>rows.map((r,j)=>j===i?{...r,[key]:value}:r))
   const save=async()=>{
     if(!editing)return
+    if(extrasInvalid){toast.push({tone:'danger',title:'Kiểm tra lại phần Thông tin thêm'});return}
     setBusy(true)
     try{
       const facts:AiFacts={
         sizes:sizes.filter(r=>r.size.trim()).map(r=>({size:r.size.trim(),weight_min:toNum(r.weight_min),weight_max:toNum(r.weight_max),height_min:toNum(r.height_min),height_max:toNum(r.height_max),note:r.note.trim()})),
-        colors:colors.split(',').map(c=>c.trim()).filter(Boolean).slice(0,20),material:material.trim(),shipping:shipping.trim(),notes:notes.trim()}
+        colors:colors.split(',').map(c=>c.trim()).filter(Boolean).slice(0,20),material:material.trim(),shipping:shipping.trim(),notes:notes.trim(),
+        category:category.trim().slice(0,40),
+        extras:Object.fromEntries(extras.map(r=>[r.key.trim(),r.value.trim()] as const).filter(([k,v])=>k&&v).slice(0,MAX_EXTRAS))}
       await apiRequest('/tiktok-catalog/products/'+editing.id+'/description',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({description})})
       const saved=await apiRequest<{id:number;ai_facts:AiFacts}>('/tiktok-catalog/products/'+editing.id+'/ai-facts',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(facts)})
       setProducts(rows=>rows.map(p=>p.id===editing.id?{...p,description,ai_facts:saved.ai_facts}:p))
@@ -146,6 +165,23 @@ export default function ProductsPage(){
           <Input label="Màu sắc" maxLength={400} value={colors} placeholder="Đen, Trắng, Be" hint="Cách nhau bằng dấu phẩy (tối đa 20 màu)" onChange={e=>setColors(e.target.value)}/>
           <Input label="Chất liệu" maxLength={200} value={material} placeholder="Cotton 100%, co giãn 4 chiều" onChange={e=>setMaterial(e.target.value)}/>
           <Textarea label="Vận chuyển" rows={2} maxLength={300} value={shipping} placeholder="Giao 2–4 ngày, được kiểm hàng" onChange={e=>setShipping(e.target.value)}/>
+          <Input label="Nhóm sản phẩm" maxLength={40} list="pp-categories" value={category} placeholder="áo, váy, quần…" hint="Mẫu chung có thể chỉ dành cho một nhóm (ví dụ chỉ cho váy)" onChange={e=>setCategory(e.target.value)}/>
+          <datalist id="pp-categories">{CATEGORIES.map(c=><option key={c} value={c}/>)}</datalist>
+          <div className="pp-extras">
+            <strong>Thông tin thêm</strong>
+            <p className="pp-facts-hint">Mỗi dòng một thông tin. Mẫu chung dùng bằng cách viết {'{product.tên}'}, ví dụ {'{product.form}'}.</p>
+            {extras.map((r,i)=>{const err=extraError(r),label=extraLabel(r.key.trim())
+              return <div key={i} className="pp-extra-row">
+                <span className="pp-extra-cell"><input aria-label="Tên thông tin" maxLength={31} placeholder="form" value={r.key} className={err?'is-error':undefined} onChange={e=>setExtra(i,{key:e.target.value})}/>
+                  <small className={err?'is-error':undefined}>{err||label||'chữ thường không dấu'}</small></span>
+                <input aria-label="Nội dung" maxLength={EXTRA_LEN} placeholder="rộng, dễ mặc" value={r.value} onChange={e=>setExtra(i,{value:e.target.value})}/>
+                <button type="button" className="pp-icon is-danger" aria-label="Xoá thông tin" onClick={()=>setExtras(rows=>rows.filter((_,j)=>j!==i))}><Trash2 size={15}/></button>
+              </div>})}
+            <div className="pp-extra-chips">
+              {COMMON_EXTRAS.filter(([k])=>!extras.some(r=>r.key.trim()===k)).map(([k,label])=><button key={k} type="button" className="pp-chip" disabled={extras.length>=MAX_EXTRAS} onClick={()=>setExtras(rows=>[...rows,{key:k,value:''}])}>+ {label}</button>)}
+              <Button variant="outline" size="sm" leftIcon={<Plus size={14}/>} disabled={extras.length>=MAX_EXTRAS} onClick={()=>setExtras(rows=>[...rows,{key:'',value:''}])}>Thêm dòng{extras.length>=MAX_EXTRAS?' (tối đa '+MAX_EXTRAS+')':''}</Button>
+            </div>
+          </div>
           <Textarea label="Ghi chú khác" rows={3} maxLength={500} value={notes} placeholder="Đổi size trong 7 ngày…" hint={notes.length+'/500 ký tự'} onChange={e=>setNotes(e.target.value)}/>
         </div>
         <a href="#/cloud-media">Gắn video cho sản phẩm trong Thư viện video →</a>

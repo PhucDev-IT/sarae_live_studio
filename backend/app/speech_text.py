@@ -152,6 +152,12 @@ def spoken(text: str, end: bool = True) -> str:
     t = re.sub(r"(?<![\w])(\d{1,3}(?:[.,]\d)?)\s*(?:kg|ký|kí|ki lô)(?![\w])", lambda m: f"{read_decimal(m.group(1))} ký", t,
                flags=re.IGNORECASE)
     t = re.sub(r"(?<![\w])(\d{1,3})\s*%", lambda m: f"{read_number(int(m.group(1)))} phần trăm", t)
+    # "8h", "8h30" -> "tám giờ", "tám giờ ba mươi"
+    t = re.sub(r"(?<![\w])(\d{1,2})h(\d{2})?(?![\w])", lambda m: f"{read_number(int(m.group(1)))} giờ" +
+               (f" {read_number(int(m.group(2)))}" if m.group(2) else ""), t)
+    # "2-4 ngày" -> "hai đến bốn ngày"
+    t = re.sub(r"(?<![\w.,])(\d{1,3})\s*[-–]\s*(\d{1,3})(?![\w.,])",
+               lambda m: f"{read_number(int(m.group(1)))} đến {read_number(int(m.group(2)))}", t)
     t = re.sub(r"\b((?:size|sz|cỡ)\s*)(XXXL|XXL|XL|XS|2XL|3XL|S|M|L|FREESIZE)\b", _size, t, flags=re.IGNORECASE)
     t = re.sub(r"\b((?:lấy|mặc|mang|bận|chọn|còn|có)\s+)(XXXL|XXL|XL|XS|2XL|3XL|S|M|L)\b", _size, t)
     t = re.sub(r"\bfree\s*ship\b", "miễn phí ship", t, flags=re.IGNORECASE)
@@ -233,6 +239,8 @@ def allowed_amounts(product: dict) -> set[int]:
     """Prices a reply may say: the product's price and original price, and any amount its description states."""
     amounts = {int(round(v)) for v in (product.get("price"), product.get("origin_price")) if v}
     amounts.update(money_amounts(product.get("description") or ""))
+    # Shop policies ("freeship đơn từ 300k") may be said too.
+    amounts.update(money_amounts(" ".join((product.get("policies") or {}).values())))
     return amounts
 
 

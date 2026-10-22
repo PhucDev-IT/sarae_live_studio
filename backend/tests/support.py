@@ -23,7 +23,8 @@ from app.database import get_db
 PASSWORD = "OwnerSecretPassword123!"
 # Modules that open sessions with SessionLocal() directly instead of the FastAPI dependency.
 SESSION_MODULES = ["app.live", "app.live_sessions", "app.ai_live_batches", "app.tiktok_catalog",
-                   "app.tiktok_products", "app.answer_bank", "app.ai_answers", "app.tiktok_chat"]
+                   "app.tiktok_products", "app.answer_bank", "app.ai_answers", "app.tiktok_chat",
+                   "app.sales_brain"]
 
 
 class SaasTestCase(unittest.TestCase):
@@ -60,6 +61,9 @@ class SaasTestCase(unittest.TestCase):
         app.dependency_overrides[db_session] = override
         app.dependency_overrides[get_db] = override
         self.session_patches = [patch(f"{module}.SessionLocal", self.Session) for module in SESSION_MODULES]
+        # The built-in template library (app/knowledge/builtin_vi.jsonl) is tested on its own (test_sales_brain);
+        # other tests see only the templates they create.
+        self.session_patches.append(patch("app.sales_brain._builtin", []))
         for p in self.session_patches:
             p.start()
         self.client = TestClient(app, headers=self.A)

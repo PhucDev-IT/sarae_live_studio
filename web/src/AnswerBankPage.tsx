@@ -5,6 +5,9 @@ import {BookOpen,Copy,MessageSquareText,Package,Pencil,Play,Plus,Save,Sparkles,T
 import {api,apiRequest,errorText} from './mediaApi'
 import {authHeaders} from './authToken'
 import {Thumb} from './CatalogParts'
+import KnowledgeTemplates from './KnowledgeTemplates'
+import KnowledgePolicies from './KnowledgePolicies'
+import KnowledgeBackup from './KnowledgeBackup'
 import './answer-bank.css'
 
 type Product={id:number;name:string;price:number|null;image_url:string;description?:string;ai_facts?:unknown}
@@ -12,7 +15,7 @@ type Intent='ASK_PRICE'|'ASK_SIZE'|'ASK_COLOR'|'ASK_MATERIAL'|'ASK_STOCK'|'ASK_S
 type Answer={id:number;question:string;intent:string;say:string[];text:string[];source:'manual'|'operator'|'ai'|'pregen';approved:boolean;uses:number;last_used_at:string|null;scope:'shop'|'auto'}
 type BankView={product:{id:number;name:string;price:number|null};answers:Answer[]}
 type Viewer={username:string;nickname:string;comment:string}
-type Reply={id:number;question:string;comments:Viewer[];intent:string;slots:Record<string,unknown>;source:'rule'|'bank'|'ai';say:string;text:string;intro:string|null;body:string;spoken_text:string;comment_text:string;review_reasons:string[];route:'review'|'voice'|'comment'|'both';confidence:number}
+type Reply={id:number;question:string;comments:Viewer[];intent:string;slots:Record<string,unknown>;source:'rule'|'bank'|'ai'|'template';template_id?:string|null;say:string;text:string;intro:string|null;body:string;spoken_text:string;comment_text:string;review_reasons:string[];route:'review'|'voice'|'comment'|'both';confidence:number}
 type Playground={product:{id:number;name:string;price:number|null};replies:Reply[];skipped:{username:string;comment:string;reason:string}[];usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
 type VoiceConfig={voice?:string;rate?:unknown}
 type BadgeTone='default'|'primary'|'success'|'warning'|'danger'|'info'
@@ -21,7 +24,7 @@ type Draft={id:number|null;question:string;intent:string;say:string;text:string}
 const INTENTS:Record<Intent,string>={ASK_PRICE:'Giá',ASK_SIZE:'Size',ASK_COLOR:'Màu',ASK_MATERIAL:'Chất liệu',ASK_STOCK:'Còn hàng',ASK_SHIPPING:'Vận chuyển',SHOW_PRODUCT:'Xem sản phẩm',GENERAL:'Khác',ORDER:'Chốt đơn'}
 const intentLabel=(i:string)=>INTENTS[i as Intent]??i
 const SOURCES:Record<Answer['source'],string>={manual:'Shop thêm',operator:'Bạn sửa khi LIVE',ai:'AI',pregen:'AI chuẩn bị sẵn'}
-const REPLY_SOURCES:Record<Reply['source'],{label:string;tone:BadgeTone}>={rule:{label:'Luật · 0 token',tone:'success'},bank:{label:'Kho câu · 0 token',tone:'info'},ai:{label:'AI',tone:'primary'}}
+const REPLY_SOURCES:Record<Reply['source'],{label:string;tone:BadgeTone}>={rule:{label:'Luật · 0 token',tone:'success'},bank:{label:'Kho câu · 0 token',tone:'info'},ai:{label:'AI',tone:'primary'},template:{label:'Mẫu chung · 0 token',tone:'success'}}
 const ROUTES:Record<Reply['route'],{label:string;tone:BadgeTone}>={review:{label:'Cần duyệt',tone:'warning'},voice:{label:'Đọc giọng',tone:'success'},comment:{label:'Comment',tone:'info'},both:{label:'Đọc + comment',tone:'primary'}}
 const SAMPLES=['giá bn shop','55kg mặc size gì','có màu đen không','vải gì vậy','giá bn, có size L k','hàng lỗi đổi sao','hi']
 const MAX_SAY=5, MAX_TEXT=5, SAY_LEN=160, TEXT_LEN=120, MAX_LINES=20
@@ -67,7 +70,22 @@ function useSpeaker(){
   return {speak,playing}
 }
 
+type View='product'|'templates'|'policies'|'backup'
+const VIEWS:{value:View;label:string}[]=[{value:'product',label:'Theo sản phẩm'},{value:'templates',label:'Mẫu chung'},{value:'policies',label:'Chính sách shop'},{value:'backup',label:'Sao lưu & nhập'}]
+
 export default function AnswerBankPage(){
+  const [view,setView]=useState<View>('product')
+  return <div className="ab-root">
+    <header className="ab-top">
+      <p className="ab-muted">Mẫu chung dùng cho mọi sản phẩm: chỉ cần nhập dữ liệu sản phẩm, không phải dạy lại.<br/>Chính sách shop nhập 1 lần.</p>
+      <SegmentedControl value={view} onChange={setView} items={VIEWS}/>
+    </header>
+    {view==='product'?<ProductAnswers/>:view==='templates'?<KnowledgeTemplates/>:view==='policies'?<KnowledgePolicies/>:<KnowledgeBackup/>}
+  </div>
+}
+
+/** "Theo sản phẩm": product list + answer bank / playground for the selected product. */
+function ProductAnswers(){
   const toast=useToast()
   const [products,setProducts]=useState<Product[]>([])
   const [loaded,setLoaded]=useState(false)
@@ -249,7 +267,7 @@ function PlaygroundTab({productId,speaker,onSave}:{productId:number;speaker:Spea
       {result.replies.map(r=>{const src=REPLY_SOURCES[r.source]??{label:r.source,tone:'default' as BadgeTone},route=ROUTES[r.route]??{label:r.route,tone:'default' as BadgeTone}
         return <article key={r.id} className="ab-card">
           <div className="ab-viewers">{r.comments.map((c,i)=><div key={i}><b>{c.nickname||c.username}:</b> {c.comment}</div>)}</div>
-          <div className="ab-chips"><Badge tone={src.tone}>{src.label}</Badge><Badge tone="primary">{intentLabel(r.intent)}</Badge><Badge tone={route.tone}>{route.label}</Badge></div>
+          <div className="ab-chips"><Badge tone={src.tone}>{src.label}</Badge>{r.template_id&&<small className="ab-template-id" title="Mã mẫu chung đã dùng">{r.template_id}</small>}<Badge tone="primary">{intentLabel(r.intent)}</Badge><Badge tone={route.tone}>{route.label}</Badge></div>
           {r.route==='review'&&r.review_reasons.length>0&&<ul className="ab-reasons">{r.review_reasons.map((x,i)=><li key={i}>{x}</li>)}</ul>}
           {r.spoken_text&&<div className="ab-line"><span aria-label="AI sẽ nói">🔊</span><span>{r.spoken_text}</span>
             <Button size="sm" variant="outline" leftIcon={<Play size={13}/>} loading={speaker.playing==='r'+r.id} onClick={()=>void speaker.speak('r'+r.id,r.spoken_text)}>Nghe</Button></div>}

@@ -96,8 +96,9 @@ def delete_credential(provider: str, owner: Owner):
 # Per-OWNER counters for this Backend process. They never imply provider quota; the API provider enforces real limits.
 COUNTS = PerOwner(lambda _owner_id: {"requests": 0, "input_tokens": 0, "output_tokens": 0})
 COUNT_LOCK = RLock()
-ALLOWED_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_SHIPPING", "ASK_STOCK", "SHOW_PRODUCT",
-                   "ORDER", "COMPLAINT", "GREETING", "GENERAL", "OTHER"}
+ALLOWED_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_SHIPPING", "ASK_STOCK", "ASK_RETURN",
+                   "ASK_PAYMENT", "ASK_PROMO", "ASK_CARE", "ASK_STYLE", "ASK_QUALITY", "SHOW_PRODUCT", "ORDER",
+                   "COMPLAINT", "GREETING", "GENERAL", "OTHER"}
 
 def prompt(body: AnalyzeBody):
     context = {"name": body.product_name, "details": body.product_details} if body.product_name else None

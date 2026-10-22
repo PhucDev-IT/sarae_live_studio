@@ -4,6 +4,7 @@ TikTok owns a product's name, price and stock; these facts are Sarae's own, edit
 description and stored as JSON in products.ai_facts. A fact that is not here is never stated by a rule.
 """
 import json
+import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -38,6 +39,27 @@ class ProductFacts(BaseModel):
     material: str = Field(default="", max_length=200)
     shipping: str = Field(default="", max_length=300)
     notes: str = Field(default="", max_length=500)
+    # Group used by category-specific templates ("áo", "váy"...), and any other fact as key -> value
+    # ({product.form}, {product.care}... in templates, app/sales_brain.py).
+    category: str = Field(default="", max_length=40)
+    extras: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("extras")
+    @classmethod
+    def clean_extras(cls, values: dict[str, str]) -> dict[str, str]:
+        if len(values) > 30:
+            raise ValueError("Tối đa 30 thông tin thêm")
+        out = {}
+        for key, value in values.items():
+            key = str(key).strip()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{1,30}", key):
+                raise ValueError(f"Tên thông tin “{key}” chỉ gồm chữ thường không dấu, số và _ (vd form, care)")
+            value = " ".join(str(value).split())
+            if len(value) > 200:
+                raise ValueError(f"“{key}” dài quá 200 ký tự")
+            if value:
+                out[key] = value
+        return out
 
     @field_validator("colors")
     @classmethod
@@ -49,7 +71,7 @@ class ProductFacts(BaseModel):
                 out.append(value)
         return out
 
-    @field_validator("material", "shipping", "notes")
+    @field_validator("material", "shipping", "notes", "category")
     @classmethod
     def strip(cls, value: str) -> str:
         return " ".join(value.split())
