@@ -271,6 +271,7 @@ class AgentRuntime:
             "media": {"cloud_cache": self.cloud_cache_status()},
             "playback": self.playback.status(live=False),
             "monitor": self.monitor.status(),
+            "voice": self.voice.status(),
             "auto_pin": self.auto_pin.status(),
         }
 
@@ -387,6 +388,10 @@ class AgentRuntime:
         except Exception:  # noqa: BLE001
             log.exception("Lỗi khi dừng CAPTCHA Monitor")
         self.engine.stop_monitor()
+        try:
+            self.voice.close()  # restores the video volume if a sentence was playing
+        except Exception:  # noqa: BLE001
+            log.exception("Lỗi khi dừng giọng nói")
         try:
             self.auto_pin.close()
         except Exception:

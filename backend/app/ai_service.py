@@ -96,8 +96,8 @@ def delete_credential(provider: str, owner: Owner):
 # Per-OWNER counters for this Backend process. They never imply provider quota; the API provider enforces real limits.
 COUNTS = PerOwner(lambda _owner_id: {"requests": 0, "input_tokens": 0, "output_tokens": 0})
 COUNT_LOCK = RLock()
-ALLOWED_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_MATERIAL", "ASK_SHIPPING",
-                   "ASK_STOCK", "SHOW_PRODUCT", "GENERAL", "OTHER"}
+ALLOWED_INTENTS = {"ASK_PRICE", "ASK_SIZE", "ASK_COLOR", "ASK_MATERIAL", "ASK_SHIPPING", "ASK_STOCK", "SHOW_PRODUCT",
+                   "ORDER", "COMPLAINT", "GREETING", "GENERAL", "OTHER"}
 
 def prompt(body: AnalyzeBody):
     context = {"name": body.product_name, "details": body.product_details} if body.product_name else None
@@ -149,8 +149,10 @@ def usage(owner: Owner):
 def analyze_endpoint(body: AnalyzeBody, owner: Owner):
     return analyze(owner["id"], body)
 
-def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
-    """One AI call on behalf of an OWNER (their config, counters and processing log)."""
+def complete_json(owner_id: str, text: str, *, log_key: str | None = None, username: str = "",
+                  log_text: str = "", max_output_tokens: int | None = None) -> tuple[dict, dict, AIConfig]:
+    """One provider call returning a JSON object: (parsed, usage, config). Applies the OWNER's config, key, counters
+    and request limit; errors are HTTPException with the key redacted."""
     config = load_config(owner_id)
     count = COUNTS(owner_id)
     monitor = monitors(log_key or owner_id)
@@ -163,14 +165,34 @@ def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
         if count["requests"] >= config.max_requests_per_session:
             raise HTTPException(429, "Đã đạt giới hạn lượt gọi AI cho lần chạy Backend này")
         count["requests"] += 1
+    if max_output_tokens:
+        # A batch needs room for one answer per question; never below the owner's own setting.
+        config = config.model_copy(update={"max_output_tokens": max(config.max_output_tokens, min(3000, max_output_tokens))})
     start = time.monotonic()
-    monitor.record("AI_REQUEST", config.model, body.comment, username=body.username)
+    monitor.record("AI_REQUEST", config.model, log_text or text[-300:], username=username)
     try:
-        raw, inp, out = (call_gemini(config, prompt(body), key) if config.provider == "gemini"
-                         else call_openai(config, prompt(body), key))
+        raw, inp, out = (call_gemini(config, text, key) if config.provider == "gemini"
+                         else call_openai(config, text, key))
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("LLM phải trả về JSON object")
+        with COUNT_LOCK:
+            count["input_tokens"] += int(inp or 0)
+            count["output_tokens"] += int(out or 0)
+        usage = {"input_tokens": inp, "output_tokens": out, "latency_ms": round((time.monotonic() - start) * 1000)}
+        return parsed, usage, config
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        message = redact(str(exc), key)
+        monitor.record("AI_ERROR", type(exc).__name__, message[:300], username=username)
+        raise HTTPException(502, f"Lỗi AI provider: {type(exc).__name__}: {message[:240]}") from None
+
+
+def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
+    """One AI call on behalf of an OWNER (their config, counters and processing log)."""
+    monitor = monitors(log_key or owner_id)
+    parsed, usage, config = complete_json(owner_id, prompt(body), log_key=log_key, username=body.username,
+                                          log_text=body.comment)
+    try:
         intent = str(parsed.get("intent", "OTHER"))
         if intent not in ALLOWED_INTENTS:
             intent = "OTHER"
@@ -179,15 +201,10 @@ def analyze(owner_id: str, body: AnalyzeBody, log_key: str | None = None):
         parsed["reply"] = str(parsed.get("reply") or "")[:500]
         parsed["reason"] = str(parsed.get("reason") or "")[:300]
         parsed["needs_review"] = bool(parsed.get("needs_review", False))
-        with COUNT_LOCK:
-            count["input_tokens"] += int(inp or 0)
-            count["output_tokens"] += int(out or 0)
-        elapsed = round((time.monotonic()-start)*1000)
-        monitor.record("AI_RESPONSE", intent, f"{parsed['reply']} | {elapsed}ms | input={inp} output={out}", username=body.username)
-        return {"provider": config.provider, "model": config.model, "result": parsed,
-                "usage": {"input_tokens": inp, "output_tokens": out, "latency_ms": elapsed},
-                "action_executed": False}
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        message = redact(str(exc), key)
-        monitor.record("AI_ERROR", type(exc).__name__, message[:300], username=body.username)
-        raise HTTPException(502, f"Lỗi AI provider: {type(exc).__name__}: {message[:240]}") from None
+    except (ValueError, TypeError) as exc:
+        monitor.record("AI_ERROR", type(exc).__name__, str(exc)[:300], username=body.username)
+        raise HTTPException(502, f"Lỗi AI provider: {type(exc).__name__}: {str(exc)[:240]}") from None
+    monitor.record("AI_RESPONSE", intent, f"{parsed['reply']} | {usage['latency_ms']}ms | input={usage['input_tokens']} "
+                   f"output={usage['output_tokens']}", username=body.username)
+    return {"provider": config.provider, "model": config.model, "result": parsed, "usage": usage,
+            "action_executed": False}

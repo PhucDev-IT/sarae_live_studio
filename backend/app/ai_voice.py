@@ -35,10 +35,13 @@ class SpeakBody(BaseModel):
 def speak_on_agent(body: SpeakBody, owner: Owner):
     """Read the text aloud on the OBS of one of the OWNER's Windows Agents."""
     from app.owner_agents import send_command
-    sent = send_command(owner, body.agent_id, "tts_speak", {"text": body.text, "voice": body.voice})
-    monitors(owner["id"]).record("TTS_QUEUED", body.voice, f"Gửi tới Agent {sent['agent']['hostname']}: {body.text}")
+    from app.speech_text import spoken
+    # Numbers, prices and short forms are read as words ("200k" -> "hai trăm nghìn").
+    text = spoken(body.text)[:450]
+    sent = send_command(owner, body.agent_id, "tts_speak", {"text": text, "voice": body.voice})
+    monitors(owner["id"]).record("TTS_QUEUED", body.voice, f"Gửi tới Agent {sent['agent']['hostname']}: {text}")
     return {"status": "sent_to_agent", "agent": sent["agent"], "command_id": sent["command_id"],
-            "voice": body.voice, "text": body.text}
+            "voice": body.voice, "text": text}
 
 
 class PreviewBody(BaseModel):

@@ -69,6 +69,8 @@ class MonitorConfigParams(Strict):
 class SpeakParams(Strict):
     text: str = Field(min_length=1, max_length=450)
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    rate: int = Field(default=0, ge=-30, le=50)
+    duck: bool = True
 
 
 class AutoPinOpenParams(Strict):
@@ -188,7 +190,9 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("monitor.templates.list", lambda _: {"templates": rt.monitor.templates()})
 
     # voice
-    reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice), SpeakParams)
+    reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice, rate=p.rate, duck=p.duck), SpeakParams)
+    reg("voice.clear", lambda _: rt.voice.clear())
+    reg("voice.status", lambda _: rt.voice.status())
 
     # Auto Pin: controlled Chrome profile, local-only IPC (no Cloud command support).
     reg("autopin.status", lambda _: rt.auto_pin.status())

@@ -218,6 +218,13 @@ class ObsController:
         self._call("TriggerMediaInputAction", {"inputName": input_name, "mediaAction": MEDIA_ACTIONS["restart"]})
         return self.media_status(input_name)
 
+    def input_volume_db(self, input_name: str) -> float:
+        return float(self._call("GetInputVolume", {"inputName": input_name}).get("inputVolumeDb", 0.0))
+
+    def set_input_volume_db(self, input_name: str, db: float) -> None:
+        # OBS accepts -100..26 dB; -100 is silence.
+        self._call("SetInputVolume", {"inputName": input_name, "inputVolumeDb": max(-100.0, min(26.0, db))})
+
     def media_action(self, input_name: str, action: str) -> dict:
         if action not in MEDIA_ACTIONS:
             raise AgentError("INVALID_REQUEST", f"Hành động media không hợp lệ: {action}")

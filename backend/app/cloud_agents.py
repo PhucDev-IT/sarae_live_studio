@@ -281,7 +281,8 @@ def get_status(authorization:str|None=Header(None)):
 
 NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_resume","obs_next","obs_previous",
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
-    "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare"}
+    "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
+    "tts_clear"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
@@ -354,7 +355,16 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         voice=payload.get("voice","vi-VN-HoaiMyNeural")
         if voice not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural"):
             raise HTTPException(422,"Giọng không được hỗ trợ")
-        return {"text":text,"voice":voice}
+        out={"text":text,"voice":voice}
+        # Optional (AI voice): speed in percent, seconds after which the Agent no longer speaks it, video ducking.
+        if "rate" in payload:out["rate"]=_int(payload["rate"],"rate",-30,50)
+        if "ttl_seconds" in payload:
+            ttl=payload["ttl_seconds"]
+            if isinstance(ttl,bool) or not isinstance(ttl,(int,float)) or not 3<=ttl<=300:
+                raise HTTPException(422,"ttl_seconds từ 3 đến 300")
+            out["ttl_seconds"]=float(ttl)
+        if "duck" in payload:out["duck"]=_bool(payload["duck"],"duck")
+        return out
     if kind=="local_playlist_start":
         return {"media_ids":_media_ids(payload.get("media_ids")),"loop":_bool(payload.get("loop",True),"loop")}
     if kind=="local_media_play":

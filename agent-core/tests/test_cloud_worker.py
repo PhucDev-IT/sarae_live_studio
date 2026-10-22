@@ -319,7 +319,11 @@ def test_router_reaches_engine(router):
         r.execute(kind, {})
         getattr(engine, method).assert_called()
     r.execute("tts_speak", {"text": "Xin chào", "voice": "vi-VN-NamMinhNeural"})
-    voice.speak.assert_called_once_with("Xin chào", "vi-VN-NamMinhNeural")
+    voice.speak.assert_called_once_with("Xin chào", "vi-VN-NamMinhNeural", rate=0, ttl_seconds=None, duck=True)
+    r.execute("tts_speak", {"text": "Xin chào", "rate": 10, "ttl_seconds": 20, "duck": False})
+    voice.speak.assert_called_with("Xin chào", "vi-VN-HoaiMyNeural", rate=10, ttl_seconds=20, duck=False)
+    r.execute("tts_clear", {})
+    voice.clear.assert_called_once_with()
     r.execute("monitor_config", {"interval_seconds": 3, "threshold": 0.9})
     assert monitor.configure.call_args.args[0]["threshold"] == 0.9
 

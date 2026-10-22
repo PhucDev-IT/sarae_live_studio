@@ -64,7 +64,9 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | `monitor.status` / `.start` / `.stop` | — | `{state, config, events, templates}` |
 | `monitor.config` | `{interval_seconds?,threshold?,telegram_enabled?,telegram_chat_id?,autostart?}` | Cấu hình monitor |
 | `monitor.templates.list` | — | Ảnh mẫu đang có (chỉ đọc: ảnh do SUPER_ADMIN cung cấp qua Cloud, GUI không thêm/xoá) |
-| `voice.speak` | `{text≤450, voice?}` | `{status:"sent_to_obs",source,voice,chars}` |
+| `voice.speak` | `{text≤450, voice?, rate?(-30..50), duck?}` | `{status:"queued",id,position,source,voice,chars}` (vào hàng đợi, trả về ngay) |
+| `voice.clear` | — | `{cleared,stopped}` (xoá hàng đợi, dừng câu đang đọc) |
+| `voice.status` | — | `{queue,speaking,ducked,stats,last}` |
 | `diagnostics.export` | — | `{path, folder, bytes}` |
 | `logs.recent` | `{limit?≤500}` | `{entries[]}` |
 
@@ -95,7 +97,7 @@ Params được kiểm tra bằng Pydantic (`extra="forbid"`): sai kiểu/thừa
 | Cloud | `CLOUD_URL_MISSING`, `CLOUD_URL_MISMATCH`, `CLOUD_UNREACHABLE`, `CLOUD_TIMEOUT`, `CLOUD_SERVER_ERROR`, `CLOUD_BAD_RESPONSE`, `CLOUD_VALIDATION_ERROR`, `AGENT_UNAUTHORIZED`, `AGENT_REVOKED`, `AGENT_NOT_ACTIVATED`, `AGENT_RUNNING`, `AGENT_ALREADY_RUNNING`, `AGENT_NOT_CONNECTED`, `ACK_REJECTED` |
 | Media | `CACHE_BUSY`, `CACHE_MANIFEST_FAILED`, `CACHE_MEDIA_INVALID`, `CACHE_CHECKSUM_MISSING`, `CACHE_INTEGRITY_FAILED`; video chưa có trong cache → `PLAYBACK_CONFLICT` "… chưa tải về cache của Agent" |
 | OBS/Phát | `OBS_NOT_RUNNING`, `OBS_AUTH_FAILED`, `OBS_TIMEOUT`, `OBS_CONNECT_FAILED`, `OBS_DISCONNECTED`, `OBS_INPUT_MISSING`, `OBS_REQUEST_FAILED`, `OBS_NOT_APPLIED`, `OBS_UNAVAILABLE` (503), `PLAYBACK_CONFLICT` (409), `INVALID_REQUEST` (422) — `PlaybackError` giữ `status_code` của engine Cloud |
-| Monitor/TTS | `MONITOR_UNSUPPORTED`, `MONITOR_DEPENDENCY_MISSING`, `TEMPLATE_MISSING`, `INVALID_TEMPLATE`, `TTS_BUSY`, `TTS_TIMEOUT`, `TTS_FAILED`, `TTS_UNAVAILABLE` |
+| Monitor/TTS | `MONITOR_UNSUPPORTED`, `MONITOR_DEPENDENCY_MISSING`, `TEMPLATE_MISSING`, `INVALID_TEMPLATE`, `TTS_QUEUE_FULL`, `TTS_TIMEOUT`, `TTS_FAILED`, `TTS_UNAVAILABLE` |
 | Lệnh Cloud | `UNSUPPORTED_COMMAND`, `INVALID_COMMAND_PAYLOAD` |
 
 ## 5. Cloud API dùng bởi Agent

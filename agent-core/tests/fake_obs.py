@@ -19,6 +19,7 @@ class FakeWs:
         self.cursor: dict = {}
         self.muted: dict = {}
         self.enabled: dict = {}
+        self.volume: dict = {}
         self.apply = apply
         self.broken = False
         self.calls: list[str] = []
@@ -67,6 +68,10 @@ class FakeWs:
             self.enabled[data["sceneItemId"]] = data["sceneItemEnabled"]
         if request == "SetMediaInputCursor":
             self.cursor[name] = data["mediaCursor"]
+        if request == "GetInputVolume":
+            return {"inputVolumeDb": self.volume.get(name, 0.0)}
+        if request == "SetInputVolume":
+            self.volume[name] = data["inputVolumeDb"]
         return {}
 
     def disconnect(self):

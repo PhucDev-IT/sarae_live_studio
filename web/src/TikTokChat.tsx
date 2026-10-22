@@ -73,7 +73,7 @@ function ChatDesk({agent}:{agent:OwnerAgent}){
       <div className="tc-chat-title"><h3>Processing Monitor — Event Terminal</h3><span>Chế độ: {processing?.mode==='rules_only_no_ai'?'Quy tắc, chưa kết nối AI':'—'}</span></div>
       <div className="tc-meta" style={{marginTop:12}}><span>Đã chọn: <b>{processing?.selected??0}</b></span><span>Event trùng: <b>{processing?.duplicates??0}</b></span><span>Chặn AI do spam: <b>{processing?.spam_suppressed??0}</b></span></div>
       <div className="tc-terminal" role="log" aria-label="Processing trace">{traces.length===0?<p>Chưa có event xử lý.</p>:traces.slice().reverse().map(t=><div className="tc-trace" key={t.id}><time>{fmt(t.timestamp)}</time> <b>[{t.stage}]</b> <em>{t.decision}</em> <span>#{t.comment_id??'?'} @{t.username||'?'} — {t.text}</span></div>)}</div>
-      <p className="tc-note">Log chạy từ Backend thật. Dedup chỉ xác nhận được khi TikTok cung cấp ID sự kiện; chống spam giới hạn cùng username và nội dung trong 20 giây. Khi bật AI realtime, câu trả lời thật sẽ hiển thị trong Batch Monitor; giọng nói hiện chỉ cho nghe thử tại máy.</p>
+      <p className="tc-note">Log chạy từ Backend thật. Dedup chỉ xác nhận được khi TikTok cung cấp ID sự kiện; chống spam giới hạn cùng username và nội dung trong 20 giây. Khi bật AI realtime, mỗi câu hỏi có câu trả lời riêng trong khung AI trả lời LIVE; giọng nói phát theo chế độ bạn chọn (thủ công, bán tự động, tự động).</p>
     </section>
   </div>
 }

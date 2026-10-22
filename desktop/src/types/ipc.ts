@@ -286,7 +286,9 @@ export interface CoreMethods {
   'monitor.stop': [NoParams, MonitorStatus]
   'monitor.config': [Partial<MonitorConfig>, MonitorConfig]
   'monitor.templates.list': [NoParams, { templates: TemplateInfo[] }]
-  'voice.speak': [{ text: string; voice?: Voice }, { status: string; source: string; voice: string; chars: number }]
+  'voice.speak': [{ text: string; voice?: Voice; rate?: number; duck?: boolean }, { status: string; id: string; position: number; source: string; voice: string; chars: number }]
+  'voice.clear': [NoParams, { cleared: number; stopped: boolean }]
+  'voice.status': [NoParams, { queue: number; speaking: string | null; ducked: boolean; stats: Record<string, number>; last: Record<string, unknown> | null }]
   'diagnostics.export': [NoParams, { path: string; folder: string; bytes: number }]
   'logs.recent': [{ limit?: number }, { entries: LogEntry[] }]
 }

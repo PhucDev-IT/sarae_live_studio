@@ -90,6 +90,10 @@ class TikTokSyncPayload(Payload):
 class TtsPayload(Payload):
     text: str = Field(min_length=1, max_length=450)
     voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    # AI voice (backend/app/live_reply_director.py): speed in percent, not spoken after ttl_seconds, video ducking.
+    rate: int = Field(default=0, ge=-30, le=50)
+    ttl_seconds: float | None = Field(default=None, ge=3, le=300)
+    duck: bool = True
 
 
 class MonitorConfigPayload(Payload):
@@ -136,7 +140,9 @@ class CommandRouter:
             "playback_video": (NoPayload, lambda _: p.use_video()),
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "media_prepare": (MediaPreparePayload, lambda b: self._media_prepare(b.session_id)),
-            "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice)),
+            "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice, rate=b.rate, ttl_seconds=b.ttl_seconds,
+                                                            duck=b.duck)),
+            "tts_clear": (NoPayload, lambda _: voice.clear()),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
                               (("local_media_stop", "obs_stop", "playback_stop"), p.stop),
