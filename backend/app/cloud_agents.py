@@ -297,7 +297,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
-COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","tts_prepare","local_media_play","local_playlist_start",
+COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
@@ -380,6 +380,9 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         if "duck" in payload:out["duck"]=_bool(payload["duck"],"duck")
         if payload.get("intro") is not None:out["intro"]=_text(payload["intro"],"intro",1,120)
         return out
+    if kind=="playback_policy":
+        from app.playback_policy import validate_command
+        return validate_command(payload)
     if kind=="tts_prepare":
         texts=payload.get("texts")
         if not isinstance(texts,list) or not 1<=len(texts)<=40 or any(not isinstance(t,str) or not 1<=len(t)<=450 for t in texts):

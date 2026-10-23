@@ -13,6 +13,7 @@ Public API (kept stable for the cloud LIVE facade; ``status()`` is the heartbeat
     start_playlist(media_ids, loop=True, start_index=0, playlist_id=None)
     product_play(session_id, product_id, media_ids, mode)  # 'immediate' | 'after_current'
     cancel_pending(), pause(), resume(), next(), previous(), select(index), seek(ms), stop()
+    set_policy(session_id, policy, lineup)  # docs/PLAYBACK_POLICY.md: video order, automatic product rotation
     configure(...), list_inputs(host, port, password), set_loop(loop), status(), tick(), start_monitor()
 
 Agent-core differences: OBS settings come from ``store`` (the runtime keeps them in
@@ -25,16 +26,18 @@ PRODUCT_SWITCHED, PLAYBACK_ENDED or ERROR.
 """
 import json
 import logging
+import random
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from sarae_agent.config import paths
 from sarae_agent.errors import AgentError
+from sarae_agent.media.cloud_cache import MEDIA_ID
 from sarae_agent.media.probe import obs_file, probe_media
 
 log = logging.getLogger("sarae.playback")
@@ -62,6 +65,55 @@ class ObsConfig(BaseModel):
     source_a: str = Field(default="", max_length=200)
     source_b: str = Field(default="", max_length=200)
     camera_input: str = Field(default="", max_length=200)
+
+
+class PlaybackPolicy(BaseModel):
+    """docs/PLAYBACK_POLICY.md; also the payload of the ``playback_policy`` Cloud command."""
+    model_config = {"extra": "forbid"}
+
+    video_order: Literal["sequential", "random", "shuffle"] = "sequential"
+    product_rotation: Literal["off", "sequential", "random", "shuffle"] = "off"
+    rotate_after_videos: int | None = Field(default=3, ge=1, le=50)
+    rotate_after_minutes: int | None = Field(default=None, ge=1, le=240)
+    switch_mode: Literal["after_current", "immediate"] = "after_current"
+    auto: bool = True
+
+    @model_validator(mode="after")
+    def _limit(self):
+        if self.product_rotation != "off" and self.rotate_after_videos is None and self.rotate_after_minutes is None:
+            raise ValueError("Cần rotate_after_videos hoặc rotate_after_minutes khi bật đổi sản phẩm tự động")
+        return self
+
+
+class LineupItem(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    product_id: int = Field(ge=1)
+    media_ids: list[str] = Field(default_factory=list, max_length=3000)
+
+    @field_validator("media_ids")
+    @classmethod
+    def _ids(cls, value: list[str]) -> list[str]:
+        if any(not (isinstance(m, str) and MEDIA_ID.fullmatch(m)) for m in value):
+            raise ValueError("Danh sách media_ids không hợp lệ")
+        return value
+
+
+class PolicyUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    session_id: int = Field(ge=1)
+    policy: PlaybackPolicy
+    lineup: list[LineupItem] = Field(default_factory=list, max_length=300)
+
+    @field_validator("lineup")
+    @classmethod
+    def _lineup(cls, value: list[LineupItem]) -> list[LineupItem]:
+        if sum(len(item.media_ids) for item in value) > 3000:
+            raise ValueError("Tối đa 3000 video trong lineup")
+        if len({item.product_id for item in value}) != len(value):
+            raise ValueError("Sản phẩm bị lặp trong lineup")
+        return value
 
 
 def load_obs_config(path: Path) -> ObsConfig:
@@ -115,8 +167,9 @@ def _close(client):
 class PlaybackEngine:
     def __init__(self, resolve: Callable[[str], Path | None], on_event: Callable[[dict], None] | None = None,
                  config_file: Path | None = None, client_factory: Callable[[ObsConfig], object] | None = None,
-                 store=None):
+                 store=None, rng: random.Random | None = None):
         self.resolve = resolve
+        self.rng = rng or random.Random()
         self.on_event = on_event
         self.config_file = Path(config_file) if config_file else paths.root / "obs_config.json"
         self.store = store or FileObsStore(self.config_file)
@@ -154,6 +207,20 @@ class PlaybackEngine:
         self.session_id = None
         # Lineups pushed by the VPS: the full ordered media list per product, re-checked at each video end.
         self.product_media: dict[int, list[str]] = {}
+        # Playback policy of one LIVE session (docs/PLAYBACK_POLICY.md); applies while that session is on air.
+        self.policy: PlaybackPolicy | None = None
+        self.policy_session_id: int | None = None
+        self.product_order: list[int] = []
+        self.videos_in_product = 0
+        self.product_started_at: float | None = None
+        self._product_starting = False
+        # Choices are made once and remembered, so the A/B preload and the next play agree.
+        self._planned_next: str | None = None
+        self._planned_product: int | None = None
+        self._planned_start: tuple[int, str] | None = None
+        self._video_bag: list[str] = []
+        self._product_bag: list[int] = []
+        self._product_rounds = 0
         self._monitor_thread = None
         self._monitor_stop = threading.Event()
 
@@ -191,6 +258,216 @@ class PlaybackEngine:
     def client(self):
         return self.client_factory(self.config)
 
+    # ----- playback policy ------------------------------------------------------------------------
+
+    def _policy(self) -> PlaybackPolicy | None:
+        if (self.policy is not None and self.session_mode == "product" and self.session_id is not None
+                and self.session_id == self.policy_session_id):
+            return self.policy
+        return None
+
+    def _video_order(self) -> str:
+        policy = self._policy()
+        return policy.video_order if policy else "sequential"
+
+    def _has_cached(self, product_id) -> bool:
+        return any(self._path(m) is not None for m in self.product_media.get(product_id, []))
+
+    def _plan_next(self, current: int, exclude=frozenset()) -> int | None:
+        """Index of the video after ``current`` (an index of self.ids; -1 when it left the lineup)."""
+        n = len(self.ids)
+        order = self._video_order()
+        if order == "sequential":
+            if current + 1 < n:
+                return current + 1
+            return 0 if self.loop and n else None
+        current_id = self.ids[current] if 0 <= current < n else None
+        candidates = [m for m in self.ids if m != current_id and m not in exclude]
+        if not candidates:
+            return None if current_id is None or current_id in exclude else current
+        planned = self._planned_next
+        if planned in candidates:
+            return self.ids.index(planned)
+        if order == "random":
+            chosen = self.rng.choice(candidates)
+        else:
+            chosen = None
+            for refilled in (False, True):
+                while self._video_bag:
+                    media_id = self._video_bag.pop(0)
+                    if media_id in candidates:
+                        chosen = media_id
+                        break
+                if chosen is not None or refilled:
+                    break
+                # New round over every video; its first is never the one that just played.
+                bag = list(self.ids)
+                self.rng.shuffle(bag)
+                if bag[0] == current_id:
+                    bag.append(bag.pop(0))
+                self._video_bag = bag
+            if chosen is None:
+                chosen = self.rng.choice(candidates)
+        self._planned_next = chosen
+        return self.ids.index(chosen)
+
+    def _plan_start(self, product_id, ids: list[str]) -> str:
+        """First video of a product about to go on air, chosen by video_order."""
+        planned = self._planned_start
+        if planned is not None and planned[0] == product_id and planned[1] in ids:
+            return planned[1]
+        media_id = ids[0] if self._video_order() == "sequential" else ids[self.rng.randrange(len(ids))]
+        self._planned_start = (product_id, media_id)
+        return media_id
+
+    def _start_index(self, product_id, ids: list[str]) -> int:
+        media_id = self._plan_start(product_id, ids)
+        self._planned_start = None
+        return ids.index(media_id)
+
+    def _rotation_policy(self) -> PlaybackPolicy | None:
+        policy = self._policy()
+        if policy is None or not policy.auto or policy.product_rotation == "off":
+            return None
+        return policy
+
+    def _product_seconds(self) -> int:
+        return int(time.monotonic() - self.product_started_at) if self.product_started_at is not None else 0
+
+    def _plan_product(self):
+        """The product automatic rotation would switch to, or None (remembered until used)."""
+        policy = self._rotation_policy()
+        if policy is None:
+            return None
+        current = self.product_id
+        order = self.product_order
+        planned = self._planned_product
+        if planned is not None and planned != current and planned in order and self._has_cached(planned):
+            return planned
+        target = None
+        if policy.product_rotation == "sequential":
+            start = order.index(current) if current in order else -1
+            for step in range(1, len(order) + 1):
+                candidate = order[(start + step) % len(order)]
+                if candidate != current and self._has_cached(candidate):
+                    target = candidate
+                    break
+        elif policy.product_rotation == "random":
+            candidates = [p for p in order if p != current and self._has_cached(p)]
+            target = self.rng.choice(candidates) if candidates else None
+        else:
+            for refilled in (False, True):
+                while self._product_bag:
+                    candidate = self._product_bag.pop(0)
+                    if candidate != current and candidate in order and self._has_cached(candidate):
+                        target = candidate
+                        break
+                if target is not None or refilled:
+                    break
+                bag = [p for p in order if self._has_cached(p)]
+                if self._product_rounds == 0:
+                    # The product already on air counts as the first of the first round.
+                    bag = [p for p in bag if p != current]
+                self.rng.shuffle(bag)
+                if bag and bag[0] == current:
+                    bag.append(bag.pop(0))
+                self._product_bag = bag
+                self._product_rounds += 1
+        self._planned_product = target
+        return target
+
+    def _rotation_due(self, minutes_only: bool = False) -> bool:
+        policy = self._rotation_policy()
+        if policy is None or self.pending_product_id is not None:
+            return False
+        if policy.rotate_after_minutes is not None and self._product_seconds() >= policy.rotate_after_minutes * 60:
+            return True
+        return (not minutes_only and policy.rotate_after_videos is not None
+                and self.videos_in_product >= policy.rotate_after_videos)
+
+    def _rotate(self) -> bool:
+        target = self._plan_product()
+        if target is None:
+            return False
+        ids = self.product_queue(target)
+        start = self._start_index(target, ids)
+        try:
+            self.switch_product(target, trigger="auto_rotation", ids=ids, start=start)
+            return True
+        except PlaybackError as exc:
+            if exc.status_code != 409:
+                raise
+            self._planned_product = None
+            self._skipped(ids[start], exc)
+            return False
+
+    def _skipped(self, media_id: str, exc: PlaybackError):
+        self.last_status = f"Bỏ qua video lỗi: {exc.detail}"
+        self._emit("ERROR", {"code": "video_skipped", "media_id": media_id, "message": exc.detail})
+
+    def _following_media(self, index: int, count: int) -> str | None:
+        """Video to preload on the stand-by A/B source while ``index`` plays as video ``count`` of its product."""
+        if (self.session_mode == "product" and self.pending_product_id is not None
+                and self.pending_product_id != self.product_id):
+            try:
+                return self._plan_start(self.pending_product_id, self.product_queue(self.pending_product_id))
+            except PlaybackError:
+                return None
+        policy = self._rotation_policy()
+        if policy is not None and policy.rotate_after_videos is not None and count >= policy.rotate_after_videos:
+            target = self._plan_product()
+            if target is not None:
+                try:
+                    return self._plan_start(target, self.product_queue(target))
+                except PlaybackError:
+                    pass
+        following = self._plan_next(index)
+        return self.ids[following] if following is not None else None
+
+    def _restage_following(self):
+        if not (self.dual_mode and self.active and self.slots):
+            return
+        media_id = self._following_media(self.index, self.videos_in_product)
+        if media_id is None:
+            return
+        client = self.client()
+        try:
+            self._stage_media(client, 1 - self.active_slot, media_id)
+        finally:
+            _close(client)
+
+    def set_policy(self, session_id: int, policy: dict, lineup: list[dict]):
+        """Store a LIVE session's playback policy and product lineup; applies now if that session is on air."""
+        try:
+            body = PolicyUpdate.model_validate({"session_id": session_id, "policy": policy, "lineup": lineup})
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            where = ".".join(str(x) for x in first.get("loc", ())) or "policy"
+            raise PlaybackError(422, f"Chính sách phát không hợp lệ: {where}: {first.get('msg')}") from exc
+        with self.lock:
+            previous = self._policy()
+            order = [item.product_id for item in body.lineup]
+            for item in body.lineup:
+                self.product_media[item.product_id] = list(item.media_ids)
+            if order != self.product_order or self.policy_session_id != body.session_id:
+                self._product_bag = []
+                self._product_rounds = 0
+            self.product_order = order
+            self.policy = body.policy
+            self.policy_session_id = body.session_id
+            self._planned_product = None
+            current = self._policy()
+            if previous is None or current is None or previous.video_order != current.video_order:
+                self._planned_next = None
+                self._planned_start = None
+                self._video_bag = []
+            if current is not None:
+                try:
+                    self._restage_following()
+                except Exception as exc:
+                    log.warning("Không preload lại video kế sau khi đổi chính sách: %s", exc)
+        return self.status()
+
     def _sources(self):
         return [self.config.source_a.strip() or self.config.input_name + " A",
                 self.config.source_b.strip() or self.config.input_name + " B"]
@@ -206,7 +483,9 @@ class PlaybackEngine:
         return scene, names, ids
 
     def _media(self, index):
-        media_id = self.ids[index]
+        return self._prepare(self.ids[index])
+
+    def _prepare(self, media_id: str):
         path = self._path(media_id)
         if path is None:
             raise PlaybackError(409, f"Video {media_id[:12]} chưa tải về cache của Agent")
@@ -225,6 +504,10 @@ class PlaybackEngine:
 
     def _stage(self, client, slot, index):
         path, _ = self._media(index)
+        self._stage_path(client, slot, path)
+
+    def _stage_media(self, client, slot, media_id):
+        path, _ = self._prepare(media_id)
         self._stage_path(client, slot, path)
 
     def _stage_path(self, client, slot, path):
@@ -341,7 +624,7 @@ class PlaybackEngine:
             finally:
                 _close(client)
 
-    def _play_dual(self, client, index, initial=False):
+    def _play_dual(self, client, index, initial=False, count=1):
         if initial:
             located = self._locate_dual(client)
             if not located:
@@ -381,10 +664,10 @@ class PlaybackEngine:
             client.set_input_mute(self.slots[incoming], False)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
             self.active_slot = incoming
-        following = index + 1 if index + 1 < len(self.ids) else (0 if self.loop else None)
+        following = self._following_media(index, count)
         if following is not None:
             try:
-                self._stage(client, 1 - self.active_slot, following)
+                self._stage_media(client, 1 - self.active_slot, following)
             except PlaybackError as exc:
                 self.last_status = f"Không preload được video kế: {exc.detail}"
 
@@ -418,6 +701,11 @@ class PlaybackEngine:
                 "error_count": self.error_count, "transition_count": self.transition_count,
                 "recovery_count": self.recovery_count, "source_mode": "camera" if self.camera_mode else "video",
                 "session_seconds": int(time.time() - self.session_started_at) if self.session_started_at else 0,
+                "policy": self.policy.model_dump() if self.policy is not None else None,
+                "rotation": {"auto": bool(self.policy is not None and self.policy.auto),
+                             "videos_in_product": self.videos_in_product if self.session_mode == "product" else 0,
+                             "product_seconds": self._product_seconds() if self.session_mode == "product" else 0,
+                             "next_product_id": self._plan_product() if self.active else None},
                 # Current connection settings (never the password) so the UI can show and prefill them.
                 "obs": {"host": self.config.host, "port": self.config.port, "input_name": self.config.input_name,
                         "dual_mode": self.dual_mode, "dual_sources": self._sources(),
@@ -463,11 +751,22 @@ class PlaybackEngine:
             if not 0 <= index < len(self.ids):
                 raise PlaybackError(422, "Vị trí video không hợp lệ")
             path, name = self._media(index)
+            fresh = self._product_starting
+            count = 1 if fresh else self.videos_in_product + 1
+            if self._planned_next == self.ids[index]:
+                self._planned_next = None
+            if fresh:
+                # A product goes on air: its shuffle round starts with this video.
+                self._planned_next = None
+                self._video_bag = []
+                if self._video_order() == "shuffle":
+                    self._video_bag = [m for m in self.ids if m != self.ids[index]]
+                    self.rng.shuffle(self._video_bag)
             try:
                 client = self.client()
                 try:
                     if self.dual_mode:
-                        self._play_dual(client, index, initial=not self.active)
+                        self._play_dual(client, index, initial=not self.active, count=count)
                     else:
                         video_scene, video_id = self._verify_input(client, self.config.input_name, "ffmpeg_source")
                         self._fit_video(client, video_scene, video_id)
@@ -512,6 +811,11 @@ class PlaybackEngine:
             self.active = True
             self.paused = False
             self.generation += 1
+            if self.session_mode == "product":
+                self.videos_in_product = count
+                if fresh or self.product_started_at is None:
+                    self.product_started_at = time.monotonic()
+            self._product_starting = False
             self.last_status = f"Đang phát {name}"
             return {"ok": True, "index": index, "filename": name, "media_id": self.ids[index]}
 
@@ -526,6 +830,11 @@ class PlaybackEngine:
         self.paused = False
         self.session_started_at = time.time()
         self.transition_count = self.recovery_count = self.error_count = 0
+        self.videos_in_product = 0
+        self.product_started_at = None
+        self._product_starting = mode == "product"
+        self._planned_next = self._planned_product = self._planned_start = None
+        self._video_bag, self._product_bag, self._product_rounds = [], [], 0
 
     def start_playlist(self, media_ids: list[str], loop: bool = True, start_index: int = 0, playlist_id=None):
         with self.lock:
@@ -540,18 +849,28 @@ class PlaybackEngine:
             self._begin_session(list(media_ids), mode="playlist", loop=bool(loop), playlist_id=playlist_id)
             return self.play(start_index)
 
-    def switch_product(self, product_id, trigger: str | None = None):
-        """Play product_id from its first video. ``trigger`` set means a pending switch was applied."""
-        ids = self.product_queue(product_id)
+    def switch_product(self, product_id, trigger: str | None = None, ids: list[str] | None = None,
+                       start: int | None = None):
+        """Play product_id from the video chosen by the policy (the first one by default).
+
+        ``trigger`` set means the engine switched by itself (pending switch applied or auto_rotation).
+        """
+        ids = self.product_queue(product_id) if ids is None else ids
+        start = self._start_index(product_id, ids) if start is None else start
         old_ids, old_index, old_product = self.ids, self.index, self.product_id
         self.ids = ids
+        # Set before play() so the A/B preload plans from the new product.
+        self.product_id = product_id
+        self._product_starting = True
         try:
-            result = self.play(0)
+            result = self.play(start)
         except Exception:
             self.ids, self.index, self.product_id = old_ids, old_index, old_product
+            self._product_starting = False
             raise
-        previous = self.product_id
-        self.product_id = product_id
+        previous = old_product
+        if self._planned_product == product_id:
+            self._planned_product = None
         self.pending_product_id = None
         self.session_mode = "product"
         if trigger is not None:
@@ -588,9 +907,10 @@ class PlaybackEngine:
                 ids = self.product_queue(product_id)
                 self._begin_session(ids, mode="product", loop=True, session_id=session_id, product_id=product_id)
                 try:
-                    return self.play(0)
+                    return self.play(self._start_index(product_id, ids))
                 except Exception:
                     self.product_id = None
+                    self._product_starting = False
                     raise
             if mode == "immediate":
                 return self.switch_product(product_id)
@@ -602,21 +922,15 @@ class PlaybackEngine:
             if self.dual_mode and self.slots:
                 # The pending product will be needed at the next boundary. Replace the
                 # ordinary next-video preload while its scene item is still hidden.
-                pending_first = self.product_queue(product_id)[0]
-                if self._path(pending_first) is not None:
-                    current_ids = self.ids
+                pending_first = self._plan_start(product_id, self.product_queue(product_id))
+                try:
+                    client = self.client()
                     try:
-                        self.ids = [pending_first]
-                        path, _ = self._media(0)
-                        client = self.client()
-                        try:
-                            self._stage_path(client, 1 - self.active_slot, path)
-                        finally:
-                            _close(client)
-                    except Exception as exc:
-                        log.warning("Không preload được sản phẩm #%s: %s", product_id, exc)
+                        self._stage_media(client, 1 - self.active_slot, pending_first)
                     finally:
-                        self.ids = current_ids
+                        _close(client)
+                except Exception as exc:
+                    log.warning("Không preload được sản phẩm #%s: %s", product_id, exc)
             self.last_status = f"Đã xếp sản phẩm #{product_id} sau video hiện tại"
             return {"ok": True, "pending_product_id": product_id}
 
@@ -631,14 +945,8 @@ class PlaybackEngine:
         with self.lock:
             pending = self.pending_product_id
             self.pending_product_id = None
-            if pending is not None and self.dual_mode and self.active and self.slots:
-                following = self.index + 1 if self.index + 1 < len(self.ids) else (0 if self.loop else None)
-                if following is not None:
-                    client = self.client()
-                    try:
-                        self._stage(client, 1 - self.active_slot, following)
-                    finally:
-                        _close(client)
+            if pending is not None:
+                self._restage_following()
             return {"ok": True, "cancelled_product_id": pending}
 
     def pause(self):
@@ -667,11 +975,10 @@ class PlaybackEngine:
                 raise PlaybackError(409, "Chưa phát playlist")
             if self.pending_product_id is not None:
                 return self.switch_product(self.pending_product_id, trigger="next")
-            if self.index + 1 >= len(self.ids):
-                if self.loop:
-                    return self.play(0)
+            target = self._plan_next(self.index)
+            if target is None:
                 return self.stop()
-            return self.play(self.index + 1)
+            return self.play(target)
 
     def previous(self):
         with self.lock:
@@ -863,6 +1170,11 @@ class PlaybackEngine:
                 self.next_retry_at = 0
                 if media_status == "OBS_MEDIA_STATE_ENDED":
                     self._advance_after_end()
+                elif (self.session_mode == "product" and self._rotation_policy() is not None
+                      and self._rotation_policy().switch_mode == "immediate" and self._rotation_due(minutes_only=True)):
+                    if not self._rotate():
+                        # Nothing to switch to: stay on this product for another period instead of retrying each tick.
+                        self.product_started_at = time.monotonic()
             except Exception as exc:
                 self.retry_count += 1
                 self.error_count += 1
@@ -873,7 +1185,8 @@ class PlaybackEngine:
                     self.next_retry_at = time.monotonic() + min(2 ** self.retry_count, 20)
 
     def _advance_after_end(self):
-        if self.session_mode == "product" and self.pending_product_id is not None:
+        if (self.session_mode == "product" and self.pending_product_id is not None
+                and self.pending_product_id != self.product_id):
             pending = self.pending_product_id
             try:
                 self.switch_product(pending, trigger="video_end")
@@ -883,6 +1196,8 @@ class PlaybackEngine:
                 self.last_status = f"Chuyển sản phẩm lỗi: {exc.detail}; tiếp tục sản phẩm cũ"
                 self._emit("ERROR", {"code": "switch_failed", "pending_product_id": pending,
                                      "message": exc.detail})
+        elif self.session_mode == "product" and self._rotation_due() and self._rotate():
+            return
         if self.session_mode == "product":
             try:
                 refreshed = self.product_queue(self.product_id)
@@ -892,6 +1207,23 @@ class PlaybackEngine:
             except PlaybackError as exc:
                 self._deactivate("no_media", f"Dừng phiên: {exc.detail}")
                 return
+        if self._video_order() != "sequential":
+            failed: set[str] = set()
+            for _ in range(len(self.ids)):
+                candidate = self._plan_next(self.index, exclude=failed)
+                if candidate is None:
+                    break
+                try:
+                    self.play(candidate)
+                    return
+                except PlaybackError as exc:
+                    if exc.status_code != 409:
+                        raise
+                    failed.add(self.ids[candidate])
+                    self._planned_next = None
+                    self._skipped(self.ids[candidate], exc)
+            self._deactivate("no_media", "Không còn video hợp lệ để phát")
+            return
         target = self.index + 1
         if target >= len(self.ids):
             if not self.loop:
@@ -908,7 +1240,7 @@ class PlaybackEngine:
                 return
             except PlaybackError as exc:
                 if exc.status_code == 409:
-                    self.last_status = f"Bỏ qua video lỗi: {exc.detail}"
+                    self._skipped(self.ids[candidate], exc)
                     continue
                 raise
         self._deactivate("no_media", "Không còn video hợp lệ để phát")

@@ -57,6 +57,9 @@ class PlaybackService:
     def set_loop(self, loop: bool) -> dict:
         return self._run(lambda: self.engine.set_loop(loop))
 
+    def set_policy(self, session_id: int, policy: dict, lineup: list[dict]) -> dict:
+        return self._run(lambda: self.engine.set_policy(session_id, policy, lineup))
+
     def use_camera(self) -> dict:
         return self._run(self.engine.use_camera)
 

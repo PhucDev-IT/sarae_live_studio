@@ -29,6 +29,8 @@ class LiveSession(Base):
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     current_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Video order and automatic product rotation (app/playback_policy.py), JSON; empty = the owner's default.
+    playback_policy: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -316,9 +318,12 @@ def apply_command_outcome(command: dict, context: dict):
         owner_id, agent_id, account_id = item.owner_id, item.agent_id, item.tiktok_account_id
         db.commit()
     if follow:
-        # The session reads its own TikTok chat from now on (AI replies need the comments).
+        # The session reads its own TikTok chat from now on (AI replies need the comments), and its Agent gets the
+        # video order / product rotation policy with the lineup.
         from app.tiktok_chat import follow_session
+        from app.playback_policy import push
         follow_session(owner_id, agent_id, account_id)
+        push(owner_id, sid)
 
 
 RECONCILE_STOP_SECONDS = 60
@@ -481,6 +486,12 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         replace_products(db, session_id, body.product_ids)
         event(db, session_id, "QUEUE_UPDATED")
         db.commit()
+        running = item.status == "RUNNING"
+    if running:
+        from app.playback_policy import push
+        push(owner["id"], session_id)  # the Agent rotates over the new lineup
+    with SessionLocal() as db:
+        item = get_session(db, session_id, owner)
         return serialize(db, item)
 
 class PrepareInput(BaseModel):
@@ -703,6 +714,9 @@ def switch_session_product(session_id: int, body: SwitchInput, owner: Owner,
             db.commit()
         require_product_cached(db, owner, agent, session_id, body.product_id)
         view = play_product(db, owner, agent, item, body.product_id, body.mode, "switch", idempotency_key)
+    # A product chosen by hand pauses the automatic rotation until the operator turns it back on (spec §6).
+    from app.playback_policy import pause_auto
+    pause_auto(owner["id"], session_id)
     return answer(view, owner, session_id)
 
 @router.patch("/{session_id}")

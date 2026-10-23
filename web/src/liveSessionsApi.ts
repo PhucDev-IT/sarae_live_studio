@@ -44,12 +44,16 @@ export const EVENT_LABEL:Record<string,string> = {
   AGENT_STOP_UNCONFIRMED:'Chưa xác nhận Agent đã dừng',
   CLAIM_RELEASED:'Nhả khóa tài khoản / Agent',
   START_ABANDONED:'Hủy lần bắt đầu chưa rõ kết quả',
+  AUTO_PAUSED:'Tạm dừng tự đổi sản phẩm',
+  AUTO_RESUMED:'Bật lại tự đổi sản phẩm',
 }
 
 /** Turns the backend's `key=value;…` event detail into a short Vietnamese note. */
 export function eventDetail(detail:string){
   if (!detail) return ''
   const values = Object.fromEntries(detail.split(';').map(part=>part.split('=') as [string,string]))
+  if (values.code === 'video_skipped' || detail.includes('video_skipped')) return 'Bỏ qua video lỗi' + (values.message ? `: ${values.message}` : '')
+  if (values.trigger === 'auto_rotation') return 'Tự đổi sản phẩm'
   if (values.during_live) return 'Đưa lên LIVE ngoài danh sách chuẩn bị'
   if (values.stale) return 'Đóng phiên bị treo sau khi Backend khởi động lại'
   if (values.duplicate_of) return `Nhân bản từ phiên #${values.duplicate_of}`
@@ -71,6 +75,18 @@ export function durationText(from:string|null, to:string|null){
 }
 
 const json = (data:unknown, method = 'POST'):RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+/** Video order and automatic product rotation of a LIVE session (docs/PLAYBACK_POLICY.md). */
+export type PlaybackOrder = 'sequential' | 'random' | 'shuffle'
+export type PlaybackPolicy = {
+  video_order:PlaybackOrder; product_rotation:'off' | PlaybackOrder
+  rotate_after_videos:number|null; rotate_after_minutes:number|null
+  switch_mode:'after_current' | 'immediate'; auto:boolean
+}
+/** Rotation progress reported by the Agent with the playback status. */
+export type RotationStatus = { auto:boolean; videos_in_product:number; product_seconds:number; next_product_id:number|null }
+/** Answer of saving / resuming a policy: `sent` when the running Agent got it right away. */
+export type PolicySaved = { policy:PlaybackPolicy; sent:boolean; agent_error:string|null }
+
 /** Answer of start / resume / switch: the Agent command and the session after it. */
 export type SessionAction = { command?:AgentCommand; session?:LiveSession; unchanged?:boolean }
 export const sessionsApi = {
@@ -91,6 +107,10 @@ export const sessionsApi = {
   finish:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/finish`, {method:'POST'}),
   /** The owner's products with how many LIVE videos each has on that Agent. */
   products:(agentId:string) => apiRequest<LiveProduct[]>(onAgent('/live/products', agentId)),
+  playbackPolicy:(id:number) => apiRequest<{policy:PlaybackPolicy}>(`/live/sessions/${id}/playback-policy`).then(r=>r.policy),
+  savePlaybackPolicy:(id:number, policy:PlaybackPolicy) => apiRequest<PolicySaved>(`/live/sessions/${id}/playback-policy`, json(policy, 'PUT')),
+  /** Turns automatic rotation back on after a manual product switch paused it. */
+  resumeAuto:(id:number) => apiRequest<PolicySaved>(`/live/sessions/${id}/playback-policy/resume`, {method:'POST'}),
 }
 
 /** Hash route helpers: `#/sessions?id=3` opens a session in the planner. */

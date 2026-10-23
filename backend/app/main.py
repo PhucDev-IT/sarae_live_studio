@@ -22,6 +22,7 @@ from app.storage_admin import router as storage_admin_router
 from app.media_clips import router as media_clips_router
 from app.media_library import products_router as media_library_products_router, router as media_library_router
 from app.tiktok_chat import session_router as tiktok_chat_session_router
+from app.playback_policy import router as playback_policy_router
 from app.sales_brain import router as sales_brain_router
 from app.ai_answers import router as ai_answers_router
 from app.agent_media import router as agent_media_router
@@ -80,6 +81,7 @@ app.include_router(ai_live_router)
 app.include_router(ai_voice_router)
 app.include_router(ai_answers_router)
 app.include_router(sales_brain_router)
+app.include_router(playback_policy_router)
 app.include_router(verification_monitor_router)
 app.include_router(cloud_agents_router)
 app.include_router(identity_router)

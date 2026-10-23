@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from sarae_agent.errors import AgentError
 from sarae_agent.media.cloud_cache import MEDIA_ID
+from sarae_agent.playback.engine import PolicyUpdate
 
 # Sarae Media Library ids (32-hex); the files come from the Agent cloud media cache.
 MediaId = Field(pattern=MEDIA_ID.pattern)
@@ -55,6 +56,10 @@ class ProductPlayPayload(MediaIdsPayload):
     session_id: int = Field(ge=1)
     product_id: int = Field(ge=1)
     mode: Literal["immediate", "after_current"] = "immediate"
+
+
+class PlaybackPolicyPayload(PolicyUpdate, Payload):
+    """docs/PLAYBACK_POLICY.md: session_id, policy, lineup (<=300 products, <=3000 media ids)."""
 
 
 class SelectPayload(Payload):
@@ -149,6 +154,9 @@ class CommandRouter:
             "local_playlist_start": (PlaylistPayload, lambda b: p.start_playlist(b.media_ids, loop=b.loop)),
             "product_play": (ProductPlayPayload,
                              lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
+            "playback_policy": (PlaybackPolicyPayload,
+                                lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
+                                                       [item.model_dump() for item in b.lineup])),
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_select": (SelectPayload, lambda b: p.select(b.index)),
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),

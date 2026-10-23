@@ -42,7 +42,7 @@ def upgrade(bind=None):
             "products":{"shop_id":"INTEGER","tiktok_product_id":"VARCHAR(80)","tiktok_seller_id":"VARCHAR(80)",
                         "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)",
                         "ai_facts":"TEXT"},
-            "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER"},
+            "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER","playback_policy":"TEXT"},
         }.items():
             present={c["name"] for c in inspect(conn).get_columns(table)}
             for name,kind in columns.items():

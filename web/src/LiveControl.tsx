@@ -8,7 +8,8 @@ import {
 } from 'lucide-react'
 import { agentAction, apiRequest, durationLabel, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
-import { sessionHref, sessionsApi, type LiveProduct, type LiveSession } from './liveSessionsApi'
+import { sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus } from './liveSessionsApi'
+import PlaybackSettings from './PlaybackSettings'
 import { WithAgent, useAgent } from './agentContext'
 import VideoThumb from './VideoThumb'
 import './media.css'
@@ -20,6 +21,8 @@ type LiveStatus = {
   running:boolean; paused?:boolean; loop?:boolean; session_mode?:string; playlist_id:number|null; product_id?:number|null; pending_product_id?:number|null; session_id?:number|null
   queue_ids?:string[]; index:number; count:number; last_status:string; retry_count?:number; error_count?:number; transition_count?:number
   recovery_count?:number; session_seconds?:number; obs?:ObsSettings
+  /** Video order / product rotation the Agent applies, and its rotation progress (docs/PLAYBACK_POLICY.md). */
+  policy?:PlaybackPolicy|null; rotation?:RotationStatus|null
 }
 
 const POLL_MS = 3000
@@ -241,6 +244,9 @@ function Console({agent}:{agent:OwnerAgent}){
           </div>}
           <div className="lc-shortcuts"><Kbd>Space</Kbd> tạm dừng / tiếp <Kbd>←</Kbd> video trước <Kbd>→</Kbd> video tiếp · kéo thanh thời gian để tua</div>
         </Card>
+
+        {activeSession && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
+          productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
 
         {/* Queue of the running session */}
         <Card className="lc-queue" padding={false} title={<span className="lc-card-title"><ListVideo size={17}/>Hàng đợi phát</span>}
