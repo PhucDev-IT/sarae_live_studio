@@ -86,10 +86,48 @@
 .mce-actions{display:flex;gap:8px;justify-content:flex-end}
 .mce-actions .ui-btn--ghost{color:#c9c9dc}
 
-/* page banner while a cut runs in the background */
-.mc-job{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.mc-job-bar{flex:1;min-width:140px;height:6px;border-radius:99px;background:var(--ui-surface-2);overflow:hidden}
-.mc-job-bar span{display:block;height:100%;background:var(--ui-primary);transition:width .3s}
+/* progress screen over the editor while the server cuts */
+.mcp{position:absolute;inset:57px 0 0;z-index:5;display:grid;place-items:start center;padding:28px 16px;overflow:auto;background:rgba(17,17,24,.96)}
+.mcp-card{display:grid;gap:16px;width:min(640px,100%);padding:24px;border:1px solid #26263a;border-radius:16px;background:#1a1a25}
+.mcp-hero{display:flex;align-items:center;gap:16px;color:var(--ui-primary,#8b7cf0)}
+.mcp-hero.is-done{color:#2fbf71}
+.mcp-hero.is-bad{color:#f06a6e}
+.mcp-hero h2{margin:0 0 4px;font-size:20px;color:#fff}
+.mcp-hero p{margin:0;color:#c9c9dc;line-height:1.5}
+.mcp-spin{animation:mcp-spin 1s linear infinite}
+@keyframes mcp-spin{to{transform:rotate(360deg)}}
+.mcp-bar{height:10px;border-radius:99px;background:#26263a;overflow:hidden}
+.mcp-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ui-primary,#6553d7),#9d8cff);transition:width .5s}
+.mcp-bar span.is-done{background:#2fbf71}
+.mcp-bar span.is-bad{background:#f06a6e}
+.mcp-meta{display:flex;justify-content:space-between;gap:10px;margin-top:-8px;color:#9a9ab5;font-size:13px;font-variant-numeric:tabular-nums}
+.mcp-meta b{color:#fff}
+.mcp-meta span{display:inline-flex;align-items:center;gap:5px}
+.mcp-steps{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.mcp-steps li{display:flex;align-items:center;gap:10px;color:#7a7a95}
+.mcp-steps li.is-active{color:#fff;font-weight:600}
+.mcp-steps li.is-done{color:#c9c9dc}
+.mcp-steps li.is-bad{color:#f06a6e;font-weight:600}
+.mcp-dot{display:grid;place-items:center;flex:none;width:24px;height:24px;border-radius:50%;background:#26263a;font-size:12px}
+.is-active > .mcp-dot{background:var(--ui-primary,#6553d7);color:#fff}
+.is-done > .mcp-dot{background:#2fbf71;color:#fff}
+.is-bad > .mcp-dot{background:#f06a6e;color:#fff}
+.mcp-clips{display:grid;gap:6px;max-height:300px;margin:0;padding:0;overflow:auto;list-style:none}
+.mcp-clips li{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 10px;border:1px solid #26263a;border-radius:10px;background:#16161f}
+.mcp-clips li.is-active{border-color:var(--ui-primary,#6553d7)}
+.mcp-clips li.is-bad{border-color:#f06a6e}
+.mcp-thumb{display:block;width:40px;height:56px;border-radius:6px;background:#26263a;overflow:hidden}
+.mcp-thumb img{width:100%;height:100%;object-fit:cover}
+.mcp-clip-main{display:grid;gap:2px;min-width:0}
+.mcp-clip-main strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mcp-clip-main small{color:#9a9ab5;font-size:12px;font-variant-numeric:tabular-nums}
+.mcp-clip-state{display:inline-flex;align-items:center;gap:5px;color:#7a7a95;font-size:12px;white-space:nowrap}
+.is-active .mcp-clip-state{color:#c9bfff}
+.is-done .mcp-clip-state{color:#2fbf71}
+.is-bad .mcp-clip-state{color:#f06a6e}
+.mcp-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.mcp-actions .ui-btn--ghost,.mcp-actions .ui-btn--outline{color:#e8e8f0}
+.mcp-note{flex:1;min-width:200px;color:#9a9ab5;font-size:12px;line-height:1.5}
 
 @media (max-width:900px){
   /* phone: player, timeline, then the list of pieces */

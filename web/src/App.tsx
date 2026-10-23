@@ -6,6 +6,7 @@ import PresentersPage from './PresentersPage'
 import ProductsPage from './ProductsPage'
 import CloudMediaPage from './CloudMediaPage'
 import UploadDock from './UploadDock'
+import ClipDock from './ClipDock'
 import LiveControl from './LiveControl'
 import LiveSessions from './LiveSessions'
 import TikTokChat from './TikTokChat'
@@ -153,7 +154,10 @@ function AuthenticatedApp({user,logout}:{user:SaraeUser;logout:()=>void}) {
           <footer className="footer"><span>© 2026 Sarae Live Studio · Internal Workspace</span><span>Web Admin Foundation</span></footer>
         </main>
       </div>
-      <UploadDock onOpenLibrary={() => navigate('cloud-media')}/>
+      <div className="dock-stack">
+        <ClipDock onOpenLibrary={() => navigate('cloud-media')}/>
+        <UploadDock onOpenLibrary={() => navigate('cloud-media')}/>
+      </div>
     </div></AgentProvider></ToastProvider></ThemeProvider>
   )
 }

@@ -75,7 +75,8 @@ class ClipRequest(BaseModel):
 
 
 def _job_view(job: dict) -> dict:
-    return {key: job[key] for key in ("id", "media_id", "status", "mode", "total", "done", "phase", "media_ids", "error")}
+    return {key: job[key] for key in ("id", "media_id", "status", "mode", "total", "done", "phase", "step", "current", "progress",
+                                      "started_at", "media_ids", "error")}
 
 
 def _prune():
@@ -96,7 +97,8 @@ def create_clips(media_id: str, body: ClipRequest, owner: Owner, db: DB):
                 raise fail(422, "CLIP_OUT_OF_RANGE", "Có đoạn bắt đầu sau khi video đã kết thúc")
     ffmpeg, ffprobe = _tool("ffmpeg"), _tool("ffprobe")
     job = {"id": new_id(), "owner_id": owner["id"], "media_id": media.id, "status": "QUEUED", "mode": body.mode,
-           "total": len(body.clips), "done": 0, "phase": "Đang chờ", "media_ids": [], "error": None, "finished_at": 0.0}
+           "total": len(body.clips), "done": 0, "phase": "Đang chờ máy chủ rảnh", "step": "QUEUED", "current": 0, "progress": 0.0,
+           "started_at": time.time(), "media_ids": [], "error": None, "finished_at": 0.0}
     with _jobs_lock:
         _prune()
         _jobs[job["id"]] = job
@@ -151,7 +153,7 @@ def _run(job: dict, body: ClipRequest, sessions: sessionmaker, ffmpeg: str, ffpr
         try:
             _set(job, status="RUNNING")
             _cut_all(db, job, body, work, ffmpeg, ffprobe)
-            _set(job, status="DONE", phase="Hoàn tất")
+            _set(job, status="DONE", step="DONE", phase="Hoàn tất", progress=1.0)
         except StorageError as exc:
             log.warning("clip job %s failed: %s", job["id"], exc.code)
             _set(job, status="FAILED", error=exc.message)
@@ -166,8 +168,10 @@ def _cut_all(db: Session, job: dict, body: ClipRequest, work: str, ffmpeg: str, 
     source = db.get(MediaItem, job["media_id"])
     ext = os.path.splitext(source.filename)[1].lower() or ".mp4"
     original = os.path.join(work, "source" + ext)
-    _set(job, phase="Đang lấy video gốc từ kho")
-    _download(db, source, original)
+    # Progress: reading the original is the first 25 %, then each clip gets an equal share (cut = first half, save = second).
+    _set(job, step="DOWNLOAD", phase="Đang lấy video gốc từ kho")
+    _download(db, source, original, lambda read: _set(job, progress=0.25 * min(1.0, read / max(1, source.size_bytes))))
+    _set(job, step="ANALYZE", phase="Đang đọc thông tin video", progress=0.25)
     info = _probe(ffprobe, original)
     keyframes = _keyframes(ffprobe, original) if body.mode == "COPY" else []
     duration = info["duration"] or source.duration_seconds or 0
@@ -181,18 +185,19 @@ def _cut_all(db: Session, job: dict, body: ClipRequest, work: str, ffmpeg: str, 
             start = max((k for k in keyframes if k <= start + 0.05), default=0.0)
         if end - start < MIN_CLIP_SECONDS:
             raise StorageError("CLIP_OUT_OF_RANGE", f"Đoạn {index} nằm ngoài thời lượng video")
-        _set(job, phase=f"Đang cắt đoạn {index}/{job['total']}")
+        share = 0.75 / job["total"]
+        _set(job, step="CUT", current=index, phase=f"Đang cắt đoạn {index}/{job['total']}", progress=0.25 + share * (index - 1))
         path = os.path.join(work, f"clip{index}{ext}")
         _ffmpeg(ffmpeg, _cut_args(original, path, start, end, body.mode, info, ext))
         clip_info = _probe(ffprobe, path)
-        _set(job, phase=f"Đang lưu đoạn {index}/{job['total']}")
+        _set(job, step="SAVE", phase=f"Đang lưu đoạn {index}/{job['total']} vào kho", progress=0.25 + share * (index - 0.5))
         media = _store(db, source, path, f"{stem}_part{index}{ext}", clip.name.strip() or f"{base_name} - đoạn {index}",
                        clip_info, body.keep_links, products, presenters)
         cover = _cover(ffmpeg, path, work, clip_info["duration"])
         if cover:
             db.add(MediaThumbnail(media_id=media.id, owner_id=media.owner_id, mime_type="image/jpeg", content=cover))
             db.commit()
-        _set(job, done=index, media_ids=[*job["media_ids"], media.id])
+        _set(job, done=index, media_ids=[*job["media_ids"], media.id], progress=0.25 + share * index)
         os.remove(path)
 
 
@@ -222,10 +227,14 @@ def _ffmpeg(ffmpeg: str, args: list[str]):
         raise StorageError("CLIP_FFMPEG_FAILED", "ffmpeg không cắt được video này", 422)
 
 
-def _download(db: Session, media: MediaItem, path: str):
+def _download(db: Session, media: MediaItem, path: str, on_progress=None):
+    read = 0
     with open(path, "wb") as out:
         for chunk in provider(media.provider, db).open_read(media.provider_file_id).iter():
             out.write(chunk)
+            read += len(chunk)
+            if on_progress:
+                on_progress(read)
 
 
 def _keyframes(ffprobe: str, path: str) -> list[float]:

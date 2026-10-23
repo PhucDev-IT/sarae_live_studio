@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { Alert, Button, Input, SegmentedControl, Select, Switch } from './ui/core'
-import { Check, ChevronsLeft, ChevronsRight, EyeOff, Minus, Pause, Play, Plus, Scissors, X, ZoomIn } from 'lucide-react'
+import { Check, ChevronsLeft, ChevronsRight, CircleAlert, CircleCheck, Clock, EyeOff, Loader2, Minus, Pause, Play, Plus, RotateCcw, Scissors, WifiOff, X, ZoomIn } from 'lucide-react'
 import { errorText } from './mediaApi'
-import { createClips, getKeyframes, type ClipJob, type ClipMode, type CloudMedia } from './cloudMediaApi'
+import { assetUrl } from './mediaApi'
+import { createClips, getKeyframes, type ClipMode, type ClipSpec, type CloudMedia } from './cloudMediaApi'
+import { clipJobs, isFinal, useClipJobs, type TrackedClipJob } from './clipJobStore'
 import { filmstrip } from './videoFrame'
 import './media-clipper.css'
 
 /** A piece of the video between two cut points; `key` is its start, so names/kept state survive new cuts elsewhere. */
 type Segment = { key:string; start:number; end:number }
+/** A clip as it was sent to the server, with what the progress screen shows for it. */
+type SentClip = ClipSpec & { label:string; thumb:string|null }
 
 const MIN_LENGTH = 0.5
 const MAX_CLIPS = 50
@@ -28,8 +32,7 @@ const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (
  * Full-screen cutter, like a phone video editor: scrub the frame strip, press ✂ to cut where the playhead is, tap a
  * piece to keep or drop it. Every kept piece becomes a new video of the library (the server cuts the original file).
  */
-export default function MediaClipper({media,src,running,onClose,onStarted}:{media:CloudMedia;src:string;running:boolean;
-  onClose:()=>void;onStarted:(job:ClipJob)=>void}){
+export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:string;onClose:()=>void}){
   const player = useRef<HTMLVideoElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const track = useRef<HTMLDivElement>(null)
@@ -52,6 +55,11 @@ export default function MediaClipper({media,src,running,onClose,onStarted}:{medi
   const stopAt = useRef<number|null>(null)
   const scrubbing = useRef(false)
   const dragging = useRef<number|null>(null)
+  const [jobId,setJobId] = useState<string|null>(null)
+  const [sent,setSent] = useState<SentClip[]>([])
+  const tracked = useClipJobs()
+  const job = tracked.find(t=>t.job.id === jobId)
+  const running = tracked.some(t=>t.job.id !== jobId && !isFinal(t.job) && !t.lost)  // another cut still on the server
 
   const segments = useMemo<Segment[]>(()=>{
     const bounds = [0, ...cuts, duration]
@@ -185,6 +193,7 @@ export default function MediaClipper({media,src,running,onClose,onStarted}:{medi
   useEffect(()=>{
     const onKey = (event:KeyboardEvent) => {
       if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return
+      if (jobId && event.key !== 'Escape') return  // the progress screen covers the editor
       const actions:Record<string, ()=>void> = {
         ' ':toggle, s:cutHere, S:cutHere, ArrowLeft:()=>seek(now - (event.shiftKey ? 5 : 1)), ArrowRight:()=>seek(now + (event.shiftKey ? 5 : 1)),
         ',':()=>seek(now - FRAME), '.':()=>seek(now + FRAME), Escape:()=>{if (!busy) onClose()},
@@ -225,14 +234,22 @@ export default function MediaClipper({media,src,running,onClose,onStarted}:{medi
     if (x < box.scrollLeft + 40 || x > box.scrollLeft + box.clientWidth - 40) box.scrollLeft = x - box.clientWidth / 2
   },[now, zoom, duration])
 
-  const submit = async () => {
+  /** Send the clips; the cutter then shows the job's progress (it keeps running on the server if the cutter closes). */
+  const start = async (clips:SentClip[]) => {
     setBusy(true);setError('')
+    player.current?.pause()
     try{
-      const clips = kept.map(s=>({start:Number(s.start.toFixed(3)), end:Number(s.end.toFixed(3)), name:(names[s.key] ?? '').trim()}))
-      onStarted(await createClips(media.id, clips, mode, keepLinks))
+      const created = await createClips(media.id, clips.map(({start, end, name})=>({start, end, name})), mode, keepLinks)
+      clipJobs.track(created, media.display_name)
+      setSent(clips);setJobId(created.id)
     }catch(e){setError(errorText(e, 'Không bắt đầu cắt được video'))}
     finally{setBusy(false)}
   }
+  const submit = () => start(kept.map((s, i)=>{
+    const name = (names[s.key] ?? '').trim()
+    return {start:Number(s.start.toFixed(3)), end:Number(s.end.toFixed(3)), name, label:name || `${media.display_name} - đoạn ${i + 1}`, thumb:thumbAt(s.start + 0.01)}
+  }))
+  const cutMore = () => {setJobId(null);setSent([]);setCuts([]);setDropped(new Set());setNames({})}
 
   const pct = (t:number) => duration ? `${t / duration * 100}%` : '0%'
   const tick = TICKS.find(step=>duration / step <= 8 * zoom) ?? TICKS.at(-1) as number
@@ -246,6 +263,9 @@ export default function MediaClipper({media,src,running,onClose,onStarted}:{medi
       <Scissors size={18}/><strong>Cắt video</strong><span className="mce-title" title={media.display_name}>{media.display_name}</span>
       <button type="button" className="mce-close" aria-label="Đóng trình cắt" onClick={()=>{if (!busy) onClose()}}><X size={18}/></button>
     </header>
+
+    {job && <ClipProgress tracked={job} clips={sent} onClose={onClose} onEdit={()=>setJobId(null)} onCutMore={cutMore}
+      onRetry={()=>{clipJobs.dismiss(job.job.id);void start(sent)}}/>}
 
     <div className="mce-body">
       <section className="mce-stage">
@@ -377,5 +397,90 @@ function HoverFrame({src,time,left}:{src:string;time:number|null;left:string}){
     <canvas ref={canvas} width={90} height={160}/>
     <span>{clipTime(time ?? 0)}</span>
     <video ref={video} src={src} crossOrigin="anonymous" muted preload="auto" onSeeked={draw} hidden/>
+  </div>
+}
+
+const STEPS = [
+  {label:'Lấy video gốc từ kho', steps:['QUEUED', 'DOWNLOAD', 'ANALYZE']},
+  {label:'Cắt và lưu từng đoạn', steps:['CUT', 'SAVE']},
+  {label:'Hoàn tất, thêm vào thư viện', steps:['DONE']},
+]
+const minutes = (ms:number) => {const s = Math.max(0, Math.round(ms / 1000));return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`}
+
+/** What the server is doing right now, step by step and clip by clip; the result (or the error) once it ends. */
+function ClipProgress({tracked,clips,onClose,onEdit,onCutMore,onRetry}:{tracked:TrackedClipJob;clips:SentClip[];onClose:()=>void;onEdit:()=>void;
+  onCutMore:()=>void;onRetry:()=>void}){
+  const {job, lost} = tracked
+  const done = job.status === 'DONE', failed = job.status === 'FAILED', active = !done && !failed && !lost
+  const [now,setNow] = useState(()=>Date.now())
+  useEffect(()=>{
+    if (!active) return
+    const timer = window.setInterval(()=>setNow(Date.now()), 1000)
+    return ()=>window.clearInterval(timer)
+  },[active])
+  const elapsed = now - tracked.startedAt
+  const percent = Math.round(job.progress * 100)
+  const left = active && job.progress > 0.2 && elapsed > 4000 ? elapsed / job.progress * (1 - job.progress) : null
+  const stepIndex = STEPS.findIndex(s=>s.steps.includes(job.step))
+  const items = new Map((job.items ?? []).map(m=>[m.id, m]))
+
+  return <div className="mcp">
+    <div className="mcp-card">
+      <div className={'mcp-hero' + (done ? ' is-done' : failed || lost ? ' is-bad' : '')}>
+        {done ? <CircleCheck size={40}/> : failed ? <CircleAlert size={40}/> : lost ? <WifiOff size={40}/> : <Loader2 size={40} className="mcp-spin"/>}
+        <div>
+          <h2>{done ? `Đã cắt xong ${job.done} video` : failed ? 'Cắt video thất bại' : lost ? 'Mất kết nối với máy chủ' : 'Đang cắt video…'}</h2>
+          <p>{done ? 'Các video mới đã có trong thư viện, video gốc vẫn giữ nguyên.'
+            : failed ? (job.error || 'Có lỗi khi cắt video.') + (job.done ? ` ${job.done} đoạn đầu đã lưu xong vẫn được giữ trong thư viện.` : '')
+            : lost ? `Không hỏi được tiến độ (${lost}). Máy chủ có thể vẫn đang cắt.`
+            : job.phase}</p>
+        </div>
+      </div>
+
+      <div className="mcp-bar"><span className={failed || lost ? 'is-bad' : done ? 'is-done' : ''} style={{width:`${Math.max(done ? 100 : 3, percent)}%`}}/></div>
+      <div className="mcp-meta">
+        <span><b>{done ? 100 : percent}%</b> · {job.done}/{job.total} đoạn xong</span>
+        <span><Clock size={13}/> {minutes(elapsed)}{left != null ? ` · còn khoảng ${minutes(left)}` : ''}</span>
+      </div>
+
+      <ol className="mcp-steps">{STEPS.map((step, i)=>{
+        const state = done || i < stepIndex ? 'done' : i === stepIndex ? (failed ? 'bad' : 'active') : 'wait'
+        return <li key={step.label} className={'is-' + state}>
+          <span className="mcp-dot">{state === 'done' ? <Check size={13}/> : state === 'bad' ? <X size={13}/> : state === 'active' && active ? <Loader2 size={13} className="mcp-spin"/> : i + 1}</span>
+          {step.label}{i === 1 && stepIndex === 1 && !done ? ` (${Math.min(job.current, job.total)}/${job.total})` : ''}
+        </li>
+      })}</ol>
+
+      <ul className="mcp-clips">{clips.map((clip, i)=>{
+        const n = i + 1, saved = items.get(job.media_ids[i]), working = n === job.current && (job.step === 'CUT' || job.step === 'SAVE')
+        const state = n <= job.done ? 'done' : failed && n === job.current ? 'bad' : active && working ? 'active' : 'wait'
+        const thumb = assetUrl(saved?.thumb_url) ?? clip.thumb
+        return <li key={i} className={'is-' + state}>
+          <span className="mcp-thumb">{thumb ? <img src={thumb} alt=""/> : null}</span>
+          <span className="mcp-clip-main"><strong title={clip.label}>{clip.label}</strong>
+            <small>{clipTime(clip.start)} → {clipTime(clip.end)} · {clipTime(clip.end - clip.start)}{saved?.duration_seconds ? ` · file thật ${clipTime(saved.duration_seconds)}` : ''}</small></span>
+          <span className="mcp-clip-state">{state === 'done' ? <><CircleCheck size={15}/>Đã lưu</>
+            : state === 'bad' ? <><CircleAlert size={15}/>Lỗi</>
+            : state === 'active' ? <><Loader2 size={15} className="mcp-spin"/>{job.step === 'CUT' ? 'Đang cắt' : 'Đang lưu'}</>
+            : failed ? 'Chưa làm' : 'Đang chờ'}</span>
+        </li>
+      })}</ul>
+
+      <div className="mcp-actions">
+        {active && <>
+          <span className="mcp-note">Có thể đóng cửa sổ này: máy chủ vẫn tiếp tục cắt, tiến độ hiện ở góc dưới bên phải mọi trang.</span>
+          <Button variant="outline" onClick={onClose}>Chạy nền và đóng</Button>
+        </>}
+        {lost && <Button leftIcon={<RotateCcw size={15}/>} onClick={()=>clipJobs.resume(job.id)}>Kiểm tra lại</Button>}
+        {failed && <>
+          <Button variant="ghost" onClick={onEdit}>Quay lại chỉnh</Button>
+          <Button leftIcon={<RotateCcw size={15}/>} onClick={onRetry}>Thử lại</Button>
+        </>}
+        {done && <>
+          <Button variant="ghost" onClick={onCutMore}>Cắt tiếp video này</Button>
+          <Button leftIcon={<Check size={16}/>} onClick={()=>{clipJobs.dismiss(job.id);onClose()}}>Xong</Button>
+        </>}
+      </div>
+    </div>
   </div>
 }

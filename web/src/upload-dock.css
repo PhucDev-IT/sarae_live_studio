@@ -1,5 +1,8 @@
-/* Floating upload progress (bottom-right on every page). */
-.ud{position:fixed;right:20px;bottom:20px;z-index:60;width:min(360px,calc(100vw - 32px));background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:14px;box-shadow:0 18px 48px rgba(15,15,35,.22);overflow:hidden}
+/* Floating progress cards (uploads, video cuts), stacked bottom-right on every page. Above the detail Sheet (10010) so
+   progress stays visible while a video is open; below the full-screen cutter (10015) and dialogs. */
+.dock-stack{position:fixed;right:20px;bottom:20px;z-index:10012;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:none}
+.dock-stack > *{pointer-events:auto}
+.ud{position:relative;width:min(360px,calc(100vw - 32px));background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:14px;box-shadow:0 18px 48px rgba(15,15,35,.22);overflow:hidden}
 .ud-head{display:flex;align-items:center;gap:8px;padding:12px 12px 12px 14px}
 .ud-title{flex:1;min-width:0;padding:0;border:0;background:none;color:var(--ui-text);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ud-icon{display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:none;color:var(--ui-text-muted);cursor:pointer;flex:none}
@@ -19,4 +22,5 @@
 .ud-spin{color:var(--ui-primary);animation:ud-spin 1s linear infinite;flex:none}
 @keyframes ud-spin{to{transform:rotate(360deg)}}
 .ud-link{display:flex;align-items:center;gap:6px;width:100%;padding:10px 14px;border:0;border-top:1px solid var(--ui-border);background:none;color:var(--ui-primary);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
-@media (max-width:640px){.ud{right:16px;bottom:16px}}
+@media (max-width:640px){.dock-stack{right:16px;bottom:16px}}
+.ud-kind{flex:none;color:var(--ui-primary)}

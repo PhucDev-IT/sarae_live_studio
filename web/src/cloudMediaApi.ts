@@ -34,8 +34,10 @@ export function putCover(id:string, image:Blob, meta:{duration?:number|null; wid
 /** COPY keeps the original stream untouched (starts on a keyframe); PRECISE cuts on the frame and re-encodes. */
 export type ClipMode = 'COPY'|'PRECISE'
 export type ClipSpec = { start:number; end:number; name:string }
+export type ClipStep = 'QUEUED'|'DOWNLOAD'|'ANALYZE'|'CUT'|'SAVE'|'DONE'
+/** progress: 0..1 (reading the original ≈ first 25 %, then each clip an equal share); current: clip being worked on. */
 export type ClipJob = { id:string; media_id:string; status:'QUEUED'|'RUNNING'|'DONE'|'FAILED'; mode:ClipMode; total:number; done:number
-  phase:string; media_ids:string[]; error:string|null; items?:CloudMedia[] }
+  phase:string; step:ClipStep; current:number; progress:number; media_ids:string[]; error:string|null; items?:CloudMedia[] }
 
 export const createClips = (id:string, clips:ClipSpec[], mode:ClipMode, keepLinks:boolean) =>
   apiRequest<ClipJob>(`/media-library/${id}/clips`, json('POST', {clips, mode, keep_links:keepLinks}))

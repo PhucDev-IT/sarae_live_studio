@@ -58,3 +58,5 @@ button, input, textarea, select { font-family: inherit; }
 /* UI Core puts Sheet (side panels) at z-index 10010 but Modal at 1000: a confirm opened from a Sheet would hide
    behind it. Dialogs always stack above panels. */
 .ui-modal__backdrop { z-index: 10020; }
+/* Toasts must be readable over panels and the full-screen video cutter too. */
+.ui-toast-stack { z-index: 10030; }

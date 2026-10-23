@@ -60,6 +60,7 @@ class MediaClipsTest(MediaLibraryTestCase):
         job = self.cut([{"start": 0, "end": 2, "name": "Mở hộp"}, {"start": 3, "end": 5}])
         self.assertEqual(job["status"], "DONE", job)
         self.assertEqual((job["done"], len(job["items"])), (2, 2))
+        self.assertEqual((job["step"], job["progress"]), ("DONE", 1.0))
         first, second = sorted(job["items"], key=lambda m: m["filename"])
         self.assertEqual(first["display_name"], "Mở hộp")
         self.assertEqual(second["display_name"], "long - đoạn 2")
