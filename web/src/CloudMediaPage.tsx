@@ -3,12 +3,13 @@ import {
   Alert, Button, ConfirmModal, EmptyState, Input, LoadingState, SearchInput, SegmentedControl, Select, Sheet, SkeletonCard,
   TagsInput, Textarea, useToast,
 } from './ui/core'
-import { Check, CloudUpload, Film, ImagePlus, Package, Play, RefreshCw, Trash2, UserRound, X } from 'lucide-react'
+import { Check, CloudUpload, Film, ImagePlus, Package, Play, RefreshCw, Scissors, Trash2, UserRound, X } from 'lucide-react'
 import { apiRequest, assetUrl, durationLabel, errorText, sizeLabel, type Presenter, type Product } from './mediaApi'
 import {
-  ACCEPTED_VIDEO, deleteCloudMedia, listCloudMedia, patchCloudMedia, putCover, setCloudMediaPresenters, setCloudMediaProducts,
-  type CloudMedia,
+  ACCEPTED_VIDEO, deleteCloudMedia, getClipJob, listCloudMedia, patchCloudMedia, putCover, setCloudMediaPresenters, setCloudMediaProducts,
+  type ClipJob, type CloudMedia,
 } from './cloudMediaApi'
+import MediaClipper from './MediaClipper'
 import { uploads, useUploads } from './uploadStore'
 import { captureElement, captureFrame } from './videoFrame'
 import './cloud-media.css'
@@ -54,6 +55,11 @@ export default function CloudMediaPage(){
   useEffect(()=>{void load()},[load])
   useEffect(()=>uploads.onMediaAdded(()=>void load()),[load])
   useCoverBackfill(items, updated=>setItems(list=>list.map(m=>m.id === updated.id ? updated : m)))
+  const clipJob = useClipJob(job=>{
+    if (job.status === 'DONE') toast.push({tone:'success', title:`Đã cắt xong ${job.done} đoạn`, description:'Các đoạn đã được thêm vào thư viện.'})
+    else toast.push({tone:'danger', title:'Cắt video thất bại', description:job.error ?? ''})
+    void load()
+  })
 
   const productName = useMemo(()=>new Map(products.map(p=>[p.id, p.name])),[products])
   const presenterName = useMemo(()=>new Map(presenters.map(p=>[p.id, p.name])),[presenters])
@@ -112,6 +118,13 @@ export default function CloudMediaPage(){
       </div>
     </Alert>}
 
+    {clipJob.job && <Alert tone="info" title={`Đang cắt “${items.find(m=>m.id === clipJob.job?.media_id)?.display_name ?? 'video'}”`}>
+      <div className="mc-job">
+        <span>{clipJob.job.phase} · {clipJob.job.done}/{clipJob.job.total} đoạn xong</span>
+        <span className="mc-job-bar"><span style={{width:`${Math.max(4, clipJob.job.done / clipJob.job.total * 100)}%`}}/></span>
+      </div>
+    </Alert>}
+
     <section className="cm-toolbar" aria-label="Lọc video">
       <SearchInput value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm theo tên video, tags, sản phẩm…" aria-label="Tìm video"/>
       <Select value={productFilter} onChange={setProductFilter} options={[{value:'all',label:'Mọi sản phẩm'},...products.map(p=>({value:String(p.id),label:p.name}))]}/>
@@ -136,6 +149,7 @@ export default function CloudMediaPage(){
     {dragging && <div className="cm-drop-overlay"><CloudUpload size={40}/><strong>Thả video để tải lên</strong></div>}
 
     <MediaDetail media={opened} products={products} presenters={presenters} onClose={()=>setOpenId(null)}
+      clipRunning={!!clipJob.job} onClipStarted={job=>{clipJob.watch(job);toast.push({tone:'info', title:'Đã bắt đầu cắt video', description:'Có thể đóng cửa sổ này, các đoạn sẽ tự xuất hiện trong thư viện.'})}}
       onChanged={media=>setItems(list=>list.map(m=>m.id === media.id ? media : m))}
       onDeleted={media=>{setOpenId(null);setItems(list=>list.filter(m=>m.id !== media.id));toast.push({tone:'success',title:'Đã xóa khỏi thư viện',description:media.display_name})}}/>
   </div>
@@ -170,6 +184,36 @@ function VideoCard({item,productName,presenterName,onOpen}:{item:CloudMedia;prod
   </button>
 }
 
+/** Polls the running clip job (it keeps going when the detail sheet is closed) and reports once it ends. */
+function useClipJob(onFinished:(job:ClipJob)=>void){
+  const [job,setJob] = useState<ClipJob|null>(null)
+  const finished = useRef(onFinished)
+  useEffect(()=>{finished.current = onFinished})
+  const jobId = job?.id
+  useEffect(()=>{
+    if (!jobId) return
+    let stopped = false, failures = 0
+    const tick = async () => {
+      if (stopped) return
+      try{
+        const next = await getClipJob(jobId)
+        failures = 0
+        if (stopped) return
+        if (next.status === 'DONE' || next.status === 'FAILED') {setJob(null);finished.current(next);return}
+        setJob(next)
+      }catch(e){
+        if (++failures >= 5) {setJob(null);finished.current({...(job as ClipJob), status:'FAILED', error:errorText(e, 'Mất kết nối tới máy chủ')});return}
+      }
+      window.setTimeout(()=>void tick(), 1500)
+    }
+    const first = window.setTimeout(()=>void tick(), 1000)
+    return ()=>{stopped = true;window.clearTimeout(first)}
+  // Restart only for a new job; `job` itself changes on every poll.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[jobId])
+  return {job, watch:setJob}
+}
+
 /** Videos stored before covers existed (or whose cover failed at upload): capture one frame in the background. */
 function useCoverBackfill(items:CloudMedia[], onUpdated:(media:CloudMedia)=>void){
   const tried = useRef(new Set<string>())
@@ -188,8 +232,8 @@ function useCoverBackfill(items:CloudMedia[], onUpdated:(media:CloudMedia)=>void
   },[items, onUpdated, round])
 }
 
-function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{media:CloudMedia|null;products:Product[];presenters:Presenter[];
-  onClose:()=>void;onChanged:(m:CloudMedia)=>void;onDeleted:(m:CloudMedia)=>void}){
+function MediaDetail({media,products,presenters,clipRunning,onClose,onChanged,onDeleted,onClipStarted}:{media:CloudMedia|null;products:Product[];presenters:Presenter[];
+  clipRunning:boolean;onClose:()=>void;onChanged:(m:CloudMedia)=>void;onDeleted:(m:CloudMedia)=>void;onClipStarted:(job:ClipJob)=>void}){
   const toast = useToast()
   const [tab,setTab] = useState<Tab>('info')
   const [name,setName] = useState('')
@@ -201,6 +245,7 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
   const [coverBusy,setCoverBusy] = useState(false)
   const [error,setError] = useState('')
   const [confirmDelete,setConfirmDelete] = useState(false)
+  const [cutting,setCutting] = useState(false)
   const player = useRef<HTMLVideoElement>(null)
   const mediaId = media?.id
   // Every save returns freshly signed URLs; keep the first ones so the player does not reload and jump to 0:00.
@@ -211,7 +256,7 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
   useEffect(()=>{
     if (!media) return
     setTab('info');setName(media.display_name);setNotes(media.notes);setTags(parseTags(media.tags))
-    setProductIds(media.product_ids);setPresenterIds(media.presenter_ids);setError('')
+    setProductIds(media.product_ids);setPresenterIds(media.presenter_ids);setError('');setCutting(false)
   // Reset the form only when another video is opened, not when this one is refreshed after saving.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[mediaId])
@@ -266,6 +311,7 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
           <div className="cm-player-frame">
             {streamSrc && <video ref={player} key={media.id} controls preload="metadata" crossOrigin="anonymous" poster={posterSrc} src={streamSrc}/>}
           </div>
+          <Button leftIcon={<Scissors size={16}/>} onClick={()=>{player.current?.pause();setCutting(true)}}>Cắt video thành nhiều đoạn</Button>
           <Button variant="outline" size="sm" leftIcon={<ImagePlus size={15}/>} loading={coverBusy} onClick={()=>void setCover()}>Đặt khung hình đang xem làm ảnh bìa</Button>
           <dl className="cm-facts">
             <Fact label="File gốc">{media.filename}</Fact>
@@ -295,6 +341,8 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
         </div>
       </div>}
     </Sheet>
+    {cutting && media && streamSrc && <MediaClipper media={media} src={streamSrc} running={clipRunning} onClose={()=>setCutting(false)}
+      onStarted={job=>{setCutting(false);onClipStarted(job)}}/>}
     <ConfirmModal open={confirmDelete} title="Xóa video khỏi thư viện?" tone="danger" confirmLabel="Xóa" loading={busy}
       description="Video sẽ ẩn khỏi thư viện và không thể gắn thêm sản phẩm. Lịch sử phiên LIVE vẫn được giữ."
       onConfirm={()=>void remove()} onClose={()=>setConfirmDelete(false)}/>

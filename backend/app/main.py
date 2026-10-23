@@ -19,6 +19,7 @@ from app.tiktok_products import router as tiktok_products_router
 from app.tiktok_catalog import router as tiktok_catalog_router
 from app.android_agents import router as android_agents_router
 from app.storage_admin import router as storage_admin_router
+from app.media_clips import router as media_clips_router
 from app.media_library import products_router as media_library_products_router, router as media_library_router
 from app.tiktok_chat import session_router as tiktok_chat_session_router
 from app.sales_brain import router as sales_brain_router
@@ -96,6 +97,7 @@ app.include_router(tiktok_products_router)
 app.include_router(tiktok_catalog_router)
 app.include_router(android_agents_router)
 app.include_router(storage_admin_router)
+app.include_router(media_clips_router)
 app.include_router(media_library_router)
 app.include_router(media_library_products_router)
 app.include_router(agent_media_router)

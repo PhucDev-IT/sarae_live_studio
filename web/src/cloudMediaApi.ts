@@ -31,7 +31,19 @@ export function putCover(id:string, image:Blob, meta:{duration?:number|null; wid
   return apiRequest<CloudMedia>(`/media-library/${id}/thumbnail?${query}`, {method:'PUT', body:image, headers:{'Content-Type':image.type || 'image/jpeg'}})
 }
 
-export const ACCEPTED_VIDEO = '.mp4,.mov,.m4v,video/mp4,video/quicktime,video/x-m4v'
+/** COPY keeps the original stream untouched (starts on a keyframe); PRECISE cuts on the frame and re-encodes. */
+export type ClipMode = 'COPY'|'PRECISE'
+export type ClipSpec = { start:number; end:number; name:string }
+export type ClipJob = { id:string; media_id:string; status:'QUEUED'|'RUNNING'|'DONE'|'FAILED'; mode:ClipMode; total:number; done:number
+  phase:string; media_ids:string[]; error:string|null; items?:CloudMedia[] }
+
+export const createClips = (id:string, clips:ClipSpec[], mode:ClipMode, keepLinks:boolean) =>
+  apiRequest<ClipJob>(`/media-library/${id}/clips`, json('POST', {clips, mode, keep_links:keepLinks}))
+/** Times where COPY mode can start a clip (the server reads the whole file the first time). */
+export const getKeyframes = (id:string) => apiRequest<{keyframes:number[]; duration:number|null}>(`/media-library/${id}/keyframes`)
+export const getClipJob = (jobId:string) => apiRequest<ClipJob>('/media-library/clip-jobs/' + jobId)
+
+export const ACCEPTED_VIDEO ='.mp4,.mov,.m4v,video/mp4,video/quicktime,video/x-m4v'
 const RETRIES = 4
 
 class HttpError extends Error {

@@ -49,6 +49,49 @@ export function captureFrame(source:File|string, atSeconds?:number):Promise<Fram
   })
 }
 
+/** `count` small frames spread evenly over a stored video, delivered one by one as they are read (cutter timeline). */
+export function filmstrip(url:string, count:number, height:number, onFrame:(index:number, image:string)=>void, signal:AbortSignal):Promise<void>{
+  return new Promise(resolve=>{
+    const video = document.createElement('video')
+    const canvas = document.createElement('canvas')
+    let index = 0, done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      video.removeAttribute('src')
+      video.load()
+      resolve()
+    }
+    const next = () => {
+      if (signal.aborted || index >= count) return finish()
+      video.currentTime = Math.min(video.duration - 0.05, (index + 0.5) * video.duration / count)
+    }
+    signal.addEventListener('abort', finish, {once:true})
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'auto'
+    video.crossOrigin = 'anonymous'
+    video.onloadedmetadata = () => {
+      canvas.height = height
+      canvas.width = video.videoWidth && video.videoHeight ? Math.round(height * video.videoWidth / video.videoHeight) : Math.round(height * 9 / 16)
+      next()
+    }
+    video.onseeked = () => {
+      if (done) return
+      try {
+        canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height)
+        onFrame(index, canvas.toDataURL('image/jpeg', 0.7))
+      } catch {
+        return finish()
+      }
+      index++
+      next()
+    }
+    video.onerror = finish
+    video.src = url
+  })
+}
+
 /** The frame currently shown by a playing <video> element (used by "Đặt làm ảnh bìa"). */
 export function captureElement(video:HTMLVideoElement):Promise<Blob|null>{
   const width = video.videoWidth, height = video.videoHeight

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     sarae_media_max_upload_bytes: int = 4 * 1024 ** 3
     # Per-owner storage quota in bytes; 0 = unlimited.
     sarae_media_owner_quota_bytes: int = 0
+    # ffmpeg/ffprobe used to cut Media Library videos into clips; empty = found on PATH.
+    sarae_ffmpeg_path: str = ""
+    sarae_ffprobe_path: str = ""
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""

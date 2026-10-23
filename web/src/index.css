@@ -54,3 +54,7 @@ button, input, textarea, select { font-family: inherit; }
 .core-field .ui-field__label { font-size:var(--ui-font-sm); font-weight:650; }
 .core-field .ui-input-wrap { min-height:var(--ui-control-height); border-radius:var(--ui-radius-control); }
 .primary-button.ui-btn, .secondary-button.ui-btn { display:inline-flex; align-items:center; gap:9px; height:44px; width:auto; }
+
+/* UI Core puts Sheet (side panels) at z-index 10010 but Modal at 1000: a confirm opened from a Sheet would hide
+   behind it. Dialogs always stack above panels. */
+.ui-modal__backdrop { z-index: 10020; }
