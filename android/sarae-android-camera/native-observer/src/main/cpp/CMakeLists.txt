@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(sarae_native_observer LANGUAGES C)
+add_library(sarae_native_observer SHARED observer.c)
+add_library(sarae_hook_validation SHARED hook_validation.c phase20_binding.c)
+target_compile_definitions(sarae_hook_validation PRIVATE _GNU_SOURCE)
+target_link_libraries(sarae_hook_validation dl)

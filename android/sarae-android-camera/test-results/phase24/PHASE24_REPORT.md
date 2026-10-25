@@ -4,7 +4,7 @@
 
 ## Receiver evidence
 
-The viewer file `C:\Users\nguye\OneDrive\Pictures\Screenshots\AXFO5607.MP4` is present (489,033,353 bytes). `ffprobe` reports 266.33 s, HEVC 1290×2796 at average 18.04 fps, plus AAC stereo 44.1 kHz. This confirms the recording contains an audio stream, but codec metadata cannot identify its sound source. The viewer's direct report is that video was moving and the audio was noisy microphone only, without MP4 music. Therefore:
+The user-provided viewer recording is present locally (489,033,353 bytes). `ffprobe` reports 266.33 s, HEVC 1290×2796 at average 18.04 fps, plus AAC stereo 44.1 kHz. This confirms the recording contains an audio stream, but codec metadata cannot identify its sound source. The viewer's direct report is that video was moving and the audio was noisy microphone only, without MP4 music. Therefore:
 
 | Gate | Result | Evidence scope |
 |---|---|---|
