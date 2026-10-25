@@ -98,7 +98,7 @@ class AnswersAndPlaygroundTests(SaasTestCase):
         data = result.json()
         price, material = data["replies"]
         self.assertEqual((price["source"], price["intro"]), ("rule", None))
-        self.assertIn("hai trăm nghìn", price["body"])
+        self.assertIn("hai trăm nghìn", price["body"].lower(), "price rule phrasings are random; check the words")
         self.assertEqual(price["spoken_text"], price["body"], "straight to the answer")
         self.assertEqual((material["source"], material["comment_text"]), ("ai", "@hoa Cotton mát lắm nha"))
         self.assertEqual(data["skipped"][0]["comment"], "hi")
