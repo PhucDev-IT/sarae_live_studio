@@ -6,7 +6,7 @@ import {
   CalendarClock, CircleAlert, Clock, FastForward, Film, ListVideo, Package, Pause, Pencil, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward,
   MonitorPlay, Square, Undo2, Wifi, WifiOff,
 } from 'lucide-react'
-import { agentAction, apiRequest, durationLabel, errorText, onAgent, type OwnerAgent } from './mediaApi'
+import { agentAction, apiRequest, assetUrl, durationLabel, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import { sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus } from './liveSessionsApi'
 import PlaybackSettings from './PlaybackSettings'
@@ -147,9 +147,9 @@ function Console({agent}:{agent:OwnerAgent}){
     const isLive = p.id === status?.product_id
     const isPending = p.id === status?.pending_product_id
     return <li key={p.id}><button type="button" className={(target === p.id && !isLive ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} disabled={!p.video_count || isLive || busy} onClick={()=>setTarget(p.id)}>
-      <span className="lc-p-index">{isLive ? <Radio size={13}/> : <Package size={13}/>}</span>
-      <span className="lc-p-text"><strong>{p.name}</strong><small>{p.sku || '—'} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
-      {isLive ? <Badge tone="danger" dot>Đang phát</Badge> : isPending ? <Badge tone="warning">Chờ</Badge> : isOutside ? <Badge>Ngoài DS</Badge> : null}
+      <span className="lc-p-thumb">{isLive ? <Radio size={16}/> : <Package size={16}/>}{p.image_url && <img src={assetUrl(p.image_url) ?? undefined} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display = 'none'}}/>}</span>
+      <span className="lc-p-text"><strong title={p.name}>{p.name}</strong><small title={p.sku || undefined}>{p.sku || '—'} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
+      {isLive ? <span className="lc-p-badge"><Badge tone="danger" dot>Đang phát</Badge></span> : isPending ? <span className="lc-p-badge"><Badge tone="warning">Chờ</Badge></span> : isOutside ? <span className="lc-p-badge"><Badge>Ngoài DS</Badge></span> : null}
     </button></li>
   }
   const togglePause = () => act(status?.paused ? '/live/resume' : '/live/pause', post(), status?.paused ? 'Đã tiếp tục phát' : 'Đã tạm dừng')
@@ -189,23 +189,24 @@ function Console({agent}:{agent:OwnerAgent}){
     </Alert>}
     {/* Connection + session health */}
     <section className={'lc-status' + (onAir ? ' is-live' : '')} aria-live="polite">
-      <div className="lc-status-main">
-        <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={16}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
+      <div className="lc-status-head">
+        <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={14}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
         <div className="lc-status-text">
-          <strong>{liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
-          <small>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị ở khung bên phải để bắt đầu.'}</small>
+          <strong title={liveProduct?.name}>{liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
+          <small title={activeSession ? activeSession.name + (status?.last_status ? ' · ' + status.last_status : '') : status?.last_status}>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị để bắt đầu.'}</small>
         </div>
+        <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs}
+          title={`Xem trạng thái OBS · ${status?.obs?.dual_mode ? `A/B: ${status.obs.dual_sources?.join(' · ') ?? ''}` : status?.obs?.input_name ?? 'Sarae Video'}`}>
+          {status?.connected ? <Wifi size={14}/> : <WifiOff size={14}/>}
+          <span className="lc-obs-text"><strong>{status?.connected ? `OBS ${status.obs_version ?? ''}` : 'OBS chưa kết nối'}</strong><small>{status?.obs?.dual_mode ? `A/B: ${status.obs.dual_sources?.join(' · ') ?? ''}` : status?.obs?.input_name ?? 'Sarae Video'}</small></span>
+          <Settings2 size={14}/>
+        </button>
       </div>
       <div className="lc-metrics">
         <Metric icon={<Clock size={15}/>} label="Thời gian phiên" value={sessionLabel(status?.session_seconds)}/>
         <Metric icon={<FastForward size={15}/>} label="Lần chuyển video" value={status?.transition_count ?? 0}/>
         <Metric icon={<CircleAlert size={15}/>} label="Lỗi / phục hồi" value={`${status?.error_count ?? 0} / ${status?.recovery_count ?? 0}`} warn={(status?.error_count ?? 0) > 0}/>
       </div>
-      <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs} title="Xem trạng thái OBS và nơi cấu hình">
-        {status?.connected ? <Wifi size={16}/> : <WifiOff size={16}/>}
-        <span><strong>{status?.connected ? `OBS ${status.obs_version ?? ''}` : 'OBS chưa kết nối'}</strong><small>{status?.obs?.dual_mode ? `A/B: ${status.obs.dual_sources?.join(' · ') ?? ''}` : status?.obs?.input_name ?? 'Sarae Video'}</small></span>
-        <Settings2 size={15}/>
-      </button>
     </section>
 
     {status && !status.connected && <Alert tone="danger" title="OBS chưa kết nối">
@@ -222,27 +223,29 @@ function Console({agent}:{agent:OwnerAgent}){
           <div className="lc-now-body">
             <div className="lc-now-thumb">{currentId != null ? <VideoThumb src={current?.thumb_url}/> : <Film size={30}/>}</div>
             <div className="lc-now-info">
+              {liveProduct && <div className="lc-now-product" title={liveProduct.name}><Package size={14}/><span>{liveProduct.name}</span></div>}
+              <h2 title={current?.display_name}>{current?.display_name ?? (running ? 'Video không có trong thư viện' : 'Chưa phát video nào')}</h2>
               <div className="lc-now-tags">
-                {liveProduct && <Badge tone="primary"><Package size={12}/>{liveProduct.name}</Badge>}
                 {running && <Badge>Video {(status?.index ?? 0) + 1}/{status?.count ?? 0}</Badge>}
                 {mediaState && <Badge tone={mediaState.tone}>{mediaState.label}</Badge>}
                 {status?.loop && running && <Badge tone="info">Lặp</Badge>}
               </div>
-              <h2 title={current?.display_name}>{current?.display_name ?? (running ? 'Video không có trong thư viện' : 'Chưa phát video nào')}</h2>
               <SeekBar cursor={cursor} duration={duration} disabled={busy || offline || !running} onSeek={seek}/>
             </div>
           </div>
           <div className="lc-transport">
-            <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || offline || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>
-            <Button className="lc-play" leftIcon={status?.paused ? <Play size={18}/> : <Pause size={18}/>} disabled={busy || offline || !running} onClick={()=>void togglePause()} title="Tạm dừng / tiếp tục (Space)">{status?.paused ? 'Tiếp tục' : 'Tạm dừng'}</Button>
-            <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || offline || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>
+            <div className="lc-transport-group">
+              <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || offline || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>
+              <Button className="lc-play" leftIcon={status?.paused ? <Play size={18}/> : <Pause size={18}/>} disabled={busy || offline || !running} onClick={()=>void togglePause()} title="Tạm dừng / tiếp tục (Space)">{status?.paused ? 'Tiếp tục' : 'Tạm dừng'}</Button>
+              <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || offline || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>
+            </div>
             <Button className="lc-stop" variant="danger" leftIcon={<Square size={16}/>} disabled={busy || offline || !running} onClick={()=>setConfirmStop(true)}>{activeSession ? 'Kết thúc' : 'Dừng'}</Button>
           </div>
           {pendingProduct && <div className="lc-pending">
-            <span>Sau video này sẽ chuyển sang <b>{pendingProduct.name}</b></span>
+            <span title={pendingProduct.name}>Sau video này sẽ chuyển sang <b>{pendingProduct.name}</b></span>
             <Button size="sm" variant="ghost" leftIcon={<Undo2 size={14}/>} disabled={busy} onClick={()=>void act('/live/product-session/cancel-switch', post(), 'Đã hủy chuyển sản phẩm')}>Hủy</Button>
           </div>}
-          <div className="lc-shortcuts"><Kbd>Space</Kbd> tạm dừng / tiếp <Kbd>←</Kbd> video trước <Kbd>→</Kbd> video tiếp · kéo thanh thời gian để tua</div>
+          <div className="lc-shortcuts"><span><Kbd>Space</Kbd> tạm dừng</span><span><Kbd>←</Kbd> trước</span><span><Kbd>→</Kbd> tiếp</span><span>Kéo thanh thời gian để tua</span></div>
         </Card>
 
         {activeSession && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
@@ -259,8 +262,9 @@ function Console({agent}:{agent:OwnerAgent}){
               return <li key={`${id}-${i}`} className={isCurrent ? 'is-current' : ''}>
                 <span className="lc-q-index">{isCurrent ? <Radio size={14}/> : i + 1}</span>
                 <span className="lc-q-thumb"><VideoThumb src={video?.thumb_url}/></span>
-                <span className="lc-q-info"><strong title={video?.display_name}>{video?.display_name ?? 'Video không có trong thư viện'}</strong><small>{durationLabel(video?.duration_seconds) ?? '—'}{isCurrent ? ' · đang phát' : ''}</small></span>
-                {!isCurrent && <Button size="sm" variant="ghost" leftIcon={<Play size={14}/>} disabled={busy} onClick={()=>void act('/live/select', post({index:i}), 'Đã phát video được chọn')}>Phát</Button>}
+                <span className="lc-q-info"><strong title={video?.display_name}>{video?.display_name ?? 'Video không có trong thư viện'}</strong><small>{durationLabel(video?.duration_seconds) ?? '—'}</small></span>
+                {isCurrent ? <span className="lc-q-action"><Badge tone="danger" dot>Đang phát</Badge></span>
+                  : <span className="lc-q-action"><Button size="sm" variant="ghost" leftIcon={<Play size={14}/>} disabled={busy} onClick={()=>void act('/live/select', post({index:i}), 'Đã phát video được chọn')}>Phát</Button></span>}
               </li>
             })}</ol>}
         </Card>
@@ -285,7 +289,7 @@ function Console({agent}:{agent:OwnerAgent}){
           </ul>
           <div className="lc-product-actions">
             {!targetProduct ? <p className="lc-muted">Chọn sản phẩm muốn đưa lên LIVE — không cần theo thứ tự.</p> : <>
-              <p className="lc-target">Đưa <b>{targetProduct.name}</b> lên LIVE{targetOutside ? ' (sẽ thêm vào phiên)' : ''}</p>
+              <p className="lc-target" title={targetProduct.name}>Đưa <b>{targetProduct.name}</b> lên LIVE{targetOutside ? ' (sẽ thêm vào phiên)' : ''}</p>
               <Button block leftIcon={<SkipForward size={16}/>} disabled={busy} onClick={()=>void switchProduct(targetProduct.id, 'immediate')}>Chuyển ngay</Button>
               <Button block variant="outline" disabled={busy || targetProduct.id === status?.pending_product_id} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
             </>}
@@ -312,8 +316,8 @@ function Console({agent}:{agent:OwnerAgent}){
         </div> : <>
           <p className="lc-muted lc-pad">Bắt đầu một phiên tại trang Phiên LIVE: Agent kiểm tra đúng TikTok Account, đồng bộ giỏ sản phẩm rồi bạn xác nhận danh sách trước khi phát.</p>
           <ul className="lc-product-list">{drafts.map(s=><li key={s.id}><a className="lc-draft-link" href={sessionHref(s.id)}>
-            <span className="lc-p-text"><strong>{s.name}</strong><small>{s.product_ids.length} sản phẩm · mở để bắt đầu</small></span>
-            {!s.product_ids.length ? <Badge tone="warning">Trống</Badge> : null}
+            <span className="lc-p-text"><strong title={s.name}>{s.name}</strong><small>{s.product_ids.length} sản phẩm · mở để bắt đầu</small></span>
+            {!s.product_ids.length ? <span className="lc-p-badge"><Badge tone="warning">Trống</Badge></span> : null}
           </a></li>)}</ul>
         </>}</>}
       </Card>

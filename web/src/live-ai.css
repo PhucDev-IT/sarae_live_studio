@@ -72,3 +72,12 @@
 .lai-btn.is-primary{background:var(--ui-primary);border-color:var(--ui-primary);color:#fff}
 .lai-btn.is-primary:hover{filter:brightness(.95);background:var(--ui-primary)}
 .lai-btn.is-ghost{border-color:transparent;background:transparent;color:var(--ui-text-muted)}
+
+/* Auto reply switches (voice / TikTok comment) and the comment pacing group */
+.lai-auto{display:grid;gap:10px}
+.lai-group{display:grid;gap:8px;padding:10px;border-radius:8px;background:var(--ui-surface-2)}
+.lai-group .lai-warn{margin:0;line-height:1.5}
+/* "Chi tiết gửi" of a TikTok comment */
+.lai-delivery{font-size:12px}
+.lai-delivery ol{margin:6px 0 0;padding-left:18px;display:grid;gap:2px;overflow-wrap:anywhere}
+.lai-delivery .is-bad{margin-top:4px;overflow-wrap:anywhere}

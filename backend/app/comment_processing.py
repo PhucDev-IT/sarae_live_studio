@@ -85,9 +85,9 @@ class Monitor:
             self._log("SELECT", "queued_if_enabled", "Đủ điều kiện vào Batch AI nếu chế độ realtime được bật.", mid, user)
             return "selected"
 
-    def record(self, stage, decision, text, username=None):
+    def record(self, stage, decision, text, username=None, comment_id=None):
         with self.lock:
-            self._log(stage, decision, text, username=username)
+            self._log(stage, decision, text, comment_id=comment_id, username=username)
 
     def snapshot(self, after=0):
         with self.lock:

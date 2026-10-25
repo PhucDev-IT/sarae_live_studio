@@ -69,7 +69,7 @@ On the Windows Agent (agent-core/src/sarae_agent/voice/tts.py):
 - `tts_prepare` renders up to 40 sentences into the cache in a separate thread (never played). The voice status (queue, sentence being spoken, last error, sentences being prepared) goes up with every heartbeat and shows in the web.
 - **Agents must be updated** with the backend: older Agents reject the new `tts_speak` fields (`rate`, `ttl_seconds`, `duck`, `intro`) and do not know `tts_clear` / `tts_prepare`.
 
-Comments are **not** posted to TikTok automatically (no public API; automating the app risks the account). The operator presses **Copy comment** and pastes it; the reply is then marked as commented.
+Comments can be posted automatically as TikTok LIVE chat messages through the Agent's LIVE Console browser when **Tự động trả lời bằng bình luận TikTok** is on (docs/AI_AUTO_REPLY.md: pacing, duplicates, expiry, Reply → Mention → Normal). Otherwise the operator presses **Gửi comment** or **Copy comment**.
 
 **Requirements:** the backend is a single process; batch settings are persisted, but pending work, replies, answer cache and voice queue live in memory and are lost on restart. Do not use multiple Uvicorn workers. Edge TTS is an unofficial online service and can change or be rate-limited. Test in OBS preview before streaming.
 
@@ -77,7 +77,7 @@ Comments are **not** posted to TikTok automatically (no public API; automating t
 - "Same question" is matched by words (exact, or close wording with identical numbers and negation), not by meaning; very different phrasings still go to the AI once and are then in the bank.
 - Rules answer only single-topic questions; mixed questions ("giá bn, có size L k") go to the AI.
 - Pending comments, replies and the voice queue live in memory (one backend process); the answer bank and facts are persisted.
-- Comments are not posted to TikTok automatically.
+- Automatic comments use TikTok's own LIVE Console UI through Playwright; its selectors must be checked on a real Console (`chat_probe`).
 # Multi-provider Voice Engine
 
 See [Voice Engine](VOICE_ENGINE.md) for Edge/ElevenLabs configuration, Agent key delivery, monitoring and mock test commands.

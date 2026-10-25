@@ -64,6 +64,13 @@ class BatchState:
         # Voice pacing (app/live_reply_director): replies waiting to be spoken, when the voice is free again,
         # when each topic was last spoken.
         self.voice_queue: list[int] = []
+        # Comment branch (app/comment_reply.py): queue, message in flight, pacing and duplicate memory.
+        self.comment_queue: list[int] = []
+        self.comment_inflight: int | None = None
+        self.comment_last_sent: float | None = None
+        self.comment_sent_times: list[float] = []
+        self.comment_msg_ids: set[str] = set()
+        self.comment_texts: dict[str, float] = {}
         self.busy_until = 0.0
         self.topic_last: dict[str, float] = {}
         self.stats = {"received": 0, "processed": 0, "cached": 0, "batches": 0, "skipped": 0,
@@ -256,6 +263,7 @@ def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: 
     return {"id": reply_id, "batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
             "product_name": product["name"], "version": ctx["version"], "question": question["text"],
             "comments": [{"id": i["id"], "username": i["username"], "nickname": i.get("nickname") or "",
+                          "user_id": i.get("user_id") or "", "msg_id": i.get("msg_id") or "",
                           "comment": i["comment"]} for i in items],
             "intent": answer["intent"], "slots": answer["slots"], "say": answer["say"], "text": answer["text"],
             "confidence": answer["confidence"], "source": source, "approved": bool(answer.get("approved")),
@@ -416,6 +424,7 @@ def enqueue(owner_id: str, agent_id: str, message):
     maybe_prepare(st, ctx)
     key = (ctx["session_id"], ctx["product"]["id"], ctx["version"])
     item = {"id": message.get("id"), "username": message.get("username") or "", "nickname": message.get("nickname") or "",
+            "user_id": message.get("user_id") or "", "msg_id": message.get("msg_id") or "",
             "comment": message.get("comment") or "", "context": ctx, "asked_at": time.monotonic(), "asked_iso": _now_iso()}
     with st.lock:
         st.stats["received"] += 1
@@ -513,8 +522,8 @@ def prepare(st: BatchState, ctx: dict, regenerate: bool, state: dict):
             state.update(state="error", error=str(exc.detail)[:200])
         monitor.record("PREPARE", "failed", f"{product['name']}: {state['error']}")
         return
-    if options.channel != "comment":
-        prerender(st, product, ctx["version"], options)
+    # Rendered even when the voice is not automatic: the operator's Speak button plays them at once too.
+    prerender(st, product, ctx["version"], options)
 
 
 def prerender(st: BatchState, product: dict, version: str, options) -> None:
@@ -566,11 +575,16 @@ def set_config(body: BatchOptions, owner: Owner):
 def get_status(owner: Owner, agent_id: AgentId, after: int = 0):
     """Counters, the latest batches and the latest replies (newest first) with their voice/comment state."""
     st = desk(owner, agent_id)
+    try:
+        from app.cloud_agents import apply_outcomes
+        apply_outcomes(st.agent_id)  # chat messages the Agent finished sending
+    except Exception:  # noqa: BLE001 - the status must answer even if outcomes cannot be read now
+        pass
     with st.lock:
         replies = [public_reply(r) for r in reversed(st.replies.values())][:80]
         open_states = ("review", "ready", "scheduled", "queued")
         unanswered = sum(1 for r in st.replies.values() if not r.get("dismissed") and r["voice"] != "sent"
-                         and r["comment"] != "done" and (r["voice"] in open_states or r["comment"] == "ready"))
+                         and r["comment"] not in ("done", "sent") and (r["voice"] in open_states or r["comment"] == "ready"))
         result = {"stats": st.stats.copy(), "last_id": st.results[-1]["batch_id"] if st.results else 0,
                   "batches": [b for b in list(st.results)[-20:] if b["batch_id"] > after],
                   "pending": sum(map(len, st.pending.values())), "voice_queue": len(st.voice_queue),
@@ -683,3 +697,21 @@ def prepare_now(body: PrepareBody, owner: Owner, agent_id: AgentId):
         done = bool(current and current["version"] == ctx["version"] and current["state"] in ("running", "ready"))
     state = current if done and not body.force else maybe_prepare(st, ctx, force=True)
     return dict(state) if state else None
+
+
+class CommentBody(BaseModel):
+    # The operator's edited message; empty means the reply's own comment text.
+    text: str | None = Field(default=None, max_length=150)
+
+
+@router.post("/replies/{reply_id}/comment")
+def comment_reply_now(reply_id: int, body: CommentBody, owner: Owner, agent_id: AgentId):
+    """Post this reply as a TikTok LIVE chat message now (pacing and duplicate checks still apply)."""
+    from app import comment_reply
+    return public_reply(comment_reply.send_now(desk(owner, agent_id, online=True), reply_id, body.text or None))
+
+
+@router.post("/replies/{reply_id}/comment/cancel")
+def cancel_comment_reply(reply_id: int, owner: Owner, agent_id: AgentId):
+    from app import comment_reply
+    return public_reply(comment_reply.cancel(desk(owner, agent_id), reply_id))

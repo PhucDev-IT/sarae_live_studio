@@ -128,7 +128,27 @@ function CommentFeed({messages, state, name}:{messages:ChatMessage[]; state:Chat
   </div>
 }
 
-const STAGE:Record<string,string> = {RECEIVED:'Nhận', DEDUP:'Lọc trùng', ANTI_SPAM:'Chống spam', SELECT:'Chọn'}
+const STAGE:Record<string,string> = {RECEIVED:'Nhận', DEDUP:'Lọc trùng', ANTI_SPAM:'Chống spam', SELECT:'Chọn', AI_DECISION:'AI quyết định', COMMENT_SEND:'Gửi bình luận', VOICE:'Giọng nói'}
+/** Readable fields of a JSON log line (AI_DECISION / COMMENT_SEND / VOICE), in this order. */
+const LOG_FIELDS:[string, string][] = [
+  ['comment','Bình luận'], ['reason','Lý do'], ['response','Trả lời'], ['text','Nội dung'],
+  ['voice_enabled','Giọng'], ['auto_voice_reply','Giọng'], ['comment_enabled','Bình luận TikTok'], ['auto_comment_reply','Bình luận TikTok'],
+  ['mode','Cách gửi'], ['status','Trạng thái'], ['ms','Thời gian'], ['error','Lỗi'],
+]
+const LOG_VALUE:Record<string,string> = {DIRECT_REPLY:'Trả lời trực tiếp', MENTION:'Nhắc @tên', NORMAL:'Chat thường', CONFIRMED:'Đã gửi ✓', SUBMITTED:'Đã gửi (chưa xác nhận)', FAILED:'Lỗi', EXPIRED:'Quá hạn', DUPLICATE:'Trùng, bỏ qua', RATE_LIMITED:'Chờ lượt', QUEUED:'Chờ gửi', TYPING:'Đang gõ'}
+/** Log text as written, or the key fields of a JSON log line so staff can read it. */
+function LogText({text}:{text:string}){
+  let data:Record<string,unknown>|null = null
+  if (text.trimStart().startsWith('{')) {try {const v:unknown = JSON.parse(text);if (v && typeof v === 'object' && !Array.isArray(v)) data = v as Record<string,unknown>} catch {/* plain text */}}
+  if (!data) return <>{text}</>
+  const show = (key:string, v:unknown) => typeof v === 'boolean' ? (v ? 'bật' : 'tắt') : key === 'ms' ? `${String(v)} ms` : typeof v === 'string' ? LOG_VALUE[v] ?? v : JSON.stringify(v)
+  const seen = new Set<string>()
+  const parts = LOG_FIELDS.filter(([k, label])=>data[k] !== undefined && data[k] !== null && data[k] !== '' && !seen.has(label) && seen.add(label))
+  const steps = Array.isArray(data.steps) ? data.steps as {step?:string; ms?:number}[] : []
+  if (!parts.length && !steps.length) return <>{text}</>
+  return <>{parts.map(([k, label], i)=><span key={k} className={k === 'error' ? 'slc-log-bad' : undefined}>{i > 0 && ' · '}{label}: <b>{show(k, data[k])}</b></span>)}
+    {steps.length > 0 && <small className="slc-log-steps">{steps.map(s=>`${s.step ?? '?'} ${s.ms ?? 0}ms`).join(' → ')}</small>}</>
+}
 const DECISION:Record<string,{label:string; tone:string}> = {
   accepted:{label:'Đã nhận', tone:'ok'}, unique_event:{label:'Không trùng', tone:'ok'}, duplicate_event:{label:'Trùng, bỏ qua', tone:'muted'},
   unverified:{label:'Không kiểm tra được', tone:'warn'}, suppressed:{label:'Spam, bỏ qua', tone:'warn'}, pass:{label:'Hợp lệ', tone:'ok'},
@@ -163,7 +183,7 @@ function ProcessingLog({agentId}:{agentId:string}){
       : <ol className="slc-log-list">{traces.slice().reverse().map(t=><li key={t.id}>
         <time>{time(t.timestamp)}</time>
         <span className="slc-stage">{STAGE[t.stage] ?? t.stage}</span>
-        <span className="slc-log-text">{t.username && <b>@{t.username} </b>}{t.text}</span>
+        <span className="slc-log-text">{t.username && <b>@{t.username} </b>}<LogText text={t.text}/></span>
         {t.decision && <span className={'slc-decision is-' + (DECISION[t.decision]?.tone ?? 'muted')}>{DECISION[t.decision]?.label ?? t.decision}</span>}
       </li>)}</ol>}
   </div>

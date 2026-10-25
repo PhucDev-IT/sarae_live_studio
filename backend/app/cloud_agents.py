@@ -86,16 +86,25 @@ SLOW_LEASE_SECONDS = 150
 SLOW_KINDS = {"tiktok_products_sync", "tts_speak", "obs_configure", "obs_inputs"}
 
 
+# TikTok LIVE chat messages (Playwright on the Console) run in their own lane: never behind a TTS, never in front.
+CHAT_KINDS = {"chat_send", "chat_probe"}
+CHAT_TTL_SECONDS = 120
+
+
 def lane(kind: str) -> str:
+    if kind in CHAT_KINDS:
+        return "chat"
     return "background" if kind in BACKGROUND_KINDS else "live"
 
 
 def ttl_seconds(kind: str) -> int:
+    if kind in CHAT_KINDS:
+        return CHAT_TTL_SECONDS
     return SLOW_TTL_SECONDS if kind in SLOW_KINDS or kind in BACKGROUND_KINDS else DEFAULT_TTL_SECONDS
 
 
 def lease_seconds(kind: str) -> int:
-    return SLOW_LEASE_SECONDS if kind in SLOW_KINDS else DEFAULT_LEASE_SECONDS
+    return SLOW_LEASE_SECONDS if kind in SLOW_KINDS or kind in CHAT_KINDS else DEFAULT_LEASE_SECONDS
 
 
 # ----- storage ---------------------------------------------------------------------------------------
@@ -312,7 +321,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
-COMMAND_KINDS=NO_PARAM_KINDS|{"monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
+COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
@@ -424,6 +433,11 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         if "duck" in payload:out["duck"]=_bool(payload["duck"],"duck")
         if payload.get("intro") is not None:out["intro"]=_text(payload["intro"],"intro",1,120)
         return out
+    if kind=="chat_send":
+        from app.chat_payload import validate_chat_send
+        return validate_chat_send(payload)
+    if kind=="chat_probe":
+        return {}
     if kind=="playback_policy":
         from app.playback_policy import validate_command
         return validate_command(payload)
@@ -731,6 +745,7 @@ def apply_outcomes(agent_id:str)->int:
     """Let the module that created a command apply its final outcome (e.g. a LIVE session becomes RUNNING) — exactly
     once per final status, including TIMEOUTs found by the sweep and late acks that turn a TIMEOUT into SUCCESS."""
     from app.live_sessions import apply_command_outcome
+    from app.comment_reply import apply_outcome as apply_comment_outcome
     applied=0
     with _db() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -741,7 +756,11 @@ def apply_outcomes(agent_id:str)->int:
         for row in rows:
             db.execute("UPDATE agent_commands SET applied_status=? WHERE command_id=?",(row["status"],row["command_id"]))
     for row in rows:
-        apply_command_outcome(command_view(row),json.loads(row["context"]))
+        context=json.loads(row["context"])
+        if context.get("module")=="ai_comment":
+            apply_comment_outcome(command_view(row),context)
+        else:
+            apply_command_outcome(command_view(row),context)
         applied+=1
     return applied
 

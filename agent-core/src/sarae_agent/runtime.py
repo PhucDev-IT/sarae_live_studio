@@ -35,6 +35,7 @@ from sarae_agent.monitoring.captcha import CaptchaMonitor
 from sarae_agent.obs.controller import ObsController, ObsSettingsStore
 from sarae_agent.playback.engine import PlaybackEngine
 from sarae_agent.playback.service import PlaybackService
+from sarae_agent.tiktok_chat_sender import SELECTORS_FILE, ChatSender
 from sarae_agent.voice.tts import VoiceService
 from sarae_agent.windows.win32 import hostname
 
@@ -83,9 +84,11 @@ class AgentRuntime:
         self.playback = PlaybackService(self.engine, self.emit)
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.voice = VoiceService(self.config, self.obs)
-        self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile')
+        self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile',
+                                       chat_sender=ChatSender(paths.root / SELECTORS_FILE))
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
-                                    tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache)
+                                    tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
+                                    chat=self.auto_pin)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
     def resolve_media(self, media_id: str):

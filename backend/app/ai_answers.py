@@ -140,6 +140,10 @@ def playground(body: PlaygroundBody, owner: Owner):
     out = []
     for reply in replies:
         channel, why = route(reply, options)
+        if channel == "auto":
+            channel = {(True, True): "both", (True, False): "voice", (False, True): "comment"}.get(
+                (options.auto_voice_reply and bool(reply["say"]), options.auto_comment_reply and bool(reply["text"])),
+                "manual")
         intro, body_text = compose_speech(reply, options, product.id) if reply["say"] else (None, "")
         out.append({**public_reply(reply), "route": channel, "note": why, "intro": intro, "body": body_text,
                     "spoken_text": spoken_text(intro, body_text),

@@ -15,7 +15,7 @@ type Intent='ASK_PRICE'|'ASK_SIZE'|'ASK_COLOR'|'ASK_MATERIAL'|'ASK_STOCK'|'ASK_S
 type Answer={id:number;question:string;intent:string;say:string[];text:string[];source:'manual'|'operator'|'ai'|'pregen';approved:boolean;uses:number;last_used_at:string|null;scope:'shop'|'auto'}
 type BankView={product:{id:number;name:string;price:number|null};answers:Answer[]}
 type Viewer={username:string;nickname:string;comment:string}
-type Reply={id:number;question:string;comments:Viewer[];intent:string;slots:Record<string,unknown>;source:'rule'|'bank'|'ai'|'template';template_id?:string|null;say:string;text:string;intro:string|null;body:string;spoken_text:string;comment_text:string;review_reasons:string[];route:'review'|'voice'|'comment'|'both';confidence:number}
+type Reply={id:number;question:string;comments:Viewer[];intent:string;slots:Record<string,unknown>;source:'rule'|'bank'|'ai'|'template';template_id?:string|null;say:string;text:string;intro:string|null;body:string;spoken_text:string;comment_text:string;review_reasons:string[];route:'review'|'voice'|'comment'|'both'|'manual';confidence:number}
 type Playground={product:{id:number;name:string;price:number|null};replies:Reply[];skipped:{username:string;comment:string;reason:string}[];usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
 type BadgeTone='default'|'primary'|'success'|'warning'|'danger'|'info'
 type Draft={id:number|null;question:string;intent:string;say:string;text:string}
@@ -24,7 +24,7 @@ const INTENTS:Record<Intent,string>={ASK_PRICE:'Giá',ASK_SIZE:'Size',ASK_COLOR:
 const intentLabel=(i:string)=>INTENTS[i as Intent]??i
 const SOURCES:Record<Answer['source'],string>={manual:'Shop thêm',operator:'Bạn sửa khi LIVE',ai:'AI',pregen:'AI chuẩn bị sẵn'}
 const REPLY_SOURCES:Record<Reply['source'],{label:string;tone:BadgeTone}>={rule:{label:'Luật · 0 token',tone:'success'},bank:{label:'Kho câu · 0 token',tone:'info'},ai:{label:'AI',tone:'primary'},template:{label:'Mẫu chung · 0 token',tone:'success'}}
-const ROUTES:Record<Reply['route'],{label:string;tone:BadgeTone}>={review:{label:'Cần duyệt',tone:'warning'},voice:{label:'Đọc giọng',tone:'success'},comment:{label:'Comment',tone:'info'},both:{label:'Đọc + comment',tone:'primary'}}
+const ROUTES:Record<Reply['route'],{label:string;tone:BadgeTone}>={review:{label:'Cần duyệt',tone:'warning'},voice:{label:'Tự đọc giọng',tone:'success'},comment:{label:'Tự gửi comment',tone:'info'},both:{label:'Tự đọc + tự comment',tone:'primary'},manual:{label:'Bạn bấm gửi (tự động đang tắt)',tone:'default'}}
 const SAMPLES=['giá bn shop','55kg mặc size gì','có màu đen không','vải gì vậy','giá bn, có size L k','hàng lỗi đổi sao','hi']
 const MAX_SAY=5, MAX_TEXT=5, SAY_LEN=160, TEXT_LEN=120, MAX_LINES=20
 const HINT='Viết như bạn nói khi LIVE. Viết số bằng số (200k, 55kg) – hệ thống tự đọc thành chữ. Có thể viết nhiều cách nói để AI xoay vòng cho tự nhiên.'

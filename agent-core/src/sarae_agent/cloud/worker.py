@@ -9,7 +9,8 @@ Threads (all outbound, no inbound port):
   * main: heartbeat every 2 s while a video plays (idle: cloud.heartbeat_seconds), with ``playback`` =
     PlaybackEngine.status(); flushes playback events to POST /agents/events as soon as they happen.
   * commands: long-polls GET /agents/commands/{agent_id}/next?wait=N and hands each command to its lane.
-  * one executor per lane ("live", "background"), so a long TTS never blocks a product switch and each lane
+  * one executor per lane ("live", "background", "chat"), so a long TTS never blocks a product switch or a
+    LIVE chat reply, and each lane
     runs in the order the Cloud hands it out (the Cloud keeps at most one RUNNING command per lane).
   * templates: mirrors the CAPTCHA reference images Sarae's SUPER_ADMIN publishes: they rarely change, so once
     each time the worker connects (every app start) and then every TEMPLATE_SYNC_SECONDS.
@@ -91,7 +92,7 @@ class CloudWorker:
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
         self._lanes = {name: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"cloud-{name}")
-                       for name in ("live", "background")}
+                       for name in ("live", "background", "chat")}
         self._guard = threading.Lock()
         self._inflight: dict[str, dict] = {}
         self._pending_acks = 0

@@ -2,15 +2,17 @@
 
 Voice is the main channel. Airtime is limited and a spoken sentence cannot be taken back, so:
 - routing (route) sends to review anything flagged, unsure, sensitive or below the confidence threshold;
-- modes: manual (operator presses Speak), semi_auto (spoken after a few seconds unless the operator cancels),
-  auto (spoken at once, still through every check below);
+- two independent switches (docs/AI_AUTO_REPLY.md): auto_voice_reply speaks replies, auto_comment_reply posts them
+  as TikTok LIVE chat messages (app/comment_reply.py); both can be on, each waits confirm_seconds so the operator
+  can cancel; with both off the operator presses Speak / Gửi comment on each reply;
 - pacing (pump): one sentence at a time, most useful first (orders, then price/size...), a question older than
   max_age is no longer spoken, and a topic just spoken is not repeated within the cooldown. Neither is dropped: the
   reply falls back to the comment channel so the viewer can still be answered;
 - the spoken sentence (compose_speech) goes straight to the answer, without viewer names. Only when the product on
   air changed since the question does an intro name the product it is about. The Agent speaks intro and body as two
   clips: the body is the same every time, so its audio (often rendered in advance by preparation) is reused.
-Comments are not posted automatically (TikTok has no API for it): the operator copies the prepared text.
+The comment branch has its own queue, pacing and Agent lane: it never waits for the voice and a failure of one branch
+does not touch the other.
 """
 import json
 import time
@@ -18,7 +20,7 @@ from threading import Timer
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.identity import owner_settings
 from app.comment_processing import monitors
@@ -29,11 +31,16 @@ VOICES = ("vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural")
 
 
 class ReplyOptions(BaseModel):
-    mode: Literal["manual", "semi_auto", "auto"] = "manual"
-    channel: Literal["voice", "comment", "both"] = "voice"
+    # Independent delivery switches (both may be on).
+    auto_voice_reply: bool = False
+    auto_comment_reply: bool = False
+    # Both branches wait this long so the operator can cancel; 0 sends at once.
+    confirm_seconds: float = Field(default=4, ge=0, le=15)
+    comment_min_interval_seconds: float = Field(default=8, ge=4, le=120)
+    comment_max_per_minute: int = Field(default=5, ge=1, le=20)
+    comment_max_age_seconds: float = Field(default=60, ge=10, le=300)
     voice: str = Field(default=VOICES[0], pattern=r"^vi-VN-(HoaiMy|NamMinh)Neural$")
     rate: int = Field(default=5, ge=-30, le=50)
-    veto_seconds: float = Field(default=4, ge=1, le=15)
     max_age_seconds: float = Field(default=25, ge=5, le=120)
     topic_cooldown_seconds: float = Field(default=40, ge=0, le=600)
     min_confidence: float = Field(default=0.75, ge=0.3, le=1)
@@ -43,6 +50,21 @@ class ReplyOptions(BaseModel):
     # Prepare answers and their audio as soon as a new product is on air (one AI call per product version).
     auto_prepare: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade(cls, data):
+        """Settings saved before the two switches (mode + channel + veto_seconds): keep the voice behaviour the
+        shop had; never start posting comments by itself (the old comment channel only prepared text to copy)."""
+        if not isinstance(data, dict) or "auto_voice_reply" in data or ("mode" not in data and "channel" not in data):
+            return data
+        data = dict(data)
+        mode, channel = data.pop("mode", "manual"), data.pop("channel", "voice")
+        veto = data.pop("veto_seconds", 4)
+        data["auto_voice_reply"] = mode != "manual" and channel in ("voice", "both")
+        data["auto_comment_reply"] = False
+        data.setdefault("confirm_seconds", veto if mode == "semi_auto" else 0)
+        return data
+
 
 def reply_options(owner_id: str) -> ReplyOptions:
     return ReplyOptions.model_validate(owner_settings(owner_id).get("ai_reply") or {})
@@ -50,8 +72,6 @@ def reply_options(owner_id: str) -> ReplyOptions:
 
 # Never spoken without the operator, whatever the mode.
 NEVER_AUTO = {"COMPLAINT", "OTHER", "GENERAL", "GREETING"}
-# Details that make a question one viewer's own: better answered by a comment when both channels are on.
-PERSONAL_SLOTS = {"weight_kg", "height_cm", "place", "quantity"}
 PRIORITY = {"ORDER": 3, "ASK_PRICE": 2, "ASK_SIZE": 2, "ASK_STOCK": 2, "ASK_COLOR": 1, "ASK_MATERIAL": 1,
             "ASK_SHIPPING": 1, "SHOW_PRODUCT": 1}
 VOICE_PENDING = ("review", "ready", "scheduled", "queued")
@@ -59,24 +79,14 @@ SYLLABLES_PER_SECOND = 4.2
 
 
 def route(reply: dict, options: ReplyOptions) -> tuple[str, str]:
-    """(channel, why): channel is review, voice, comment or both."""
+    """("review", why) when the reply must wait for the operator, else ("auto", "")."""
     if reply["review_reasons"]:
         return "review", "; ".join(reply["review_reasons"])
     if reply["intent"] == "COMPLAINT" or (reply["intent"] in NEVER_AUTO and not reply.get("approved")):
         return "review", "Loại câu hỏi này luôn cần người duyệt"
     if reply["confidence"] < options.min_confidence:
         return "review", f"Độ tự tin {reply['confidence']:.2f} thấp hơn ngưỡng {options.min_confidence:.2f}"
-    if options.channel == "comment":
-        return "comment", ""
-    if options.channel == "voice":
-        return ("voice", "") if reply["say"] else ("comment", "Không có câu để nói")
-    if reply["intent"] == "ORDER":
-        return "both", "Chốt đơn: nói để tạo không khí, comment để xác nhận"
-    if len(reply["comments"]) >= 2:
-        return "voice", "Nhiều người cùng hỏi"
-    if PERSONAL_SLOTS & reply["slots"].keys():
-        return "comment", "Câu hỏi riêng của một người"
-    return "voice", ""
+    return "auto", ""
 
 
 def estimate_seconds(text: str, rate: int) -> float:
@@ -126,33 +136,52 @@ def _schedule(st, key, seconds: float, action):
 
 
 def dispatch(st, replies: list[dict], options: ReplyOptions | None = None):
-    """Route new replies and start their voice (by mode) or comment state."""
+    """Hand each new reply to the voice branch and the comment branch, independently, per the two switches."""
+    from app import comment_reply
     options = options or reply_options(st.owner_id)
     with st.lock:
         for reply in replies:
             channel, why = route(reply, options)
-            _touch(reply, route=channel, note=why, comment_text=comment_text(reply) if reply["text"] else "")
+            voice_on = channel == "auto" and options.auto_voice_reply and bool(reply["say"])
+            comment_on = channel == "auto" and options.auto_comment_reply and bool(reply["text"])
+            if channel == "auto" and not (options.auto_voice_reply or options.auto_comment_reply):
+                why = "Tự động trả lời đang tắt (cả giọng nói và bình luận)"
+            _touch(reply, route=channel, note=why, comment_text=comment_text(reply) if reply["text"] else "",
+                   voice_enabled=voice_on, comment_enabled=comment_on)
+            _log_decision(st, reply, channel, why, voice_on, comment_on)
             if channel == "review":
                 st.stats["review"] += 1
                 _touch(reply, voice="review", comment="ready" if reply["text"] else None)
                 continue
-            if channel in ("comment", "both") and reply["text"]:
+            if comment_on:
+                comment_reply.schedule(st, reply, options)
+            elif reply["text"]:
                 _touch(reply, comment="ready")
-            if channel not in ("voice", "both"):
-                continue
-            if options.mode == "manual":
-                _touch(reply, voice="ready")
-            elif options.mode == "semi_auto":
-                _touch(reply, voice="scheduled", speak_at=time.time() + options.veto_seconds)
-                _schedule(st, ("veto", reply["id"]), options.veto_seconds, lambda r=reply["id"]: promote(st, r))
+            if not voice_on:
+                _touch(reply, voice="ready" if reply["say"] else None)
+            elif options.confirm_seconds > 0:
+                _touch(reply, voice="scheduled", speak_at=time.time() + options.confirm_seconds)
+                _schedule(st, ("veto", reply["id"]), options.confirm_seconds, lambda r=reply["id"]: promote(st, r))
             else:
                 _touch(reply, voice="queued")
                 st.voice_queue.append(reply["id"])
     pump(st)
+    comment_reply.pump(st)
+
+
+def _log_decision(st, reply: dict, channel: str, why: str, voice_on: bool, comment_on: bool):
+    """One line per source comment: why the AI answers or holds it, the answer, and which branches will send it."""
+    decision = "review" if channel == "review" else ("reply" if voice_on or comment_on else "manual")
+    for c in reply["comments"]:
+        monitors(st.key).record("AI_DECISION", decision, json.dumps({
+            "comment": c.get("comment"), "reason": why or "Đủ điều kiện trả lời", "source": reply.get("source"),
+            "intent": reply.get("intent"), "response": {"say": reply.get("say"), "text": reply.get("text")},
+            "voice_enabled": voice_on, "comment_enabled": comment_on}, ensure_ascii=False),
+            username=c.get("username"), comment_id=c.get("msg_id") or None)
 
 
 def promote(st, reply_id: int):
-    """The cancel window of a semi_auto reply ended: queue it for the voice unless the operator cancelled it."""
+    """The cancel window of a reply ended: queue it for the voice unless the operator cancelled it."""
     with st.lock:
         st.timers.pop(("veto", reply_id), None)
         reply = st.replies.get(reply_id)
@@ -164,8 +193,9 @@ def promote(st, reply_id: int):
 
 
 def _fallback(reply: dict, why: str):
-    """Not spoken after all: keep the viewer answerable by comment."""
-    _touch(reply, voice="skipped", note=why, comment="ready" if reply["text"] and reply["comment"] != "done" else reply["comment"])
+    """Not spoken after all: keep the viewer answerable by comment (unless the comment branch already has it)."""
+    busy = reply.get("comment") in ("done", "scheduled", "queued", "sending", "sent")
+    _touch(reply, voice="skipped", note=why, comment=reply["comment"] if busy or not reply["text"] else "ready")
 
 
 def pump(st):
@@ -272,7 +302,7 @@ def speak_now(st, reply_id: int, say: str | None):
 
 
 def cancel(st, reply_id: int):
-    """Do not speak this reply (the semi_auto cancel window); it stays available as a comment."""
+    """Do not speak this reply (the cancel window); it stays available as a comment."""
     with st.lock:
         reply = find(st, reply_id)
         timer = st.timers.pop(("veto", reply_id), None)
@@ -287,7 +317,9 @@ def cancel(st, reply_id: int):
 
 def dismiss(st, reply_id: int):
     with st.lock:
+        from app import comment_reply
         reply = cancel(st, reply_id)
+        comment_reply.cancel(st, reply_id)
         _touch(reply, dismissed=True, comment="dismissed" if reply["comment"] == "ready" else reply["comment"])
         return reply
 
