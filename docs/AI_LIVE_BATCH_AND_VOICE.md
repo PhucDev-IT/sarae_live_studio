@@ -78,3 +78,6 @@ Comments are **not** posted to TikTok automatically (no public API; automating t
 - Rules answer only single-topic questions; mixed questions ("giá bn, có size L k") go to the AI.
 - Pending comments, replies and the voice queue live in memory (one backend process); the answer bank and facts are persisted.
 - Comments are not posted to TikTok automatically.
+# Multi-provider Voice Engine
+
+See [Voice Engine](VOICE_ENGINE.md) for Edge/ElevenLabs configuration, Agent key delivery, monitoring and mock test commands.

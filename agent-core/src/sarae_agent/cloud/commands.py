@@ -94,7 +94,10 @@ class TikTokSyncPayload(Payload):
 
 class TtsPayload(Payload):
     text: str = Field(min_length=1, max_length=450)
-    voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
+    provider: Literal["edge", "elevenlabs"] = "edge"
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+    settings: dict = Field(default_factory=dict)
     # AI voice (backend/app/live_reply_director.py): speed in percent, not spoken after ttl_seconds, video ducking.
     rate: int = Field(default=0, ge=-30, le=50)
     ttl_seconds: float | None = Field(default=None, ge=3, le=300)
@@ -106,7 +109,10 @@ class TtsPayload(Payload):
 class TtsPreparePayload(Payload):
     """Answers generated into the voice cache before they are needed (nothing is played)."""
     texts: list[str] = Field(min_length=1, max_length=40)
-    voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
+    provider: Literal["edge", "elevenlabs"] = "edge"
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+    settings: dict = Field(default_factory=dict)
     rate: int = Field(default=0, ge=-30, le=50)
 
     @field_validator("texts")
@@ -143,6 +149,10 @@ class CommandRouter:
             # Status carries has_password only; the password itself is never echoed back.
             return p.status()
 
+        def tts_options(b: TtsPayload | TtsPreparePayload) -> dict:
+            return {name: getattr(b, name) for name in ("provider", "model", "settings")
+                    if name in b.model_fields_set}
+
         self._table: dict[str, tuple[type[BaseModel], Callable[[BaseModel], object]]] = {
             "monitor_start": (NoPayload, lambda _: monitor.start()),
             "monitor_stop": (NoPayload, lambda _: monitor.stop()),
@@ -165,8 +175,9 @@ class CommandRouter:
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "media_prepare": (MediaPreparePayload, lambda b: self._media_prepare(b.session_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice, rate=b.rate, ttl_seconds=b.ttl_seconds,
-                                                            duck=b.duck, intro=b.intro)),
-            "tts_prepare": (TtsPreparePayload, lambda b: voice.prepare(b.texts, b.voice, b.rate)),
+                                                            duck=b.duck, intro=b.intro, **tts_options(b))),
+            "tts_prepare": (TtsPreparePayload, lambda b: voice.prepare(b.texts, b.voice, b.rate,
+                                                                          **tts_options(b))),
             "tts_clear": (NoPayload, lambda _: voice.clear()),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),

@@ -6,7 +6,7 @@ type Options={enabled:boolean;window_seconds:number;max_comments:number}
 type ReplyOptions={mode:'manual'|'semi_auto'|'auto';channel:'voice'|'comment'|'both';voice:string;rate:number;veto_seconds:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;duck_video:boolean;persona:string;auto_prepare:boolean}
 type Reply={id:number;batch_id:number;product_name:string;question:string;comments:{id:number;username:string;nickname:string;comment:string}[];intent:string;slots:Record<string,string|number>;say:string;text:string;confidence:number;source:'rule'|'bank'|'cache'|'ai';review_reasons:string[];route:string|null;voice:string|null;comment:string|null;note:string;spoken_text:string;comment_text?:string;speak_at?:number;dismissed?:boolean;asked_at:string}
 type Batch={batch_id:number;product_name:string;comments:number;questions:number;skipped:{username:string;comment:string;reason:string}[];sources:{rule:number;bank?:number;cache?:number;ai:number};usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
-type AgentVoice={online:boolean;queue:number;speaking:string|null;ducked:boolean;stats:Record<string,number>;last:{status:string;code?:string;message?:string}|null;prepare_pending:number}
+type AgentVoice={online:boolean;queue:number;speaking:string|null;ducked:boolean;stats:Record<string,number>;last:{status:string;code?:string;message?:string;provider?:string;model?:string;voice?:string;duration_ms?:string}|null;prepare_pending:number}
 type Prepared={product_id:number;product_name:string;state:'none'|'running'|'ready'|'error';count:number;error?:string}
 type Status={stats:Record<string,number>;pending:number;voice_queue:number;unanswered:number;batches:Batch[];replies:Reply[];agent_voice?:AgentVoice|null;prepared?:Prepared|null}
 type Answer={id:number;question:string;intent:string;say:string[];text:string[];source:'ai'|'pregen'|'operator';approved:boolean;uses:number;last_used_at:string|null}
@@ -64,7 +64,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const prep=status?.prepared
  const modeLabel=reply.mode==='manual'?'Thủ công':reply.mode==='semi_auto'?'Bán tự động':'Tự động'
  const channelLabel=reply.channel==='voice'?'Giọng nói':reply.channel==='comment'?'Comment':'Giọng nói + comment'
- const voiceLabel=reply.voice==='vi-VN-NamMinhNeural'?'Nam Minh':'Hoài My'
+ const voiceLabel='Voice Settings'
  const unanswered=status?.unanswered??0
  const stat=(label:string,value:number,tone?:string)=><div className={'lai-stat'+(tone?' is-'+tone:'')}><b>{value}</b><span>{label}</span></div>
  return <section className="lai">
@@ -78,6 +78,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
    {av?.online&&av.queue>0&&<span>· chờ <b>{av.queue}</b> câu</span>}
    {av?.online&&av.prepare_pending>0&&<span>· đang chuẩn bị âm thanh <b>{av.prepare_pending}</b></span>}
    {av?.last?.status==='failed'&&<span className="is-bad">· Lỗi phát: {av.last.message||av.last.code||'không rõ'}</span>}
+   {av?.last?.status==='spoken'&&<span>· vừa phát {av.last.provider}/{av.last.model}/{av.last.voice} · {av.last.duration_ms} ms</span>}
    {prep&&prep.state!=='none'&&<span className={prep.state==='error'?'is-bad':undefined}>· {prep.state==='ready'?`Đã chuẩn bị ${prep.count} câu trả lời cho ${prep.product_name}`:prep.state==='running'?`Đang chuẩn bị câu trả lời cho ${prep.product_name}…`:`Chuẩn bị câu trả lời lỗi: ${prep.error||'không rõ'}`}</span>}
   </div>
   <div className="lai-stats">
@@ -90,8 +91,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
     <div className="lai-fields">
      <label>Cách phát<select disabled={busy} value={reply.mode} onChange={e=>setMode(e.target.value as ReplyOptions['mode'])}><option value="manual">Thủ công (bấm phát)</option><option value="semi_auto">Bán tự động (tự nói nếu không huỷ)</option><option value="auto">Tự động</option></select></label>
      <label>Trả lời bằng<select disabled={busy} value={reply.channel} onChange={e=>void saveReply({...reply,channel:e.target.value as ReplyOptions['channel']})}><option value="voice">Giọng nói</option><option value="comment">Comment</option><option value="both">Cả hai (thông minh)</option></select></label>
-     <label>Giọng<select disabled={busy} value={reply.voice} onChange={e=>void saveReply({...reply,voice:e.target.value})}><option value="vi-VN-HoaiMyNeural">Hoài My (nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (nam)</option></select></label>
-     <label>Tốc độ %<input type="number" min={-30} max={50} value={reply.rate} onChange={e=>setReply(x=>({...x,rate:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>
+     <p className="lai-hint">Provider, model, giọng và tốc độ được cấu hình tại <a href="#/ai">Voice Settings</a>.</p>
      {reply.mode==='semi_auto'&&<label>Thời gian huỷ (giây)<input type="number" min={1} max={15} value={reply.veto_seconds} onChange={e=>setReply(x=>({...x,veto_seconds:Number(e.target.value)}))} onBlur={()=>void saveReply(reply)}/></label>}
      <label>Gom bình luận (giây)<input type="number" min={1} max={10} step={0.5} value={options.window_seconds} onChange={e=>setOptions(x=>({...x,window_seconds:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>
      <label>Tối đa mỗi lượt<input type="number" min={1} max={30} value={options.max_comments} onChange={e=>setOptions(x=>({...x,max_comments:Number(e.target.value)}))} onBlur={()=>void save(options)}/></label>

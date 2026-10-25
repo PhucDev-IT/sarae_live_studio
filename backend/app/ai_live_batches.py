@@ -364,6 +364,9 @@ def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log
             if learned:
                 monitor.record("BRAIN", "learned", f"Mẫu mới {learned}: {q['text']}")
     replies = merge_replies(replies)
+    monitor.record("AI_RESPONSE_READY", f"batch={batch_id}",
+                   f"replies={len(replies)} chars={sum(len(r.get('say') or '') for r in replies)} "
+                   f"usage={batch.get('usage', [])}")
     batch["reply_ids"] = [r["id"] for r in replies]
     batch["status"] = "error" if batch["error"] else "ready"
     monitor.record("BATCH", "answered", f"#{batch_id}: {len(items)} bình luận → {len(questions)} câu hỏi → "
@@ -517,6 +520,7 @@ def prepare(st: BatchState, ctx: dict, regenerate: bool, state: dict):
 def prerender(st: BatchState, product: dict, version: str, options) -> None:
     """Have the Agent synthesize the prepared sentences now, so they play without waiting for the TTS service."""
     from app.cloud_agents import create_command
+    from app.ai_voice import voice_config
     lines = [spoken(s) for entry in answer_bank.list_product(st.owner_id, product["id"], version) for s in entry["say"]]
     if product.get("price"):
         lines += [spoken(t.format(p=price_short(product["price"]))) for t in reply_rules.PRICE_SAY]
@@ -530,7 +534,9 @@ def prerender(st: BatchState, product: dict, version: str, options) -> None:
     if not texts:
         return
     try:
-        create_command(st.agent_id, st.owner_id, "tts_prepare", {"texts": texts, "voice": options.voice, "rate": options.rate})
+        voice = voice_config(st.owner_id)
+        create_command(st.agent_id, st.owner_id, "tts_prepare", {"texts": texts, "provider": voice.provider,
+            "model": voice.model, "voice": voice.voice, "rate": voice.rate, "settings": voice.settings})
     except HTTPException as exc:
         monitors(st.key).record("PREPARE", "audio_skipped", f"Không gửi được tới Agent: {exc.detail}")
 
