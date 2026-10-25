@@ -18,7 +18,7 @@ MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 # Cloud lane "chat": TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md), never behind a TTS or a product switch.
 CHAT_KINDS = {"chat_send", "chat_probe"}
 
@@ -96,6 +96,39 @@ class TikTokSyncPayload(Payload):
     expected_user_id: str = Field(pattern=r"^[0-9]{1,80}$")
 
 
+class PinTarget(Payload):
+    tiktok_product_id: str | None = Field(default=None, pattern=r"^[0-9]{1,80}$")
+    name: str = Field(min_length=1, max_length=200)
+    image_url: str = Field(default="", max_length=1000)
+    price_text: str = Field(default="", max_length=80)
+    expected_user_id: str = Field(default="", max_length=80)
+
+
+class PinPayload(Payload):
+    session_id: int = Field(ge=1)
+    target: PinTarget
+    confirmed_token: str | None = Field(default=None, pattern=r"^[0-9a-fA-F-]{1,80}$")
+
+
+class PinStatePayload(Payload):
+    target: PinTarget | None = None
+
+
+class UnpinPayload(Payload):
+    session_id: int = Field(ge=1)
+    expected_user_id: str = Field(pattern=r"^[0-9]{1,80}$")
+
+
+class AutoPinProduct(PinTarget):
+    sarae_product_id: int = Field(ge=1)
+
+
+class SetAutoPinPayload(Payload):
+    enabled: bool
+    session_id: int | None = Field(default=None, ge=1)
+    products: list[AutoPinProduct] = Field(default_factory=list, max_length=300)
+
+
 class TtsPayload(Payload):
     text: str = Field(min_length=1, max_length=450)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
@@ -163,7 +196,7 @@ class MonitorConfigPayload(Payload):
 
 class CommandRouter:
     def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None,
-                 media_prepare: Callable[[int], dict] | None = None, chat=None):
+                 media_prepare: Callable[[int], dict] | None = None, chat=None, auto_pin=None):
         """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud;
         ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once);
         ``chat`` (auto_pin.AutoPinService) posts LIVE chat replies: chat_send(payload) / chat_probe()."""
@@ -173,6 +206,7 @@ class CommandRouter:
         self.tiktok_sync = tiktok_sync
         self.media_prepare = media_prepare
         self.chat = chat
+        self.auto_pin = auto_pin
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -197,16 +231,25 @@ class CommandRouter:
             "local_playlist_start": (PlaylistPayload, lambda b: p.start_playlist(b.media_ids, loop=b.loop)),
             "product_play": (ProductPlayPayload,
                              lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
+            "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_policy": (PlaybackPolicyPayload,
                                 lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
                                                        [item.model_dump() for item in b.lineup])),
-            "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_select": (SelectPayload, lambda b: p.select(b.index)),
             "playback_seek": (SeekPayload, lambda b: p.seek(b.ms)),
             "playback_camera": (NoPayload, lambda _: p.use_camera()),
             "playback_video": (NoPayload, lambda _: p.use_video()),
             "tiktok_products_sync": (TikTokSyncPayload, lambda b: self._tiktok_sync(b.expected_user_id)),
             "media_prepare": (MediaPreparePayload, lambda b: self._media_prepare(b.session_id)),
+            "PIN_PRODUCT": (PinPayload, lambda b: auto_pin.pin_product({**b.target.model_dump(),
+                **({"confirmed_token": b.confirmed_token} if b.confirmed_token is not None else {})},
+                current=lambda: bool(p.active and p.session_id == b.session_id), guard=p.lock)),
+            "UNPIN_PRODUCT": (UnpinPayload, lambda b: auto_pin.unpin_product(b.expected_user_id,
+                current=lambda: bool(p.active and p.session_id == b.session_id), guard=p.lock)),
+            "GET_PIN_STATE": (PinStatePayload, lambda b: auto_pin.get_pin_state(b.target.model_dump() if b.target else None)),
+            "SET_AUTO_PIN": (SetAutoPinPayload, lambda b: auto_pin.set_video_auto(b.enabled,
+                {item.sarae_product_id: item.model_dump(exclude={"sarae_product_id"}) for item in b.products},
+                b.session_id)),
             "tts_speak": (TtsPayload, lambda b: voice.speak(b.text, b.voice, rate=b.rate, ttl_seconds=b.ttl_seconds,
                                                             duck=b.duck, intro=b.intro, **tts_options(b))),
             "tts_prepare": (TtsPreparePayload, lambda b: voice.prepare(b.texts, b.voice, b.rate,

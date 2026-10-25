@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ChevronDown, Clapperboard, Cloud, Download, Pin, ScanEye } from 'lucide-react'
 import { useApp } from '../../app/store'
-import { ActionButton, Input, Switch, type Tone } from '../../app/ui'
+import { ActionButton, Switch, type Tone } from '../../app/ui'
 import { call } from '../../services/core'
 import type { AutoPinStatus } from '../../types/ipc'
 
@@ -42,7 +42,7 @@ export function Controls() {
       <ObsRow />
       <CacheRow />
       <CaptchaRow />
-      <AutoPinRow />
+      <LiveConsoleRow />
     </section>
   )
 }
@@ -162,14 +162,14 @@ function CaptchaRow() {
 
 const LIVE_CONSOLE_URL = 'https://shop.tiktok.com/streamer/live/product/dashboard'
 
-/** Two steps on one Chrome profile: 1. sign in by hand in plain Chrome, 2. let the Agent pin (Playwright). */
-function AutoPinRow() {
+/** The Agent's TikTok LIVE Console window (one Chrome profile): sign-in and product sync here; pinning and chat
+ *  replies are driven from the web through the same window. */
+function LiveConsoleRow() {
   const { run } = useApp()
   const [pin, setPin] = useState<AutoPinStatus | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncInfo, setSyncInfo] = useState('')
-  const [interval, setIntervalSeconds] = useState(30)
 
   useEffect(() => {
     let alive = true
@@ -204,12 +204,11 @@ function AutoPinRow() {
   }
 
   if (!pin) return null
-  const canPin = !pin.login_open && pin.browser_open
   const status = syncing ? 'Đang đồng bộ sản phẩm…'
-    : pin.enabled ? 'Đang tự động ghim'
+    : pin.login_open ? 'Đang đăng nhập TikTok trong Chrome'
     : pin.browser_open ? 'TikTok LIVE Console đã mở'
     : 'Sẵn sàng mở TikTok LIVE Console'
-  const tone: Tone = pin.enabled ? 'ok' : pin.browser_open ? 'info' : 'muted'
+  const tone: Tone = pin.browser_open ? 'info' : 'muted'
 
   return (
     <Row icon={<Pin size={16} />} title="TikTok LIVE Console" status={status} tone={tone}
@@ -229,28 +228,8 @@ function AutoPinRow() {
         {syncInfo && <small className="tone-ok">{syncInfo}</small>}
         <small className="muted">
           Đăng nhập và quản lý TikTok trực tiếp trong Chrome. Đồng bộ chạy ngầm, không hiển thị danh sách sản phẩm trên Agent.
+          Ghim sản phẩm và tự trả lời bình luận được điều khiển từ web (Điều khiển LIVE) qua cửa sổ Chrome này.
         </small>
-        <div className="inline">
-          <span className="muted small">Auto Pin (để phát triển sau)</span>
-          <Switch checked={pin.enabled} disabled={!pin.enabled && !canPin}
-            label="Tự động ghim"
-            onToggle={value => act(() => call(value ? 'autopin.start' : 'autopin.stop'))} />
-          <Input type="number" min={5} max={3600} value={interval}
-            onChange={e => setIntervalSeconds(Number(e.target.value))}
-            className="input input-num" />
-          <span className="muted small">giây</span>
-          <ActionButton disabled={!pin.products.length || interval === pin.interval_seconds}
-            onAction={() => act(() => call('autopin.configure', {
-              products: pin.products, interval_seconds: interval,
-            }), 'Đã lưu chu kỳ ghim')}>Lưu</ActionButton>
-        </div>
-        {pin.enabled
-          ? <ActionButton variant="danger" onAction={() => act(() => call('autopin.stop'), 'Đã dừng Auto Pin')}>
-              Dừng Auto Pin
-            </ActionButton>
-          : <ActionButton disabled={!canPin} onAction={() => act(() => call('autopin.start'))}>
-              Bắt đầu Auto Pin
-            </ActionButton>}
       </div>}
     </Row>
   )

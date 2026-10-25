@@ -10,12 +10,15 @@ import { agentAction, apiRequest, assetUrl, durationLabel, errorText, onAgent, t
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import { sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus } from './liveSessionsApi'
 import PlaybackSettings from './PlaybackSettings'
+import SessionLiveChat from './SessionLiveChat'
 import { WithAgent, useAgent } from './agentContext'
 import VideoThumb from './VideoThumb'
 import './media.css'
 import './live-control.css'
 
 type ObsSettings = { host:string; port:number; input_name:string; dual_mode:boolean; dual_sources?:string[]; has_password:boolean }
+type PinCard = { index:number; token:string; name:string; image_url:string; price_text:string; product_ids:string[]; pinned:boolean }
+type PinState = { status?:'IDLE'|'PENDING'|'SUCCESS'|'FAILED'; product_id?:string|null; card_name?:string|null; action?:string|null; error?:string|null; auto_enabled?:boolean; browser_open?:boolean }
 type LiveStatus = {
   connected:boolean; error?:string; obs_version?:string; media_state?:string; media_cursor?:number|null; media_duration?:number|null
   running:boolean; paused?:boolean; loop?:boolean; session_mode?:string; playlist_id:number|null; product_id?:number|null; pending_product_id?:number|null; session_id?:number|null
@@ -23,6 +26,7 @@ type LiveStatus = {
   recovery_count?:number; session_seconds?:number; obs?:ObsSettings
   /** Video order / product rotation the Agent applies, and its rotation progress (docs/PLAYBACK_POLICY.md). */
   policy?:PlaybackPolicy|null; rotation?:RotationStatus|null
+  pin?:PinState
 }
 
 const POLL_MS = 3000
@@ -66,6 +70,10 @@ function Console({agent}:{agent:OwnerAgent}){
   const [confirmStop,setConfirmStop] = useState(false)
 
   const [obsOpen,setObsOpen] = useState(false)
+  const [pinBusy,setPinBusy] = useState(false)
+  const [pinObserved,setPinObserved] = useState(false)
+  const [pinCandidates,setPinCandidates] = useState<PinCard[]>([])
+  const [pinTarget,setPinTarget] = useState<LiveProduct|null>(null)
 
   const applyStatus = (next:LiveStatus) => {setStatus(next);setReceivedAt(Date.now())}
   const agentId = agent.id
@@ -82,6 +90,23 @@ function Console({agent}:{agent:OwnerAgent}){
     const tick = window.setInterval(()=>setNow(Date.now()), 500)
     return ()=>{window.clearInterval(poll);window.clearInterval(tick)}
   },[loadAll,pollStatus,toast])
+
+  const refreshPin = useCallback(async () => {
+    if (!agent.online) return
+    try {
+      const result = await apiRequest<{pinned_product_id:string|null;pinned_card:PinCard|null;multiple_pins:boolean}>(onAgent('/live/pin-state',agentId))
+      setPinObserved(true)
+      setStatus(prev=>prev ? {...prev,pin:{...prev.pin,product_id:result.pinned_product_id,
+        card_name:result.pinned_card?.name ?? null,
+        ...(result.multiple_pins ? {status:'FAILED' as const,error:'Nhiều product card đang ghim'} : {})}} : prev)
+    } catch {/* Console may be closed or not logged in; the Agent heartbeat carries that state. */}
+  },[agent.online,agentId])
+  useEffect(()=>{
+    if (!agent.online) return
+    void refreshPin()
+    const poll = window.setInterval(()=>void refreshPin(),12000)
+    return ()=>window.clearInterval(poll)
+  },[agent.online,refreshPin])
 
   // Session lineups change on the planner page and the session ends from here; reload when playback changes owner.
   useEffect(()=>{void sessionsApi.list().then(setSessions).catch(()=>{})},[status?.running,status?.session_id])
@@ -106,6 +131,8 @@ function Console({agent}:{agent:OwnerAgent}){
   const currentId = running ? queue[status?.index ?? 0] : undefined
   const current = currentId != null ? videoById.get(currentId) : undefined
   const liveProduct = status?.product_id != null ? productById.get(status.product_id) : undefined
+  const pinSelection = (target != null ? productById.get(target) : undefined) ?? liveProduct
+  const pinnedProduct = products.find(p=>p.tiktok_product_id && p.tiktok_product_id === status?.pin?.product_id)
   const pendingProduct = status?.pending_product_id != null ? productById.get(status.pending_product_id) : undefined
   const mediaState = status?.media_state ? MEDIA_STATE[status.media_state] : undefined
 
@@ -124,6 +151,45 @@ function Console({agent}:{agent:OwnerAgent}){
   const outside = q ? products.filter(p=>!lineup.includes(p.id) && p.status !== 'INACTIVE' && matches(p)) : []
   const targetProduct = target != null && target !== status?.product_id ? productById.get(target) : undefined
   const targetOutside = !!targetProduct && !lineup.includes(targetProduct.id)
+
+  const sendPin = async (product:LiveProduct, confirmedToken?:string) => {
+    setPinBusy(true)
+    try {
+      await agentAction(agentId, onAgent('/live/pin', agentId), post({product_id:product.id, confirmed_token:confirmedToken ?? null}))
+      toast.push({tone:'success',title:`Đã ghim ${product.name}`})
+      setPinCandidates([]);setPinTarget(null)
+      await pollStatus()
+      await refreshPin()
+    } catch(e) {toast.push({tone:'danger',title:'Không ghim được sản phẩm',description:errorText(e, '')})}
+    finally {setPinBusy(false)}
+  }
+  const previewPin = async () => {
+    if (!pinSelection) return
+    setPinBusy(true)
+    try {
+      const state = await apiRequest<{candidates:PinCard[]}>(onAgent(`/live/pin-state?product_id=${pinSelection.id}`,agentId))
+      if (!state.candidates.length) throw new Error('LIVE Console chưa tìm thấy product card khớp tên, ảnh hoặc giá. Kiểm tra Console và đồng bộ lại sản phẩm.')
+      if (state.candidates.length === 1) await sendPin(pinSelection)
+      else {setPinTarget(pinSelection);setPinCandidates(state.candidates)}
+    } catch(e) {toast.push({tone:'danger',title:'Không xác định được product card',description:errorText(e, '')})}
+    finally {setPinBusy(false)}
+  }
+  const unpin = async () => {
+    setPinBusy(true)
+    try {await agentAction(agentId,onAgent('/live/unpin',agentId),post());toast.push({tone:'success',title:'Đã bỏ ghim'});await pollStatus();await refreshPin()}
+    catch(e){toast.push({tone:'danger',title:'Không bỏ ghim được',description:errorText(e,'')})}
+    finally{setPinBusy(false)}
+  }
+  const toggleAutoPin = async () => {
+    const enabled = !status?.pin?.auto_enabled
+    setPinBusy(true)
+    try {
+      await agentAction(agentId,onAgent('/live/auto-pin',agentId),post({enabled}))
+      setStatus(prev=>prev ? {...prev,pin:{...prev.pin,auto_enabled:enabled}} : prev)
+      toast.push({tone:'success',title:enabled?'Đã bật tự động ghim':'Đã tắt tự động ghim'})
+    } catch(e) {toast.push({tone:'danger',title:'Không đổi được tự động ghim',description:errorText(e,'')})}
+    finally{setPinBusy(false)}
+  }
 
   // Nothing running: pick one of the prepared (DRAFT) sessions and the product to open with.
   // Only this Agent's sessions: a session always plays on the Agent it belongs to.
@@ -146,7 +212,7 @@ function Console({agent}:{agent:OwnerAgent}){
   const productRow = (p:LiveProduct, isOutside:boolean) => {
     const isLive = p.id === status?.product_id
     const isPending = p.id === status?.pending_product_id
-    return <li key={p.id}><button type="button" className={(target === p.id && !isLive ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} disabled={!p.video_count || isLive || busy} onClick={()=>setTarget(p.id)}>
+    return <li key={p.id}><button type="button" className={(target === p.id ? 'is-selected ' : '') + (isLive ? 'is-live' : '')} aria-pressed={target === p.id} disabled={busy} onClick={()=>setTarget(p.id)}>
       <span className="lc-p-thumb">{isLive ? <Radio size={16}/> : <Package size={16}/>}{p.image_url && <img src={assetUrl(p.image_url) ?? undefined} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display = 'none'}}/>}</span>
       <span className="lc-p-text"><strong title={p.name}>{p.name}</strong><small title={p.sku || undefined}>{p.sku || '—'} · {p.video_count ? `${p.video_count} video` : 'chưa có video'}</small></span>
       {isLive ? <span className="lc-p-badge"><Badge tone="danger" dot>Đang phát</Badge></span> : isPending ? <span className="lc-p-badge"><Badge tone="warning">Chờ</Badge></span> : isOutside ? <span className="lc-p-badge"><Badge>Ngoài DS</Badge></span> : null}
@@ -251,6 +317,8 @@ function Console({agent}:{agent:OwnerAgent}){
         {activeSession && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
 
+        {activeSession && <SessionLiveChat key={activeSession.id} sessionId={activeSession.id} handle="" agent={agent}/>}
+
         {/* Queue of the running session */}
         <Card className="lc-queue" padding={false} title={<span className="lc-card-title"><ListVideo size={17}/>Hàng đợi phát</span>}
           description={running ? `${queue.length} video · ${status?.loop ? 'lặp liên tục' : 'phát một lượt'}` : 'Hàng đợi sẽ hiện khi phiên phát bắt đầu'}>
@@ -279,6 +347,19 @@ function Console({agent}:{agent:OwnerAgent}){
           <Button variant="ghost" aria-label="Tải lại" title="Tải lại" onClick={()=>void loadAll()}><RefreshCw size={16}/></Button>
         </>}>
         {activeSession ? <>
+          <div className="lc-pin-panel">
+            <div><strong>Sản phẩm đang phát:</strong> {liveProduct?.name ?? '—'}</div>
+            <div><strong>Đang ghim trên TikTok:</strong> {pinnedProduct?.name ?? status?.pin?.card_name ?? status?.pin?.product_id ?? (pinObserved ? 'Chưa ghim' : 'Chưa xác định')}
+              {status?.pin?.status && status.pin.status !== 'IDLE' && <Badge tone={status.pin.status === 'FAILED' ? 'danger' : status.pin.status === 'SUCCESS' ? 'success' : 'warning'}>{status.pin.status === 'PENDING' ? 'Đang xử lý' : status.pin.status === 'SUCCESS' ? 'Thành công' : 'Thất bại'}</Badge>}
+            </div>
+            {status?.pin?.error && <p className="lc-pin-error">{status.pin.error}</p>}
+            {pinSelection && !pinSelection.tiktok_product_id && <p className="lc-pin-note">Chưa có TikTok Product ID; Agent sẽ đối chiếu tên, ảnh và giá trên LIVE Console.</p>}
+            <div className="lc-pin-actions">
+              <Button size="sm" disabled={pinBusy || offline || !running || !pinSelection} title={pinSelection?.name} onClick={()=>void previewPin()}>Ghim sản phẩm đã chọn</Button>
+              <Button size="sm" variant="outline" disabled={pinBusy || offline} onClick={()=>void unpin()}>Bỏ ghim</Button>
+              <label><input type="checkbox" checked={!!status?.pin?.auto_enabled} disabled={pinBusy || offline} onChange={()=>void toggleAutoPin()}/> Tự động ghim theo video</label>
+            </div>
+          </div>
           <div className="lc-products-search"><SearchInput value={productQuery} onChange={e=>setProductQuery(e.target.value)} placeholder="Tìm trong phiên hoặc toàn bộ sản phẩm…" aria-label="Tìm sản phẩm"/></div>
           <ul className="lc-product-list">
             {inSession.map(p=>productRow(p, false))}
@@ -290,10 +371,11 @@ function Console({agent}:{agent:OwnerAgent}){
           <div className="lc-product-actions">
             {!targetProduct ? <p className="lc-muted">Chọn sản phẩm muốn đưa lên LIVE — không cần theo thứ tự.</p> : <>
               <p className="lc-target" title={targetProduct.name}>Đưa <b>{targetProduct.name}</b> lên LIVE{targetOutside ? ' (sẽ thêm vào phiên)' : ''}</p>
-              <Button block leftIcon={<SkipForward size={16}/>} disabled={busy} onClick={()=>void switchProduct(targetProduct.id, 'immediate')}>Chuyển ngay</Button>
-              <Button block variant="outline" disabled={busy || targetProduct.id === status?.pending_product_id} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
+              <Button block leftIcon={<SkipForward size={16}/>} disabled={busy || !targetProduct.video_count} onClick={()=>void switchProduct(targetProduct.id, 'immediate')}>Chuyển ngay</Button>
+              <Button block variant="outline" disabled={busy || !targetProduct.video_count || targetProduct.id === status?.pending_product_id} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
+              {!targetProduct.video_count && <small className="lc-tip">Sản phẩm chưa có video nên chưa thể đưa lên LIVE; vẫn có thể ghim trên TikTok.</small>}
             </>}
-            <small className="lc-tip">Ghim sản phẩm trên TikTok LIVE trước, rồi mới chuyển video.</small>
+            <small className="lc-tip">Chọn sản phẩm trong danh sách để ghim thủ công; khi bật tự động ghim, Agent ghim sau khi video chuyển thành công.</small>
           </div>
         </> : running ? <div className="lc-pad">
           <Alert tone="warning" title="Đang phát ngoài Phiên LIVE">
@@ -341,6 +423,14 @@ function Console({agent}:{agent:OwnerAgent}){
       description={activeSession ? `OBS sẽ dừng phát và “${activeSession.name}” được lưu vào lịch sử. Không thể tiếp tục phiên sau khi kết thúc.` : 'Media Source trong OBS sẽ dừng phát.'}
       confirmLabel={activeSession ? 'Kết thúc phiên' : 'Dừng phát'}
       onClose={()=>setConfirmStop(false)} onConfirm={()=>{setConfirmStop(false);void perform(()=>apiRequest(onAgent('/live/stop', agentId), post()), activeSession ? 'Đã kết thúc phiên LIVE' : 'Đã dừng phát').then(()=>loadAll())}}/>
+    <Modal open={pinCandidates.length > 1} title="Xác nhận product card trên TikTok" size="md" onClose={()=>{setPinCandidates([]);setPinTarget(null)}} footer={<Button variant="outline" onClick={()=>{setPinCandidates([]);setPinTarget(null)}}>Hủy</Button>}>
+      <p>Có nhiều card trùng thông tin. Chọn đúng card cho <strong>{pinTarget?.name}</strong>; thứ tự dưới đây chỉ dùng để xác nhận thao tác này.</p>
+      <ul className="lc-pin-candidates">{pinCandidates.map(card=><li key={card.index}>
+        {card.image_url && <img src={card.image_url} alt={`Ảnh sản phẩm ${card.name}`}/>}
+        <span><strong>{card.name}</strong><small>{card.price_text || 'Không có giá'} · Card #{card.index + 1}{card.product_ids.length ? ` · ID ${card.product_ids.join(', ')}` : ''}</small></span>
+        <Button size="sm" disabled={pinBusy || !pinTarget} onClick={()=>pinTarget && void sendPin(pinTarget,card.token)}>Chọn card này</Button>
+      </li>)}</ul>
+    </Modal>
   </div>
 }
 

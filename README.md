@@ -50,3 +50,25 @@ Not implemented: product CRUD, video imports, cloud storage, thumbnail generatio
 ## Storage and security
 
 Development database is `backend/data/sarae_live.db` (ignored by Git). Use `backend/.env.example` as the basis for local configuration. Before exposing the service beyond localhost, implement authentication and suitable access controls. Desktop-local video folders are not accessible to remote browsers without an authorized server/agent.
+
+# TikTok LIVE product pin (Windows Agent)
+
+Trong **LIVE Control**, chọn sản phẩm rồi bấm **Ghim**, hoặc bật **Tự động ghim theo video**.
+Windows Agent phải đang online, phiên LIVE phải gắn TikTok Account đã xác minh, và Chrome điều khiển
+phải mở đúng LIVE Console đã đăng nhập. Dùng chức năng đồng bộ LIVE Console hiện có trước khi ghim để
+Agent xác nhận tài khoản. Toggle tự động ghim mặc định **tắt** mỗi lần Agent khởi động.
+
+Sarae dùng TikTok Product ID đã lưu khi card cho phép xác minh ID trực tiếp. Nếu card không lộ ID,
+Agent đối chiếu tên, ảnh và giá với sản phẩm trong catalog rồi click nút DOM trên đúng card. Khi có
+nhiều card khớp, LIVE Control hiện từng card để người vận hành xác nhận; Agent không tự chọn theo vị trí
+hoặc tên gần giống. Nếu card không còn tồn tại khi xác nhận, lệnh thất bại và cần xem lại.
+
+Auto-pin chỉ chạy sau khi Agent xác nhận playback đã chuyển sản phẩm. Lệnh cũ bị hủy nếu video đã chuyển
+tiếp; Agent không bỏ ghim sản phẩm cũ trước khi ghim sản phẩm mới. **Bỏ ghim** là thao tác thủ công.
+Thời gian hiển thị card 30 giây của TikTok không kích hoạt unpin hoặc repin. Các thao tác dùng DOM trong
+Chrome đang đăng nhập, không gửi request đến API nội bộ TikTok.
+
+**Đã kiểm thử:** mapping ID và descriptor, trường hợp trùng card cần xác nhận, pin/unpin và đọc lại DOM,
+loại lệnh auto-pin cũ bằng mock DOM; build Web. Người vận hành báo đã dùng được ghim/bỏ ghim trên Console.
+**Cần xác minh thêm trên LIVE Console thực tế:** auto-pin khi chuyển video liên tiếp, card trùng thông tin,
+và các biến thể DOM/ảnh/giá của TikTok. Không tự động thao tác trên một phiên LIVE thật khi chưa được phép.
