@@ -17,6 +17,12 @@ jobs:
         run: python -m compileall -q backend/app agent-core/src
       - name: Install Backend dependencies
         run: python -m pip install -r backend/requirements.txt
+      - name: Install Voice Engine test dependencies
+        run: python -m pip install pytest obsws-python edge-tts
+      - name: Test Voice Engine and LIVE reply integration with mock providers
+        env:
+          PYTHONPATH: backend:backend/tests:agent-core/src:agent-core/tests
+        run: python -m pytest -q agent-core/tests/test_voice_queue.py agent-core/tests/test_voice_providers.py backend/tests/test_ai_live_reply.py backend/tests/test_voice_settings.py
       - name: Test TikTok Account contract
         env:
           PYTHONPATH: backend:backend/tests

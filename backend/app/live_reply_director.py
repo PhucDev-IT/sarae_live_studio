@@ -200,6 +200,7 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
                ttl: float = 120, manual: bool = False):
     """Send one sentence to the desk's Agent (its OBS 'Sarae Voice' source). Raises HTTPException only if `manual`."""
     from app.cloud_agents import create_command
+    from app.ai_voice import voice_config
     intro, body = compose_speech(reply, options, product_on_air, say)
     speech = spoken_text(intro, body)
     # Prices are checked on the sentence as written (digits) against the question's product snapshot; words on
@@ -212,7 +213,9 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
             raise HTTPException(422, "Không phát được: " + "; ".join(issues))
         _touch(reply, voice="review", note="; ".join(issues))
         return
-    payload = {"text": body, "voice": options.voice, "rate": options.rate,
+    voice = voice_config(st.owner_id)
+    payload = {"text": body, "provider": voice.provider, "model": voice.model,
+               "voice": voice.voice, "rate": voice.rate, "settings": voice.settings,
                "ttl_seconds": round(max(5.0, min(300.0, ttl)), 1), "duck": options.duck_video}
     if intro:
         payload["intro"] = intro
@@ -224,11 +227,11 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
         _fallback(reply, f"Không gửi được tới Agent: {exc.detail}")
         return
     now = time.monotonic()
-    st.busy_until = max(st.busy_until, now) + estimate_seconds(speech, options.rate)
+    st.busy_until = max(st.busy_until, now) + estimate_seconds(speech, voice.rate)
     st.topic_last[topic(reply)] = now
     st.stats["spoken"] += 1
     _touch(reply, voice="sent", spoken_text=speech, command_id=command.get("command_id"), note="")
-    monitors(st.key).record("TTS_QUEUED", options.voice, speech)
+    monitors(st.key).record("TTS_QUEUED", f"{voice.provider}/{voice.model}/{voice.voice}", speech)
 
 
 # ----- operator actions --------------------------------------------------------------------------------

@@ -17,7 +17,6 @@ type BankView={product:{id:number;name:string;price:number|null};answers:Answer[
 type Viewer={username:string;nickname:string;comment:string}
 type Reply={id:number;question:string;comments:Viewer[];intent:string;slots:Record<string,unknown>;source:'rule'|'bank'|'ai'|'template';template_id?:string|null;say:string;text:string;intro:string|null;body:string;spoken_text:string;comment_text:string;review_reasons:string[];route:'review'|'voice'|'comment'|'both';confidence:number}
 type Playground={product:{id:number;name:string;price:number|null};replies:Reply[];skipped:{username:string;comment:string;reason:string}[];usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
-type VoiceConfig={voice?:string;rate?:unknown}
 type BadgeTone='default'|'primary'|'success'|'warning'|'danger'|'info'
 type Draft={id:number|null;question:string;intent:string;say:string;text:string}
 
@@ -47,7 +46,6 @@ function parseComments(raw:string):Viewer[]{
 /** Plays `text` with the shop's LIVE voice (binary response, so a raw fetch rather than apiRequest). */
 function useSpeaker(){
   const toast=useToast()
-  const config=useRef<VoiceConfig|null>(null)
   const audio=useRef<HTMLAudioElement|null>(null)
   const [playing,setPlaying]=useState('')
   useEffect(()=>()=>{audio.current?.pause()},[])
@@ -56,8 +54,7 @@ function useSpeaker(){
     audio.current?.pause()
     setPlaying(key)
     try{
-      if(!config.current)config.current=await apiRequest<VoiceConfig>('/ai/live/reply-config').catch(()=>({}))
-      const response=await fetch(api+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({text,voice:config.current.voice,rate:config.current.rate})})
+      const response=await fetch(api+'/api/ai/voice/preview',{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({text})})
       if(!response.ok){const r=await response.json().catch(()=>({}));throw new Error(typeof r.detail==='string'?r.detail:'HTTP '+response.status)}
       const url=URL.createObjectURL(await response.blob())
       const player=new Audio(url)

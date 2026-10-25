@@ -2,6 +2,7 @@ import {useEffect,useState} from 'react'
 import {Bot,Save,AlertCircle,KeyRound,MessageSquareText,Trash2} from 'lucide-react'
 import {apiRequest,errorText} from './mediaApi'
 import './ai-settings.css'
+import VoiceSettings from './VoiceSettings'
 type Settings={provider:'gemini'|'openai';model:string;enabled:boolean;max_output_tokens:number;max_requests_per_session:number;has_api_key:boolean;key_source?:'owner'|'platform'|null}
 /** What the server tells about a stored key: never the key itself, only whether it exists and its last 4 characters. */
 type Credential={provider:'gemini'|'openai';configured:boolean;last4:string|null;updated_at:string|null}
@@ -22,6 +23,7 @@ export default function AISettings(){
  const exec=async(job:()=>Promise<void>)=>{setLoading(true);setError('');setNotice('');try{await job()}catch(e){setError(errorText(e,'Thao tác lỗi'))}finally{setLoading(false)}}
  const update=(v:Partial<Settings>)=>setSettings(old=>({...old,...v}))
  return <div className="ais-layout">
+ <VoiceSettings/>
  <section className="ais-panel">
  <h3><Bot size={19}/> AI Provider Configuration</h3>
  <p>Chọn provider/model theo nhu cầu. Gemini Free Tier chỉ áp dụng nếu dự án và model của bạn đủ điều kiện; phần mềm không thể tự xác định hạn mức tài khoản.</p>

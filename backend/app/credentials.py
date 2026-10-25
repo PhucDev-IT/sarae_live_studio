@@ -16,6 +16,7 @@ from app.identity import db_open
 
 KEY_FILE = DATA_DIR / "credential.key"
 PROVIDERS = ("gemini", "openai")
+VOICE_PROVIDERS = ("elevenlabs",)
 _fernet: Fernet | None = None
 
 
@@ -55,8 +56,8 @@ def _table(db):
 
 
 def _provider(provider: str) -> str:
-    if provider not in PROVIDERS:
-        raise HTTPException(422, "Nhà cung cấp AI không được hỗ trợ")
+    if provider not in PROVIDERS + VOICE_PROVIDERS:
+        raise HTTPException(422, "Nhà cung cấp không được hỗ trợ")
     return provider
 
 
@@ -78,14 +79,14 @@ def delete(owner_id: str, provider: str) -> bool:
         return db.execute("DELETE FROM owner_credentials WHERE owner_id=? AND provider=?", (owner_id, _provider(provider))).rowcount > 0
 
 
-def describe(owner_id: str) -> list[dict]:
+def describe(owner_id: str, providers: tuple[str, ...] = PROVIDERS) -> list[dict]:
     """What the owner may see about their credentials: never the key itself."""
     with db_open() as db:
         _table(db)
         rows = {r["provider"]: r for r in db.execute(
             "SELECT provider,last4,updated_at FROM owner_credentials WHERE owner_id=?", (owner_id,)).fetchall()}
     return [{"provider": p, "configured": p in rows, "last4": rows[p]["last4"] if p in rows else None,
-             "updated_at": rows[p]["updated_at"] if p in rows else None} for p in PROVIDERS]
+             "updated_at": rows[p]["updated_at"] if p in rows else None} for p in providers]
 
 
 def secret(owner_id: str, provider: str) -> str | None:

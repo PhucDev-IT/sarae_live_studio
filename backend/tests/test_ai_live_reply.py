@@ -191,6 +191,19 @@ class LiveReplyTests(SaasTestCase):
 
     # --- voice -------------------------------------------------------------------------------------------
 
+    def test_live_reply_uses_saved_elevenlabs_voice_without_key_in_command(self):
+        response = self.client.put("/api/ai/voice/config", json={"provider": "elevenlabs",
+            "model": "eleven_flash_v2_5", "voice": "voice123", "rate": 0,
+            "settings": {"stability": 0.5, "speed": 1.0}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.options(mode="auto")
+        self.batch(("lan", "Lan", "giá bn shop"))
+        payload = next(c["payload"] for c in self.sent if c["kind"] == "tts_speak")
+        self.assertEqual((payload["provider"], payload["model"], payload["voice"]),
+                         ("elevenlabs", "eleven_flash_v2_5", "voice123"))
+        self.assertEqual(payload["settings"], {"stability": 0.5, "speed": 1.0})
+        self.assertNotIn("api_key", payload)
+
     def test_semi_auto_speaks_after_the_cancel_window_unless_cancelled(self):
         self.options(mode="semi_auto", veto_seconds=10, rate=10)
         self.ai_answers = [[answer(1, "ASK_SIZE", "55kg mặc M là vừa nha.", slots={"weight_kg": 55}),

@@ -69,7 +69,10 @@ class MonitorConfigParams(Strict):
 
 class SpeakParams(Strict):
     text: str = Field(min_length=1, max_length=450)
-    voice: Literal["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"] = "vi-VN-HoaiMyNeural"
+    voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
+    provider: Literal["edge", "elevenlabs"] = "edge"
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+    settings: dict = Field(default_factory=dict)
     rate: int = Field(default=0, ge=-30, le=50)
     duck: bool = True
     intro: str | None = Field(default=None, min_length=1, max_length=120)
@@ -194,7 +197,8 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("monitor.templates.list", lambda _: {"templates": rt.monitor.templates()})
 
     # voice
-    reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice, rate=p.rate, duck=p.duck, intro=p.intro), SpeakParams)
+    reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice, rate=p.rate, duck=p.duck, intro=p.intro,
+                                                provider=p.provider, model=p.model, settings=p.settings), SpeakParams)
     reg("voice.clear", lambda _: rt.voice.clear())
     reg("voice.status", lambda _: rt.voice.status())
 

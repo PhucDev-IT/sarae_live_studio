@@ -1,9 +1,9 @@
-"""Vietnamese TTS for the LIVE (Microsoft Edge neural voices via edge-tts), spoken one sentence at a time.
+"""LIVE voice queue and OBS playback; provider synthesis lives in providers.py.
 
 Sentences come from the Cloud (`tts_speak`, AI replies the Cloud already checked) or the local GUI (`voice.speak`).
 They wait in a short queue and a single worker speaks them in order:
   * a sentence older than its `ttl_seconds` is dropped, not spoken late (a viewer's question goes stale fast);
-  * the MP3 is cached by (voice, rate, text): a sentence said before plays at once, without the TTS service;
+  * the MP3 is cached by provider, model, voice, settings, rate and text;
   * it plays on the OBS input named in config.obs.voice_input (a Media Source with audio in the mixer), and the next
     sentence starts only when OBS reports the previous one ended, so voices never overlap;
   * an `intro` (viewer names, e.g. "Lan với Hoa ơi,") is spoken just before the sentence as its own file, so the
@@ -16,7 +16,6 @@ played or replaced here, only its volume changed.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -30,6 +29,7 @@ from typing import Callable
 from sarae_agent.config import ConfigStore, paths
 from sarae_agent.errors import AgentError
 from sarae_agent.obs.controller import ENDED_STATES, ObsController
+from sarae_agent.voice.providers import ProviderRegistry, default_registry
 
 log = logging.getLogger("sarae.voice")
 
@@ -39,9 +39,7 @@ MAX_INTRO_CHARS = 120
 MAX_PREPARE_TEXTS = 40
 
 
-class VoiceService:
-    GENERATE_TIMEOUT = 25.0
-    SYNTH_ATTEMPTS = 4
+class VoiceEngine:
     MAX_QUEUE = 4
     DEFAULT_TTL = 120.0
     DUCK_DB = 12.0
@@ -53,10 +51,14 @@ class VoiceService:
 
     def __init__(self, config: ConfigStore, obs: ObsController,
                  synthesize: Callable[[str, str, str, str], None] | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 registry: ProviderRegistry | None = None,
+                 key_resolver: Callable[[str], str | None] | None = None):
         self._config = config
         self._obs = obs
-        self._synthesize = synthesize or self._edge_tts
+        self._legacy_synthesize = synthesize
+        self._registry = registry or default_registry()
+        self.key_resolver = key_resolver
         self._clock = clock
         self._cond = threading.Condition()
         self._queue: deque[dict] = deque()
@@ -74,35 +76,12 @@ class VoiceService:
                       "prepared": 0, "prepare_failed": 0}
 
     # --- synthesis -----------------------------------------------------------------------
-    def _edge_tts(self, text: str, voice: str, output: str, rate: str = "+0%") -> None:
-        try:
-            import edge_tts
-        except ImportError as exc:
-            raise AgentError("TTS_UNAVAILABLE", "Thiếu thư viện edge-tts trong Agent Core") from exc
-
-        async def run() -> None:
-            # The Edge service now and then answers with no audio at all (edge_tts.exceptions.NoAudioReceived,
-            # roughly 1 request in 10 for the Vietnamese voices); the same request a moment later works.
-            for attempt in range(self.SYNTH_ATTEMPTS):
-                try:
-                    await asyncio.wait_for(edge_tts.Communicate(text, voice, rate=rate).save(output),
-                                           timeout=self.GENERATE_TIMEOUT)
-                    return
-                except edge_tts.exceptions.NoAudioReceived:
-                    if attempt == self.SYNTH_ATTEMPTS - 1:
-                        raise
-                    await asyncio.sleep(0.5 * (attempt + 1))
-
-        try:
-            asyncio.run(run())
-        except asyncio.TimeoutError as exc:
-            raise AgentError("TTS_TIMEOUT", f"Tạo giọng nói quá {int(self.GENERATE_TIMEOUT)} giây",
-                             retryable=True) from exc
-        except AgentError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - aiohttp/network errors from the TTS service
-            raise AgentError("TTS_FAILED", f"Dịch vụ TTS lỗi: {type(exc).__name__}: {str(exc)[:200]}",
-                             retryable=True) from exc
+    def _spec(self, provider: str, model: str | None, voice: str, rate: int, settings: dict | None) -> dict:
+        if not isinstance(voice, str) or not 1 <= len(voice) <= 100:
+            raise AgentError("INVALID_PARAMS", "Voice ID không hợp lệ")
+        normalized_model, normalized_settings = self._registry.get(provider).normalize(model, voice, int(rate), settings)
+        return {"provider": provider, "model": normalized_model, "voice": voice,
+                "settings": normalized_settings}
 
     @property
     def _cache_dir(self):
@@ -111,8 +90,10 @@ class VoiceService:
         return path
 
     @staticmethod
-    def _key(text: str, voice: str, rate: int) -> str:
-        return hashlib.sha256(f"{voice}|{rate}|{text}".encode()).hexdigest()[:32]
+    def _key(text: str, voice: str, rate: int, provider: str = "edge",
+             model: str | None = None, settings: dict | None = None) -> str:
+        return hashlib.sha256(json.dumps([provider, model, voice, rate, settings or {}, text],
+                                         sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:32]
 
     def _cached(self, key: str):
         target = self._cache_dir / f"{key}.mp3"
@@ -121,10 +102,12 @@ class VoiceService:
         except OSError:  # pruned meanwhile
             return None
 
-    def _audio(self, text: str, voice: str, rate: int):
+    def _audio(self, text: str, voice: str, rate: int, provider: str = "edge",
+               model: str | None = None, settings: dict | None = None):
         """MP3 for one text: from the cache, else generated once and kept. Called by the speak worker and the
         prepare thread at the same time: each writes its own temp file, then os.replace (atomic)."""
-        key = self._key(text, voice, rate)
+        spec = self._spec(provider, model, voice, rate, settings)
+        key = self._key(text, voice, rate, provider, spec["model"], spec["settings"])
         target = self._cached(key)
         if target is not None:
             try:
@@ -133,14 +116,28 @@ class VoiceService:
                 pass
             with self._cond:
                 self.stats["cache_hits"] += 1
+            log.info("TTS audio ready provider=%s model=%s voice=%s chars=%s cache=hit",
+                     provider, spec["model"], voice, len(text))
             return target
         target = self._cache_dir / f"{key}.mp3"
         temp = self._cache_dir / f"tmp_{uuid.uuid4().hex}.mp3"
         try:
-            self._synthesize(text, voice, str(temp), f"{rate:+d}%")
+            started = self._clock()
+            log.info("TTS request started provider=%s model=%s voice=%s chars=%s cache=miss",
+                     provider, spec["model"], voice, len(text))
+            if self._legacy_synthesize and provider == "edge":
+                self._legacy_synthesize(text, voice, str(temp), f"{rate:+d}%")
+            else:
+                provider_impl = self._registry.get(provider)
+                key_value = self.key_resolver(provider) if provider_impl.requires_key and self.key_resolver else None
+                provider_impl.synthesize(text, voice, spec["model"], spec["settings"], temp,
+                    key_value, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
+                                                provider, int((self._clock() - started) * 1000)))
             if not temp.is_file() or temp.stat().st_size == 0:
                 raise AgentError("TTS_FAILED", "Dịch vụ TTS không trả về âm thanh", retryable=True)
             os.replace(temp, target)
+            log.info("TTS audio ready provider=%s model=%s voice=%s chars=%s latency_ms=%s cache=miss",
+                     provider, spec["model"], voice, len(text), int((self._clock() - started) * 1000))
         finally:
             temp.unlink(missing_ok=True)
         self._prune_cache()
@@ -170,11 +167,13 @@ class VoiceService:
 
     # --- public API ----------------------------------------------------------------------
     def speak(self, text: str, voice: str = VOICES[0], obs_source: str | None = None, *, rate: int = 0,
-              ttl_seconds: float | None = None, duck: bool = True, intro: str | None = None) -> dict:
+              ttl_seconds: float | None = None, duck: bool = True, intro: str | None = None,
+              provider: str = "edge", model: str | None = None, settings: dict | None = None) -> dict:
         """Queue one sentence; returns at once with its place in the queue.
 
         ``intro`` (viewer names) is spoken right before ``text``; the two are cached apart so the body is reused."""
-        text = self._check(text, voice, rate)
+        spec = self._spec(provider, model, voice, rate, settings)
+        text = self._check(text)
         if intro is not None:
             intro = " ".join(intro.split())
             if not 1 <= len(intro) <= MAX_INTRO_CHARS:
@@ -182,7 +181,8 @@ class VoiceService:
         source = obs_source or self._config.get().obs.voice_input
         now = self._clock()
         item = {"id": uuid.uuid4().hex[:12], "text": text, "intro": intro, "voice": voice, "rate": int(rate), "source": source,
-                "duck": bool(duck), "queued_at": now, "deadline": now + (ttl_seconds or self.DEFAULT_TTL)}
+                "duck": bool(duck), "queued_at": now, "deadline": now + (ttl_seconds or self.DEFAULT_TTL),
+                "provider": provider, "model": spec["model"], "settings": spec["settings"]}
         with self._cond:
             if self._closed:
                 raise AgentError("TTS_UNAVAILABLE", "Dịch vụ giọng nói đã dừng")
@@ -194,26 +194,29 @@ class VoiceService:
             self._ensure_worker()
             self._cond.notify_all()
         return {"status": "queued", "id": item["id"], "position": position, "source": source, "voice": voice,
-                "chars": _chars(item)}
+                "provider": provider, "model": spec["model"], "chars": _chars(item)}
 
-    def prepare(self, texts: list[str], voice: str = VOICES[0], rate: int = 0) -> dict:
+    def prepare(self, texts: list[str], voice: str = VOICES[0], rate: int = 0, *,
+                provider: str = "edge", model: str | None = None, settings: dict | None = None) -> dict:
         """Generate texts into the cache ahead of time (returns at once; a second thread does the work)."""
         if not isinstance(texts, list) or not 1 <= len(texts) <= MAX_PREPARE_TEXTS:
             raise AgentError("INVALID_PARAMS", f"Danh sách chuẩn bị TTS từ 1 đến {MAX_PREPARE_TEXTS} câu")
-        cleaned = [self._check(t, voice, rate) for t in texts]
+        spec = self._spec(provider, model, voice, rate, settings)
+        cleaned = [self._check(t) for t in texts]
         accepted = cached = 0
         with self._cond:
             if self._closed:
                 raise AgentError("TTS_UNAVAILABLE", "Dịch vụ giọng nói đã dừng")
             for text in dict.fromkeys(cleaned):
-                key = self._key(text, voice, int(rate))
+                key = self._key(text, voice, int(rate), provider, spec["model"], spec["settings"])
                 if self._cached(key) is not None:
                     cached += 1
                     continue
                 accepted += 1
                 if key in self._prepare_keys:
                     continue  # already waiting
-                self._prepare.append({"key": key, "text": text, "voice": voice, "rate": int(rate)})
+                self._prepare.append({"key": key, "text": text, "voice": voice, "rate": int(rate),
+                                      "provider": provider, "model": spec["model"], "settings": spec["settings"]})
                 self._prepare_keys.add(key)
                 while len(self._prepare) > self.MAX_PREPARE_PENDING:  # oldest dropped: generated when spoken
                     self._prepare_keys.discard(self._prepare.popleft()["key"])
@@ -223,14 +226,10 @@ class VoiceService:
         return {"accepted": accepted, "already_cached": cached}
 
     @staticmethod
-    def _check(text: str, voice: str, rate: int) -> str:
+    def _check(text: str) -> str:
         text = " ".join((text or "").split())
         if not 1 <= len(text) <= MAX_CHARS:
             raise AgentError("INVALID_PARAMS", f"Nội dung TTS từ 1 đến {MAX_CHARS} ký tự")
-        if voice not in VOICES:
-            raise AgentError("INVALID_PARAMS", "Giọng đọc không được hỗ trợ")
-        if not -30 <= int(rate) <= 50:
-            raise AgentError("INVALID_PARAMS", "Tốc độ đọc từ -30% đến +50%")
         return text
 
     def clear(self) -> dict:
@@ -292,7 +291,8 @@ class VoiceService:
                 job = self._prepare.popleft()
             try:
                 if self._cached(job["key"]) is None:  # spoken (and cached) by the worker meanwhile: nothing to do
-                    self._audio(job["text"], job["voice"], job["rate"])
+                    self._audio(job["text"], job["voice"], job["rate"], job["provider"],
+                                job["model"], job["settings"])
                     with self._cond:
                         self.stats["prepared"] += 1
             except Exception as exc:  # noqa: BLE001 - one bad text must not stop the others
@@ -326,7 +326,8 @@ class VoiceService:
         self._restore()
 
     def _play(self, item: dict) -> None:
-        base = {"id": item["id"], "chars": _chars(item), "voice": item["voice"], "source": item["source"]}
+        base = {"id": item["id"], "chars": _chars(item), "voice": item["voice"], "source": item["source"],
+                "provider": item["provider"], "model": item["model"]}
         if self._clock() > item["deadline"]:
             self.stats["expired"] += 1
             self.last = {**base, "status": "expired"}
@@ -336,11 +337,13 @@ class VoiceService:
             intro_path = None
             if item.get("intro"):
                 try:
-                    intro_path = self._audio(item["intro"], item["voice"], item["rate"])
+                    intro_path = self._audio(item["intro"], item["voice"], item["rate"], item["provider"],
+                                             item["model"], item["settings"])
                 except Exception as exc:  # noqa: BLE001 - without the names the answer is still worth saying
                     base["intro_failed"] = True
                     log.warning("Không tạo được lời gọi tên TTS, chỉ đọc phần trả lời: %s", _reason(exc))
-            path = self._audio(item["text"], item["voice"], item["rate"])
+            path = self._audio(item["text"], item["voice"], item["rate"], item["provider"],
+                               item["model"], item["settings"])
             if self._interrupt.is_set():
                 return
             if self._clock() > item["deadline"]:
@@ -352,13 +355,19 @@ class VoiceService:
             if intro_path is not None:  # names first, then the answer, on the same OBS input
                 started = self._clock()
                 self._obs.play_file(item["source"], str(intro_path.resolve()), unmute=True)
+                log.info("TTS OBS playback started provider=%s model=%s voice=%s intro=true",
+                         item["provider"], item["model"], item["voice"])
                 self._wait_end(item["source"], item["intro"], item["rate"], started)
                 if self._interrupt.is_set():
                     self.last = {**base, "status": "stopped"}
                     return
             started = self._clock()
             media = self._obs.play_file(item["source"], str(path.resolve()), unmute=True)
+            log.info("TTS OBS playback started provider=%s model=%s voice=%s queue_latency_ms=%s",
+                     item["provider"], item["model"], item["voice"], int((started - item["queued_at"]) * 1000))
             self._wait_end(item["source"], item["text"], item["rate"], started)
+            log.info("TTS OBS playback finished provider=%s model=%s voice=%s playback_ms=%s",
+                     item["provider"], item["model"], item["voice"], int((self._clock() - started) * 1000))
             if self._interrupt.is_set():
                 self.last = {**base, "status": "stopped"}
                 return
@@ -459,3 +468,7 @@ def _chars(item: dict) -> int:
 
 def _reason(exc: Exception) -> str:
     return getattr(exc, "message", None) or f"{type(exc).__name__}: {exc}"[:200]
+
+
+# Existing desktop and Cloud callers keep their public import during migration.
+VoiceService = VoiceEngine
