@@ -137,6 +137,8 @@
 .lc-target{margin:0;font-size:13px;color:var(--ui-text-muted);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow-wrap:anywhere}
 .lc-target b{color:var(--ui-text)}
 .lc-tip{font-size:12px;color:var(--ui-text-muted);text-align:center}
+.lc-product-list button.is-live.is-selected{border-color:var(--ui-primary)}
+.lc-hint{color:var(--ui-danger);font-size:12px;text-align:center}
 
 .lc-disclaimer{margin:0;font-size:12px;color:var(--ui-text-muted)}
 
@@ -189,3 +191,16 @@
 .lc-ps-limit input[type=number]:disabled{opacity:.5}
 .lc-ps-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 @media(max-width:640px){.lc-ps-state,.lc-ps-body{padding-left:16px;padding-right:16px}}
+.lc-pin-panel{padding:14px 16px;border-bottom:1px solid var(--ui-border);display:grid;gap:7px}
+.lc-pin-panel .ui-badge{margin-left:8px}
+.lc-pin-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.lc-pin-actions label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.lc-pin-note{margin:0;color:var(--ui-text-muted);font-size:12px}
+.lc-pin-error{margin:0;color:var(--ui-danger);font-size:12px}
+.lc-pin-candidates{list-style:none;margin:12px 0;padding:0;display:grid;gap:8px}
+.lc-pin-candidates li{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--ui-border);border-radius:8px}
+.lc-pin-candidates img{width:44px;height:44px;object-fit:cover;border-radius:5px}
+.lc-pin-candidates span{display:grid;gap:2px;flex:1;min-width:0}
+.lc-pin-candidates small{color:var(--ui-text-muted)}
+.lc-pin-panel>div{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-pin-actions .ui-button{flex-shrink:0}

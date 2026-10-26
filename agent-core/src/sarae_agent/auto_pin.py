@@ -16,6 +16,7 @@ stealth tricks. DOM selectors may need updates when the console UI changes.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 import os
 import queue
 import re
@@ -43,6 +44,55 @@ RELOGIN = "TikTok yêu cầu đăng nhập lại: dùng bước 1 (Đăng nhập
 LOGIN_CHROME_OPEN = "Chrome đăng nhập vẫn đang mở: bấm \"Đã đăng nhập xong\" hoặc đóng cửa sổ Chrome đó trước"
 MAX_PRODUCTS = 100
 CHAT_WAIT_SECONDS = 60  # a chat command queued behind a long sync gives up (and is cancelled) after this
+PIN_BUTTON = "button.pc_pin_product_pin"
+UNPIN_BUTTON = "button.pc_pin_product_unpin"
+
+# Read the card that owns each control. The ordinal is only a short-lived DOM handle, never a product ID.
+PIN_CARD_JS = r"""
+(target) => {
+  document.querySelectorAll('[data-sarae-pin-target]').forEach(e => e.removeAttribute('data-sarae-pin-target'));
+  const buttons = [...document.querySelectorAll('button.pc_pin_product_pin, button.pc_pin_product_unpin')];
+  const cards = [];
+  for (const [index, button] of buttons.entries()) {
+    let card = button;
+    for (let depth = 0; depth < 9 && card.parentElement; depth++) {
+      card = card.parentElement;
+      if (card.querySelectorAll('button.pc_pin_product_pin, button.pc_pin_product_unpin').length !== 1) break;
+      if (card.querySelector('img') && (card.innerText || '').trim()) break;
+    }
+    if (card.querySelectorAll('button.pc_pin_product_pin, button.pc_pin_product_unpin').length !== 1) continue;
+    if (!card.dataset.saraeCardToken) card.dataset.saraeCardToken = crypto.randomUUID();
+    const lines = (card.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const image = card.querySelector('img');
+    const title = card.querySelector('.text-body-m-regular span, [data-testid*="product-name"], [class*="product_name"], [class*="product-name"]');
+    // Only product-specific attributes/links are evidence of a TikTok Product ID.
+    // Generic data-id, room IDs, seller IDs and numbers in visible text are not.
+    const ids = [];
+    for (const el of [card, ...card.querySelectorAll('[data-product-id], [data-productid], [data-tiktok-product-id], [href]')]) {
+      for (const attr of el.attributes) {
+        if (/^data-(?:tiktok-)?product-?id$/i.test(attr.name) && /^[0-9]{12,25}$/.test(attr.value)) {
+          ids.push(attr.value);
+        } else if (attr.name === 'href') {
+          const match = attr.value.match(/(?:[?&](?:product_id|productId)=|\/(?:product|products)\/)([0-9]{12,25})(?:[&#/?]|$)/i);
+          if (match) ids.push(match[1]);
+        }
+      }
+    }
+    cards.push({index, token: card.dataset.saraeCardToken,
+      name: title?.textContent?.trim() || lines.filter(s => !/^(ghim|pin|bỏ ghim|unpin)$/i.test(s) && !/[₫$]/.test(s) && !/^còn:/i.test(s))
+        .sort((a,b) => b.length-a.length)[0] || '',
+      image_url: image?.currentSrc || image?.src || '',
+      price_text: lines.find(s => /[₫$]/.test(s)) || '',
+      product_ids: [...new Set(ids.filter(Boolean))],
+      pinned: button.matches('button.pc_pin_product_unpin')});
+  }
+  if (target !== null && cards.some(c => c.token === target)) {
+    const chosen = document.querySelector('[data-sarae-card-token="' + target + '"] button.pc_pin_product_pin, [data-sarae-card-token="' + target + '"] button.pc_pin_product_unpin');
+    chosen?.setAttribute('data-sarae-pin-target', '1');
+  }
+  return cards;
+}
+"""
 
 # Runs in the LIVE Console page (read only). A product row is the largest ancestor of a Ghim/Pin button that
 # contains no other such button; its name is the longest text line that is not a button label, price or count.
@@ -176,6 +226,11 @@ class AutoPinService:
         self._sync_capture_active = False
         self._observed_pages = set()
         self._chat = chat_sender or ChatSender()  # TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md)
+        self._video_auto_enabled = False
+        self._video_session_id: int | None = None
+        self._video_products: dict[int, dict] = {}
+        self._video_revision = 0
+        self._pin_state: dict = {"status": "IDLE", "product_id": None, "card_name": None, "action": None, "error": None}
 
     # --- status --------------------------------------------------------------------------
     def login_open(self) -> bool:
@@ -192,6 +247,229 @@ class AutoPinService:
                     "last_pin": self._last_pin, "last_error": self._last_error,
                     "browser_open": self._context is not None, "login_open": login_open,
                     "found": len(self._found)}
+
+    def pin_status(self) -> dict:
+        with self._lock:
+            return {**self._pin_state, "auto_enabled": self._video_auto_enabled,
+                    "browser_open": self._context is not None}
+
+    def set_video_auto(self, enabled: bool, products: dict[int, dict], session_id: int | None = None) -> dict:
+        if enabled and self._enabled:
+            self._request("stop")
+        with self._lock:
+            self._video_revision += 1
+            self._video_auto_enabled = enabled
+            self._video_session_id = session_id if enabled else None
+            self._video_products = {key: dict(value) for key, value in products.items()} if enabled else {}
+        return self.pin_status()
+
+    def video_product(self, sarae_product_id: int, session_id: int | None = None) -> dict | None:
+        with self._lock:
+            if not self._video_auto_enabled or (session_id is not None and session_id != self._video_session_id):
+                return None
+            target = self._video_products.get(sarae_product_id)
+            return dict(target) if target else None
+
+    def pin_product(self, target: dict, current: Callable[[], bool] | None = None, guard=None) -> dict:
+        return self._request("pin_product", target, current, guard)
+
+    def unpin_product(self, expected_user_id: str | None = None,
+                      current: Callable[[], bool] | None = None, guard=None) -> dict:
+        return self._request("unpin_product", expected_user_id, current, guard)
+
+    def get_pin_state(self, target: dict | None = None) -> dict:
+        return self._request("get_pin_state", target)
+
+    def queue_video_pin(self, sarae_product_id: int, current: Callable[[], bool], guard=None,
+                        session_id: int | None = None) -> None:
+        with self._lock:
+            if not self._video_auto_enabled or (session_id is not None and session_id != self._video_session_id):
+                return
+            target = self._video_products.get(sarae_product_id)
+            if not target:
+                return
+            target = dict(target)
+            revision = self._video_revision
+            self._pin_state = {"status": "PENDING", "product_id": target.get("tiktok_product_id"),
+                               "action": "PIN_PRODUCT", "error": None}
+            self._ensure_worker()
+        def still_current() -> bool:
+            with self._lock:
+                fresh = self._video_auto_enabled and self._video_revision == revision
+            return fresh and current()
+        self._queue.put(("pin_product", (target, still_current, guard), None))
+
+    @staticmethod
+    def _matches(card: dict, target: dict) -> bool:
+        product_id = target.get("tiktok_product_id")
+        if product_id and product_id in card.get("product_ids", []):
+            return True
+        if product_id and card.get("product_ids"):
+            return False
+        if str(card.get("name") or "").casefold().strip() != str(target.get("name") or "").casefold().strip():
+            return False
+        # Name alone is allowed only when it identifies one card; image and price narrow a duplicate.
+        image = target.get("image_url")
+        if image and card.get("image_url") and image.split("?")[0] != card["image_url"].split("?")[0]:
+            return False
+        price = target.get("price_text")
+        if price and card.get("price_text") and re.sub(r"\D", "", price) != re.sub(r"\D", "", card["price_text"]):
+            return False
+        return True
+
+    @classmethod
+    def _matching_cards(cls, cards: list[dict], target: dict) -> list[dict]:
+        product_id = target.get("tiktok_product_id")
+        exact = [c for c in cards if product_id and product_id in c.get("product_ids", [])]
+        return exact if exact else [c for c in cards if cls._matches(c, target)]
+
+    def _resolved_target(self, target: dict) -> dict:
+        if target.get("tiktok_product_id"):
+            return target
+        matches = self._snapshot_matches(target)
+        if len(matches) == 1 and matches[0].get("product_id"):
+            return {**target, "tiktok_product_id": str(matches[0]["product_id"])}
+        return target
+
+    def _snapshot_matches(self, target: dict) -> list[dict]:
+        snapshot = self._product_snapshot or {}
+        if not snapshot.get("complete"):
+            return []
+        matches = []
+        for row in snapshot.get("products", []):
+            candidate = {"name": row.get("name"), "image_url": row.get("image_url") or "",
+                         "price_text": row.get("price_text") or "", "product_ids": []}
+            if self._matches(candidate, target):
+                matches.append(row)
+        return matches
+
+    def _console_page(self):
+        page = self._page
+        if self._context is None or page is None or page.is_closed():
+            raise RuntimeError("LIVE Console chưa mở trên Chrome điều khiển")
+        if needs_login(page.url):
+            raise LoginRequired(RELOGIN)
+        if urlsplit(page.url).hostname not in LIVE_ORIGINS:
+            raise RuntimeError("Trang hiện tại không phải TikTok LIVE Console")
+        return page
+
+    def _cards(self, target: dict | None = None) -> tuple[object, list[dict]]:
+        page = self._console_page()
+        expected = (target or {}).get("expected_user_id")
+        if expected and (self._account_profile or {}).get("user_id") != expected:
+            raise AccountMismatch("Chưa xác minh đúng TikTok Account; hãy đồng bộ LIVE Console trước")
+        return page, page.evaluate(PIN_CARD_JS, None)
+
+    def _pin_state_on_worker(self, target: dict | None = None) -> dict:
+        if target:
+            target = self._resolved_target(target)
+        try:
+            _, cards = self._cards(target)
+        except Exception as exc:
+            with self._lock:
+                self._pin_state = {"status": "FAILED", "product_id": self._pin_state.get("product_id"),
+                                   "card_name": self._pin_state.get("card_name"), "action": "GET_PIN_STATE",
+                                   "error": str(exc)[:300]}
+            raise
+        pinned = [c for c in cards if c.get("pinned")]
+        candidates = self._matching_cards(cards, target) if target else []
+        snapshot_ambiguous = bool(target and len(self._snapshot_matches(target)) > 1 and
+            not any(target.get("tiktok_product_id") in c.get("product_ids", []) for c in candidates))
+        product_id = pinned[0]["product_ids"][0] if len(pinned) == 1 and len(pinned[0].get("product_ids", [])) == 1 else None
+        if len(pinned) == 1 and product_id is None:
+            resolved = self._resolved_target({"name": pinned[0].get("name"),
+                "image_url": pinned[0].get("image_url"), "price_text": pinned[0].get("price_text")})
+            product_id = resolved.get("tiktok_product_id")
+        if target is None:
+            with self._lock:
+                self._pin_state = {"status": "FAILED" if len(pinned) > 1 else "SUCCESS",
+                                   "product_id": product_id,
+                                   "card_name": pinned[0].get("name") if len(pinned) == 1 else None,
+                                   "action": "GET_PIN_STATE",
+                                   "error": "Nhiều product card đang ghim" if len(pinned) > 1 else None}
+        return {"status": "FAILED" if len(pinned) > 1 else "SUCCESS", "pinned_product_id": product_id,
+                "pinned_card": pinned[0] if len(pinned) == 1 else None,
+                "candidates": candidates, "ambiguous": len(candidates) > 1 or snapshot_ambiguous,
+                "resolved_product_id": target.get("tiktok_product_id") if target else None,
+                "multiple_pins": len(pinned) > 1}
+
+    def _pin_on_worker(self, target: dict, current: Callable[[], bool] | None, guard=None) -> dict:
+        product_id = target.get("tiktok_product_id")
+        with self._lock:
+            self._pin_state = {"status": "PENDING", "product_id": product_id, "action": "PIN_PRODUCT", "error": None}
+        try:
+            if not product_id and not target.get("confirmed_token") and len(self._snapshot_matches(target)) > 1:
+                raise RuntimeError("Nhiều sản phẩm trùng thông tin; cần người dùng xác nhận card")
+            target = self._resolved_target(target)
+            product_id = target.get("tiktok_product_id")
+            for attempt in range(3):
+                page, cards = self._cards(target)
+                matches = self._matching_cards(cards, target)
+                selected = target.get("confirmed_token")
+                if not selected and len(self._snapshot_matches(target)) > 1 and not any(
+                        product_id in c.get("product_ids", []) for c in matches):
+                    raise RuntimeError("Nhiều sản phẩm trùng thông tin; cần người dùng xác nhận card")
+                if selected is not None:
+                    matches = [c for c in matches if c.get("token") == selected]
+                if len(matches) > 1:
+                    raise RuntimeError("Nhiều product card trùng thông tin; cần người dùng xác nhận card")
+                if len(matches) == 1:
+                    card = matches[0]
+                    with guard if guard is not None else nullcontext():
+                        if current is not None and not current():
+                            raise RuntimeError("Video đã chuyển tiếp; hủy lệnh ghim cũ")
+                        if not card["pinned"]:
+                            page.evaluate(PIN_CARD_JS, card["token"])
+                            page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
+                        state = self._pin_state_on_worker(target)
+                    pinned = state.get("pinned_card")
+                    if pinned and pinned.get("token") == card.get("token"):
+                        result = {"status": "SUCCESS", "product_id": product_id, "card_name": pinned.get("name"), "card": pinned,
+                                  "action": "PIN_PRODUCT", "error": None}
+                        with self._lock:
+                            self._pin_state = result
+                        log.info("TikTok pin product=%s card=%s result=SUCCESS at=%s", product_id, card["index"], time.time())
+                        return result
+                if attempt < 2:
+                    page.wait_for_timeout(500)
+            raise RuntimeError("Không tìm thấy đúng product card hoặc TikTok chưa xác nhận ghim")
+        except Exception as exc:
+            with self._lock:
+                self._pin_state = {"status": "FAILED", "product_id": product_id, "action": "PIN_PRODUCT", "error": str(exc)[:300]}
+            log.warning("TikTok pin product=%s result=FAILED at=%s: %s", product_id, time.time(), exc)
+            raise
+
+    def _unpin_on_worker(self, expected_user_id: str | None = None,
+                         current: Callable[[], bool] | None = None, guard=None) -> dict:
+        with self._lock:
+            self._pin_state = {"status": "PENDING", "product_id": self._pin_state.get("product_id"),
+                               "card_name": self._pin_state.get("card_name"), "action": "UNPIN_PRODUCT", "error": None}
+        try:
+            page, cards = self._cards({"expected_user_id": expected_user_id} if expected_user_id else None)
+            pinned = [c for c in cards if c.get("pinned")]
+            if len(pinned) != 1:
+                raise RuntimeError("Không xác định được duy nhất product card đang ghim")
+            with guard if guard is not None else nullcontext():
+                if current is not None and not current():
+                    raise RuntimeError("Phiên LIVE đã kết thúc hoặc chuyển; hủy lệnh bỏ ghim cũ")
+                page.evaluate(PIN_CARD_JS, pinned[0]["token"])
+                page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
+                state = self._pin_state_on_worker()
+            if state["pinned_card"] is not None:
+                raise RuntimeError("TikTok chưa xác nhận bỏ ghim")
+            result = {"status": "SUCCESS", "product_id": None, "card_name": None,
+                      "action": "UNPIN_PRODUCT", "error": None}
+            with self._lock:
+                self._pin_state = result
+            log.info("TikTok unpin result=SUCCESS at=%s", time.time())
+            return result
+        except Exception as exc:
+            with self._lock:
+                self._pin_state = {"status": "FAILED", "product_id": self._pin_state.get("product_id"),
+                                   "card_name": self._pin_state.get("card_name"), "action": "UNPIN_PRODUCT",
+                                   "error": str(exc)[:300]}
+            log.warning("TikTok unpin result=FAILED at=%s: %s", time.time(), exc)
+            raise
 
     # --- step 1: login in plain Chrome ---------------------------------------------------
     def _profile_locked(self) -> bool:
@@ -558,11 +836,19 @@ class AutoPinService:
                     result = self._chat_send_on_worker(*args)
                 elif method == "chat_probe":
                     result = self._chat_probe_on_worker()
+                elif method == "pin_product":
+                    result = self._pin_on_worker(*args)
+                elif method == "unpin_product":
+                    result = self._unpin_on_worker(*args)
+                elif method == "get_pin_state":
+                    result = self._pin_state_on_worker(*args)
                 elif method == "start":
-                    if self._context is None:
-                        self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
+                    if self._video_auto_enabled:
+                        raise RuntimeError("Đang bật tự động ghim theo video; hãy tắt trên Web trước")
                     if not self._items:
                         raise RuntimeError("Hãy bấm Đồng bộ sản phẩm trước khi tự động ghim")
+                    if self._context is None:
+                        self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
                     self._enabled = True
                     self._state = "running"
                     next_pin = time.monotonic()

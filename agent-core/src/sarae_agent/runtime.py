@@ -86,9 +86,11 @@ class AgentRuntime:
         self.voice = VoiceService(self.config, self.obs)
         self.auto_pin = AutoPinService(paths.root / 'chrome-auto-pin-profile',
                                        chat_sender=ChatSender(paths.root / SELECTORS_FILE))
+        self._auto_pin_guard = threading.Lock()
+        self._auto_pin_last: tuple | None = None
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
-                                    chat=self.auto_pin)
+                                    chat=self.auto_pin, auto_pin=self.auto_pin)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
     def resolve_media(self, media_id: str):
@@ -124,6 +126,7 @@ class AgentRuntime:
             worker.poke()
         self._emit_raw(name, data)
         if name == "command.finished":
+            self._maybe_pin_current_video()
             try:
                 self.playback.changed()  # a Cloud command may have changed playback: refresh the GUI
             except Exception:  # noqa: BLE001
@@ -132,6 +135,8 @@ class AgentRuntime:
     def _on_playback_event(self, event: dict) -> None:
         """PRODUCT_SWITCHED / PLAYBACK_ENDED / ERROR from the engine: queue for the Cloud, refresh the GUI."""
         self.outbox.push(event)
+        if event.get("type") in ("PRODUCT_SWITCHED", "PLAYBACK_ENDED"):
+            self._maybe_pin_current_video()
         worker = self.worker
         if worker is not None:
             worker.poke()
@@ -139,6 +144,28 @@ class AgentRuntime:
             self.playback.changed()
         except Exception:  # noqa: BLE001 - never break the engine watchdog
             log.exception("Không cập nhật được trạng thái phát")
+
+    def _maybe_pin_current_video(self) -> None:
+        with self.engine.lock:
+            running = self.engine.active
+            product_id = self.engine.product_id
+            marker = (self.engine.session_id, product_id, self.engine.transition_count)
+        with self._auto_pin_guard:
+            if not running:
+                self._auto_pin_last = None
+                return
+            if not product_id or not self.auto_pin.video_product(product_id, marker[0]):
+                self._auto_pin_last = None
+                return
+            if marker == self._auto_pin_last:
+                return
+            self._auto_pin_last = marker
+        def still_current() -> bool:
+            with self.engine.lock:
+                return bool(self.engine.active and
+                            (self.engine.session_id, self.engine.product_id, self.engine.transition_count) == marker and
+                            self.auto_pin.video_product(product_id, marker[0]))
+        self.auto_pin.queue_video_pin(product_id, still_current, self.engine.lock, marker[0])
 
     def reload_obs_settings(self) -> None:
         """OBS settings changed from the GUI: the engine uses them from its next request."""
@@ -303,6 +330,7 @@ class AgentRuntime:
             "playback": play,
             "media_cache": self.media_cache_report(),
             "voice": self.voice.status(),  # queue, stats, last sentence; no file paths
+            "pin": self.auto_pin.pin_status(),
         }
 
     def sync_tiktok_products(self, expected_user_id: str | None = None) -> dict:

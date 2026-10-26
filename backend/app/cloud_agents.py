@@ -72,12 +72,12 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
                    "android_mock_live_start", "android_mock_live_stop"}
-BACKGROUND_KINDS = {"tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 MAX_ATTEMPTS = 3
 DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is stale: TIMEOUT, never played late
 SLOW_TTL_SECONDS = 180
@@ -189,6 +189,7 @@ class Heartbeat(BaseModel):
     media_cache:dict|None=None
     # VoiceService.status() on the Agent: queue, sentence being spoken, last result.
     voice:dict|None=None
+    pin:dict|None=None
 
 def _media_cache(report:dict|None)->dict|None:
     """Keep only what readiness needs from the Agent's cache report, with bounded sizes."""
@@ -278,7 +279,9 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
     at=_now()
     verification=_without_paths(body.verification)
     sanitized={"verification":verification,"obs":body.obs,"local_playback":body.local_playback,
-               "playback":body.playback,"media_cache":_media_cache(body.media_cache),"voice":_voice(body.voice)}
+               "playback":body.playback,"media_cache":_media_cache(body.media_cache),"voice":_voice(body.voice),
+               "pin": {k:body.pin.get(k) for k in ("status","product_id","card_name","action","error","auto_enabled","browser_open")}
+                      if isinstance(body.pin,dict) else None}
     with _db() as db:
         db.execute("BEGIN IMMEDIATE")
         row=db.execute("SELECT captcha_alert FROM agent_status WHERE agent_id=?",(body.agent_id,)).fetchone()
@@ -321,7 +324,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "obs_stop","local_media_next","local_media_stop","playback_cancel_pending","playback_pause",
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
-COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
+COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","PIN_PRODUCT","UNPIN_PRODUCT","GET_PIN_STATE","SET_AUTO_PIN","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
     "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
@@ -405,11 +408,57 @@ def _tts_spec(payload:dict)->dict:
             out[name]=value
     return out
 
+def _pin_target(target:dict)->dict:
+    if not isinstance(target,dict):
+        raise HTTPException(422,"Thiếu product mapping")
+    product_id=target.get("tiktok_product_id")
+    if product_id is not None and (not isinstance(product_id,str) or not product_id.isdigit() or len(product_id)>80):
+        raise HTTPException(422,"TikTok Product ID không hợp lệ")
+    expected_user_id=target.get("expected_user_id")
+    if not isinstance(expected_user_id,str) or not expected_user_id.isdigit() or len(expected_user_id)>80:
+        raise HTTPException(422,"expected_user_id không hợp lệ")
+    image_url=target.get("image_url") or ""
+    price_text=target.get("price_text") or ""
+    if not isinstance(image_url,str) or len(image_url)>1000:
+        raise HTTPException(422,"image_url không hợp lệ")
+    if not isinstance(price_text,str) or len(price_text)>80:
+        raise HTTPException(422,"price_text không hợp lệ")
+    return {"tiktok_product_id":product_id,"name":_text(target.get("name"),"name",1,200),
+            "image_url":image_url,"price_text":price_text,"expected_user_id":expected_user_id}
 
 def validate_payload(kind:str,payload:dict|None)->dict:
     """Return the normalized payload for ``kind`` or raise HTTPException(422)."""
     payload=payload or {}
     if kind not in COMMAND_KINDS:raise HTTPException(422,"Lệnh không được hỗ trợ")
+    if kind in {"PIN_PRODUCT", "GET_PIN_STATE"}:
+        if kind == "GET_PIN_STATE" and not payload:
+            return {}
+        out = {"target": _pin_target(payload.get("target"))}
+        if kind == "PIN_PRODUCT":
+            out["session_id"] = _int(payload.get("session_id"),"session_id",1,2**63-1)
+            if payload.get("confirmed_token") is not None:
+                token = _text(payload["confirmed_token"],"confirmed_token",1,80)
+                if not all(c in "0123456789abcdef-" for c in token.lower()):
+                    raise HTTPException(422,"confirmed_token không hợp lệ")
+                out["confirmed_token"] = token
+        return out
+    if kind == "UNPIN_PRODUCT":
+        uid = payload.get("expected_user_id")
+        if not isinstance(uid,str) or not uid.isdigit() or len(uid)>80:
+            raise HTTPException(422,"expected_user_id không hợp lệ")
+        return {"expected_user_id":uid,"session_id":_int(payload.get("session_id"),"session_id",1,2**63-1)}
+    if kind == "SET_AUTO_PIN":
+        enabled = _bool(payload.get("enabled"),"enabled")
+        session_id = _int(payload.get("session_id"),"session_id",1,2**63-1) if enabled else None
+        products = payload.get("products", [])
+        if not isinstance(products, list) or len(products)>300:
+            raise HTTPException(422,"Danh sách sản phẩm không hợp lệ")
+        normalized = []
+        for row in products:
+            if not isinstance(row, dict): raise HTTPException(422,"Product mapping không hợp lệ")
+            normalized.append({"sarae_product_id": _int(row.get("sarae_product_id"),"sarae_product_id",1,2**63-1),
+                               **_pin_target(row)})
+        return {"enabled": enabled, "session_id": session_id, "products": normalized}
     if kind=="tiktok_products_sync":
         uid=payload.get("expected_user_id")
         if uid is None:
@@ -571,6 +620,10 @@ def create_command(agent_id:str,owner_id:str,kind:str,payload:dict|None=None,*,i
                                 (agent_id,idempotency_key)).fetchone()
             if existing is not None:
                 if existing["kind"]!=kind:raise HTTPException(409,"Idempotency-Key đã dùng cho lệnh khác")
+                if kind in {"PIN_PRODUCT","UNPIN_PRODUCT","SET_AUTO_PIN"} and (
+                    json.loads(existing["payload"])!=payload or existing["session_id"]!=session_id
+                ):
+                    raise HTTPException(409,"Idempotency-Key đã dùng cho sản phẩm hoặc phiên LIVE khác")
                 return command_view(existing)
         if require_online:
             seen=db.execute("SELECT last_seen FROM agent_status WHERE agent_id=?",(agent_id,)).fetchone()

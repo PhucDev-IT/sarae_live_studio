@@ -5,9 +5,9 @@ Nothing here touches OBS directly. Every call names its Agent (`agent_id`); the 
 two Agents of the same OWNER cannot affect each other. Status is the Agent's latest heartbeat (`PlaybackEngine.status()`);
 commands go through `cloud_agents`. Product LIVE sessions themselves are managed in `live_sessions`.
 """
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.catalog import Product
 from app.database import SessionLocal
@@ -62,20 +62,22 @@ CONTROL_WAIT_SECONDS = 5
 IdempotencyKey = Header(None, alias="Idempotency-Key")
 
 
-def agent_call(owner: dict, agent_id: str, kind: str, payload: dict | None = None, timeout: float = 10):
+def agent_call(owner: dict, agent_id: str, kind: str, payload: dict | None = None, timeout: float = 10,
+               session_id: int | None = None):
     """A call whose answer the page needs now (OBS inputs, saved config): the Agent's result or an error."""
     from app.cloud_agents import rpc
     agent = owned_agent(owner, agent_id, online=True)
-    return rpc(agent["id"], owner["id"], kind, payload, timeout)
+    return rpc(agent["id"], owner["id"], kind, payload, timeout, session_id=session_id)
 
 
-def control(owner: dict, agent_id: str, kind: str, payload: dict | None = None, idempotency_key: str | None = None):
+def control(owner: dict, agent_id: str, kind: str, payload: dict | None = None,
+            idempotency_key: str | None = None, session_id: int | None = None):
     """A playback control as a tracked command: 200 when the Agent confirmed within a few seconds, else 202 with the
     command to poll. The same Idempotency-Key (e.g. a retried click) never runs the control twice."""
     from app.cloud_agents import respond, run_command
     agent = owned_agent(owner, agent_id, online=True)
     return respond(run_command(agent["id"], owner["id"], kind, payload, wait=CONTROL_WAIT_SECONDS,
-                               idempotency_key=idempotency_key))
+                               idempotency_key=idempotency_key, session_id=session_id))
 
 
 @router.get("/status")
@@ -83,7 +85,97 @@ def get_status(owner: Owner, agent_id: AgentId):
     from app.live_sessions import sync_agent_events
     agent = owned_agent(owner, agent_id)
     sync_agent_events(owner["id"])
-    return {**playback_of(agent), "agent": public(agent)}
+    return {**playback_of(agent), "pin": ((agent.get("status") or {}).get("pin") or {}), "agent": public(agent)}
+
+
+class PinInput(BaseModel):
+    product_id: int = Field(gt=0)
+    confirmed_token: str | None = Field(default=None, pattern=r"^[0-9a-fA-F-]{1,80}$")
+
+
+class AutoPinInput(BaseModel):
+    enabled: bool
+
+
+def _pin_account(db, owner: dict, agent_id: str) -> tuple[str, int]:
+    from app.live_sessions import LiveSession, playing_session
+    session_id = playing_session(owner["id"], agent_id)
+    session = db.get(LiveSession, session_id) if session_id is not None else None
+    if (session is None or session.status != "RUNNING" or session.owner_id != owner["id"]
+            or session.agent_id != agent_id or session.tiktok_account_id is None):
+        raise HTTPException(409, "Cần một phiên LIVE đang phát với TikTok Account đã xác minh")
+    row = db.execute(text("""SELECT a.user_id FROM tiktok_accounts a
+        JOIN user_tiktok_accounts ua ON ua.account_id=a.id
+        WHERE a.id=:id AND ua.owner_id=:owner"""),
+                     {"id": session.tiktok_account_id, "owner": owner["id"]}).first()
+    if not row or not row[0]:
+        raise HTTPException(409, "Chưa xác minh TikTok Account của phiên LIVE")
+    return str(row[0]), session.id
+
+
+def _pin_mapping(product: Product, expected_user_id: str) -> dict:
+    return {"tiktok_product_id": product.tiktok_product_id, "name": product.name,
+            "image_url": product.image_url or "", "price_text": str(int(product.price)) if product.price is not None else "",
+            "expected_user_id": expected_user_id}
+
+
+@router.get("/pin-state")
+def get_pin_state(owner: Owner, agent_id: AgentId, product_id: int | None = None):
+    owned_agent(owner, agent_id, online=True)
+    target = None
+    if product_id is not None:
+        with SessionLocal() as db:
+            account, session_id = _pin_account(db, owner, agent_id)
+            product = db.get(Product, product_id)
+            if product is None or product.owner_id != owner["id"]:
+                raise HTTPException(404, "Không tìm thấy sản phẩm")
+            target = _pin_mapping(product, account)
+    return agent_call(owner, agent_id, "GET_PIN_STATE", {"target": target} if target else {}, timeout=15,
+                      session_id=session_id if target else None)
+
+
+@router.post("/pin")
+def pin_product(body: PinInput, owner: Owner, agent_id: AgentId,
+                idempotency_key: str | None = IdempotencyKey):
+    owned_agent(owner, agent_id, online=True)
+    with SessionLocal() as db:
+        account, session_id = _pin_account(db, owner, agent_id)
+        product = db.get(Product, body.product_id)
+        if product is None or product.owner_id != owner["id"]:
+            raise HTTPException(404, "Không tìm thấy sản phẩm")
+        target = _pin_mapping(product, account)
+    return control(owner, agent_id, "PIN_PRODUCT", {"session_id": session_id, "target": target,
+        "confirmed_token": body.confirmed_token}, idempotency_key, session_id)
+
+
+@router.post("/unpin")
+def unpin_product(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
+    with SessionLocal() as db:
+        account, session_id = _pin_account(db, owner, agent_id)
+    return control(owner, agent_id, "UNPIN_PRODUCT", {"session_id": session_id,
+        "expected_user_id": account}, idempotency_key, session_id)
+
+
+@router.post("/auto-pin")
+def set_auto_pin(body: AutoPinInput, owner: Owner, agent_id: AgentId,
+                 idempotency_key: str | None = IdempotencyKey):
+    owned_agent(owner, agent_id, online=True)
+    products = []
+    session_id = None
+    if body.enabled:
+        with SessionLocal() as db:
+            from app.live_sessions import LiveSession
+            account, session_id = _pin_account(db, owner, agent_id)
+            session = db.scalar(select(LiveSession).where(LiveSession.owner_id == owner["id"],
+                LiveSession.agent_id == agent_id, LiveSession.id == session_id, LiveSession.status == "RUNNING"))
+            if session is None:
+                raise HTTPException(409, "Phiên LIVE đã kết thúc")
+            rows = db.scalars(select(Product).where(Product.owner_id == owner["id"])).all()
+            if len(rows) > 300:
+                raise HTTPException(422, "Catalog có hơn 300 sản phẩm; chưa thể bật tự động ghim cho toàn bộ catalog")
+            products = [{"sarae_product_id": p.id, **_pin_mapping(p, account)} for p in rows]
+    return control(owner, agent_id, "SET_AUTO_PIN", {"enabled": body.enabled, "session_id": session_id,
+        "products": products}, idempotency_key, session_id)
 
 
 @router.post("/config")
@@ -165,7 +257,7 @@ def available_products(owner: Owner, agent_id: AgentId):
     with SessionLocal() as db:
         products = db.scalars(select(Product).where(Product.owner_id == owner["id"]).order_by(Product.id)).all()
         counts = product_video_counts(db, owner["id"])
-        return [{"id": p.id, "shop_id": p.shop_id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
+        return [{"id": p.id, "shop_id": p.shop_id, "tiktok_product_id": p.tiktok_product_id, "name": p.name, "sku": p.sku, "image_url": public_url(p.image_url, p.owner_id), "status": p.status,
                  "price": p.price, "video_count": counts.get(p.id, 0)} for p in products]
 
 

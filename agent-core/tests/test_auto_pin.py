@@ -1,5 +1,6 @@
 """Auto Pin: validation, the plain-Chrome login step and the hand-over to Playwright, without launching Chrome."""
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest import mock
 
 from sarae_agent import auto_pin
 from sarae_agent.auto_pin import AutoPinService, find_chrome, needs_login
+from sarae_agent.cloud.commands import CommandRouter
 
 CONSOLE = "https://shop.tiktok.com/streamer/live/product/dashboard"
 
@@ -79,6 +81,45 @@ class FakePage:
         return {"rows": self.rows, "scroll": None}
 
 
+class FakePinPage:
+    """A small DOM fixture: stable card tokens survive the Pin/Unpin button transition."""
+    url = CONSOLE
+
+    def __init__(self, cards):
+        self.cards = cards
+        self.selected = None
+        self.clicks = 0
+
+    def is_closed(self):
+        return False
+
+    def evaluate(self, _script, token):
+        if token is not None:
+            self.selected = token
+        return [dict(card) for card in self.cards]
+
+    def locator(self, _selector):
+        return self
+
+    def click(self, **_kwargs):
+        self.clicks += 1
+        selected = next(card for card in self.cards if card["token"] == self.selected)
+        selected["pinned"] = not selected["pinned"]
+        if selected["pinned"]:
+            for card in self.cards:
+                if card is not selected:
+                    card["pinned"] = False
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def pin_card(index, name, *, product_id=None, image="https://img.example/a.jpg", price="199.000 ₫", pinned=False):
+    return {"index": index, "token": f"00000000-0000-0000-0000-{index:012d}", "name": name,
+            "image_url": image, "price_text": price,
+            "product_ids": [product_id] if product_id else [], "pinned": pinned}
+
+
 class AutoPinTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -110,6 +151,120 @@ class AutoPinTests(unittest.TestCase):
             self.pin.start()
         self.assertFalse(self.pin.status()["enabled"])
         self.assertEqual(self.pin.stop()["state"], "stopped")
+
+    def test_pin_exact_id_then_verify_and_unpin(self):
+        page = FakePinPage([pin_card(0, "Trùng tên", product_id="1111111111111111111"),
+                            pin_card(1, "Trùng tên", product_id="2222222222222222222")])
+        self.pin._context, self.pin._page = object(), page
+        target = {"tiktok_product_id": "2222222222222222222", "name": "Trùng tên"}
+        result = self.pin.pin_product(target)
+        self.assertEqual(result["card"]["index"], 1)
+        self.assertEqual(self.pin.get_pin_state()["pinned_product_id"], "2222222222222222222")
+        self.assertEqual(self.pin.unpin_product()["status"], "SUCCESS")
+        self.assertIsNone(self.pin.get_pin_state()["pinned_card"])
+        self.assertEqual(page.clicks, 2)
+        self.pin._context = None
+
+    def test_no_id_uses_unique_name_image_price_and_duplicate_requires_confirmation(self):
+        cards = [pin_card(0, "Son đỏ"), pin_card(1, "Son đỏ")]
+        page = FakePinPage(cards)
+        self.pin._context, self.pin._page = object(), page
+        target = {"name": "Son đỏ", "image_url": "https://img.example/a.jpg", "price_text": "199000"}
+        self.assertTrue(self.pin.get_pin_state(target)["ambiguous"])
+        with self.assertRaisesRegex(RuntimeError, "cần người dùng xác nhận"):
+            self.pin.pin_product(target)
+        self.assertEqual(page.clicks, 0)
+        target["confirmed_token"] = cards[1]["token"]
+        self.assertEqual(self.pin.pin_product(target)["card"]["index"], 1)
+        self.pin._context = None
+
+    def test_stale_video_never_clicks(self):
+        page = FakePinPage([pin_card(0, "B")])
+        self.pin._context, self.pin._page = object(), page
+        with self.assertRaisesRegex(RuntimeError, "Video đã chuyển tiếp"):
+            self.pin.pin_product({"name": "B"}, current=lambda: False)
+        self.assertEqual(page.clicks, 0)
+        self.pin._context = None
+
+    def test_snapshot_resolves_missing_id_without_manual_entry(self):
+        page = FakePinPage([pin_card(0, "Son đỏ")])
+        self.pin._context, self.pin._page = object(), page
+        self.pin._product_snapshot = {"complete": True, "products": [{"product_id": "1732299744789890081",
+            "name": "Son đỏ", "image_url": "https://img.example/a.jpg", "price_text": "199.000 ₫"}]}
+        result = self.pin.pin_product({"name": "Son đỏ", "image_url": "https://img.example/a.jpg",
+                                       "price_text": "199000"})
+        self.assertEqual(result["product_id"], "1732299744789890081")
+        self.pin._context = None
+
+    def test_duplicate_snapshot_needs_confirmation_even_if_only_one_card_is_visible(self):
+        card = pin_card(0, "Son đỏ")
+        page = FakePinPage([card])
+        self.pin._context, self.pin._page = object(), page
+        self.pin._product_snapshot = {"complete": True, "products": [
+            {"product_id": "1732299744789890081", "name": "Son đỏ", "image_url": card["image_url"],
+             "price_text": card["price_text"]},
+            {"product_id": "1732299744789890082", "name": "Son đỏ", "image_url": card["image_url"],
+             "price_text": card["price_text"]},
+        ]}
+        target = {"name": "Son đỏ", "image_url": card["image_url"], "price_text": card["price_text"]}
+        with self.assertRaisesRegex(RuntimeError, "cần người dùng xác nhận"):
+            self.pin.pin_product(target)
+        self.assertEqual(page.clicks, 0)
+        self.assertEqual(self.pin.pin_status()["status"], "FAILED")
+        result = self.pin.pin_product({**target, "confirmed_token": card["token"]})
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertIsNone(result["product_id"])
+        self.pin._context = None
+
+    def test_known_id_cannot_guess_between_identical_cards_without_dom_ids(self):
+        card = pin_card(0, "Son đỏ")
+        page = FakePinPage([card])
+        self.pin._context, self.pin._page = object(), page
+        self.pin._product_snapshot = {"complete": True, "products": [
+            {"product_id": pid, "name": "Son đỏ", "image_url": card["image_url"],
+             "price_text": card["price_text"]} for pid in ("1732299744789890081", "1732299744789890082")
+        ]}
+        target = {"tiktok_product_id": "1732299744789890081", "name": "Son đỏ",
+                  "image_url": card["image_url"], "price_text": card["price_text"]}
+        self.assertTrue(self.pin.get_pin_state(target)["ambiguous"])
+        with self.assertRaisesRegex(RuntimeError, "cần người dùng xác nhận"):
+            self.pin.pin_product(target)
+        self.assertEqual(page.clicks, 0)
+        self.assertEqual(self.pin.pin_product({**target, "confirmed_token": card["token"]})["status"], "SUCCESS")
+        self.pin._context = None
+
+    def test_auto_pin_queue_rejects_an_older_configuration(self):
+        self.pin._ensure_worker = lambda: None
+        self.pin.set_video_auto(True, {7: {"name": "Son đỏ"}}, session_id=4)
+        self.pin.queue_video_pin(7, lambda: True, session_id=4)
+        _, (_, current, _), _ = self.pin._queue.get_nowait()
+        self.assertTrue(current())
+        self.pin.set_video_auto(False, {})
+        self.pin.set_video_auto(True, {7: {"name": "Son đỏ"}}, session_id=4)
+        self.assertFalse(current())
+
+    def test_cloud_command_router_reaches_dom_worker(self):
+        page = FakePinPage([pin_card(0, "Son đỏ")])
+        self.pin._context, self.pin._page = object(), page
+        self.pin._account_profile = {"user_id": "7494647113328657914"}
+        playback = mock.Mock()
+        playback.lock, playback.active, playback.session_id = threading.RLock(), True, 4
+        router = CommandRouter(playback=playback, monitor=mock.Mock(), voice=mock.Mock(), auto_pin=self.pin)
+        target = {"name": "Son đỏ", "expected_user_id": "7494647113328657914"}
+        self.assertEqual(router.execute("PIN_PRODUCT", {"session_id": 4, "target": target})["status"], "SUCCESS")
+        self.assertTrue(router.execute("GET_PIN_STATE", {})["pinned_card"])
+        self.assertEqual(router.execute("UNPIN_PRODUCT", {"session_id": 4,
+            "expected_user_id": "7494647113328657914"})["status"], "SUCCESS")
+        self.assertEqual(page.clicks, 2)
+        playback.active = False
+        with self.assertRaisesRegex(RuntimeError, "Video đã chuyển tiếp"):
+            router.execute("PIN_PRODUCT", {"session_id": 4, "target": target})
+        page.cards[0]["pinned"] = True
+        with self.assertRaisesRegex(RuntimeError, "Phiên LIVE đã kết thúc"):
+            router.execute("UNPIN_PRODUCT", {"session_id": 4,
+                "expected_user_id": "7494647113328657914"})
+        self.assertEqual(page.clicks, 2)
+        self.pin._context = None
 
 
 class ChromePathTests(unittest.TestCase):
