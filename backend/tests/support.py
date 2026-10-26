@@ -24,7 +24,8 @@ PASSWORD = "OwnerSecretPassword123!"
 # Modules that open sessions with SessionLocal() directly instead of the FastAPI dependency.
 SESSION_MODULES = ["app.live", "app.live_sessions", "app.ai_live_batches", "app.tiktok_catalog",
                    "app.tiktok_products", "app.answer_bank", "app.ai_answers", "app.tiktok_chat",
-                   "app.sales_brain", "app.playback_policy"]
+                   "app.sales_brain", "app.playback_policy",
+                   "app.comment_reply"]
 
 
 class SaasTestCase(unittest.TestCase):

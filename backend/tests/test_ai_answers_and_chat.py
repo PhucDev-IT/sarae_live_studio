@@ -72,8 +72,8 @@ class AnswersAndPlaygroundTests(SaasTestCase):
         result = self.client.post("/api/ai/playground", json={"product_id": self.product_id, "comments": [
             {"nickname": "Lan", "username": "lan", "comment": "giặt máy được không shop"}]}).json()
         reply = result["replies"][0]
-        self.assertEqual((reply["source"], reply["say"], reply["route"]), ("bank", "Giặt máy thoải mái nha.", "voice"),
-                         "an approved shop answer is spoken even for a GENERAL question")
+        self.assertEqual((reply["source"], reply["say"], reply["route"]), ("bank", "Giặt máy thoải mái nha.", "manual"),
+                         "an approved shop answer is not held for review even for a GENERAL question")
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton mát nha.")]]
         self.client.post("/api/ai/playground", json={"product_id": self.product_id, "comments": [{"comment": "vải mặc nóng không"}]})
         self.assertIn('"shop_qa": [{"q": "giặt máy được không", "a": "Giặt máy thoải mái nha."}]', self.prompts[0])
@@ -98,7 +98,7 @@ class AnswersAndPlaygroundTests(SaasTestCase):
         data = result.json()
         price, material = data["replies"]
         self.assertEqual((price["source"], price["intro"]), ("rule", None))
-        self.assertIn("hai trăm nghìn", price["body"])
+        self.assertIn("hai trăm nghìn", price["body"].lower(), "price rule phrasings are random; check the words")
         self.assertEqual(price["spoken_text"], price["body"], "straight to the answer")
         self.assertEqual((material["source"], material["comment_text"]), ("ai", "@hoa Cotton mát lắm nha"))
         self.assertEqual(data["skipped"][0]["comment"], "hi")

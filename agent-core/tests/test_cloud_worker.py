@@ -439,3 +439,69 @@ def test_heartbeat_report_matches_cloud_and_has_no_paths(home, events):
     assert report["playback"]["connected"] is True and report["playback"]["queue_ids"] == []
     assert report["verification"]["state"]["window_info"] == {"exe_name": "TikTok LIVE Studio.exe"}
     assert "C:\\Users" not in json.dumps(report)
+
+
+# --- TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md, lane "chat") ------------------------------------
+CHAT_SEND = {"reply_id": 12, "session_id": 3, "expected_user_id": "6970", "ttl_seconds": 45,
+             "text": "55kg lấy size M vừa đẹp nha",
+             "target": {"msg_id": "7301", "user_id": "6812", "username": "lan.nguyen", "nickname": "Lan",
+                        "comment": "55kg mặc size gì"}}
+
+
+def test_chat_commands_have_their_own_lane():
+    assert lane("chat_send") == "chat" and lane("chat_probe") == "chat"
+    assert lane("tts_speak") == "background" and lane("playback_next") == "live"
+
+
+def test_router_chat_commands_reach_auto_pin():
+    chat = mock.Mock()
+    chat.chat_send.return_value = {"status": "CONFIRMED", "mode": "NORMAL", "error": None, "steps": []}
+    r = CommandRouter(playback=mock.Mock(), monitor=mock.Mock(), voice=mock.Mock(), chat=chat)
+    assert r.execute("chat_send", CHAT_SEND)["status"] == "CONFIRMED"
+    sent = chat.chat_send.call_args.args[0]
+    assert sent["target"]["username"] == "lan.nguyen" and sent["min_interval_seconds"] == 8 \
+        and sent["max_per_minute"] == 5
+    r.execute("chat_send", {**CHAT_SEND, "min_interval_seconds": 20, "max_per_minute": 2})
+    assert chat.chat_send.call_args.args[0]["min_interval_seconds"] == 20
+    r.execute("chat_probe", {})
+    chat.chat_probe.assert_called_once_with()
+
+
+@pytest.mark.parametrize("kind,payload", [
+    ("chat_send", {**CHAT_SEND, "unexpected": 1}),
+    ("chat_send", {**CHAT_SEND, "expected_user_id": "abc"}),
+    ("chat_send", {**CHAT_SEND, "text": "   "}),
+    ("chat_send", {**CHAT_SEND, "target": {**CHAT_SEND["target"], "username": "lan nguyen"}}),
+    ("chat_send", {**CHAT_SEND, "target": {**CHAT_SEND["target"], "extra": "x"}}),
+    ("chat_send", {k: v for k, v in CHAT_SEND.items() if k != "target"}),
+    ("chat_send", {**CHAT_SEND, "max_per_minute": 0}),
+    ("chat_probe", {"x": 1}),
+])
+def test_router_rejects_bad_chat_payloads(kind, payload):
+    r = CommandRouter(playback=mock.Mock(), monitor=mock.Mock(), voice=mock.Mock(), chat=mock.Mock())
+    with pytest.raises(AgentError) as exc:
+        r.execute(kind, payload)
+    assert exc.value.code == "INVALID_COMMAND_PAYLOAD"
+
+
+def test_router_without_chat_service():
+    r = CommandRouter(playback=mock.Mock(), monitor=mock.Mock(), voice=mock.Mock())
+    with pytest.raises(AgentError) as exc:
+        r.execute("chat_send", CHAT_SEND)
+    assert exc.value.code == "CHAT_UNAVAILABLE"
+
+
+def test_chat_lane_never_waits_for_background_tts(events, journal):
+    cloud, router, states = FakeCloud(), CountingRouter(), []
+    router.gate.clear()
+    cloud.queue = [{"command_id": "tts", "kind": "tts_speak", "payload": {"text": "xin chào"}, "claim_token": "a"},
+                   {"command_id": "chat", "kind": "chat_send", "payload": CHAT_SEND, "claim_token": "b"}]
+    worker = make_worker(cloud, router, events, states, journal)
+    worker.start()
+    try:
+        assert wait_until(lambda: cloud.acks_for("chat"))
+        assert not cloud.acks_for("tts")  # still speaking
+        router.gate.set()
+        assert wait_until(lambda: cloud.acks_for("tts"))
+    finally:
+        worker.stop(timeout=5)

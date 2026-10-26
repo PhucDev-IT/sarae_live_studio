@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
@@ -41,6 +42,7 @@ CONSOLE_NOT_READY = "TikTok chưa trả danh sách sản phẩm (trang tải ch�
 RELOGIN = "TikTok yêu cầu đăng nhập lại: dùng bước 1 (Đăng nhập TikTok bằng Chrome thường)"
 LOGIN_CHROME_OPEN = "Chrome đăng nhập vẫn đang mở: bấm \"Đã đăng nhập xong\" hoặc đóng cửa sổ Chrome đó trước"
 MAX_PRODUCTS = 100
+CHAT_WAIT_SECONDS = 60  # a chat command queued behind a long sync gives up (and is cancelled) after this
 
 # Runs in the LIVE Console page (read only). A product row is the largest ancestor of a Ghim/Pin button that
 # contains no other such button; its name is the longest text line that is not a button label, price or count.
@@ -145,7 +147,8 @@ class AutoPinService:
     LOGIN_CLOSE_SECONDS = 15.0
 
     def __init__(self, profile_dir: Path, *, chrome_finder: Callable[[], str] = find_chrome,
-                 popen: Callable[..., subprocess.Popen] = subprocess.Popen):
+                 popen: Callable[..., subprocess.Popen] = subprocess.Popen, chat_sender=None):
+        from sarae_agent.tiktok_chat_sender import ChatSender  # it imports needs_login from this module
         self.profile_dir = profile_dir
         self._find_chrome = chrome_finder
         self._popen = popen
@@ -172,6 +175,7 @@ class AutoPinService:
         self._account_profile = None
         self._sync_capture_active = False
         self._observed_pages = set()
+        self._chat = chat_sender or ChatSender()  # TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md)
 
     # --- status --------------------------------------------------------------------------
     def login_open(self) -> bool:
@@ -253,12 +257,15 @@ class AutoPinService:
         self._thread = threading.Thread(target=self._run, name="auto-pin-browser", daemon=True)
         self._thread.start()
 
-    def _request(self, method: str, *args):
+    def _submit(self, method: str, *args) -> Future:
         with self._lock:
             self._ensure_worker()
         result = Future()
         self._queue.put((method, args, result))
-        return result.result(timeout=60)
+        return result
+
+    def _request(self, method: str, *args):
+        return self._submit(method, *args).result(timeout=60)
 
     def open_browser(self, url: str = DEFAULT_URL):
         return self._request("open", _check_url(url))
@@ -284,10 +291,8 @@ class AutoPinService:
         self._last_error = ""
 
     def _capture_account_response(self, response):
-        """Capture the logged-in broadcaster's verified account from the page's own XHR."""
-        from urllib.parse import urlsplit
-        if not self._sync_capture_active:
-            return
+        """Capture the logged-in broadcaster's verified account from the page's own XHR, at all times (the chat
+        sender checks the account with it); product responses are still read only during a sync."""
         if urlsplit(response.url).path != "/api/v1/streamer_desktop/account_info/get":
             return
         if response.status != 200:
@@ -364,6 +369,7 @@ class AutoPinService:
                 if self._page is None or self._page.is_closed():
                     pages = [p for p in self._context.pages if not p.is_closed()]
                     self._page = pages[0] if pages else self._context.new_page()
+                self._attach_response_listener(self._page)
                 self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 # A closed Chrome context cannot be reused.
@@ -382,6 +388,7 @@ class AutoPinService:
                 user_data_dir=str(self.profile_dir), channel="chrome", headless=False,
                 accept_downloads=False, viewport=None)
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            self._attach_response_listener(self._page)
             self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
             self._drop_context()
@@ -547,6 +554,10 @@ class AutoPinService:
                     result = self._open_on_worker(*args)
                 elif method == "scan":
                     result = self._scan_on_worker(*args)
+                elif method == "chat_send":
+                    result = self._chat_send_on_worker(*args)
+                elif method == "chat_probe":
+                    result = self._chat_probe_on_worker()
                 elif method == "start":
                     if self._context is None:
                         self._open_on_worker(self._url)  # step 2 after the operator closed the login Chrome
@@ -603,6 +614,78 @@ class AutoPinService:
             except Exception as exc:  # noqa: BLE001
                 if future:
                     future.set_exception(exc)
+
+    # --- TikTok LIVE chat replies (Cloud lane "chat") ----------------------------------------
+    def chat_send(self, payload: dict) -> dict:
+        """Post one reply as a LIVE chat message on the open Console page (never opens a browser)."""
+        from sarae_agent.tiktok_chat_sender import FAILED, ChatRequest
+        request = ChatRequest.from_payload(payload, received_at=self._chat.outbox.now())
+        job = {"lock": threading.Lock(), "started": False, "cancelled": False}
+        future = self._submit("chat_send", request, job)
+        try:
+            return future.result(timeout=CHAT_WAIT_SECONDS)
+        except FutureTimeout:
+            with job["lock"]:
+                if not job["started"]:
+                    job["cancelled"] = True  # the worker skips it: nothing is sent after we said FAILED
+            if not job["cancelled"]:
+                return future.result(timeout=CHAT_WAIT_SECONDS)  # already typing: wait for the real outcome
+            error = "Trình duyệt Auto Pin đang bận (đồng bộ / ghim); chưa gửi"
+            log.info("chat_send reply=%s status=FAILED error=%s", request.reply_id, error)
+            return {"status": FAILED, "mode": None, "error": error,
+                    "steps": [{"step": "QUEUED", "ms": 0}, {"step": FAILED, "ms": CHAT_WAIT_SECONDS * 1000}]}
+
+    def chat_probe(self) -> dict:
+        """What the chat sender finds on the open Console (composer, list, reply controls...), nothing typed."""
+        return self._request("chat_probe")
+
+    def _chat_page(self):
+        """(open LIVE Console page, None) or (None, reason). Never launches or navigates a browser."""
+        page = self._page
+        if self._context is not None and (page is None or page.is_closed()):
+            try:
+                pages = [p for p in self._context.pages
+                         if not p.is_closed() and urlsplit(p.url).hostname in LIVE_ORIGINS]
+            except Exception:  # noqa: BLE001 - Chrome was closed by hand
+                pages = []
+            page = self._page = pages[0] if pages else None
+        if self._context is None or page is None:
+            return None, "LIVE Console chưa mở"
+        if needs_login(page.url):
+            self._state = "login_required"
+            return None, RELOGIN
+        if urlsplit(page.url).hostname not in LIVE_ORIGINS:
+            return None, "Trang hiện tại không phải TikTok LIVE Console"
+        self._attach_response_listener(page)
+        return page, None
+
+    def _chat_send_on_worker(self, request, job) -> dict:
+        from sarae_agent.tiktok_chat_sender import FAILED
+        with job["lock"]:
+            if job["cancelled"]:
+                return {"status": FAILED, "mode": None, "error": "Đã huỷ vì chờ quá lâu", "steps": []}
+            job["started"] = True
+        page, error = self._chat_page()
+        if page is None:
+            result = {"status": FAILED, "mode": None, "error": error,
+                      "steps": [{"step": "QUEUED", "ms": 0}, {"step": FAILED, "ms": 0, "detail": error}]}
+        else:
+            profile = self._account_profile or {}
+            result = self._chat.send(page, request, profile.get("user_id"),
+                                     account_names=(profile.get("nick_name") or "", profile.get("user_name") or ""))
+        log.info("chat_send reply=%s session=%s mode=%s status=%s error=%s steps=%s", request.reply_id,
+                 request.session_id, result.get("mode"), result.get("status"), result.get("error"),
+                 result.get("steps"))
+        return result
+
+    def _chat_probe_on_worker(self) -> dict:
+        page, error = self._chat_page()
+        profile = self._account_profile or {}
+        account = {"verified": bool(profile.get("user_id")), "user_id": profile.get("user_id"),
+                   "user_name": profile.get("user_name")}
+        if page is None:
+            return {"ok": False, "error": error, "account": account, "groups": {}}
+        return {**self._chat.probe(page), "account": account}
 
     def start(self):
         return self._request("start")

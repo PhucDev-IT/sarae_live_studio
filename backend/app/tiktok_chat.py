@@ -124,11 +124,14 @@ class Reader:
                     "id": self.seq,
                     "username": str(getattr(user, "unique_id", "") or ""),
                     "nickname": str(getattr(user, "nickname", "") or ""),
+                    # Stable ids: the viewer is identified by user_id/unique_id, never by the display name.
+                    "user_id": str(getattr(user, "id", "") or getattr(user, "user_id", "") or ""),
                     "comment": str(event.comment),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 self.messages.append(message)
                 event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
+                message["msg_id"] = event_id
                 decision = monitors(self.key).process(message, event_id=event_id or None)
                 if decision == 'selected':
                     enqueue(self.owner_id, self.agent_id, message)

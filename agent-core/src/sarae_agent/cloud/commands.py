@@ -19,9 +19,13 @@ MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
 BACKGROUND_KINDS = {"tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+# Cloud lane "chat": TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md), never behind a TTS or a product switch.
+CHAT_KINDS = {"chat_send", "chat_probe"}
 
 
 def lane(kind: str) -> str:
+    if kind in CHAT_KINDS:
+        return "chat"
     return "background" if kind in BACKGROUND_KINDS else "live"
 
 
@@ -123,6 +127,33 @@ class TtsPreparePayload(Payload):
         return value
 
 
+class ChatTargetPayload(Payload):
+    msg_id: str | None = Field(default=None, min_length=1, max_length=80)
+    user_id: str | None = Field(default=None, pattern=r"^[0-9]{1,80}$")
+    username: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._]{1,64}$")
+    nickname: str | None = Field(default=None, max_length=100)
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class ChatSendPayload(Payload):
+    """docs/AI_AUTO_REPLY.md "Agent command chat_send", plus the desk's pacing."""
+    reply_id: int = Field(ge=1)
+    session_id: int = Field(ge=1)
+    expected_user_id: str = Field(pattern=r"^[0-9]{1,80}$")
+    ttl_seconds: float = Field(ge=1, le=600)
+    text: str = Field(min_length=1, max_length=300)
+    target: ChatTargetPayload
+    min_interval_seconds: float = Field(default=8, ge=0, le=600)
+    max_per_minute: int = Field(default=5, ge=1, le=60)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Nội dung bình luận trống")
+        return value
+
+
 class MonitorConfigPayload(Payload):
     interval_seconds: float = Field(default=2.0, ge=0.5, le=15)
     threshold: float = Field(default=0.82, ge=0.65, le=0.99)
@@ -132,14 +163,16 @@ class MonitorConfigPayload(Payload):
 
 class CommandRouter:
     def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None,
-                 media_prepare: Callable[[int], dict] | None = None):
+                 media_prepare: Callable[[int], dict] | None = None, chat=None):
         """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud;
-        ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once)."""
+        ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once);
+        ``chat`` (auto_pin.AutoPinService) posts LIVE chat replies: chat_send(payload) / chat_probe()."""
         self.playback = playback
         self.monitor = monitor
         self.voice = voice
         self.tiktok_sync = tiktok_sync
         self.media_prepare = media_prepare
+        self.chat = chat
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -179,6 +212,8 @@ class CommandRouter:
             "tts_prepare": (TtsPreparePayload, lambda b: voice.prepare(b.texts, b.voice, b.rate,
                                                                           **tts_options(b))),
             "tts_clear": (NoPayload, lambda _: voice.clear()),
+            "chat_send": (ChatSendPayload, lambda b: self._chat().chat_send(b.model_dump())),
+            "chat_probe": (NoPayload, lambda _: self._chat().chat_probe()),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
                               (("local_media_stop", "obs_stop", "playback_stop"), p.stop),
@@ -199,6 +234,11 @@ class CommandRouter:
                 "account":result.get("account"),
                 "summary":result.get("summary"),
                 "imported":result.get("imported")}
+
+    def _chat(self):
+        if self.chat is None:
+            raise AgentError("CHAT_UNAVAILABLE", "Agent chưa hỗ trợ gửi bình luận TikTok LIVE")
+        return self.chat
 
     def _media_prepare(self, session_id: int) -> dict:
         if self.media_prepare is None:

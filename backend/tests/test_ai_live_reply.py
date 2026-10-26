@@ -196,7 +196,7 @@ class LiveReplyTests(SaasTestCase):
             "model": "eleven_flash_v2_5", "voice": "voice123", "rate": 0,
             "settings": {"stability": 0.5, "speed": 1.0}})
         self.assertEqual(response.status_code, 200, response.text)
-        self.options(mode="auto")
+        self.options(auto_voice_reply=True, confirm_seconds=0)
         self.batch(("lan", "Lan", "giá bn shop"))
         payload = next(c["payload"] for c in self.sent if c["kind"] == "tts_speak")
         self.assertEqual((payload["provider"], payload["model"], payload["voice"]),
@@ -205,7 +205,7 @@ class LiveReplyTests(SaasTestCase):
         self.assertNotIn("api_key", payload)
 
     def test_semi_auto_speaks_after_the_cancel_window_unless_cancelled(self):
-        self.options(mode="semi_auto", veto_seconds=10, rate=10)
+        self.options(auto_voice_reply=True, confirm_seconds=10, rate=10)
         self.ai_answers = [[answer(1, "ASK_SIZE", "55kg mặc M là vừa nha.", slots={"weight_kg": 55}),
                             answer(2, "ASK_COLOR", "Có màu trắng nha.", slots={"color": "trắng"})]]
         first, second = self.batch(("lan_9x", "Lan 🌸", "55kg mặc size gì"), ("hoa", "Hoa", "có màu trắng k"))
@@ -222,7 +222,7 @@ class LiveReplyTests(SaasTestCase):
                          "a cancelled reply stays answerable by comment")
 
     def test_auto_voice_is_paced_and_never_repeats_or_speaks_late(self):
-        self.options(mode="auto", topic_cooldown_seconds=60, max_age_seconds=20)
+        self.options(auto_voice_reply=True, confirm_seconds=0, topic_cooldown_seconds=60, max_age_seconds=20)
         price = self.batch(("a", "An", "giá bn"))[0]
         self.assertEqual(price["voice"], "sent")
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.")]]
@@ -248,20 +248,23 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(len(self.sent), 2)
 
     def test_complaints_and_unsure_answers_are_never_spoken_automatically(self):
-        self.options(mode="auto", min_confidence=0.8)
+        self.options(auto_voice_reply=True, confirm_seconds=0, auto_comment_reply=True, min_confidence=0.8)
         self.ai_answers = [[answer(1, "COMPLAINT", "Bạn nhắn riêng shop nha."),
                             answer(2, "ASK_COLOR", "Chắc có màu đen.", confidence=0.5)]]
         complaint, unsure = self.batch(("a", "", "hàng lỗi đổi sao"), ("b", "", "có màu đen ko"))
         self.assertEqual((complaint["voice"], unsure["voice"], self.sent), ("review", "review", []))
 
-    def test_both_channels_route_personal_questions_to_comments(self):
-        self.options(mode="auto", channel="both")
-        self.ai_answers = [[answer(1, "ASK_SIZE", "55kg lấy M nha.", text="55kg lấy M nha", slots={"weight_kg": 55}),
-                            answer(2, "ORDER", "Chốt đơn cho bạn rồi nha.", text="chốt rồi nha")]]
-        personal, order = self.batch(("lan", "Lan", "55kg mặc size gì"), ("hoa", "Hoa", "chốt 1 cái"))
-        self.assertEqual((personal["route"], personal["voice"], personal["comment"]), ("comment", None, "ready"))
-        self.assertEqual(personal["comment_text"], "@lan 55kg lấy M nha")
-        self.assertEqual((order["route"], order["voice"], order["comment"]), ("both", "sent", "ready"))
+    def test_switches_are_independent(self):
+        cases = {(False, False): ("ready", "ready"), (True, False): ("queued", "ready"),
+                 (False, True): ("ready", "queued"), (True, True): ("queued", "queued")}
+        for (voice_on, comment_on), expected in cases.items():
+            self.options(auto_voice_reply=voice_on, auto_comment_reply=comment_on, confirm_seconds=0)
+            self.st.busy_until = time.monotonic() + 100  # keep the voice busy so the state stays visible
+            with patch("app.comment_reply.pump"):
+                self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.", text="cotton nha")]]
+                reply = self.batch(("lan", "Lan", f"vải gì vậy {int(voice_on)}{int(comment_on)}"))[0]
+            self.assertEqual((reply["voice"], reply["comment"]), expected, (voice_on, comment_on))
+            self.assertEqual((reply["voice_enabled"], reply["comment_enabled"]), (voice_on, comment_on))
 
     def test_speech_goes_straight_to_the_answer_and_names_a_product_no_longer_on_air(self):
         reply = {"comments": [{"username": "lan", "nickname": "Lan"}, {"username": "hoa", "nickname": "Hoa"}],
@@ -285,7 +288,7 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(self.sent[-1]["payload"]["text"], "Mẫu này hai trăm nghìn thôi nha.")
         self.assertNotIn("intro", self.sent[-1]["payload"], "straight to the answer, no viewer name")
         self.assertNotIn("_asked", ok.json())
-        self.options(mode="semi_auto", veto_seconds=10)
+        self.options(auto_voice_reply=True, confirm_seconds=10)
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.")]]
         waiting = self.batch(("b", "", "vải gì"))[0]
         stop = self.client.post("/api/ai/live/voice/stop", params=on).json()
@@ -299,10 +302,10 @@ class LiveReplyTests(SaasTestCase):
         self.assertEqual(self.client.get("/api/ai/live/status", params=on, headers=self.B).status_code, 404)
 
     def test_reply_options_are_per_owner_and_validated(self):
-        self.options(mode="auto", persona="xưng em, gọi khách là chị")
-        self.assertEqual(self.client.get("/api/ai/live/reply-config").json()["mode"], "auto")
-        self.assertEqual(self.client.get("/api/ai/live/reply-config", headers=self.B).json()["mode"], "manual")
-        self.assertEqual(self.client.put("/api/ai/live/reply-config", json={"mode": "loud"}).status_code, 422)
+        self.options(auto_voice_reply=True, confirm_seconds=0, persona="xưng em, gọi khách là chị")
+        self.assertTrue(self.client.get("/api/ai/live/reply-config").json()["auto_voice_reply"])
+        self.assertFalse(self.client.get("/api/ai/live/reply-config", headers=self.B).json()["auto_voice_reply"])
+        self.assertEqual(self.client.put("/api/ai/live/reply-config", json={"confirm_seconds": 99}).status_code, 422)
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha chị.")]]
         self.batch(("a", "", "vải gì"))
         self.assertIn("PHONG CÁCH CỦA SHOP: xưng em, gọi khách là chị", self.prompts[0])
@@ -377,7 +380,7 @@ class LiveReplyTests(SaasTestCase):
 
     def test_product_on_air_is_prepared_once_with_audio(self):
         from app.ai_live_batches import prepare
-        self.options(mode="manual")
+        self.options()
         self.ai_answers = [[]]
         prepared_items = [{"question": "áo này bn", "intent": "ASK_PRICE", "slots": {},
                            "say": ["Mẫu này 200k thôi nha.", "Dạ chào anh chị, giá 200k ạ.", "Giá 250k nha."],
