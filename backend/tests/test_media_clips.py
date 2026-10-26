@@ -6,7 +6,9 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+from app.storage_errors import StorageError
 from app.storage_models import MediaItem, MediaThumbnail
 from test_media_library import MediaLibraryTestCase
 
@@ -83,6 +85,19 @@ class MediaClipsTest(MediaLibraryTestCase):
         job = self.cut([{"start": 3.6, "end": 5.0}])
         self.assertEqual(job["status"], "DONE", job)
         self.assertAlmostEqual(job["items"][0]["duration_seconds"], 2.0, delta=0.15)  # from keyframe 3.0 to 5.0
+
+    def test_failure_after_saving_a_clip_reports_it_for_retry(self):
+        clips = [{"start": 0, "end": 2}, {"start": 3, "end": 5}]
+        with patch("app.media_clips._cover", side_effect=StorageError("COVER_FAILED", "Không tạo được ảnh bìa")):
+            job = self.cut(clips)
+        self.assertEqual(job["status"], "FAILED")
+        self.assertEqual((job["done"], len(job["media_ids"])), (1, 1))
+        with self.Session() as db:
+            self.assertEqual(db.query(MediaItem).count(), 2)
+        retried = self.cut(clips[job["done"]:])
+        self.assertEqual((retried["status"], retried["done"]), ("DONE", 1))
+        with self.Session() as db:
+            self.assertEqual(db.query(MediaItem).count(), 3)
 
     def test_precise_mode_cuts_on_the_exact_frame(self):
         job = self.cut([{"start": 1.5, "end": 3.0}], mode="PRECISE")

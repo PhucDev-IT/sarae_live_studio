@@ -193,11 +193,12 @@ def _cut_all(db: Session, job: dict, body: ClipRequest, work: str, ffmpeg: str, 
         _set(job, step="SAVE", phase=f"Đang lưu đoạn {index}/{job['total']} vào kho", progress=0.25 + share * (index - 0.5))
         media = _store(db, source, path, f"{stem}_part{index}{ext}", clip.name.strip() or f"{base_name} - đoạn {index}",
                        clip_info, body.keep_links, products, presenters)
+        # The new media is committed by _store. Record it before optional cover work so retries skip this clip.
+        _set(job, done=index, media_ids=[*job["media_ids"], media.id], progress=0.25 + share * index)
         cover = _cover(ffmpeg, path, work, clip_info["duration"])
         if cover:
             db.add(MediaThumbnail(media_id=media.id, owner_id=media.owner_id, mime_type="image/jpeg", content=cover))
             db.commit()
-        _set(job, done=index, media_ids=[*job["media_ids"], media.id], progress=0.25 + share * index)
         os.remove(path)
 
 

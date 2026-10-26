@@ -5,6 +5,7 @@ import { errorText } from './mediaApi'
 import { assetUrl } from './mediaApi'
 import { createClips, getKeyframes, type ClipMode, type ClipSpec, type CloudMedia } from './cloudMediaApi'
 import { clipJobs, isFinal, useClipJobs, type TrackedClipJob } from './clipJobStore'
+import { clearClipDraft, readClipDraft, writeClipDraft } from './clipDraft'
 import { filmstrip } from './videoFrame'
 import './media-clipper.css'
 
@@ -33,6 +34,8 @@ const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (
  * piece to keep or drop it. Every kept piece becomes a new video of the library (the server cuts the original file).
  */
 export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:string;onClose:()=>void}){
+  const [draft] = useState(()=>readClipDraft(media.id))
+  const [previousJob] = useState(()=>clipJobs.latestForMedia(media.id))
   const player = useRef<HTMLVideoElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const track = useRef<HTMLDivElement>(null)
@@ -40,26 +43,37 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
   const [now,setNow] = useState(0)
   const [playing,setPlaying] = useState(false)
   const [duration,setDuration] = useState(media.duration_seconds ?? 0)
-  const [cuts,setCuts] = useState<number[]>([])
-  const [dropped,setDropped] = useState<Set<string>>(new Set())
-  const [names,setNames] = useState<Record<string, string>>({})
+  const [cuts,setCuts] = useState<number[]>(draft.cuts)
+  const [dropped,setDropped] = useState<Set<string>>(()=>new Set(draft.dropped))
+  const [names,setNames] = useState<Record<string, string>>(draft.names)
   const [frames,setFrames] = useState<(string|null)[]>([])
   const [zoom,setZoom] = useState(1)
   const [hover,setHover] = useState<{time:number; x:number}|null>(null)  // x: px inside the timeline section
-  const [mode,setMode] = useState<ClipMode>('COPY')
-  const [keepLinks,setKeepLinks] = useState(true)
+  const [mode,setMode] = useState<ClipMode>(draft.mode)
+  const [keepLinks,setKeepLinks] = useState(draft.keepLinks)
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
-  const [notice,setNotice] = useState('')
+  const [notice,setNotice] = useState(draft.cuts.length ? 'Đã khôi phục các điểm cắt và lựa chọn của lần trước.' : '')
   const [keyframes,setKeyframes] = useState<number[]|null>(null)  // null while the server reads them
   const stopAt = useRef<number|null>(null)
   const scrubbing = useRef(false)
   const dragging = useRef<number|null>(null)
-  const [jobId,setJobId] = useState<string|null>(null)
-  const [sent,setSent] = useState<SentClip[]>([])
+  const [jobId,setJobId] = useState<string|null>(previousJob?.job.id ?? null)
+  const [sent,setSent] = useState<SentClip[]>(()=>previousJob?.request.clips.map((clip,i)=>({
+    ...clip, label:clip.name || `${media.display_name} - đoạn ${i+1}`, thumb:null,
+  })) ?? [])
   const tracked = useClipJobs()
   const job = tracked.find(t=>t.job.id === jobId)
   const running = tracked.some(t=>t.job.id !== jobId && !isFinal(t.job) && !t.lost)  // another cut still on the server
+
+  useEffect(()=>{
+    if (!jobId || job) return
+    const next = tracked.findLast(t=>t.job.media_id === media.id)
+    if (next) {
+      setJobId(next.job.id)
+      setSent(next.request.clips.map((clip,i)=>({...clip, label:clip.name || `${media.display_name} - đoạn ${i+1}`, thumb:null})))
+    }
+  },[jobId, job, tracked, media.id, media.display_name])
 
   const segments = useMemo<Segment[]>(()=>{
     const bounds = [0, ...cuts, duration]
@@ -68,6 +82,10 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
   const kept = segments.filter(s=>!dropped.has(s.key))
   const keptLength = kept.reduce((sum, s)=>sum + s.end - s.start, 0)
   const current = segments.find(s=>now >= s.start && now < s.end) ?? segments.at(-1)
+
+  useEffect(()=>{
+    writeClipDraft(media.id, {cuts, dropped:[...dropped], names, mode, keepLinks})
+  },[media.id, cuts, dropped, names, mode, keepLinks])
 
   // ----- player: smooth playhead while playing, stop at the end of a previewed piece
   useEffect(()=>{
@@ -240,7 +258,7 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
     player.current?.pause()
     try{
       const created = await createClips(media.id, clips.map(({start, end, name})=>({start, end, name})), mode, keepLinks)
-      clipJobs.track(created, media.display_name)
+      clipJobs.track(created, media.display_name, {clips:clips.map(({start,end,name})=>({start,end,name})), mode, keepLinks})
       setSent(clips);setJobId(created.id)
     }catch(e){setError(errorText(e, 'Không bắt đầu cắt được video'))}
     finally{setBusy(false)}
@@ -249,7 +267,16 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
     const name = (names[s.key] ?? '').trim()
     return {start:Number(s.start.toFixed(3)), end:Number(s.end.toFixed(3)), name, label:name || `${media.display_name} - đoạn ${i + 1}`, thumb:thumbAt(s.start + 0.01)}
   }))
-  const cutMore = () => {setJobId(null);setSent([]);setCuts([]);setDropped(new Set());setNames({})}
+  const cutMore = () => {clearClipDraft(media.id);setJobId(null);setSent([]);setCuts([]);setDropped(new Set());setNames({})}
+  const retry = async () => {
+    if (!job) return
+    const remaining = sent.slice(job.job.done)
+    try{
+      const next = await clipJobs.retry(job.job.id)
+      setSent(remaining)
+      setJobId(next.id)
+    }catch{/* The progress panel displays the retry error. */}
+  }
 
   const pct = (t:number) => duration ? `${t / duration * 100}%` : '0%'
   const tick = TICKS.find(step=>duration / step <= 8 * zoom) ?? TICKS.at(-1) as number
@@ -264,8 +291,8 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
       <button type="button" className="mce-close" aria-label="Đóng trình cắt" onClick={()=>{if (!busy) onClose()}}><X size={18}/></button>
     </header>
 
-    {job && <ClipProgress tracked={job} clips={sent} onClose={onClose} onEdit={()=>setJobId(null)} onCutMore={cutMore}
-      onRetry={()=>{clipJobs.dismiss(job.job.id);void start(sent)}}/>}
+    {job && <ClipProgress tracked={job} clips={sent} onClose={onClose} onEdit={()=>{clipJobs.dismiss(job.job.id);setJobId(null)}} onCutMore={cutMore}
+      onRetry={()=>void retry()}/>}
 
     <div className="mce-body">
       <section className="mce-stage">
@@ -410,7 +437,7 @@ const minutes = (ms:number) => {const s = Math.max(0, Math.round(ms / 1000));ret
 /** What the server is doing right now, step by step and clip by clip; the result (or the error) once it ends. */
 function ClipProgress({tracked,clips,onClose,onEdit,onCutMore,onRetry}:{tracked:TrackedClipJob;clips:SentClip[];onClose:()=>void;onEdit:()=>void;
   onCutMore:()=>void;onRetry:()=>void}){
-  const {job, lost} = tracked
+  const {job, lost, retrying, retryError} = tracked
   const done = job.status === 'DONE', failed = job.status === 'FAILED', active = !done && !failed && !lost
   const [now,setNow] = useState(()=>Date.now())
   useEffect(()=>{
@@ -442,6 +469,7 @@ function ClipProgress({tracked,clips,onClose,onEdit,onCutMore,onRetry}:{tracked:
         <span><b>{done ? 100 : percent}%</b> · {job.done}/{job.total} đoạn xong</span>
         <span><Clock size={13}/> {minutes(elapsed)}{left != null ? ` · còn khoảng ${minutes(left)}` : ''}</span>
       </div>
+      {retryError && <Alert tone="danger">{retryError}</Alert>}
 
       <ol className="mcp-steps">{STEPS.map((step, i)=>{
         const state = done || i < stepIndex ? 'done' : i === stepIndex ? (failed ? 'bad' : 'active') : 'wait'
@@ -474,11 +502,11 @@ function ClipProgress({tracked,clips,onClose,onEdit,onCutMore,onRetry}:{tracked:
         {lost && <Button leftIcon={<RotateCcw size={15}/>} onClick={()=>clipJobs.resume(job.id)}>Kiểm tra lại</Button>}
         {failed && <>
           <Button variant="ghost" onClick={onEdit}>Quay lại chỉnh</Button>
-          <Button leftIcon={<RotateCcw size={15}/>} onClick={onRetry}>Thử lại</Button>
+          <Button leftIcon={<RotateCcw size={15}/>} loading={retrying} onClick={onRetry}>Thử lại đoạn chưa xong</Button>
         </>}
         {done && <>
           <Button variant="ghost" onClick={onCutMore}>Cắt tiếp video này</Button>
-          <Button leftIcon={<Check size={16}/>} onClick={()=>{clipJobs.dismiss(job.id);onClose()}}>Xong</Button>
+          <Button leftIcon={<Check size={16}/>} onClick={()=>{clearClipDraft(job.media_id);clipJobs.dismiss(job.id);onClose()}}>Xong</Button>
         </>}
       </div>
     </div>
