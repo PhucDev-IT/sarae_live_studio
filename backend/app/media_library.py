@@ -221,8 +221,12 @@ def patch_media(media_id: str, body: MediaPatch, owner: Owner, db: DB):
 
 @router.delete("/{media_id}")
 def delete_media(media_id: str, owner: Owner, db: DB):
-    """Hide from the library (DELETED). The stored object and product history are kept for LIVE audit."""
+    """Delete provider objects, then hide the media while retaining product/LIVE history."""
     media = owned_media(db, owner["id"], media_id)
+    try:
+        storage_service.delete_media_objects(db, media)
+    except StorageError as exc:
+        raise http_error(exc)
     if media.status != "DELETED":
         media.status, media.deleted_at = "DELETED", now()
         db.commit()

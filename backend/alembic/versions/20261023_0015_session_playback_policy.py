@@ -15,7 +15,8 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("live_sessions", sa.Column("playback_policy", sa.Text, nullable=True))
+    if "playback_policy" not in {c["name"] for c in sa.inspect(op.get_bind()).get_columns("live_sessions")}:
+        op.add_column("live_sessions", sa.Column("playback_policy", sa.Text, nullable=True))
 
 
 def downgrade():

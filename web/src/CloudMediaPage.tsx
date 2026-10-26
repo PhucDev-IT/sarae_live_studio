@@ -141,7 +141,7 @@ export default function CloudMediaPage(){
 
     <MediaDetail media={opened} products={products} presenters={presenters} onClose={()=>setOpenId(null)}
       onChanged={media=>setItems(list=>list.map(m=>m.id === media.id ? media : m))}
-      onDeleted={media=>{setOpenId(null);setItems(list=>list.filter(m=>m.id !== media.id));toast.push({tone:'success',title:'Đã xóa khỏi thư viện',description:media.display_name})}}/>
+      onDeleted={media=>{setOpenId(null);setItems(list=>list.filter(m=>m.id !== media.id));toast.push({tone:'success',title:'Đã xóa video và file lưu trữ',description:media.display_name})}}/>
   </div>
 }
 
@@ -303,7 +303,7 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
     </Sheet>
     {cutting && media && streamSrc && <MediaClipper media={media} src={streamSrc} onClose={()=>setCutting(false)}/>}
     <ConfirmModal open={confirmDelete} title="Xóa video khỏi thư viện?" tone="danger" confirmLabel="Xóa" loading={busy}
-      description="Video sẽ ẩn khỏi thư viện và không thể gắn thêm sản phẩm. Lịch sử phiên LIVE vẫn được giữ."
+      description="File video sẽ bị xóa khỏi kho lưu trữ và không thể khôi phục. Lịch sử phiên LIVE vẫn được giữ."
       onConfirm={()=>void remove()} onClose={()=>setConfirmDelete(false)}/>
   </>
 }

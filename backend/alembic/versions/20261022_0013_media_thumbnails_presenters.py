@@ -15,18 +15,23 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table("media_thumbnails",
-        sa.Column("media_id", sa.String(32), sa.ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("owner_id", sa.String(64), nullable=False),
-        sa.Column("mime_type", sa.String(30), nullable=False),
-        sa.Column("content", sa.LargeBinary, nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False))
-    op.create_index("ix_media_thumbnails_owner_id", "media_thumbnails", ["owner_id"])
-    op.create_table("media_item_presenters",
-        sa.Column("media_id", sa.String(32), sa.ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("presenter_id", sa.Integer, sa.ForeignKey("presenters.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("owner_id", sa.String(64), nullable=False))
-    op.create_index("ix_media_item_presenters_owner_id", "media_item_presenters", ["owner_id"])
+    bind = op.get_bind()
+    if not sa.inspect(bind).has_table("media_thumbnails"):
+        op.create_table("media_thumbnails",
+            sa.Column("media_id", sa.String(32), sa.ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True),
+            sa.Column("owner_id", sa.String(64), nullable=False),
+            sa.Column("mime_type", sa.String(30), nullable=False),
+            sa.Column("content", sa.LargeBinary, nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False))
+    if "ix_media_thumbnails_owner_id" not in {i["name"] for i in sa.inspect(bind).get_indexes("media_thumbnails")}:
+        op.create_index("ix_media_thumbnails_owner_id", "media_thumbnails", ["owner_id"])
+    if not sa.inspect(bind).has_table("media_item_presenters"):
+        op.create_table("media_item_presenters",
+            sa.Column("media_id", sa.String(32), sa.ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True),
+            sa.Column("presenter_id", sa.Integer, sa.ForeignKey("presenters.id", ondelete="CASCADE"), primary_key=True),
+            sa.Column("owner_id", sa.String(64), nullable=False))
+    if "ix_media_item_presenters_owner_id" not in {i["name"] for i in sa.inspect(bind).get_indexes("media_item_presenters")}:
+        op.create_index("ix_media_item_presenters_owner_id", "media_item_presenters", ["owner_id"])
 
 
 def downgrade():

@@ -17,12 +17,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app import credentials, google_api
+from app import credentials, google_api, storage_service
 from app.config import settings
 from app.identity import require_admin
 from app.database import get_db
 from app.storage_errors import StorageError, fail, http_error
-from app.storage_models import (PROVIDER_GOOGLE_DRIVE, MediaItem, StorageCredential, StorageOAuthState, aware, now)
+from app.storage_models import (PROVIDER_GOOGLE_DRIVE, MediaItem, MediaStorageObject, StorageCredential, StorageOAuthState, aware, now)
 from app.storage_providers import GoogleDriveStorageProvider
 
 log = logging.getLogger("sarae.storage.admin")
@@ -46,6 +46,10 @@ def status_view(db: Session) -> dict:
     row = db.get(StorageCredential, PROVIDER_GOOGLE_DRIVE)
     media = db.execute(select(func.count(MediaItem.id), func.coalesce(func.sum(MediaItem.size_bytes), 0))
                        .where(MediaItem.status == "AVAILABLE")).one()
+    pending = db.scalar(select(func.count(MediaItem.id)).where(
+        MediaItem.status == "DELETED",
+        MediaItem.id.in_(select(MediaStorageObject.media_id).where(
+            MediaStorageObject.status.in_(("ACTIVE", "RETIRED"))))))
     return {
         "upload_provider": settings.sarae_storage_provider,
         "google": {
@@ -59,12 +63,35 @@ def status_view(db: Session) -> dict:
         },
         "media_available": media[0],
         "media_bytes": int(media[1]),
+        "deleted_media_pending_cleanup": pending,
     }
 
 
 @router.get("/status")
 def get_status(_: Admin, db: DB):
     return status_view(db)
+
+
+@router.post("/deleted-media/cleanup")
+def cleanup_deleted_media(_: Admin, db: DB):
+    """Retry provider deletion for media hidden by the old metadata-only behavior."""
+    ids = list(db.scalars(select(MediaItem.id).where(
+        MediaItem.status == "DELETED",
+        MediaItem.id.in_(select(MediaStorageObject.media_id).where(
+            MediaStorageObject.status.in_(("ACTIVE", "RETIRED")))))
+        .order_by(MediaItem.deleted_at, MediaItem.id).limit(100)))
+    cleaned = 0
+    failed = 0
+    for media_id in ids:
+        media = db.get(MediaItem, media_id)
+        try:
+            storage_service.delete_media_objects(db, media)
+            cleaned += 1
+        except StorageError as exc:
+            db.rollback()
+            failed += 1
+            log.warning("cleanup of deleted media %s failed: %s", media_id, exc.code)
+    return {"cleaned": cleaned, "failed": failed, "remaining": status_view(db)["deleted_media_pending_cleanup"]}
 
 
 @router.post("/google/authorize")
@@ -195,7 +222,7 @@ def migrate(body: MigrationRequest, _: Admin, db: DB):
         provider(body.target_provider, db)
     except StorageError as exc:
         raise http_error(exc)
-    query = select(MediaItem).where(MediaItem.provider != body.target_provider)
+    query = select(MediaItem).where(MediaItem.provider != body.target_provider, MediaItem.status == "AVAILABLE")
     if body.media_ids:
         query = query.where(MediaItem.id.in_(body.media_ids))
     results = [migrate_media(db, media, body.target_provider) for media in db.scalars(query.limit(body.limit)).all()]

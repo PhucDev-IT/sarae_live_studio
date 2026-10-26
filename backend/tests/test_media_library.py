@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet
 
 from app import credentials, google_api, storage_providers, storage_service
 from app.config import settings
+from app.storage_errors import StorageError
 from app.storage_models import MediaItem, MediaStorageObject, MediaUpload, StorageCredential, now
 from fake_google_drive import FakeGoogle
 from memory_storage import MemoryStorageProvider, MemoryStore
@@ -297,6 +298,57 @@ class LibraryTest(MediaLibraryTestCase):
         self.data = video_bytes()
         self.media_id = self.upload(self.data)
 
+    def test_delete_removes_drive_file_and_keeps_audit_metadata(self):
+        with self.Session() as db:
+            file_id = db.get(MediaItem, self.media_id).provider_file_id
+        self.assertIn(file_id, self.google.content)
+        response = self.client.delete(f"/api/media-library/{self.media_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "DELETED")
+        self.assertNotIn(file_id, self.google.files)
+        self.assertNotIn(file_id, self.google.content)
+        with self.Session() as db:
+            self.assertEqual(db.get(MediaItem, self.media_id).status, "DELETED")
+            self.assertEqual(db.query(MediaStorageObject).filter_by(media_id=self.media_id).one().status, "DELETED")
+        self.assertEqual(self.client.delete(f"/api/media-library/{self.media_id}").status_code, 200)
+
+    def test_delete_provider_failure_keeps_media_available_for_retry(self):
+        with self.Session() as db:
+            file_id = db.get(MediaItem, self.media_id).provider_file_id
+        with patch.object(storage_providers.GoogleDriveStorageProvider, "delete",
+                          side_effect=StorageError("STORAGE_UNREACHABLE", "Không kết nối được Google Drive")):
+            response = self.client.delete(f"/api/media-library/{self.media_id}")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.headers["X-Sarae-Error"], "STORAGE_UNREACHABLE")
+        self.assertEqual(self.media(self.media_id).json()["status"], "AVAILABLE")
+        self.assertIn(file_id, self.google.content)
+        self.assertEqual(self.client.delete(f"/api/media-library/{self.media_id}").status_code, 200)
+        self.assertNotIn(file_id, self.google.content)
+
+    def test_repeated_delete_cleans_up_legacy_hidden_media(self):
+        with self.Session() as db:
+            media = db.get(MediaItem, self.media_id)
+            file_id = media.provider_file_id
+            media.status = "DELETED"  # old behavior hid the record but left its Drive file
+            db.commit()
+        self.assertIn(file_id, self.google.content)
+        self.assertEqual(self.client.delete(f"/api/media-library/{self.media_id}").status_code, 200)
+        self.assertNotIn(file_id, self.google.content)
+
+    def test_admin_can_clean_up_files_hidden_by_old_delete_behavior(self):
+        with self.Session() as db:
+            media = db.get(MediaItem, self.media_id)
+            file_id = media.provider_file_id
+            media.status = "DELETED"
+            db.commit()
+        self.assertEqual(self.client.get("/api/storage-admin/status", headers=self.ADMIN)
+                         .json()["deleted_media_pending_cleanup"], 1)
+        self.assertEqual(self.client.post("/api/storage-admin/deleted-media/cleanup").status_code, 403)
+        response = self.client.post("/api/storage-admin/deleted-media/cleanup", headers=self.ADMIN)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"cleaned": 1, "failed": 0, "remaining": 0})
+        self.assertNotIn(file_id, self.google.content)
+
     def test_other_owner_can_never_reach_the_media(self):
         self.assertEqual(self.client.get("/api/media-library", headers=self.B).json()["total"], 0)
         self.assertEqual(self.media(self.media_id, self.B).status_code, 404)
@@ -505,6 +557,23 @@ class ProviderMigrationTest(MediaLibraryTestCase):
         self.assertEqual((stream.status_code, stream.content), (206, self.data[:10]))
         self.assertEqual(self.media(self.media_id).json()["id"], self.media_id)  # Sarae id never changes
         self.assertEqual(self.client.post("/api/storage-admin/migrations", json={"target_provider": "MEMORY"}, headers=self.ADMIN).json()["results"], [])
+
+    def test_delete_after_migration_removes_current_and_retired_copies(self):
+        with self.Session() as db:
+            drive_file = db.get(MediaItem, self.media_id).provider_file_id
+        self.assertEqual(self.client.post("/api/storage-admin/migrations", json={"target_provider": "MEMORY"},
+                                          headers=self.ADMIN).json()["migrated"], 1)
+        with self.Session() as db:
+            memory_file = db.get(MediaItem, self.media_id).provider_file_id
+        self.assertIn(drive_file, self.google.content)
+        self.assertIn(memory_file, MemoryStorageProvider.store.objects)
+        response = self.client.delete(f"/api/media-library/{self.media_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn(drive_file, self.google.content)
+        self.assertNotIn(memory_file, MemoryStorageProvider.store.objects)
+        with self.Session() as db:
+            self.assertEqual({o.status for o in db.query(MediaStorageObject).filter_by(media_id=self.media_id)},
+                             {"DELETED"})
 
     def test_failed_checksum_keeps_the_old_mapping(self):
         MemoryStorageProvider.store.corrupt_writes = True

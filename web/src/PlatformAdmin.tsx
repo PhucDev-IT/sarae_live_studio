@@ -453,7 +453,7 @@ function CaptchaTemplates(){
   </div>
 }
 
-type StorageStatus = { upload_provider:string; media_available:number; media_bytes:number
+type StorageStatus = { upload_provider:string; media_available:number; media_bytes:number; deleted_media_pending_cleanup:number
   google:{configured:boolean; status:string; account_email:string; scopes:string[]; root_container_id:string; last_error_code:string|null; connected_at:string|null} }
 const STORAGE_ERRORS:Record<string,string> = {
   STORAGE_STATE_INVALID:'Liên kết xác thực không hợp lệ hoặc đã dùng. Hãy bấm Kết nối lại.',
@@ -472,6 +472,7 @@ function StorageView(){
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
   const [confirm,setConfirm] = useState(false)
+  const [confirmCleanup,setConfirmCleanup] = useState(false)
   const result = useMemo(()=>new URLSearchParams(window.location.hash.split('?')[1] ?? ''),[])
   const load = useCallback(async ()=>{
     try{setStatus(await call<StorageStatus>('/storage-admin/status'));setError('')}
@@ -495,6 +496,14 @@ function StorageView(){
     catch(e){toast.push({tone:'danger', title:'Không ngắt kết nối được', description:e instanceof Error ? e.message : ''})}
     finally{setBusy(false);setConfirm(false);void load()}
   }
+  const cleanup = async () => {
+    setBusy(true)
+    try{
+      const r = await call<{cleaned:number;failed:number;remaining:number}>('/storage-admin/deleted-media/cleanup', {method:'POST'})
+      toast.push({tone:r.failed ? 'danger' : 'success', title:`Đã dọn ${r.cleaned} file`, description:r.failed ? `${r.failed} file chưa xóa được; hãy kiểm tra kết nối kho rồi thử lại.` : `${r.remaining} video còn chờ dọn.`})
+    }catch(e){toast.push({tone:'danger', title:'Không dọn được file đã xóa', description:e instanceof Error ? e.message : ''})}
+    finally{setBusy(false);setConfirmCleanup(false);void load()}
+  }
   const g = status?.google
   const connected = g?.status === 'CONNECTED'
   const callbackError = result.get('storage_error')
@@ -511,11 +520,13 @@ function StorageView(){
         <div><dt>Thư mục gốc (ID)</dt><dd>{g.root_container_id ? <code>{g.root_container_id}</code> : '—'}</dd></div>
         <div><dt>Lỗi gần nhất</dt><dd>{g.last_error_code ?? 'Không có'}</dd></div>
         <div><dt>Video đang lưu</dt><dd>{status?.media_available ?? 0} video · {bytesLabel(status?.media_bytes ?? 0)}</dd></div>
+        <div><dt>Video cũ chờ dọn file</dt><dd>{status?.deleted_media_pending_cleanup ?? 0}</dd></div>
         <div><dt>Provider cho upload mới</dt><dd>{status?.upload_provider}</dd></div>
       </dl>}
       <div className="pa-storage-actions">
         <Button leftIcon={<UploadCloud size={16}/>} loading={busy} disabled={!g?.configured} onClick={()=>void connect()}>{connected ? 'Kết nối lại' : 'Kết nối Google Drive'}</Button>
         {connected && <Button variant="outline" leftIcon={<RefreshCcw size={16}/>} disabled={busy} onClick={()=>void check()}>Kiểm tra</Button>}
+        {connected && !!status?.deleted_media_pending_cleanup && <Button variant="outline" leftIcon={<Trash2 size={16}/>} disabled={busy} onClick={()=>setConfirmCleanup(true)}>Dọn file đã xóa cũ</Button>}
         {connected && <Button variant="ghost" leftIcon={<Unplug size={16}/>} disabled={busy} onClick={()=>setConfirm(true)}>Ngắt kết nối</Button>}
       </div>
     </section>
@@ -530,6 +541,9 @@ function StorageView(){
     <ConfirmModal open={confirm} title="Ngắt kết nối kho lưu trữ?" tone="danger" confirmLabel="Ngắt kết nối" loading={busy}
       description="Khách hàng sẽ không upload và xem video được cho đến khi kết nối lại ĐÚNG tài khoản Google này. File trên Drive không bị xóa."
       onConfirm={()=>void disconnect()} onClose={()=>setConfirm(false)}/>
+    <ConfirmModal open={confirmCleanup} title="Dọn file của video đã xóa?" tone="danger" confirmLabel="Xóa file" loading={busy}
+      description="Xóa vĩnh viễn file lưu trữ của tối đa 100 video đã bị ẩn trước đây. Thông tin lịch sử vẫn được giữ. Nếu còn file chờ dọn, hãy chạy lại."
+      onConfirm={()=>void cleanup()} onClose={()=>setConfirmCleanup(false)}/>
   </div>
 }
 

@@ -75,7 +75,7 @@ class StorageOwnerContainer(Base):
 class MediaItem(Base):
     """A video of a User's Media Library. `id` is Sarae's own and never changes when the file moves provider.
 
-    status: AVAILABLE / DELETED (hidden by the User; storage object kept for history and LIVE audit).
+    status: AVAILABLE / DELETED (provider objects removed; metadata kept for history and LIVE audit).
     Storage fields (provider, provider_file_id, md5) describe the CURRENT object; earlier copies are in
     media_storage_objects. Sarae fields (display_name, notes, tags) are only changed by the User.
     """
@@ -103,7 +103,7 @@ class MediaItem(Base):
 
 
 class MediaStorageObject(Base):
-    """Every copy of a Media in a provider (ACTIVE / COPYING / RETIRED / FAILED). A provider migration copies,
+    """Every copy of a Media in a provider (ACTIVE / COPYING / RETIRED / FAILED / DELETED). A provider migration copies,
     verifies the checksum and only then switches MediaItem to the new object; the old one becomes RETIRED."""
     __tablename__ = "media_storage_objects"
     __table_args__ = (UniqueConstraint("provider", "provider_file_id", name="uq_media_objects_provider_file"),)

@@ -251,6 +251,33 @@ def refresh_metadata(db: Session, media: MediaItem) -> MediaItem:
     return media
 
 
+def delete_media_objects(db: Session, media: MediaItem) -> None:
+    """Remove every stored copy, keeping the current object until historical copies are gone.
+
+    Successful deletes are recorded individually so a failed provider call can be retried.
+    Provider.delete is idempotent (a missing object is already deleted).
+    """
+    all_rows = list(db.scalars(select(MediaStorageObject).where(
+        MediaStorageObject.media_id == media.id,
+        MediaStorageObject.owner_id == media.owner_id)))
+    rows = [row for row in all_rows if row.status in ("ACTIVE", "RETIRED")]
+    current = (media.provider, media.provider_file_id)
+    rows.sort(key=lambda row: (row.provider, row.provider_file_id) == current)
+    deleted: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (row.provider, row.provider_file_id)
+        if key not in deleted:
+            provider(row.provider, db).delete(row.provider_file_id)
+            deleted.add(key)
+        row.status = "DELETED"
+        db.commit()
+    if current not in deleted and not any(
+        (row.provider, row.provider_file_id) == current and row.status == "DELETED" for row in all_rows
+    ):
+        # Older records may have no MediaStorageObject mapping.
+        provider(media.provider, db).delete(media.provider_file_id)
+
+
 # ----- provider migration (Drive → S3/R2 later) ------------------------------------------------
 
 @dataclass
