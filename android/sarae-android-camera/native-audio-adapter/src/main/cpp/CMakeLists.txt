@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(sarae_native_audio LANGUAGES CXX ASM)
-add_library(sarae_native_audio SHARED recorder.cpp owned_callback_v20.S)
+add_library(sarae_native_audio SHARED recorder.cpp native_audio_bridge.cpp owned_callback_v20.S)
 target_include_directories(sarae_native_audio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../../native-observer/src/main/cpp")
 target_link_libraries(sarae_native_audio OpenSLES dl)

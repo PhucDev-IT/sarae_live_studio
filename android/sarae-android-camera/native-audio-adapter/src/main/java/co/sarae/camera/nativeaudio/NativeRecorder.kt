@@ -2,7 +2,7 @@ package co.sarae.camera.nativeaudio
 
 import java.nio.ByteBuffer
 
-/** Owned recorder only. No symbol interception, target lookup, or global hooks. */
+/** Owned recorder only. The bridge has no foreign OpenSL attachment. */
 object NativeRecorder {
     init { System.loadLibrary("sarae_native_audio") }
     const val RATE = 48000
@@ -29,6 +29,13 @@ object NativeRecorder {
     external fun stop(handle: Long)
     external fun destroy(handle: Long)
     external fun push(handle: Long, pcm: ShortArray): Boolean
+    external fun pushGeneration(handle: Long, pcm: ShortArray, generation: Long): Boolean
+    external fun commitGeneration(handle: Long, generation: Long): Boolean
+    external fun setMode(handle: Long, mode: Int)
+    /** Owned OpenSL, foreign OpenSL, native AudioRecord, AAudio, system input. */
+    external fun bridgeCapabilities(): IntArray
+    /** Completed, video, microphone, muted, missing frames, stale, future, errors, full, generation, depth. */
+    external fun bridgeStats(handle: Long): LongArray
     external fun inputDepth(handle: Long): Int
     external fun poll(handle: Long, packet: ByteBuffer): Boolean
     // callbacks, outputDrops, missingFrames, enqueueFailures, callbacksInFlight,

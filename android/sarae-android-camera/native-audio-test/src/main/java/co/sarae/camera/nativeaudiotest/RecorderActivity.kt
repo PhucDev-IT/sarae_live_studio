@@ -57,9 +57,11 @@ class RecorderActivity : Activity() {
     private fun runSuite(seconds:Int) {
         val runId=intent.getStringExtra("runId") ?: "manual-${System.currentTimeMillis()}"
         require(runId.matches(Regex("[a-zA-Z0-9-]{1,48}")))
+        val switchAba=intent.getBooleanExtra("bridgeAba",false)
         val phase19=intent.getBooleanExtra("phase19",false)
         val phase17=phase19||intent.getBooleanExtra("phase17",false)
-        val directory=File(getExternalFilesDir(null),"${if(phase19) "phase19" else if(phase17) "phase17" else "phase15"}/$runId").apply {mkdirs()}
+        require(!switchAba || !phase17) {"bridge A/B/A uses the ordinary owned recorder"}
+        val directory=File(getExternalFilesDir(null),"${if(switchAba) "native-bridge" else if(phase19) "phase19" else if(phase17) "phase17" else "phase15"}/$runId").apply {mkdirs()}
         val logFile=File(directory,"events.jsonl")
         logFile.bufferedWriter().use {writer->
             val lock=Any()
@@ -83,7 +85,8 @@ class RecorderActivity : Activity() {
                 log("suite_start",mapOf("secondsPerMode" to seconds,"loopNs" to durationNs,"rate" to Native.RATE,"channels" to Native.CHANNELS,
                     "runId" to runId,"clock" to "CLOCK_BOOTTIME / elapsedRealtimeNanos",
                     "pcmEncoding" to "S16_LE","framesPerBuffer" to Native.FRAMES,"bufferBytes" to Native.PCM_BYTES,"queueBuffers" to 2,
-                    "replacementCapacityBlocks" to 32,"captureCapacityBlocks" to 128,"timeline" to "controlled callback-block timeline; no video pipeline"))
+                    "replacementCapacityBlocks" to 32,"captureCapacityBlocks" to 128,"timeline" to "controlled callback-block timeline; no video pipeline",
+                    "bridgeCapabilities" to Native.bridgeCapabilities().toList(),"switchAba" to switchAba))
                 // Invoke the actual @JvmStatic bridge that the module hooks,
                 // rather than Kotlin's direct Companion call.
                 val api=if(phase17) (RecorderActivity::class.java.getMethod("observationApi").invoke(null) as Long).also {check(it!=0L) {"LSPatch observation module not attached"}} else 0L
@@ -95,7 +98,7 @@ class RecorderActivity : Activity() {
                     log("hook_candidate_rejected",mapOf("stats" to rejected.toList(),"reason" to "invalid candidate rejected before framework call"))
                     Native.probeEnable(true)
                 }
-                val cases=if(phase17) listOf("BASELINE" to 0,"OBSERVED" to 0) else listOf("MICROPHONE" to 0,"VIDEO" to 1,"MUTED" to 2)
+                val cases=if(switchAba) listOf("VIDEO_ABA" to 1) else if(phase17) listOf("BASELINE" to 0,"OBSERVED" to 0) else listOf("MICROPHONE" to 0,"VIDEO" to 1,"MUTED" to 2)
                 for((name,mode) in cases) {
                     check(!cancelled.get()) {"Activity stopped"}
                     if(phase19 && name=="OBSERVED") {
@@ -106,7 +109,7 @@ class RecorderActivity : Activity() {
                         drainHooks {event,fields->log(event,fields+mapOf("mode" to "REENTRANCY"))}
                     }
                     runOnUiThread {status.text="Recording $name locally; no TikTok / no LIVE"}
-                    record(name,mode,seconds,source,durationNs,directory,if(name=="OBSERVED") api else 0L) {event,fields->log(event,fields+mapOf("mode" to name))}
+                    record(name,mode,seconds,source,durationNs,directory,if(name=="OBSERVED") api else 0L,switchAba) {event,fields->log(event,fields+mapOf("mode" to name))}
                 }
                 if(phase19) {
                     val removed=hook(3);log("native_hook_removed",mapOf("stats" to removed.toList()))
@@ -201,7 +204,8 @@ class RecorderActivity : Activity() {
         for(offset in values.indices step 11)log("native_hook_event",mapOf("values" to values.slice(offset until offset+11),"receiptNs" to SystemClock.elapsedRealtimeNanos()))
     }
 
-    private fun record(name:String,mode:Int,seconds:Int,source:File,loopNs:Long,directory:File,observerApi:Long=0L,log:(String,Map<String,Any?>)->Unit) {
+    private fun record(name:String,mode:Int,seconds:Int,source:File,loopNs:Long,directory:File,observerApi:Long=0L,
+                       switchAba:Boolean=false,log:(String,Map<String,Any?>)->Unit) {
         val hooked=intent.getBooleanExtra("phase19",false)&&name=="OBSERVED"
         val bindingHook=intent.getBooleanExtra("phase20",false)&&name=="OBSERVED"
         val handle=if(observerApi!=0L)Native.createObserved(mode,observerApi) else Native.create(mode)
@@ -231,30 +235,71 @@ class RecorderActivity : Activity() {
                 log("expected_native_error",mapOf("error" to rejection.message,"intentional" to true))
             }
             log("recorder_created",mapOf("mode" to name,"stats" to Native.stats(handle).toList(),"registeredCallback" to true,
-                "initialEnqueues" to 2,"ownership" to "OpenSL until FIFO completion; snapshot before re-enqueue"))
+                "initialEnqueues" to 2,"ownership" to "OpenSL until FIFO completion; snapshot before re-enqueue",
+                "bridge" to Native.bridgeStats(handle).toList()))
             encoder=AacOutput(File(directory,"$name.mp4"),log)
             if(mode==1) {
                 val uri=Uri.fromFile(source).toString()
+                val alternate=File(getExternalFilesDir(null),"sourceB.mp4")
+                val alternateUri=if(switchAba) {check(alternate.isFile) {"sourceB.mp4 required for A/B/A"};Uri.fromFile(alternate).toString()} else ""
+                val alternateLoopNs=if(switchAba) {
+                    val extractor=MediaExtractor()
+                    try {
+                        extractor.setDataSource(alternate.absolutePath)
+                        val track=(0 until extractor.trackCount).first {extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true}
+                        extractor.getTrackFormat(track).getLong(MediaFormat.KEY_DURATION)/10_000L*10_000_000L
+                    } finally {extractor.release()}
+                } else 0L
                 val audio=MediaAudioEngine(this) {event,fields->log(event,fields+mapOf("mode" to name))};engine=audio
                 val prepared=CountDownLatch(1)
                 audio.beginVideo(15);audio.prepareBeforeSwitch(15,1,uri) {prepared.countDown()}
                 check(prepared.await(2,TimeUnit.SECONDS)) {"decoder preparation callback timeout"}
+                if(switchAba) {
+                    audio.videoFrame(15,1,uri,0L,SystemClock.elapsedRealtimeNanos())
+                    val nextPrepared=CountDownLatch(1)
+                    audio.prepareBeforeSwitch(15,2,alternateUri) {nextPrepared.countDown()}
+                    check(nextPrepared.await(2,TimeUnit.SECONDS)) {"B decoder preparation callback timeout"}
+                    log("bridge_next_prepared",mapOf("source" to "B","loopNs" to alternateLoopNs))
+                }
                 feederRunning.set(true)
                 feeder=Thread({
                     try {
                         val cursor=AudioCursor();val pcm=ShortArray(Native.FRAMES*Native.CHANNELS)
                         var block=0L
+                        var sourceBlock=0L
+                        var currentId=1L
+                        var currentUri=uri
+                        var currentLoopNs=loopNs
+                        var generation=1L
+                        val firstSwitch=seconds*100L/3
+                        val secondSwitch=seconds*200L/3
                         while(feederRunning.get()) {
                             if(Native.inputDepth(handle)>=8) {Thread.sleep(2);continue}
                             val now=SystemClock.elapsedRealtimeNanos()
-                            val mediaNs=block*10_000_000L%loopNs
-                            audio.videoFrame(15,1,uri,mediaNs,now-10_000_000L)
+                            if(switchAba && (block==firstSwitch || block==secondSwitch)) {
+                                // A's old deck has advanced several seconds. A fresh key lets
+                                // the existing engine preload its head before returning to A.
+                                val nextId=if(block==firstSwitch) 2L else 3L
+                                val nextUri=if(nextId==2L) alternateUri else uri
+                                currentId=nextId;currentUri=nextUri;currentLoopNs=if(nextId==2L) alternateLoopNs else loopNs
+                                sourceBlock=0L;generation++
+                                audio.videoFrame(15,currentId,currentUri,0L,now-10_000_000L)
+                                check(Native.commitGeneration(handle,generation)) {"generation commit rejected"}
+                                log("bridge_source_commit",mapOf("block" to block,"source" to if(nextId==2L) "B" else "A",
+                                    "generation" to generation,"commitNs" to now,"bridge" to Native.bridgeStats(handle).toList()))
+                                if(nextId==2L) audio.prepareBeforeSwitch(15,3,uri) {
+                                    log("bridge_next_prepared",mapOf("source" to "A","generation" to 3))
+                                }
+                            }
+                            val mediaNs=sourceBlock*10_000_000L%currentLoopNs
+                            audio.videoFrame(15,currentId,currentUri,mediaNs,now-10_000_000L)
                             val result=audio.read(PcmFormat(Native.RATE,Native.CHANNELS),Native.FRAMES,cursor,now)
                             PcmBufferWriter.write(pcm,0,result.pcm,PcmEncoding.S16,pcm.size)
-                            check(Native.push(handle,pcm)) {"unexpected full replacement queue"}
+                            check(Native.pushGeneration(handle,pcm,generation)) {"unexpected full replacement queue"}
                             log("feeder_block",mapOf("block" to block,"mediaNs" to mediaNs,"epoch" to result.epoch,
-                                "missingFrames" to result.missingFrames,"depth" to Native.inputDepth(handle),"driftNs" to result.driftNs))
-                            block++
+                                "missingFrames" to result.missingFrames,"depth" to Native.inputDepth(handle),"driftNs" to result.driftNs,
+                                "source" to if(currentId==2L) "B" else "A","generation" to generation))
+                            block++;sourceBlock++
                         }
                     } catch(t:Throwable) {feederFailure.set(t)}
                 },"native-pcm-feeder").apply {start()}
@@ -317,7 +362,8 @@ class RecorderActivity : Activity() {
                 }
             }
             encoder.finish()
-            log("record_complete",mapOf("mode" to name,"blocks" to count,"durationNs" to SystemClock.elapsedRealtimeNanos()-start,"stats" to Native.stats(handle).toList(),"probe" to Native.probeStats().toList()))
+            log("record_complete",mapOf("mode" to name,"blocks" to count,"durationNs" to SystemClock.elapsedRealtimeNanos()-start,
+                "stats" to Native.stats(handle).toList(),"bridge" to Native.bridgeStats(handle).toList(),"probe" to Native.probeStats().toList()))
         } finally {
             Native.stop(handle)
             feederRunning.set(false);feeder?.join(2000)

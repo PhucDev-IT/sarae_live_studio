@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <time.h>
 #include "observer_api.h"
+#include "native_audio_bridge.h"
 #include <dlfcn.h>
 
 // Owned, metadata-only probe. Optional Phase19 test path; never touches PCM.
@@ -83,17 +84,19 @@ struct Recorder {
     SLRecordItf record=nullptr;
     SLAndroidSimpleBufferQueueItf queue=nullptr;
     std::array<Block,2> buffers{};
-    Ring<Block,32> replacement;
+    sarae::audio::NativeAudioBridge replacement;
     Ring<Packet,128> completed;
     std::atomic<bool> running{false};
     std::atomic<uint64_t> callbacks{0},drops{0},missing{0},enqueueFailures{0},inFlight{0};
     uint64_t startNs=0,stopNs=0;
     unsigned next=0;
-    const int mode;
     const SaraeObserverApi* observerApi=nullptr;
     void* observer=nullptr;
     bool observerExported=false;
-    explicit Recorder(int m,const SaraeObserverApi* api=nullptr):mode(m),observerApi(api) { if(m<0||m>2) throw std::runtime_error("invalid mode"); }
+    explicit Recorder(int m,const SaraeObserverApi* api=nullptr):
+        replacement({48000,Channels,sarae::audio::Encoding::S16Le,Frames},static_cast<sarae::audio::Mode>(m)),observerApi(api) {
+        if(m<0||m>2) throw std::runtime_error("invalid mode");
+    }
     void open() {
         check(slCreateEngine(&engineObject,0,nullptr,0,nullptr,nullptr),"slCreateEngine");
         check((*engineObject)->Realize(engineObject,SL_BOOLEAN_FALSE),"engine Realize");
@@ -137,9 +140,10 @@ struct Recorder {
         packet.header.address=reinterpret_cast<uint64_t>(buffer.data());
         packet.header.index=index;
         packet.mic=buffer;
-        if(r.mode==1) {
-            if(!r.replacement.pop(buffer)) { buffer.fill(0); packet.header.missing=Frames; r.missing.fetch_add(Frames,std::memory_order_relaxed); }
-        } else if(r.mode==2) buffer.fill(0);
+        const auto delivery=r.replacement.applyCompleted(buffer.data(),Bytes);
+        if(delivery==sarae::audio::Delivery::Underrun || delivery==sarae::audio::Delivery::ContractError) {
+            packet.header.missing=Frames;r.missing.fetch_add(Frames,std::memory_order_relaxed);
+        }
         packet.delivered=buffer;
         packet.header.depth=uint32_t(r.replacement.depth());
         packet.header.enqueueResult=(*caller)->Enqueue(caller,buffer.data(),Bytes);
@@ -251,7 +255,36 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(destroy)(JNIEnv*,jobject,jlong h) {
 extern "C" JNIEXPORT jint JNICALL JNI_METHOD(inputDepth)(JNIEnv*,jobject,jlong h) {return jint(get(h).replacement.depth());}
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(push)(JNIEnv* env,jobject,jlong h,jshortArray source) {
     if(env->GetArrayLength(source)!=Samples) {env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),"expected 960 S16 samples");return false;}
-    Block b{};env->GetShortArrayRegion(source,0,Samples,b.data());return get(h).replacement.push(b);
+    Block b{};env->GetShortArrayRegion(source,0,Samples,b.data());auto& bridge=get(h).replacement;
+    return bridge.push(bridge.generation(),b.data(),Bytes);
+}
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(pushGeneration)(JNIEnv* env,jobject,jlong h,jshortArray source,jlong generation) {
+    if(env->GetArrayLength(source)!=Samples || generation<=0) {env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),"expected 960 S16 samples and positive generation");return false;}
+    Block b{};env->GetShortArrayRegion(source,0,Samples,b.data());
+    return get(h).replacement.push(uint64_t(generation),b.data(),Bytes);
+}
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(commitGeneration)(JNIEnv*,jobject,jlong h,jlong generation) {
+    return generation>0 && get(h).replacement.commitGeneration(uint64_t(generation));
+}
+extern "C" JNIEXPORT void JNICALL JNI_METHOD(setMode)(JNIEnv* env,jobject,jlong h,jint mode) {
+    if(mode<0||mode>2) {env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),"invalid native audio mode");return;}
+    get(h).replacement.setMode(static_cast<sarae::audio::Mode>(mode));
+}
+extern "C" JNIEXPORT jlongArray JNICALL JNI_METHOD(bridgeStats)(JNIEnv* env,jobject,jlong h) {
+    const auto s=get(h).replacement.snapshot();
+    const jlong values[]={jlong(s.completed),jlong(s.video),jlong(s.microphone),jlong(s.muted),jlong(s.missingFrames),
+        jlong(s.staleBlocks),jlong(s.futureWaits),jlong(s.contractErrors),jlong(s.fullDrops),jlong(s.generation),jlong(s.queuedBlocks)};
+    auto out=env->NewLongArray(11);env->SetLongArrayRegion(out,0,11,values);return out;
+}
+extern "C" JNIEXPORT jintArray JNICALL JNI_METHOD(bridgeCapabilities)(JNIEnv* env,jobject) {
+    using namespace sarae::audio;
+    const Contract known{48000,Channels,Encoding::S16Le,Frames};
+    const jint values[]={jint(capability(Backend::OwnedOpenSl,Attachment::OwnerCompletedBuffer,known)),
+        jint(capability(Backend::ForeignOpenSl,Attachment::None,known)),
+        jint(capability(Backend::NativeAudioRecord,Attachment::None,known)),
+        jint(capability(Backend::AAudio,Attachment::None,known)),
+        jint(capability(Backend::SystemInput,Attachment::None,known))};
+    auto out=env->NewIntArray(5);env->SetIntArrayRegion(out,0,5,values);return out;
 }
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(poll)(JNIEnv* env,jobject,jlong h,jobject target) {
     auto* p=env->GetDirectBufferAddress(target);
