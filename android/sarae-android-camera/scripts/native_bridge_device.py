@@ -1,6 +1,7 @@
 """One bounded Sarae-owned OpenSL bridge run. Never starts or changes TikTok."""
 
 import datetime
+from decimal import Decimal
 import hashlib
 import json
 import shutil
@@ -38,8 +39,8 @@ def adb(*args, timeout=6, optional=False):
         entries.append({"args": list(map(str, args)), "seconds": round(time.monotonic()-before, 3)})
 
 
-def run_case(run_id, seconds, aba):
-    folder = "native-bridge" if aba else "phase15"
+def run_case(run_id, seconds, aba, loop_ns=0):
+    folder = "native-bridge" if aba or loop_ns else "phase15"
     destination = OUT / run_id
     destination.mkdir(parents=True, exist_ok=True)
     # -S stops only our completed harness task, ensuring a fresh onCreate/intent.
@@ -47,6 +48,8 @@ def run_case(run_id, seconds, aba):
             "--ei", "seconds", str(seconds), "--es", "runId", run_id]
     if aba:
         args += ["--ez", "bridgeAba", "true"]
+    if loop_ns:
+        args += ["--ez", "loopOnly", "true", "--el", "loopDurationNs", str(loop_ns)]
     adb(*args, timeout=10)
     deadline = time.monotonic() + seconds * (1 if aba else 3) + 25
     while time.monotonic() < deadline:
@@ -70,16 +73,19 @@ def run_case(run_id, seconds, aba):
 def main():
     aba_only = sys.argv[1:] == ["--aba-only"]
     aba_long = sys.argv[1:] == ["--aba-long"]
-    if sys.argv[1:] not in ([], ["--aba-only"], ["--aba-long"]):
-        raise ValueError("expected --aba-only, --aba-long or no arguments")
+    loop_corrected = sys.argv[1:] == ["--loop-corrected"]
+    if sys.argv[1:] not in ([], ["--aba-only"], ["--aba-long"], ["--loop-corrected"]):
+        raise ValueError("expected --aba-only, --aba-long, --loop-corrected or no arguments")
     if (OUT / "device-state.json").exists():
         prior = json.loads((OUT / "device-state.json").read_text(encoding="utf-8"))
-        if ("bridge-aba-long" in prior or
-            ("bridge-aba" in prior and not aba_long) or
-            ("bridge-modes" in prior and not (aba_only or aba_long))):
+        if ("bridge-loop-corrected" in prior or
+            ("bridge-aba-long" in prior and not loop_corrected) or
+            ("bridge-aba" in prior and not (aba_long or loop_corrected)) or
+            ("bridge-modes" in prior and not (aba_only or aba_long or loop_corrected))):
             raise RuntimeError("a bridge capture already exists; preserve it and diagnose before retry")
-        if aba_only or aba_long:
-            if "bridge-modes" not in prior or (aba_long and "bridge-aba" not in prior):
+        if aba_only or aba_long or loop_corrected:
+            if ("bridge-modes" not in prior or (aba_long and "bridge-aba" not in prior) or
+                (loop_corrected and "bridge-aba-long" not in prior)):
                 raise RuntimeError("correction requires the prior completed run")
             state.update(prior)
             state["correctionStartedUtc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -118,9 +124,22 @@ def main():
         if digest != hashlib.sha256(local.read_bytes()).hexdigest():
             raise RuntimeError(f"source hash mismatch: {source}")
     state["latestSourceHashes"] = {name: hashlib.sha256((OUT/name).read_bytes()).hexdigest() for name in source_names}
-    if not (aba_only or aba_long):
+    if not (aba_only or aba_long or loop_corrected):
         run_case("bridge-modes", 10, False)
-    if not aba_long:
+    if loop_corrected:
+        # This audio-only harness supplies its synthetic *video* loop duration
+        # from the MP4 container timeline, not the Android audio track format.
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(OUT / "source.mp4")],
+            capture_output=True, timeout=8, check=True,
+        )
+        loop_ns = int(Decimal(probe.stdout.decode().strip()) * 1_000_000_000)
+        if not 3_000_000_000 <= loop_ns <= 5_000_000_000:
+            raise ValueError("the targeted three-loop fixture must be about four seconds")
+        state["loopFixtureDurationNs"] = loop_ns
+        run_case("bridge-loop-corrected", 16, False, loop_ns)
+    elif not aba_long:
         run_case("bridge-aba", 12, True)
     else:
         run_case("bridge-aba-long", 12, True)

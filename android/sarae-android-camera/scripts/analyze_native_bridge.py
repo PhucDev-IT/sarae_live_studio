@@ -71,6 +71,15 @@ def events(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def packet_pts(path):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_packets",
+         "-show_entries", "packet=pts_time", "-of", "json", str(path)],
+        capture_output=True, timeout=20, check=True,
+    )
+    return [float(row["pts_time"]) for row in json.loads(result.stdout)["packets"] if "pts_time" in row]
+
+
 def metrics(path, source_a, source_b, positions):
     encoded = decode(path)
     rows = []
@@ -89,8 +98,10 @@ def main():
     modes = OUT/"bridge-modes/bridge-modes"
     aba = OUT/"bridge-aba/bridge-aba"
     long = OUT/"bridge-aba-long/bridge-aba-long"
+    loop = OUT/"bridge-loop-corrected/bridge-loop-corrected"
     mic_events, aba_events = events(modes/"events.jsonl"), events(aba/"events.jsonl")
     long_events = events(long/"events.jsonl")
+    loop_events = events(loop/"events.jsonl")
     start = next(x["emissionNs"] for x in aba_events if x["event"] == "record_state" and x["state"] == "RECORDING")
     commits = [{"source": x["source"], "generation": x["generation"],
                 "secondsAfterRecordStart": round((x["commitNs"]-start)/1e9, 3)}
@@ -101,6 +112,8 @@ def main():
     mic_delivered = (modes/"MICROPHONE-delivered.s16").read_bytes()
     muted_delivered = np.fromfile(modes/"MUTED-delivered.s16", dtype="<i2")
     muted_encoded = decode(modes/"MUTED.mp4")
+    loop_output = loop/"VIDEO_LOOP.mp4"
+    loop_pts = packet_pts(loop_output)
     report = {
         "scope": "Sarae-owned OpenSL recorder only; no TikTok attachment",
         "sourceASeconds": round(len(a)/RATE, 3), "sourceBSeconds": round(len(b)/RATE, 3),
@@ -124,6 +137,20 @@ def main():
                            [0.8, 2.0, 3.0, 4.7, 5.7, 6.8, 8.8, 9.8, 10.7]),
         "abaLongMissingPcmFrames": sum(x.get("missingFrames", 0) for x in long_events if x["event"] == "feeder_block"),
         "abaLongBridge": next(x["bridge"] for x in long_events if x["event"] == "record_complete"),
+        "loopCorrected": {
+            "encoded": metrics(loop_output, a, b, [0.8, 2.0, 4.8, 6.0, 8.8, 10.0, 12.8, 14.0]),
+            "loopClock": next({"trackDurationNs": x["trackDurationNs"],
+                               "videoTimelineLoopNs": x["videoTimelineLoopNs"]}
+                              for x in loop_events if x["event"] == "loop_clock"),
+            "loopEvents": len([x for x in loop_events if x["event"] == "audio_video_loop"]),
+            "notReadyEvents": len([x for x in loop_events if x["event"] == "audio_loop_not_ready"]),
+            "missingPcmFrames": sum(x.get("missingFrames", 0) for x in loop_events if x["event"] == "feeder_block"),
+            "missingByBlock": [{"block": x["block"], "frames": x["missingFrames"]}
+                               for x in loop_events if x["event"] == "feeder_block" and x.get("missingFrames", 0) > 0],
+            "bridge": next(x["bridge"] for x in loop_events if x["event"] == "record_complete"),
+            "encodedPacketPtsCount": len(loop_pts),
+            "encodedPacketPtsRegressions": sum(right <= left for left, right in zip(loop_pts, loop_pts[1:])),
+        },
     }
     (OUT/"analysis.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

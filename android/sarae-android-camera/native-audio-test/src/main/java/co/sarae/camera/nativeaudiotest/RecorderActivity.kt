@@ -58,10 +58,12 @@ class RecorderActivity : Activity() {
         val runId=intent.getStringExtra("runId") ?: "manual-${System.currentTimeMillis()}"
         require(runId.matches(Regex("[a-zA-Z0-9-]{1,48}")))
         val switchAba=intent.getBooleanExtra("bridgeAba",false)
+        val loopOnly=intent.getBooleanExtra("loopOnly",false)
         val phase19=intent.getBooleanExtra("phase19",false)
         val phase17=phase19||intent.getBooleanExtra("phase17",false)
-        require(!switchAba || !phase17) {"bridge A/B/A uses the ordinary owned recorder"}
-        val directory=File(getExternalFilesDir(null),"${if(switchAba) "native-bridge" else if(phase19) "phase19" else if(phase17) "phase17" else "phase15"}/$runId").apply {mkdirs()}
+        require(!(switchAba || loopOnly) || !phase17) {"bridge tests use the ordinary owned recorder"}
+        require(!(switchAba && loopOnly))
+        val directory=File(getExternalFilesDir(null),"${if(switchAba || loopOnly) "native-bridge" else if(phase19) "phase19" else if(phase17) "phase17" else "phase15"}/$runId").apply {mkdirs()}
         val logFile=File(directory,"events.jsonl")
         logFile.bufferedWriter().use {writer->
             val lock=Any()
@@ -73,7 +75,7 @@ class RecorderActivity : Activity() {
             try {
                 val source=File(getExternalFilesDir(null),"source.mp4");check(source.isFile)
                 val extractor=MediaExtractor()
-                val durationNs=try {
+                val trackDurationNs=try {
                     extractor.setDataSource(source.absolutePath)
                     val track=(0 until extractor.trackCount).first {extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true}
                     val format=extractor.getTrackFormat(track)
@@ -81,6 +83,14 @@ class RecorderActivity : Activity() {
                     // Fixed callback blocks use the complete 10 ms portion of this short fixture.
                     format.getLong(MediaFormat.KEY_DURATION)/10_000L*10_000_000L
                 } finally {extractor.release()}
+                // In this owned harness the video timeline is synthetic. A clipped
+                // audio-only MP4 can expose an edit-list-adjusted track duration
+                // that differs from the actual output/video timeline. Production
+                // MediaAudioEngine receives real source video PTS instead.
+                val suppliedLoopNs=intent.getLongExtra("loopDurationNs",0L)
+                val durationNs=if(suppliedLoopNs>0L) suppliedLoopNs else trackDurationNs
+                log("loop_clock",mapOf("trackDurationNs" to trackDurationNs,"videoTimelineLoopNs" to durationNs,
+                    "explicitVideoTimeline" to (suppliedLoopNs>0L)))
                 require(durationNs>=1_000_000_000L)
                 log("suite_start",mapOf("secondsPerMode" to seconds,"loopNs" to durationNs,"rate" to Native.RATE,"channels" to Native.CHANNELS,
                     "runId" to runId,"clock" to "CLOCK_BOOTTIME / elapsedRealtimeNanos",
@@ -98,7 +108,7 @@ class RecorderActivity : Activity() {
                     log("hook_candidate_rejected",mapOf("stats" to rejected.toList(),"reason" to "invalid candidate rejected before framework call"))
                     Native.probeEnable(true)
                 }
-                val cases=if(switchAba) listOf("VIDEO_ABA" to 1) else if(phase17) listOf("BASELINE" to 0,"OBSERVED" to 0) else listOf("MICROPHONE" to 0,"VIDEO" to 1,"MUTED" to 2)
+                val cases=if(loopOnly) listOf("VIDEO_LOOP" to 1) else if(switchAba) listOf("VIDEO_ABA" to 1) else if(phase17) listOf("BASELINE" to 0,"OBSERVED" to 0) else listOf("MICROPHONE" to 0,"VIDEO" to 1,"MUTED" to 2)
                 for((name,mode) in cases) {
                     check(!cancelled.get()) {"Activity stopped"}
                     if(phase19 && name=="OBSERVED") {
