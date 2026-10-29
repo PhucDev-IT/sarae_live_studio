@@ -190,7 +190,7 @@ function LiveConsoleRow() {
     try {
       // Give TikTok time to mount the dashboard after DOMContentLoaded.
       // The Core then reloads and waits for verified account and product responses.
-      if (afterOpen) await new Promise(resolve => window.setTimeout(resolve, 3000))
+      if (afterOpen) await new Promise(resolve => window.setTimeout(resolve, 5000))
       // Core refreshes TikTok Console and observes its own Network response.
       // Only the resulting product snapshot is sent to Sarae Cloud.
       const result = await run(() => call('tiktok.products.sync'))
