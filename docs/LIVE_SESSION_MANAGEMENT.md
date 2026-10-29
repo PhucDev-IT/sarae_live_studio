@@ -1,5 +1,10 @@
 # Phase 1 — Managed LIVE Sessions (Backend)
 
+> Sessions now have a `playback_mode`. New sessions from the Web are `SINGLE_VIDEO_TIMELINE` (one main video, products
+> pinned by a timeline): see [SINGLE_VIDEO_TIMELINE.md](SINGLE_VIDEO_TIMELINE.md). Everything below is the
+> `ADVANCED_LEGACY` mode (product lineup, switching, queue), which existing sessions and API clients that send no mode
+> keep. On a Single Video session, switching, lineup edits and the rotation policy answer 409.
+
 Semi-automated LIVE: pin product manually in TikTok Shop LIVE Manager, then select the corresponding product in Sarae. TikTok integration/AI are not included.
 
 ## Installation
