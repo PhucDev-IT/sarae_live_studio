@@ -1,13 +1,13 @@
-"""Single Video Timeline, step 4: what is really pinned on the Console (read back on start/reconnect and every
-reconcile period), manual pins (from the Web or directly on the Console) and resuming the timeline."""
+"""Single Video Timeline: what is really pinned on the Console (read back on start/reconnect and every reconcile
+period). The timeline always wins: a pin changed outside Sarae is reported and pinned back to the schedule."""
 import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from sarae_agent.cloud.commands import CommandRouter, lane
+from sarae_agent.cloud.commands import CommandRouter
 from sarae_agent.errors import AgentError
 from sarae_agent.timeline.executors import ConsolePinExecutor, DryRunPinExecutor
-from sarae_agent.timeline.scheduler import RESUME_AT_NEXT_MARKER, TimelineScheduler
+from sarae_agent.timeline.scheduler import TimelineScheduler
 from test_playback_engine import EngineTestBase
 from test_timeline_scheduler import MIN, PLAN, Clock, Gate, product, timeline
 
@@ -47,8 +47,8 @@ class ReconcileTests(unittest.TestCase):
         self.clock.now += seconds
         self.scheduler.observe(7, position_ms, 0)
 
-    def overrides(self):
-        return [e["detail"] for e in self.events if e["type"] == "MANUAL_OVERRIDE"]
+    def drifts(self):
+        return [e["detail"] for e in self.events if e["type"] == "PIN_DRIFT"]
 
     def test_unknown_state_is_read_back_before_acting(self):
         self.at(30_000)
@@ -57,28 +57,23 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.scheduler.status()["actual_product_id"], 2)
         self.at(31_000)
         self.assertEqual(self.console.calls, [("UNPIN_PRODUCT", None)], "a leftover pin is not the timeline's: unpin")
-        self.assertEqual(self.overrides(), [], "a state read while unknown is not a manual override")
+        self.assertEqual(self.drifts(), [], "a state read while unknown is not a change outside Sarae")
 
-    def test_a_pin_changed_on_the_console_holds_the_timeline(self):
+    def test_a_pin_changed_on_the_console_is_pinned_back(self):
         self.at(2 * MIN)
         self.console.answer()
         self.at(2 * MIN + 1000)
         self.assertEqual(self.console.calls, [("PIN_PRODUCT", "9001")])
-        self.console.pinned = "9003"  # the operator pinned product 3 directly on TikTok
+        self.console.pinned = "9003"  # someone pinned product 3 directly on TikTok
         self.at(2 * MIN + 40_000, seconds=40)
         self.console.answer()
-        self.assertEqual((self.scheduler.status()["mode"], self.scheduler.status()["actual_product_id"]), ("MANUAL_HOLD", 3))
-        self.assertEqual(self.overrides()[0]["source"], "console")
-        for position in range(10 * MIN, 20 * MIN, 30_000):
-            self.at(position, seconds=30)
-            while self.console.reads:
-                self.console.answer()
-        self.assertEqual(len(self.console.calls), 1, "the operator's pin is never overwritten")
-        self.scheduler.resume()
-        self.at(20 * MIN)
-        self.assertEqual(self.console.calls[-1], ("PIN_PRODUCT", "9002"))
+        self.assertEqual(self.scheduler.status()["actual_product_id"], 3)
+        self.assertEqual(self.drifts()[0]["tiktok_product_id"], "9003")
+        self.at(2 * MIN + 41_000)
+        self.assertEqual(self.console.calls[-1], ("PIN_PRODUCT", "9001"), "the timeline wins")
+        self.assertEqual(self.scheduler.status()["actual_product_id"], 1)
 
-    def test_an_unknown_card_on_the_console_counts_too(self):
+    def test_an_unknown_card_on_the_console_is_replaced_too(self):
         self.at(2 * MIN)
         self.console.answer()
         self.at(2 * MIN + 1000)
@@ -86,8 +81,9 @@ class ReconcileTests(unittest.TestCase):
         self.at(2 * MIN + 40_000, seconds=40)
         self.console.answer()
         status = self.scheduler.status()
-        self.assertEqual((status["mode"], status["actual_product_id"], status["actual_tiktok_product_id"]),
-                         ("MANUAL_HOLD", None, "123456"))
+        self.assertEqual((status["actual_product_id"], status["actual_tiktok_product_id"]), (None, "123456"))
+        self.at(2 * MIN + 41_000)
+        self.assertEqual(self.console.calls[-1], ("PIN_PRODUCT", "9001"))
 
     def test_a_reading_older_than_an_action_is_ignored(self):
         self.at(2 * MIN)
@@ -98,7 +94,8 @@ class ReconcileTests(unittest.TestCase):
         self.at(10 * MIN, seconds=1)  # no new read while one is on its way
         self.assertEqual(self.console.calls[-1], ("PIN_PRODUCT", "9002"))
         read(True, "9001", None)  # taken before the pin of 9002
-        self.assertEqual((self.scheduler.status()["mode"], self.scheduler.status()["actual_product_id"]), ("TIMELINE", 2))
+        self.assertEqual(self.scheduler.status()["actual_product_id"], 2)
+        self.assertEqual(self.drifts(), [], "an old reading is not a change outside Sarae")
 
     def test_reads_are_spaced_and_a_failed_one_changes_nothing(self):
         for second in range(10):
@@ -115,19 +112,6 @@ class ReconcileTests(unittest.TestCase):
         self.scheduler.gate = Gate(None)
         self.at(2 * MIN, seconds=60)
         self.assertEqual(self.console.reads, [])
-
-    def test_web_manual_pin_with_return_at_the_next_marker(self):
-        self.at(2 * MIN)
-        self.console.answer()
-        self.at(2 * MIN + 1000)
-        self.scheduler.manual_pin(3, RESUME_AT_NEXT_MARKER)
-        self.console.pinned = "9003"
-        self.at(5 * MIN, seconds=40)
-        while self.console.reads:
-            self.console.answer()
-        self.assertEqual(self.overrides()[-1], {"product_id": 3, "policy": RESUME_AT_NEXT_MARKER})
-        self.at(10 * MIN)
-        self.assertEqual(self.console.calls[-1], ("PIN_PRODUCT", "9002"))
 
 
 class DryRunReadTests(unittest.TestCase):
@@ -153,20 +137,15 @@ class ConsoleReadTests(unittest.TestCase):
                                    (False, None, "LIVE Console chưa mở")])
 
 
-class RouterHoldTests(EngineTestBase):
-    def test_hold_and_resume_commands(self):
+class RouterNoHoldTests(EngineTestBase):
+    def test_the_timeline_cannot_be_put_on_hold(self):
         scheduler = TimelineScheduler(DryRunPinExecutor(), Gate(), clock=Clock())
         router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=scheduler)
-        self.assertEqual((lane("timeline_hold"), lane("timeline_resume"), lane("PIN_PRODUCT")),
-                         ("background", "background", "background"), "the hold runs before the pin it announces")
         router.execute("video_play", {"session_id": 7, "media_id": self.files["pl1"], "timeline": timeline(PLAN)})
-        held = router.execute("timeline_hold", {"session_id": 7, "product_id": 3, "policy": "RESUME_AT_NEXT_MARKER"})
-        self.assertEqual((held["mode"], held["manual_policy"]), ("MANUAL_HOLD", "RESUME_AT_NEXT_MARKER"))
-        self.assertEqual(router.execute("timeline_resume", {"session_id": 7})["mode"], "TIMELINE")
-        with self.assertRaises(AgentError):
-            router.execute("timeline_hold", {"session_id": 8})
-        with self.assertRaises(AgentError):
-            router.execute("timeline_hold", {"session_id": 7, "policy": "FOREVER"})
+        for kind in ("timeline_hold", "timeline_resume"):
+            with self.assertRaises(AgentError):
+                router.execute(kind, {"session_id": 7})
+        self.assertNotIn("mode", scheduler.status())
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Single Video Timeline: pins scheduled by the OBS playback position (sarae_agent/timeline), dry-run executors only.
 
 The scenarios of the refactor spec (Phase 6): continuous 60-minute video, several products, seek, pause/resume,
-loop, LIVE not confirmed, pin API failures, manual pin, two markers at the same time, a timeline changed during
+loop, LIVE not confirmed, pin API failures, two markers at the same time, a timeline changed during
 LIVE, a product without pin data, and LIVE stopped with an action on its way.
 """
 import unittest
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from sarae_agent.cloud.commands import CommandRouter
 from sarae_agent.errors import AgentError
 from sarae_agent.timeline.executors import ConsoleLiveGate, ConsolePinExecutor, DryRunPinExecutor
-from sarae_agent.timeline.scheduler import RESUME_AT_NEXT_MARKER, TimelineScheduler
+from sarae_agent.timeline.scheduler import TimelineScheduler
 from test_playback_engine import ENDED, EngineTestBase, PLAYING
 
 MIN = 60_000
@@ -188,24 +188,6 @@ class SchedulerTests(unittest.TestCase):
         self.play(12 * MIN + 10_000, 21 * MIN)
         self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9001"))
         self.assertEqual(self.scheduler.status()["version"], 2)
-
-    def test_manual_pin_holds_until_resume(self):
-        self.play(0, 2 * MIN)
-        self.scheduler.manual_pin(3)
-        self.play(2 * MIN, 20 * MIN)
-        self.assertEqual(len(self.executor.calls), 1, "the operator's pin is not overwritten")
-        self.scheduler.resume()
-        self.scheduler.observe(7, 20 * MIN, 0)
-        self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9002"))
-
-    def test_manual_pin_can_return_at_the_next_marker(self):
-        self.play(0, 2 * MIN)
-        self.scheduler.manual_pin(3, RESUME_AT_NEXT_MARKER)
-        self.play(2 * MIN, 9 * MIN)
-        self.assertEqual(len(self.executor.calls), 1)
-        self.scheduler.observe(7, 10 * MIN, 0)
-        self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9002"))
-        self.assertEqual(self.scheduler.status()["mode"], "TIMELINE")
 
     def test_same_time_markers_the_later_one_wins_once(self):
         self.scheduler.load(7, timeline([{"at_ms": MIN, "action": "PIN_PRODUCT", "product_id": 1},

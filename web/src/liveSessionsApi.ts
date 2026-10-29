@@ -71,6 +71,7 @@ export const EVENT_LABEL:Record<string,string> = {
   PIN_APPLIED:'Đã ghim theo timeline',
   PIN_FAILED:'Ghim theo timeline thất bại',
   MANUAL_OVERRIDE:'Ghim thủ công · tạm giữ timeline',
+  PIN_DRIFT:'Ghim bị đổi ngoài Sarae · ghim lại theo lịch',
   LIVE_GATE_CHANGED:'Trạng thái LIVE trên Console',
 }
 
@@ -190,14 +191,12 @@ export const TIMELINE_STATUS:Record<TimelineStatus,{label:string;tone:'default'|
 }
 export const ACTION_LABEL:Record<MarkerAction,string> = {PIN_PRODUCT:'Ghim sản phẩm', UNPIN_PRODUCT:'Bỏ ghim', NO_ACTION:'Ghi chú (không ghim)'}
 
-/** A manual pin during LIVE: how long it wins over the timeline. */
-export type TimelinePolicy = 'HOLD_UNTIL_RESUME' | 'RESUME_AT_NEXT_MARKER'
 /** Wanted vs actual pin of a running Single Video session, as its Agent last reported. */
 export type PinStateView = {
   session_id:number; status:SessionStatus; active_version:number|null; agent_online:boolean; reported:boolean
   position_ms:number|null; media_duration_ms:number|null; iteration:number|null; agent_version:number|null
   desired_product_id:number|null; desired_product_name:string|null; actual_product_id:number|null; actual_product_name:string|null
-  actual_known:boolean|null; actual_tiktok_product_id:string|null; mode:'TIMELINE'|'MANUAL_HOLD'|null; manual_policy:TimelinePolicy|null
+  actual_known:boolean|null; actual_tiktok_product_id:string|null
   live:boolean|null; in_flight:{action:string;product_id:number|null;attempt:number}|null
   last_applied:{action:string;product_id:number|null;position_ms:number|null}|null; last_error:string|null; dry_run:boolean|null
 }
@@ -213,7 +212,6 @@ export const timelinesApi = {
   activate:(sessionId:number, id:number) => apiRequest<Timeline>(timelinePath(sessionId, `/${id}/activate`), {method:'POST'}),
   remove:(sessionId:number, id:number) => apiRequest<void>(timelinePath(sessionId, `/${id}`), {method:'DELETE'}),
   pinState:(sessionId:number) => apiRequest<PinStateView>(`/live/sessions/${sessionId}/pin-state`),
-  resume:(session:LiveSession) => agentAction(session.agent_id!, `/live/sessions/${session.id}/timeline/resume`, {method:'POST'}),
 }
 /** `#/timeline?session=3` opens the pin timeline editor of a Single Video session. */
 export const timelineHref = (sessionId:number) => `#/timeline?session=${sessionId}`

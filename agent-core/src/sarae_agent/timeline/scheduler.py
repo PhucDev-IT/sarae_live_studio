@@ -12,13 +12,13 @@ Safety rules:
 - one action in flight at a time; its result is matched by token, a late or stale result never starts another one;
 - each wanted state (timeline version, loop iteration, marker, product) gets a bounded number of attempts with
   back-off, then PIN_FAILED (final) and no more tries until the wanted state changes: no infinite pin loop;
-- nothing is executed while the LIVE gate is not open (TikTok LIVE not confirmed on the Console), while the session
-  is not the one loaded, or while the operator holds a manual pin;
+- nothing is executed while the LIVE gate is not open (TikTok LIVE not confirmed on the Console) or while the session
+  is not the one loaded;
 - ``clear`` (LIVE stopped) drops the timeline and makes any result still on its way stale.
 
 Actual state: what is pinned is read back from the Console when unknown (start, reconnect, timed-out ack) and every
-``reconcile_seconds`` while idle. A pin that changed without the scheduler (someone pinned on the Console) is a manual
-override: the timeline holds (HOLD_UNTIL_RESUME by default) instead of fighting the operator.
+``reconcile_seconds`` while idle. The timeline always wins: a pin changed outside Sarae (someone pinned on the Console)
+is reported (PIN_DRIFT) and the next observation pins the product the timeline wants again.
 """
 from __future__ import annotations
 
@@ -30,8 +30,6 @@ from typing import Callable, Protocol
 log = logging.getLogger("sarae.timeline")
 
 UNKNOWN = "UNKNOWN"
-HOLD_UNTIL_RESUME = "HOLD_UNTIL_RESUME"
-RESUME_AT_NEXT_MARKER = "RESUME_AT_NEXT_MARKER"
 
 
 class PinExecutor(Protocol):
@@ -78,7 +76,7 @@ class TimelineScheduler:
     def __init__(self, executor: PinExecutor, gate: LiveGate, emit: Callable[[dict], None] | None = None, *,
                  clock: Callable[[], float] = time.monotonic, max_attempts: int = 3,
                  retry_seconds: tuple[float, ...] = (3, 10, 30), ack_timeout: float = 75,
-                 reconcile_seconds: float = 30, drift_policy: str = HOLD_UNTIL_RESUME):
+                 reconcile_seconds: float = 30):
         self.executor = executor
         self.gate = gate
         self.emit = emit
@@ -87,7 +85,6 @@ class TimelineScheduler:
         self.retry_seconds = retry_seconds
         self.ack_timeout = ack_timeout
         self.reconcile_seconds = reconcile_seconds
-        self.drift_policy = drift_policy
         self.lock = threading.RLock()
         self._token = 0
         self._reset()
@@ -104,9 +101,6 @@ class TimelineScheduler:
         self.desired_marker: dict | None = None
         # What is pinned on TikTok as far as this Agent knows; UNKNOWN until an action of ours succeeded.
         self.actual: int | None | str = UNKNOWN
-        self.mode = "TIMELINE"
-        self.manual_policy = HOLD_UNTIL_RESUME
-        self._hold_key: tuple | None = None
         self.in_flight: dict | None = None
         self._attempts: dict[tuple, int] = {}
         self._retry_at: dict[tuple, float] = {}
@@ -130,13 +124,11 @@ class TimelineScheduler:
         with self.lock:
             same_session = session_id == self.session_id
             actual, position, iteration = self.actual, self.position_ms, self.iteration
-            mode, policy, hold = self.mode, self.manual_policy, self._hold_key
             self._token += 1  # a result of the previous version may still arrive: it only updates `actual`
             self._reset()
             self.session_id = session_id
             if same_session:
                 self.actual, self.position_ms, self.iteration = actual, position, iteration
-                self.mode, self.manual_policy, self._hold_key = mode, policy, hold
             if timeline:
                 self.version = int(timeline.get("version") or 0)
                 self.markers = sorted((dict(m) for m in timeline.get("markers") or []),
@@ -159,26 +151,6 @@ class TimelineScheduler:
             self._reset()
             self._event("TIMELINE_STOPPED", {"reason": reason, "cancelled_in_flight": cancelled}, session_id)
 
-    def manual_pin(self, product_id: int | None, policy: str = HOLD_UNTIL_RESUME) -> dict:
-        """The operator pinned (or unpinned) by hand: the timeline stops acting until ``resume`` (default) or, with
-        RESUME_AT_NEXT_MARKER, until the position reaches a marker other than the one in force now."""
-        with self.lock:
-            self.mode = "MANUAL_HOLD"
-            self.manual_policy = policy
-            self.actual = product_id
-            self._hold_key = self._key()
-            self._event("MANUAL_OVERRIDE", {"product_id": product_id, "policy": policy})
-            return self.status()
-
-    def resume(self) -> dict:
-        """Back to the timeline: the next observation restores the pin wanted at the current position."""
-        with self.lock:
-            if self.mode != "TIMELINE":
-                self.mode = "TIMELINE"
-                self._hold_key = None
-                self._event("TIMELINE_RESUMED", {})
-            return self.status()
-
     # ----- the clock --------------------------------------------------------------------------------------------
 
     def observe(self, session_id: int | None, position_ms: int | None, iteration: int = 0) -> None:
@@ -190,16 +162,10 @@ class TimelineScheduler:
             self.desired_marker = marker_at(self.markers, self.position_ms)
             self.desired = pin_at(self.markers, self.position_ms)
             self._expire_in_flight()
-            if self.mode == "MANUAL_HOLD" and self.manual_policy == RESUME_AT_NEXT_MARKER \
-                    and self.desired_marker is not None and self._key() != self._hold_key:
-                self.mode, self._hold_key = "TIMELINE", None
-                self._event("TIMELINE_RESUMED", {"trigger": "next_marker"})
             self.live = self.gate.is_live()
             reading_due = self.clock() >= self._next_read_at
             if self.live is True and self.in_flight is None and self._reading is None and reading_due:
                 self._read()
-            if self.mode == "MANUAL_HOLD":
-                return  # the operator's pin stays; a Console read may just have found one
             if self.in_flight is not None or self.desired == self.actual:
                 return
             if self.desired is None and self.actual == UNKNOWN:
@@ -251,7 +217,7 @@ class TimelineScheduler:
             if flight is None or flight["token"] != token:
                 # Stale (timed out, new version, stopped): a success still changed TikTok, so what is pinned is no
                 # longer known; the next observation pins the wanted product again (a no-op click if already pinned).
-                if ok and self.session_id is not None and self.mode == "TIMELINE":
+                if ok and self.session_id is not None:
                     self.actual = UNKNOWN
                 return
             self.in_flight = None
@@ -304,15 +270,13 @@ class TimelineScheduler:
                 return  # an action started meanwhile: this reading may predate it
             observed = self._product_of(tiktok_product_id)
             self.last_read = {"ok": True, "tiktok_product_id": tiktok_product_id, "position_ms": self.position_ms}
-            if self.actual == UNKNOWN or self.mode == "MANUAL_HOLD" or observed == self.actual:
-                self.actual = observed
-                return
-            # Changed on TikTok without the scheduler: the operator pinned or unpinned by hand.
+            drifted = self.actual != UNKNOWN and observed != self.actual
             self.actual = observed
-            self.mode, self.manual_policy, self._hold_key = "MANUAL_HOLD", self.drift_policy, self._key()
-            self._event("MANUAL_OVERRIDE", {"source": "console", "tiktok_product_id": tiktok_product_id,
-                                            "policy": self.drift_policy},
-                        product_id=observed if isinstance(observed, int) else None)
+            if drifted:
+                # Changed on TikTok outside Sarae: the timeline wins, the next observation pins the wanted product.
+                self._event("PIN_DRIFT", {"tiktok_product_id": tiktok_product_id, "wanted_product_id": self.desired,
+                                          "position_ms": self.position_ms},
+                            product_id=observed if isinstance(observed, int) else None)
 
     def _fail(self, key: tuple, error: str, final: bool, attempt: int = 1) -> None:
         self.last_error = error[:300]
@@ -358,7 +322,7 @@ class TimelineScheduler:
                     "actual_known": self.actual != UNKNOWN,
                     "actual_tiktok_product_id": self.actual.split(":", 1)[1]
                     if isinstance(self.actual, str) and self.actual.startswith("TIKTOK:") else None,
-                    "last_read": self.last_read, "mode": self.mode, "manual_policy": self.manual_policy,
+                    "last_read": self.last_read,
                     "live": self.live, "in_flight": {k: v for k, v in self.in_flight.items() if k != "key"}
                     if self.in_flight else None,
                     "last_applied": self.last_applied, "last_error": self.last_error,

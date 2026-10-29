@@ -415,7 +415,7 @@ def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
 
 # What the Agent's pin scheduler did (sarae_agent/timeline/scheduler.py), kept in the session history.
 TIMELINE_EVENTS = ("TIMELINE_LOADED", "TIMELINE_STOPPED", "TIMELINE_RESUMED", "PIN_APPLIED", "PIN_FAILED",
-                   "MANUAL_OVERRIDE", "LIVE_GATE_CHANGED")
+                   "PIN_DRIFT", "MANUAL_OVERRIDE", "LIVE_GATE_CHANGED")
 
 
 def reconcile_timeline(db, owner_id: str, agent_id: str, item, reported: dict) -> None:
