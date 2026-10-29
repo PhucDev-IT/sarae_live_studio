@@ -109,7 +109,12 @@ def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | Non
     """(intro, body) the voice reads. The answer goes straight to the point: no viewer names or "mấy bạn hỏi nè".
     The only intro is the product, when the question was about one no longer on air ("còn Áo A lúc nãy thì");
     body = the answer, read the same way every time so its audio is reused."""
-    drift = None if product_on_air == reply["product_id"] else f"Còn {reply['product_name']} lúc nãy thì"
+    if product_on_air == reply["product_id"]:
+        drift = None
+    elif reply.get("ref_label"):
+        drift = f"{reply['ref_label']} thì"  # the viewer named it ("Mẫu số 5 thì …")
+    else:
+        drift = f"Còn {reply['product_name']} lúc nãy thì"
     body = clip(spoken((say if say is not None else reply["say"]).strip()), 440)
     intro = clip(spoken(drift, end=False), 120).rstrip() if drift else None
     return intro or None, body
@@ -117,7 +122,8 @@ def compose_speech(reply: dict, options: ReplyOptions, product_on_air: int | Non
 
 def comment_text(reply: dict, text: str | None = None) -> str:
     tags = " ".join(f"@{c['username']}" for c in reply["comments"][:3] if c.get("username"))
-    return clip(f"{tags} {text if text is not None else reply['text']}".strip(), 150)
+    about = f"{reply['ref_label']}: " if reply.get("ref_label") else ""
+    return clip(f"{tags} {about}{text if text is not None else reply['text']}".strip(), 150)
 
 
 def _touch(reply: dict, **changes):

@@ -422,6 +422,12 @@ def reconcile_timeline(db, owner_id: str, agent_id: str, item, reported: dict) -
     """The Agent plays this Single Video session but runs another timeline version (or none, e.g. it restarted and
     the session was resumed before an activation reached it): send the active one again, at most once a minute."""
     from app.live_timeline import LiveTimeline, push_timeline
+    # The product "on air" of a Single Video session is the one its timeline pins at the current position: AI replies
+    # (ai_live_batches.context) and the console read current_product_id. Between pins it keeps the last one.
+    on_air = reported.get("desired_product_id") if reported.get("session_id") == item.id else None
+    if isinstance(on_air, int) and on_air != item.current_product_id:
+        item.current_product_id = on_air
+        db.commit()
     active = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
     wanted = active.version if active is not None and active.status == "ACTIVE" else None
     if reported.get("session_id") == item.id and reported.get("version") == wanted:

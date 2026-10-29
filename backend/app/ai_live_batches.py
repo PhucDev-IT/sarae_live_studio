@@ -104,13 +104,34 @@ def snapshot(product: Product, session_id: int | None = None) -> dict:
     return {"session_id": session_id, "product": details, "version": fingerprint}
 
 
+def running_session(db, owner_id: str, agent_id: str):
+    from app.live_sessions import LiveSession
+    return db.scalars(select(LiveSession).where(LiveSession.owner_id == owner_id, LiveSession.agent_id == agent_id,
+                                                LiveSession.status == "RUNNING")
+                      .order_by(LiveSession.started_at.desc())).first()
+
+
+def asked_context(owner_id: str, agent_id: str, comment: str) -> dict | None:
+    """When the comment names a product ("mẫu số 5", its name or SKU) that is not the one on air: that product's
+    snapshot, labelled the way the viewer called it (app/product_refs.py). None otherwise."""
+    from app import product_refs
+    with SessionLocal() as db:
+        session = running_session(db, owner_id, agent_id)
+        if session is None:
+            return None
+        ref = product_refs.resolve(db, owner_id, session, comment)
+        if ref is None or ref["product"].id == session.current_product_id:
+            return None
+        ctx = snapshot(ref["product"], session.id)
+    ctx["product"]["_ref"] = ref["label"]
+    ctx["ref"] = {"label": ref["label"], "how": ref["how"]}
+    return ctx
+
+
 def context(owner_id: str, agent_id: str):
     """The product live in the RUNNING session on that Agent, snapshotted when the comment arrives."""
-    from app.live_sessions import LiveSession
     with SessionLocal() as db:
-        session = db.scalars(select(LiveSession).where(LiveSession.owner_id == owner_id, LiveSession.agent_id == agent_id,
-                                                       LiveSession.status == "RUNNING")
-                             .order_by(LiveSession.started_at.desc())).first()
+        session = running_session(db, owner_id, agent_id)
         if session is None or session.current_product_id is None:
             return None
         product = db.get(Product, session.current_product_id)
@@ -176,8 +197,11 @@ def product_data(product: dict) -> dict:
 
 def batch_prompt(product: dict, questions: list[dict], persona: str = "") -> str:
     data = product_data(product)
+    # A product the viewers named ("mẫu số 5") rather than the one on air: the questions are about this PRODUCT.
+    ref = (f"CÂU HỎI VỀ SẢN PHẨM: người xem gọi PRODUCT là \"{product['_ref']}\"; các câu hỏi đang hỏi đúng PRODUCT này "
+           "(other_product=false). Câu trả lời nói \"mẫu này\", không nhắc lại số thứ tự.\n") if product.get("_ref") else ""
     return (RULES + (f"PHONG CÁCH CỦA SHOP: {persona}\n" if persona.strip() else "")
-            + "PRODUCT: " + json.dumps(data, ensure_ascii=False) + "\n"
+            + "PRODUCT: " + json.dumps(data, ensure_ascii=False) + "\n" + ref
             + "PLACEHOLDERS: " + ", ".join("{" + p + "}" for p in sales_brain.placeholders_for(product, product.get("policies") or {})) + "\n"
             + "QUESTIONS: " + json.dumps([{"qid": q["qid"], "text": q["text"]} for q in questions], ensure_ascii=False))
 
@@ -254,7 +278,7 @@ def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: 
         reasons.append(error)
     if answer["needs_review"]:
         reasons.append("AI đánh dấu cần duyệt")
-    if answer["other_product"] or reply_rules.mentions_other_product(question["text"]):
+    if not product.get("_ref") and (answer["other_product"] or reply_rules.mentions_other_product(question["text"])):
         reasons.append("Hỏi về sản phẩm khác hoặc không rõ sản phẩm")
     if not answer["say"] and not answer["text"]:
         reasons.append("Chưa có câu trả lời")
@@ -262,6 +286,8 @@ def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: 
     items = question["items"]
     return {"id": reply_id, "batch_id": batch_id, "session_id": ctx["session_id"], "product_id": product["id"],
             "product_name": product["name"], "version": ctx["version"], "question": question["text"],
+            # How the viewer called a product other than the one on air ("Mẫu số 5"); the answer is introduced with it.
+            "ref_label": product.get("_ref"),
             "comments": [{"id": i["id"], "username": i["username"], "nickname": i.get("nickname") or "",
                           "user_id": i.get("user_id") or "", "msg_id": i.get("msg_id") or "",
                           "comment": i["comment"]} for i in items],
@@ -332,7 +358,7 @@ def answer_comments(owner_id: str, ctx: dict, items: list[dict], options, *, log
         if rule:
             answers[q["qid"]] = (rule, "rule", "")
             continue
-        if not reply_rules.mentions_other_product(q["text"]):
+        if product.get("_ref") or not reply_rules.mentions_other_product(q["text"]):
             known = answer_bank.find(owner_id, product["id"], ctx["version"], q["text"], allowed=allowed)
             if known:
                 answers[q["qid"]] = (known, "bank", "")
@@ -415,14 +441,17 @@ def enqueue(owner_id: str, agent_id: str, message):
     options = batch_options(owner_id)
     if not options.enabled:
         return
-    ctx = context(owner_id, agent_id)
+    # A comment naming another product ("mẫu số 5") is answered about that product; the pin does not change.
+    asked = asked_context(owner_id, agent_id, message.get("comment") or "")
+    ctx = asked or context(owner_id, agent_id)
     if not ctx:
         monitors(st.key).record("BATCH_SKIP", "no_live_product", "Chưa có sản phẩm đang phát trong phiên LIVE; không gọi AI.")
         with st.lock:
             st.stats["skipped"] += 1
         return
-    maybe_prepare(st, ctx)
-    key = (ctx["session_id"], ctx["product"]["id"], ctx["version"])
+    if asked is None:
+        maybe_prepare(st, ctx)
+    key = (ctx["session_id"], ctx["product"]["id"], ctx["version"], (ctx.get("ref") or {}).get("label"))
     item = {"id": message.get("id"), "username": message.get("username") or "", "nickname": message.get("nickname") or "",
             "user_id": message.get("user_id") or "", "msg_id": message.get("msg_id") or "",
             "comment": message.get("comment") or "", "context": ctx, "asked_at": time.monotonic(), "asked_iso": _now_iso()}
