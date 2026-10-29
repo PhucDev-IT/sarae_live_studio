@@ -18,7 +18,13 @@ class Settings(BaseSettings):
     sarae_agent_id: str = ""
     sarae_agent_autostart_monitor: bool = False
     # Centralized Media Library storage (system-owned). Provider for NEW uploads; existing media keep theirs.
-    sarae_storage_provider: str = "GOOGLE_DRIVE"
+    sarae_storage_provider: str = "R2"
+    sarae_r2_account_id: str = ""
+    sarae_r2_bucket: str = ""
+    sarae_r2_access_key_id: str = ""
+    sarae_r2_secret_access_key: str = ""
+    sarae_r2_endpoint: str = ""
+    sarae_r2_region: str = "auto"
     # Google OAuth web client of the Sarae Google Cloud project (system account, connected by a SUPER_ADMIN).
     sarae_google_client_id: str = ""
     sarae_google_client_secret: str = ""
