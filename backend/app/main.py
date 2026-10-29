@@ -5,6 +5,7 @@ from app.config import settings
 from app.catalog import public_router as catalog_public_router, router as catalog_router
 from app.live import router as live_router
 from app.live_sessions import router as live_sessions_router
+from app.live_timeline import router as live_timeline_router
 from app.tiktok_chat import router as tiktok_chat_router
 from app.ai_service import router as ai_router
 from app.ai_live_batches import router as ai_live_router
@@ -74,6 +75,7 @@ app.include_router(catalog_public_router)
 app.include_router(catalog_router)
 app.include_router(live_router)
 app.include_router(live_sessions_router)
+app.include_router(live_timeline_router)
 app.include_router(tiktok_chat_router)
 app.include_router(tiktok_chat_session_router)
 app.include_router(ai_router)

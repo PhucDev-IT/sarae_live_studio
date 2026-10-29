@@ -786,6 +786,13 @@ def update_session(session_id: int, body: SessionPatch, owner: Owner):
             main_video(db, owner["id"], body.main_media_id)
             item.main_media_id = body.main_media_id
             event(db, session_id, "MAIN_VIDEO_CHANGED", detail=f"media={item.main_media_id}")
+            # The active timeline was made for the previous video: its positions mean nothing for the new one.
+            from app.live_timeline import LiveTimeline
+            active = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
+            if active is not None and active.media_id != item.main_media_id:
+                active.status = "APPROVED"
+                item.active_timeline_id = None
+                event(db, session_id, "TIMELINE_DEACTIVATED", detail=f"version={active.version};main_video_changed=true")
         if body.video_loop is not None:
             item.video_loop = body.video_loop
         if body.name is not None:
@@ -828,6 +835,11 @@ def duplicate_session(session_id: int, owner: Owner):
         db.flush()
         replace_products(db, item.id, ids)
         event(db, item.id, "CREATED", detail=f"duplicate_of={session_id}")
+        if is_single(source) and source.active_timeline_id and source.main_media_id:
+            # The copy starts from the timeline that ran, as a DRAFT to review again (products may have changed).
+            from app.live_timeline import copy_markers, new_version
+            timeline = new_version(db, item, owner["id"], note=f"Sao chép từ phiên #{session_id}")
+            copy_markers(db, source.active_timeline_id, timeline.id)
         db.commit()
         return serialize(db, item)
 
