@@ -187,6 +187,19 @@ class FfmpegTests(unittest.TestCase):
             pipeline.extract_audio("ffmpeg", video, wav)
             self.assertGreater(os.path.getsize(wav), 3 * 16000 * 2 * 0.9, "16 kHz mono 16-bit")
             self.assertEqual(pipeline.frame_at("ffmpeg", video, 1500)[:2], b"\xff\xd8", "a JPEG frame")
+            try:
+                import numpy  # noqa: F401 - comes with faster-whisper; read_wav needs it
+            except ImportError:
+                numpy = None
+            if numpy is not None:
+                from app.timeline_ai.providers import ProviderUnavailable, read_wav
+                samples = read_wav(wav)  # what Whisper gets instead of a path (PyAV is never used)
+                self.assertAlmostEqual(len(samples), 3 * 16000, delta=16000 * 0.1)
+                self.assertTrue(-1.0 <= float(samples.min()) and float(samples.max()) <= 1.0)
+                stereo = os.path.join(tmp, "stereo.wav")
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video, "-ac", "2", "-ar", "44100", stereo], check=True)
+                with self.assertRaises(ProviderUnavailable):
+                    read_wav(stereo)
             with self.assertRaises(pipeline.AnalysisError):
                 pipeline.probe_ms("ffprobe", os.path.join(tmp, "missing.mp4"))
 

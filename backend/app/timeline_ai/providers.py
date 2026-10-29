@@ -69,7 +69,9 @@ class FasterWhisperTranscriber:
         except ImportError as exc:
             raise ProviderUnavailable("Máy chủ chưa cài faster-whisper (pip install -r requirements-timeline-ai.txt)") from exc
         model = WhisperModel(self.model, device=self.device, compute_type=self.compute_type)
-        segments, _info = model.transcribe(audio_path, language=language, word_timestamps=True, vad_filter=True)
+        # Samples, not a path: given a path, faster-whisper decodes with PyAV, whose recent releases dropped an argument
+        # it passes (`metadata_errors`). Our audio is already 16 kHz mono PCM from FFmpeg.
+        segments, _info = model.transcribe(read_wav(audio_path), language=language, word_timestamps=True, vad_filter=True)
         out = []
         for seg in segments:
             words = [{"start_ms": int(w.start * 1000), "end_ms": int(w.end * 1000), "word": w.word.strip(),
@@ -77,6 +79,18 @@ class FasterWhisperTranscriber:
             out.append({"start_ms": int(seg.start * 1000), "end_ms": int(seg.end * 1000), "text": seg.text.strip(),
                         "words": words})
         return out
+
+
+def read_wav(path: str):
+    """16 kHz mono 16-bit PCM WAV (pipeline.extract_audio) → float32 samples in [-1, 1], as Whisper models take them."""
+    import wave
+
+    import numpy as np  # a dependency of faster-whisper
+    with wave.open(path, "rb") as wav:
+        if wav.getframerate() != 16000 or wav.getnchannels() != 1 or wav.getsampwidth() != 2:
+            raise ProviderUnavailable("Âm thanh phải là WAV 16 kHz mono 16-bit")
+        frames = wav.readframes(wav.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 class WordAligner:
