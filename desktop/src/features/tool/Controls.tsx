@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, Clapperboard, Cloud, Download, Pin, ScanEye } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Switch, type Tone } from '../../app/ui'
@@ -170,6 +170,7 @@ function LiveConsoleRow() {
   const [expanded, setExpanded] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncInfo, setSyncInfo] = useState('')
+  const syncInProgress = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -181,16 +182,15 @@ function LiveConsoleRow() {
     return () => { alive = false; window.clearInterval(timer) }
   }, [])
 
-  const act = async (fn: () => Promise<AutoPinStatus>, message?: string) => {
-    const next = await run(fn, message)
-    if (next) setPin(next)
-  }
-
-  const sync = async () => {
-    if (syncing) return
+  const sync = async (afterOpen = false) => {
+    if (syncInProgress.current) return
+    syncInProgress.current = true
     setSyncing(true)
     setSyncInfo('')
     try {
+      // Give TikTok time to mount the dashboard after DOMContentLoaded.
+      // The Core then reloads and waits for verified account and product responses.
+      if (afterOpen) await new Promise(resolve => window.setTimeout(resolve, 3000))
       // Core refreshes TikTok Console and observes its own Network response.
       // Only the resulting product snapshot is sent to Sarae Cloud.
       const result = await run(() => call('tiktok.products.sync'))
@@ -199,8 +199,15 @@ function LiveConsoleRow() {
           ' · Cập nhật ' + result.imported.updated + ' sản phẩm')
       }
     } finally {
+      syncInProgress.current = false
       setSyncing(false)
     }
+  }
+
+  const openAndSync = async () => {
+    const opened = await run(() => call('autopin.open', { url: LIVE_CONSOLE_URL }))
+    if (opened) setPin(opened)
+    if (opened?.state === 'ready') await sync(true)
   }
 
   if (!pin) return null
@@ -218,16 +225,15 @@ function LiveConsoleRow() {
       </button>}>
       {expanded && <div className="row-extra">
         <div className="inline">
-          <ActionButton variant="primary" onAction={() => act(
-            () => call('autopin.open', { url: LIVE_CONSOLE_URL }), 'Đã mở TikTok LIVE Console'
-          )}>Mở TikTok LIVE Console</ActionButton>
-          <ActionButton disabled={!pin.browser_open || syncing} onAction={sync}>
+          <ActionButton variant="primary" disabled={syncing} onAction={openAndSync}>Mở TikTok LIVE Console</ActionButton>
+          <ActionButton disabled={!pin.browser_open || syncing} onAction={() => sync()}>
             {syncing ? 'Đang đồng bộ…' : 'Đồng bộ sản phẩm'}
           </ActionButton>
         </div>
         {syncInfo && <small className="tone-ok">{syncInfo}</small>}
         <small className="muted">
-          Đăng nhập và quản lý TikTok trực tiếp trong Chrome. Đồng bộ chạy ngầm, không hiển thị danh sách sản phẩm trên Agent.
+          Đăng nhập và quản lý TikTok trực tiếp trong Chrome. Sản phẩm tự đồng bộ sau khi mở Console và trang tải xong;
+          nút Đồng bộ sản phẩm dùng để chạy lại khi cần. Danh sách sản phẩm không hiển thị trên Agent.
           Ghim sản phẩm và tự trả lời bình luận được điều khiển từ web (Điều khiển LIVE) qua cửa sổ Chrome này.
         </small>
       </div>}

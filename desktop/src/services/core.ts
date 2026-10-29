@@ -31,6 +31,7 @@ const SLOW_METHODS: Partial<Record<MethodName, number>> = {
   'autopin.login_done': 75_000,
   'autopin.start': 75_000,
   'autopin.scan': 60_000,
+  'tiktok.products.sync': 150_000,
   'activation.activate': 45_000,
   'obs.connect': 20_000,
   'voice.speak': 60_000,

@@ -680,7 +680,7 @@ class AutoPinService:
 
         With `expected_user_id`, a Console logged in with another account raises AccountMismatch and changes
         nothing: the pin list and the snapshot keep what they had."""
-        return self._request("scan", expected_user_id)
+        return self._submit("scan", expected_user_id).result(timeout=120)
 
     def _wait_for_console(self, page) -> bool:
         """Wait until the console's own account_info and product list responses were read (bodies included)."""
