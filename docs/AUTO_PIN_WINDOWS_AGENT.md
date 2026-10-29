@@ -1,5 +1,10 @@
 # Auto Pin — Windows Agent (experimental)
 
+> **Single Video Timeline sessions** (the default for new LIVE sessions) do not use this name-based timer nor the
+> per-video auto pin: their pins come from the session's pin timeline, scheduled by the playback position on the
+> Agent (`sarae_agent/timeline`), dry-run by default. See [SINGLE_VIDEO_TIMELINE.md](SINGLE_VIDEO_TIMELINE.md).
+> This page describes the Chrome profile / login steps they share and the modes kept for `ADVANCED_LEGACY` sessions.
+
 ## Scope
 
 The Tauri GUI has a **Tự động ghim** row (switch + ⌄ with two steps). Both steps use one
@@ -50,8 +55,9 @@ cannot be uniquely identified, the service **stops rather than guessing**.
 - TikTok LIVE Console DOM, locales, product row structure, and URL can change;
   the included locator is an initial implementation, **not verified against a
   live session**. Test selectors against the customer's actual LIVE Console.
-- No sync-to-OBS-product-ID mapping yet: current implementation rotates through
-  user-supplied names on a timer. It does not promise one pin per playback event.
+- The timer mode rotates through user-supplied names; it does not promise one pin per playback event. Pins by
+  playback position are the Single Video Timeline scheduler ([SINGLE_VIDEO_TIMELINE.md](SINGLE_VIDEO_TIMELINE.md)).
+  The per-video auto pin (`SET_AUTO_PIN`) pins the product whose videos start playing (advanced mode only).
 - Current cycle does not explicitly unpin a previously pinned product. Verify
   LIVE Console pin semantics (single pin vs multiple pins) before distribution.
 - Playwright needs Chrome installed and its Playwright driver packaged into the

@@ -12,6 +12,10 @@ def upgrade(bind=None):
     from app.sales_brain import ensure_schema as sales_brain_schema
     answer_bank_schema(target)
     sales_brain_schema(target)
+    from app.live_timeline import ensure_schema as live_timeline_schema
+    live_timeline_schema(target)
+    from app.timeline_ai.api import ensure_schema as timeline_ai_schema
+    timeline_ai_schema(target)
     with target.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS tiktok_shops (
             id INTEGER PRIMARY KEY,owner_id VARCHAR(64) NOT NULL,
@@ -42,7 +46,11 @@ def upgrade(bind=None):
             "products":{"shop_id":"INTEGER","tiktok_product_id":"VARCHAR(80)","tiktok_seller_id":"VARCHAR(80)",
                         "stock_num":"INTEGER","origin_price":"FLOAT","tiktok_category":"VARCHAR(250)",
                         "ai_facts":"TEXT"},
-            "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER","playback_policy":"TEXT"},
+            # Existing sessions become ADVANCED_LEGACY: they keep the product-queue behaviour.
+            "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER","playback_policy":"TEXT",
+                             "playback_mode":"VARCHAR(30) NOT NULL DEFAULT 'ADVANCED_LEGACY'",
+                             "main_media_id":"VARCHAR(32)","video_loop":"BOOLEAN NOT NULL DEFAULT 1",
+                             "active_timeline_id":"INTEGER"},
         }.items():
             present={c["name"] for c in inspect(conn).get_columns(table)}
             for name,kind in columns.items():

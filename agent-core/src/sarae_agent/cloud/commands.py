@@ -18,7 +18,7 @@ MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"timeline_hold", "timeline_resume", "PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 # Cloud lane "chat": TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md), never behind a TTS or a product switch.
 CHAT_KINDS = {"chat_send", "chat_probe"}
 
@@ -123,6 +123,46 @@ class AutoPinProduct(PinTarget):
     sarae_product_id: int = Field(ge=1)
 
 
+class TimelineMarker(Payload):
+    id: int = Field(ge=1)
+    at_ms: int = Field(ge=0, le=24 * 3600 * 1000)
+    action: Literal["PIN_PRODUCT", "UNPIN_PRODUCT", "NO_ACTION"]
+    product_id: int | None = Field(default=None, ge=1)
+    seq: int = Field(default=0, ge=0)
+
+
+class TimelinePayload(Payload):
+    """An approved, active timeline version (backend/app/live_timeline.py agent_timeline)."""
+    version: int = Field(ge=1)
+    markers: list[TimelineMarker] = Field(default_factory=list, max_length=2000)
+    products: list[AutoPinProduct] = Field(default_factory=list, max_length=300)
+    expected_user_id: str = Field(default="", pattern=r"^[0-9]{0,80}$")
+
+
+class VideoPlayPayload(Payload):
+    session_id: int = Field(ge=1)
+    media_id: str = MediaId
+    loop: bool = True
+    start_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    timeline: TimelinePayload | None = None
+
+
+class TimelineSetPayload(Payload):
+    session_id: int = Field(ge=1)
+    timeline: TimelinePayload | None = None
+
+
+class TimelineHoldPayload(Payload):
+    """The operator pins (product_id) or unpins (None) by hand: the timeline stops acting (docs: manual override)."""
+    session_id: int = Field(ge=1)
+    product_id: int | None = Field(default=None, ge=1)
+    policy: Literal["HOLD_UNTIL_RESUME", "RESUME_AT_NEXT_MARKER"] = "HOLD_UNTIL_RESUME"
+
+
+class TimelineResumePayload(Payload):
+    session_id: int = Field(ge=1)
+
+
 class SetAutoPinPayload(Payload):
     enabled: bool
     session_id: int | None = Field(default=None, ge=1)
@@ -196,7 +236,7 @@ class MonitorConfigPayload(Payload):
 
 class CommandRouter:
     def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None,
-                 media_prepare: Callable[[int], dict] | None = None, chat=None, auto_pin=None):
+                 media_prepare: Callable[[int], dict] | None = None, chat=None, auto_pin=None, timeline=None):
         """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud;
         ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once);
         ``chat`` (auto_pin.AutoPinService) posts LIVE chat replies: chat_send(payload) / chat_probe()."""
@@ -207,6 +247,7 @@ class CommandRouter:
         self.media_prepare = media_prepare
         self.chat = chat
         self.auto_pin = auto_pin
+        self.timeline = timeline
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -231,6 +272,10 @@ class CommandRouter:
             "local_playlist_start": (PlaylistPayload, lambda b: p.start_playlist(b.media_ids, loop=b.loop)),
             "product_play": (ProductPlayPayload,
                              lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
+            "video_play": (VideoPlayPayload, self._video_play),
+            "timeline_set": (TimelineSetPayload, self._timeline_set),
+            "timeline_hold": (TimelineHoldPayload, self._timeline_hold),
+            "timeline_resume": (TimelineResumePayload, self._timeline_resume),
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_policy": (PlaybackPolicyPayload,
                                 lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
@@ -259,12 +304,52 @@ class CommandRouter:
             "chat_probe": (NoPayload, lambda _: self._chat().chat_probe()),
         }
         for kinds, action in ((("local_media_next", "obs_next", "playback_next"), p.next),
-                              (("local_media_stop", "obs_stop", "playback_stop"), p.stop),
+                              (("local_media_stop", "obs_stop", "playback_stop"), self._stop),
                               (("obs_pause", "playback_pause"), p.pause),
                               (("obs_resume", "playback_resume"), p.resume),
                               (("obs_previous", "playback_previous"), p.previous)):
             for kind in kinds:
                 self._table[kind] = (NoPayload, lambda _, act=action: act())
+
+    def _scheduler(self):
+        if self.timeline is None:
+            raise AgentError("TIMELINE_UNAVAILABLE", "Agent chưa hỗ trợ timeline ghim sản phẩm")
+        return self.timeline
+
+    def _video_play(self, b: VideoPlayPayload) -> dict:
+        scheduler = self._scheduler()
+        result = self.playback.video_play(b.session_id, b.media_id, loop=b.loop, start_ms=b.start_ms)
+        if not result.get("unchanged"):
+            scheduler.load(b.session_id, b.timeline.model_dump() if b.timeline else None)
+        return {**result, "timeline": scheduler.status()}
+
+    def _timeline_set(self, b: TimelineSetPayload) -> dict:
+        """A new active version during LIVE: only the pin schedule changes, never playback or OBS."""
+        scheduler = self._scheduler()
+        p = self.playback
+        with p.lock:
+            running = p.active and p.session_mode == "video" and p.session_id == b.session_id
+        if not running:
+            raise AgentError("SESSION_NOT_PLAYING", f"Phiên LIVE #{b.session_id} không phát trên Agent này")
+        return scheduler.load(b.session_id, b.timeline.model_dump() if b.timeline else None)
+
+    def _running_timeline(self, session_id: int):
+        scheduler = self._scheduler()
+        if scheduler.session_id != session_id:
+            raise AgentError("SESSION_NOT_PLAYING", f"Phiên LIVE #{session_id} không chạy timeline trên Agent này")
+        return scheduler
+
+    def _timeline_hold(self, b: TimelineHoldPayload) -> dict:
+        return self._running_timeline(b.session_id).manual_pin(b.product_id, b.policy)
+
+    def _timeline_resume(self, b: TimelineResumePayload) -> dict:
+        return self._running_timeline(b.session_id).resume()
+
+    def _stop(self):
+        result = self.playback.stop()
+        if self.timeline is not None:
+            self.timeline.clear("stopped")
+        return result
 
     def _tiktok_sync(self, expected_user_id: str) -> dict:
         if self.tiktok_sync is None:

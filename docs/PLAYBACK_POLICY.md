@@ -1,5 +1,8 @@
 # Playback policy: video order, automatic product rotation (spec §6)
 
+> `ADVANCED_LEGACY` sessions only. A Single Video Timeline session plays one main video and has no rotation policy
+> (the endpoints answer 409, nothing is pushed to its Agent): see [SINGLE_VIDEO_TIMELINE.md](SINGLE_VIDEO_TIMELINE.md).
+
 Random product and random video are two independent settings. The Windows Agent applies them itself (it keeps going
 if the Cloud is unreachable); the Cloud stores them per LIVE session and pushes them to the Agent.
 

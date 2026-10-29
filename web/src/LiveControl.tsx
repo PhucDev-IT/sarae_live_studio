@@ -8,8 +8,9 @@ import {
 } from 'lucide-react'
 import { agentAction, apiRequest, assetUrl, durationLabel, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
-import { sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus } from './liveSessionsApi'
+import { isSingle, sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus, type TimelinePolicy } from './liveSessionsApi'
 import PlaybackSettings from './PlaybackSettings'
+import TimelinePinPanel from './TimelinePinPanel'
 import SessionLiveChat from './SessionLiveChat'
 import { WithAgent, useAgent } from './agentContext'
 import VideoThumb from './VideoThumb'
@@ -74,6 +75,8 @@ function Console({agent}:{agent:OwnerAgent}){
   const [pinObserved,setPinObserved] = useState(false)
   const [pinCandidates,setPinCandidates] = useState<PinCard[]>([])
   const [pinTarget,setPinTarget] = useState<LiveProduct|null>(null)
+  // Single Video session: how long a manual pin wins over the timeline (default: until "Tiếp tục timeline").
+  const [manualPolicy,setManualPolicy] = useState<TimelinePolicy>('HOLD_UNTIL_RESUME')
 
   const applyStatus = (next:LiveStatus) => {setStatus(next);setReceivedAt(Date.now())}
   const agentId = agent.id
@@ -145,6 +148,8 @@ function Console({agent}:{agent:OwnerAgent}){
   // and a catalog product outside the list is added to the session when it goes live.
   const activeSession = running && status?.session_id != null ? sessions.find(s=>s.id === status.session_id && s.agent_id === agentId) : undefined
   const lineup = activeSession?.product_ids ?? []
+  // One main video with a pin timeline: no product switching, rotation or video queue navigation.
+  const single = isSingle(activeSession)
   const q = productQuery.trim().toLocaleLowerCase('vi')
   const matches = (p:LiveProduct) => !q || (p.name + ' ' + p.sku).toLocaleLowerCase('vi').includes(q)
   const inSession = lineup.map(id=>productById.get(id) ?? {id, shop_id:null, name:`Sản phẩm #${id}`, sku:'', video_count:0}).filter(matches)
@@ -155,7 +160,7 @@ function Console({agent}:{agent:OwnerAgent}){
   const sendPin = async (product:LiveProduct, confirmedToken?:string) => {
     setPinBusy(true)
     try {
-      await agentAction(agentId, onAgent('/live/pin', agentId), post({product_id:product.id, confirmed_token:confirmedToken ?? null}))
+      await agentAction(agentId, onAgent('/live/pin', agentId), post({product_id:product.id, confirmed_token:confirmedToken ?? null, timeline_policy:manualPolicy}))
       toast.push({tone:'success',title:`Đã ghim ${product.name}`})
       setPinCandidates([]);setPinTarget(null)
       await pollStatus()
@@ -176,7 +181,7 @@ function Console({agent}:{agent:OwnerAgent}){
   }
   const unpin = async () => {
     setPinBusy(true)
-    try {await agentAction(agentId,onAgent('/live/unpin',agentId),post());toast.push({tone:'success',title:'Đã bỏ ghim'});await pollStatus();await refreshPin()}
+    try {await agentAction(agentId,onAgent(`/live/unpin?timeline_policy=${manualPolicy}`,agentId),post());toast.push({tone:'success',title:'Đã bỏ ghim'});await pollStatus();await refreshPin()}
     catch(e){toast.push({tone:'danger',title:'Không bỏ ghim được',description:errorText(e,'')})}
     finally{setPinBusy(false)}
   }
@@ -233,8 +238,8 @@ function Console({agent}:{agent:OwnerAgent}){
     const onKey = (e:KeyboardEvent) => {
       if (!running || busy || isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.ui-modal__backdrop')) return
       if (e.key === ' ') {e.preventDefault();void togglePause()}
-      else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'n') {e.preventDefault();void next()}
-      else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'p') {e.preventDefault();void previous()}
+      else if (!single && (e.key === 'ArrowRight' || e.key.toLowerCase() === 'n')) {e.preventDefault();void next()}
+      else if (!single && (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'p')) {e.preventDefault();void previous()}
     }
     window.addEventListener('keydown', onKey)
     return ()=>window.removeEventListener('keydown', onKey)
@@ -258,7 +263,7 @@ function Console({agent}:{agent:OwnerAgent}){
       <div className="lc-status-head">
         <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={14}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
         <div className="lc-status-text">
-          <strong title={liveProduct?.name}>{liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
+          <strong title={liveProduct?.name}>{single ? `Một video + lịch ghim · ${current?.display_name ?? 'video chính'}` : liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
           <small title={activeSession ? activeSession.name + (status?.last_status ? ' · ' + status.last_status : '') : status?.last_status}>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị để bắt đầu.'}</small>
         </div>
         <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs}
@@ -301,9 +306,9 @@ function Console({agent}:{agent:OwnerAgent}){
           </div>
           <div className="lc-transport">
             <div className="lc-transport-group">
-              <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || offline || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>
+              {!single && <Button variant="outline" leftIcon={<SkipBack size={17}/>} disabled={busy || offline || !running} onClick={()=>void previous()} title="Video trước (←)">Trước</Button>}
               <Button className="lc-play" leftIcon={status?.paused ? <Play size={18}/> : <Pause size={18}/>} disabled={busy || offline || !running} onClick={()=>void togglePause()} title="Tạm dừng / tiếp tục (Space)">{status?.paused ? 'Tiếp tục' : 'Tạm dừng'}</Button>
-              <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || offline || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>
+              {!single && <Button variant="outline" rightIcon={<SkipForward size={17}/>} disabled={busy || offline || !running} onClick={()=>void next()} title="Video tiếp (→)">Tiếp</Button>}
             </div>
             <Button className="lc-stop" variant="danger" leftIcon={<Square size={16}/>} disabled={busy || offline || !running} onClick={()=>setConfirmStop(true)}>{activeSession ? 'Kết thúc' : 'Dừng'}</Button>
           </div>
@@ -311,10 +316,13 @@ function Console({agent}:{agent:OwnerAgent}){
             <span title={pendingProduct.name}>Sau video này sẽ chuyển sang <b>{pendingProduct.name}</b></span>
             <Button size="sm" variant="ghost" leftIcon={<Undo2 size={14}/>} disabled={busy} onClick={()=>void act('/live/product-session/cancel-switch', post(), 'Đã hủy chuyển sản phẩm')}>Hủy</Button>
           </div>}
-          <div className="lc-shortcuts"><span><Kbd>Space</Kbd> tạm dừng</span><span><Kbd>←</Kbd> trước</span><span><Kbd>→</Kbd> tiếp</span><span>Kéo thanh thời gian để tua</span></div>
+          <div className="lc-shortcuts"><span><Kbd>Space</Kbd> tạm dừng</span>{!single && <><span><Kbd>←</Kbd> trước</span><span><Kbd>→</Kbd> tiếp</span></>}<span>Kéo thanh thời gian để tua{single ? ' (lịch ghim tự tính lại theo vị trí mới)' : ''}</span></div>
         </Card>
 
-        {activeSession && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
+        {activeSession && single && <TimelinePinPanel key={activeSession.id} session={activeSession} policy={manualPolicy} onPolicy={setManualPolicy}
+          productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
+
+        {activeSession && !single && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
 
         {activeSession && <SessionLiveChat key={activeSession.id} sessionId={activeSession.id} handle="" agent={agent}/>}
@@ -357,7 +365,7 @@ function Console({agent}:{agent:OwnerAgent}){
             <div className="lc-pin-actions">
               <Button size="sm" disabled={pinBusy || offline || !running || !pinSelection} title={pinSelection?.name} onClick={()=>void previewPin()}>Ghim sản phẩm đã chọn</Button>
               <Button size="sm" variant="outline" disabled={pinBusy || offline} onClick={()=>void unpin()}>Bỏ ghim</Button>
-              <label><input type="checkbox" checked={!!status?.pin?.auto_enabled} disabled={pinBusy || offline} onChange={()=>void toggleAutoPin()}/> Tự động ghim theo video</label>
+              {!single && <label><input type="checkbox" checked={!!status?.pin?.auto_enabled} disabled={pinBusy || offline} onChange={()=>void toggleAutoPin()}/> Tự động ghim theo video</label>}
             </div>
           </div>
           <div className="lc-products-search"><SearchInput value={productQuery} onChange={e=>setProductQuery(e.target.value)} placeholder="Tìm trong phiên hoặc toàn bộ sản phẩm…" aria-label="Tìm sản phẩm"/></div>
@@ -369,13 +377,14 @@ function Console({agent}:{agent:OwnerAgent}){
             {!q && <li className="lc-muted lc-small">Cần sản phẩm khác? Gõ tên để tìm trong toàn bộ danh mục.</li>}
           </ul>
           <div className="lc-product-actions">
-            {!targetProduct ? <p className="lc-muted">Chọn sản phẩm muốn đưa lên LIVE — không cần theo thứ tự.</p> : <>
+            {single ? <p className="lc-muted">Phiên một video: sản phẩm được ghim theo lịch. Chọn sản phẩm rồi bấm “Ghim sản phẩm đã chọn” để ghim thủ công.</p>
+            : !targetProduct ? <p className="lc-muted">Chọn sản phẩm muốn đưa lên LIVE — không cần theo thứ tự.</p> : <>
               <p className="lc-target" title={targetProduct.name}>Đưa <b>{targetProduct.name}</b> lên LIVE{targetOutside ? ' (sẽ thêm vào phiên)' : ''}</p>
               <Button block leftIcon={<SkipForward size={16}/>} disabled={busy || !targetProduct.video_count} onClick={()=>void switchProduct(targetProduct.id, 'immediate')}>Chuyển ngay</Button>
               <Button block variant="outline" disabled={busy || !targetProduct.video_count || targetProduct.id === status?.pending_product_id} onClick={()=>void switchProduct(targetProduct.id, 'after_current')}>Chuyển sau video hiện tại</Button>
               {!targetProduct.video_count && <small className="lc-tip">Sản phẩm chưa có video nên chưa thể đưa lên LIVE; vẫn có thể ghim trên TikTok.</small>}
             </>}
-            <small className="lc-tip">Chọn sản phẩm trong danh sách để ghim thủ công; khi bật tự động ghim, Agent ghim sau khi video chuyển thành công.</small>
+            {!single && <small className="lc-tip">Chọn sản phẩm trong danh sách để ghim thủ công; khi bật tự động ghim, Agent ghim sau khi video chuyển thành công.</small>}
           </div>
         </> : running ? <div className="lc-pad">
           <Alert tone="warning" title="Đang phát ngoài Phiên LIVE">

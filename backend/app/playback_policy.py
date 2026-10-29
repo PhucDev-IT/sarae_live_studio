@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.database import SessionLocal
 from app.identity import current_owner, owner_settings, update_owner_settings
+from app.live_timeline import is_single, require_legacy
 from app.ownership import Owner
 
 router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"], dependencies=[Depends(current_owner)])
@@ -76,7 +77,7 @@ def push(owner_id: str, session_id: int, always: bool = False) -> tuple[bool, st
     from app.live_sessions import LiveSession
     with SessionLocal() as db:
         item = db.get(LiveSession, session_id)
-        if item is None or item.status != "RUNNING" or not item.agent_id:
+        if item is None or item.status != "RUNNING" or not item.agent_id or is_single(item):
             return False, None
         policy = policy_of(item)
         if not always and is_default(policy):
@@ -140,6 +141,7 @@ def put_policy(session_id: int, body: PlaybackPolicy, owner: Owner):
     item = _session(owner, session_id)
     if item.status == "ENDED":
         raise HTTPException(409, "Phiên đã kết thúc")
+    require_legacy(item, "Chính sách xoay vòng sản phẩm")
     store(owner["id"], session_id, body)
     update_owner_settings(owner["id"], playback_policy=body.model_copy(update={"auto": True}).model_dump())
     sent, error = push(owner["id"], session_id, always=True)
@@ -151,6 +153,7 @@ def resume_auto(session_id: int, owner: Owner):
     item = _session(owner, session_id)
     if item.status == "ENDED":
         raise HTTPException(409, "Phiên đã kết thúc")
+    require_legacy(item, "Chính sách xoay vòng sản phẩm")
     store(owner["id"], session_id, policy_of(item).model_copy(update={"auto": True}), "AUTO_RESUMED")
     sent, error = push(owner["id"], session_id, always=True)
     return _view(owner, session_id, sent, error)

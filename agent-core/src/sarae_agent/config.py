@@ -135,6 +135,14 @@ class AgentOptions(BaseModel):
     autostart: bool = False
 
 
+class TimelineConfig(BaseModel):
+    """Single Video Timeline pins (sarae_agent/timeline). Dry-run by default: the schedule runs and is reported, but
+    nothing is clicked on TikTok until the operator turns it off on this PC."""
+    dry_run: bool = True
+    # Dry-run only: treat the broadcast as LIVE without reading the Console (rehearsal without going LIVE).
+    assume_live_in_dry_run: bool = True
+
+
 class AgentConfig(BaseModel):
     # Unknown keys are ignored, so config.json files written by older Agents (with the retired
     # "media": {"folders", "rescan_minutes"} section) still load; the next save drops them.
@@ -143,6 +151,7 @@ class AgentConfig(BaseModel):
     obs: ObsConfig = Field(default_factory=ObsConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     agent: AgentOptions = Field(default_factory=AgentOptions)
+    timeline: TimelineConfig = Field(default_factory=TimelineConfig)
 
 
 class ConfigError(ValueError):

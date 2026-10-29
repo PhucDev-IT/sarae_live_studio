@@ -7,11 +7,13 @@ import {
 import { apiRequest, assetUrl, errorText, onAgent, type OwnerAgent } from './mediaApi'
 import { useAgent } from './agentContext'
 import {
-  EVENT_LABEL, STATUS_META, dateTime, durationText, eventDetail, sessionIdFromHash, sessionsApi, timeOnly,
-  type LiveProduct, type LiveSession, type SessionEvent, type SessionStatus,
+  EVENT_LABEL, MODE_META, STATUS_META, dateTime, durationText, eventDetail, isSingle, sessionIdFromHash, sessionsApi, timeOnly, timelineHref,
+  type LiveProduct, type LiveSession, type PlaybackMode, type SessionEvent, type SessionStatus,
 } from './liveSessionsApi'
 import MediaPrepare from './MediaPrepare'
 import SessionLiveChat from './SessionLiveChat'
+import SingleVideoSetup from './SingleVideoSetup'
+import { useLibraryVideos, videoOptions } from './libraryVideos'
 import './live-sessions.css'
 
 type LiveStatus = { connected:boolean; running:boolean; session_id?:number|null; product_id?:number|null; pending_product_id?:number|null }
@@ -36,6 +38,9 @@ export default function LiveSessions(){
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
   // TikTok Accounts the user verified through a Console sync (account_info.user_id), not Seller IDs.
   const [createAccount,setCreateAccount] = useState('')
+  // New sessions default to one main video with a pin timeline; the multi-video mode stays available.
+  const [createMode,setCreateMode] = useState<PlaybackMode>('SINGLE_VIDEO_TIMELINE')
+  const [createVideo,setCreateVideo] = useState('')
   const [accountChoice,setAccountChoice] = useState('')
   const [accounts,setAccounts] = useState<TikTokAccount[]>([])
   useEffect(()=>{void apiRequest<TikTokAccount[]>('/tiktok-catalog/accounts').then(setAccounts).catch(()=>setAccounts([]))},[])
@@ -72,6 +77,7 @@ export default function LiveSessions(){
   /** Product chosen to open the LIVE with; any product of the session that has videos. */
   const [opener,setOpener] = useState<number|null>(null)
   const [dragIndex,setDragIndex] = useState<number|null>(null)
+  const libraryVideos = useLibraryVideos(createOpen)
 
   const loadSessions = useCallback(async ()=>{setSessions(await sessionsApi.list())},[])
   const loadAll = useCallback(async ()=>{setSessions(await sessionsApi.list());setLoaded(true)},[])
@@ -165,15 +171,17 @@ export default function LiveSessions(){
   }
   const onDrop = (event:DragEvent, to:number) => {event.preventDefault();if (dragIndex != null) move(dragIndex, to);setDragIndex(null)}
 
-  const openCreate = () => {setNameInput('');setCreateAccount(accounts.length===1?String(accounts[0].id):'');setCreateOpen(true)}
+  const openCreate = () => {setNameInput('');setCreateAccount(accounts.length===1?String(accounts[0].id):'');setCreateMode('SINGLE_VIDEO_TIMELINE');setCreateVideo('');setCreateOpen(true)}
   const create = (event:FormEvent) => {
     event.preventDefault()
     const name = nameInput.trim()
     if (!name) return
+    const single = createMode === 'SINGLE_VIDEO_TIMELINE'
     void run(async ()=>{
-      const created = await sessionsApi.create(name, Number(createAccount))
-      setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL');setPickerOpen(true)
-    }, 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
+      const created = await sessionsApi.create(name, Number(createAccount), createMode, single ? createVideo : null)
+      setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL')
+      if (!single) setPickerOpen(true)
+    }, single ? 'Đã tạo phiên — tạo lịch ghim trong Timeline Editor' : 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
   }
   const rename = (event:FormEvent) => {
     event.preventDefault()
@@ -203,7 +211,15 @@ export default function LiveSessions(){
     {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
     {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/cloud-media'},
   ]
-  const canStart = chosen?.status === 'DRAFT' && chosen.tiktok_account_id != null && checks.every(c=>c.ok || !c.blocking)
+  const single = isSingle(chosen)
+  // A Single Video session needs its main video; without an active timeline it plays without pins (advised only).
+  const singleChecks = chosen ? [
+    {ok:!!chosen.main_media_id, label:'Đã chọn video chính', blocking:true, href:'#/cloud-media'},
+    {ok:chosen.active_timeline_id != null, label:chosen.active_timeline_id != null ? 'Có lịch ghim đang dùng' : 'Chưa kích hoạt lịch ghim (video vẫn phát, không tự ghim)', blocking:false, href:timelineHref(chosen.id)},
+    {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
+  ] : []
+  const shownChecks = single ? singleChecks : checks
+  const canStart = chosen?.status === 'DRAFT' && chosen.tiktok_account_id != null && shownChecks.every(c=>c.ok || !c.blocking)
 
   const syncConsole = async () => {
     if (!chosen || !startAgent) return
@@ -215,6 +231,7 @@ export default function LiveSessions(){
       if (!expected || snapshot.account_user_id!==expected)
         throw new Error('Tài khoản LIVE Console không trùng TikTok Account của phiên. Kiểm tra đăng nhập.')
       setConsoleRows(snapshot.products);setSyncedAt(snapshot.scanned_at)
+      if (isSingle(chosen)) {setConsoleConfirmed(true);toast.push({tone:'success',title:'Đã xác minh TikTok Account trên LIVE Console'});return}
       // A sync can import new cart products and change video readiness: reload them for this Agent.
       const fresh = await sessionsApi.products(startAgent)
       setStartProducts(fresh)
@@ -290,8 +307,9 @@ export default function LiveSessions(){
             return <li key={s.id}><button type="button" className={'ls-session' + (s.id === selected ? ' is-selected' : '') + (s.status === 'RUNNING' ? ' is-live' : '')} onClick={()=>select(s.id)}>
               <span className="ls-session-top"><strong>{s.name}</strong><Badge tone={STATUS_META[s.status].tone} dot={s.status === 'RUNNING'}>{STATUS_META[s.status].label}</Badge></span>
               <span className="ls-session-meta">
+                <span title={MODE_META[s.playback_mode].hint}>{isSingle(s) ? <Video size={13}/> : <ListPlus size={13}/>}{MODE_META[s.playback_mode].label}</span>
                 <span><Package size={13}/>{s.product_ids.length} sản phẩm</span>
-                {s.status === 'DRAFT' && s.product_ids.length > 0 && ready != null && <span className={ready === s.product_ids.length ? 'is-ok' : 'is-warn'}><Video size={13}/>{ready}/{s.product_ids.length} có video</span>}
+                {s.status === 'DRAFT' && !isSingle(s) && s.product_ids.length > 0 && ready != null && <span className={ready === s.product_ids.length ? 'is-ok' : 'is-warn'}><Video size={13}/>{ready}/{s.product_ids.length} có video</span>}
                 <span><MonitorPlay size={13}/>{agentName(s.agent_id)}</span>
                 <span title="TikTok Account phát LIVE">@{accountLabel(s.tiktok_account_id)}</span>
                 <span><Clock3 size={13}/>{dateTime(s.status === 'DRAFT' ? s.created_at : s.started_at ?? s.created_at)}</span>
@@ -373,6 +391,7 @@ export default function LiveSessions(){
           </div>
         </Card>}
         <div className="ls-detail-grid">
+          {single ? <SingleVideoSetup session={chosen} productById={productById} onChanged={loadAll}/> : <>
           {/* Product lineup */}
           <Card className="ls-lineup" padding={false} title={<span className="ls-card-title"><Package size={17}/>Danh sách sản phẩm</span>}
             description={chosen.status === 'ENDED' ? `${lineup.length} sản phẩm đã dùng trong phiên` : 'Sản phẩm chuẩn bị sẵn cho phiên · khi LIVE có thể đưa bất kỳ sản phẩm nào lên, không theo thứ tự'}
@@ -410,13 +429,14 @@ export default function LiveSessions(){
               <Button size="sm" loading={busy} onClick={save}>Lưu danh sách</Button>
             </div>}
           </Card>
+          </>}
 
           <div className="ls-side">
             {chosen.status === 'DRAFT' && <Card className="ls-checks" title={<span className="ls-card-title"><CheckCircle2 size={17}/>Sẵn sàng LIVE?</span>}
               description={canStart ? 'Mọi điều kiện bắt buộc đã đạt.' : 'Hoàn tất các mục bắt buộc để bắt đầu.'}>
-              <ul className="ls-checklist">{checks.map(c=><li key={c.label} className={c.ok ? 'is-ok' : c.blocking ? 'is-bad' : 'is-warn'}>
+              <ul className="ls-checklist">{shownChecks.map(c=><li key={c.label} className={c.ok ? 'is-ok' : c.blocking ? 'is-bad' : 'is-warn'}>
                 {c.ok ? <CheckCircle2 size={16}/> : c.blocking ? <CircleDashed size={16}/> : <CircleAlert size={16}/>}
-                <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : 'Gán video'}</a></>}</span>
+                <span>{c.label}{!c.ok && c.href && <> · <a href={c.href}>{c.href === '#/live' ? 'Kết nối' : c.href === '#/agents' ? 'Xem Agent' : c.href.startsWith('#/timeline') ? 'Mở Timeline Editor' : single ? 'Thư viện video' : 'Gán video'}</a></>}</span>
               </li>)}</ul>
         
             </Card>}
@@ -446,11 +466,21 @@ export default function LiveSessions(){
 
     <Modal open={createOpen} title="Tạo phiên LIVE" size="sm" onClose={()=>!busy && setCreateOpen(false)} footer={<>
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
-      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAccount}>Tạo & thêm sản phẩm</Button>
+      <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAccount}>{createMode === 'SINGLE_VIDEO_TIMELINE' ? 'Tạo phiên' : 'Tạo & thêm sản phẩm'}</Button>
     </>}>
       <form id="ls-create-form" className="ls-create-form" onSubmit={create}>
-        <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint="Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự."/>
+        <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint={createMode === 'SINGLE_VIDEO_TIMELINE' ? 'Bước tiếp theo: đặt lịch ghim sản phẩm theo thời gian của video.' : 'Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự.'}/>
         <Select label="TikTok Account" value={createAccount} onChange={setCreateAccount} options={[{value:'',label:'Chọn tài khoản…'},...accounts.map(a=>({value:String(a.id),label:accountLabel(a.id)}))]} hint="Seller và Affiliate dùng chung TikTok Account. Windows Agent được chọn khi bắt đầu."/>
+        <div className="ls-mode-field">
+          <span className="ls-mode-label">Chế độ phát</span>
+          <SegmentedControl<PlaybackMode> fullWidth value={createMode} onChange={setCreateMode} items={[
+            {value:'SINGLE_VIDEO_TIMELINE', label:MODE_META.SINGLE_VIDEO_TIMELINE.label}, {value:'ADVANCED_LEGACY', label:MODE_META.ADVANCED_LEGACY.label},
+          ]}/>
+          <small className="ls-muted">{MODE_META[createMode].hint}</small>
+        </div>
+        {createMode === 'SINGLE_VIDEO_TIMELINE' && <Select label="Video chính" value={createVideo} onChange={setCreateVideo}
+          options={[{value:'',label:libraryVideos.length ? 'Chọn sau…' : 'Thư viện chưa có video'}, ...videoOptions(libraryVideos)]}
+          hint="Có thể chọn hoặc đổi video chính sau, khi phiên còn ở bước Chuẩn bị."/>}
       </form>
     </Modal>
 
@@ -471,10 +501,12 @@ export default function LiveSessions(){
     {startOpen && chosen && <Modal open title={`Bắt đầu “${chosen.name}”`} size="lg" onClose={()=>{if (!busy) setStartOpen(false)}} footer={<>
       {consoleRows && !consoleConfirmed && <span className="ls-picker-count">Đã chọn {consoleSelection.length}/{consoleRows.length}{dropped.length ? ` · bỏ ${dropped.length} khỏi phiên` : ''}</span>}
       <Button variant="ghost" disabled={busy} onClick={()=>setStartOpen(false)}>Hủy</Button>
-      {!consoleConfirmed
+      {!consoleConfirmed && single
+        ? <Button leftIcon={<RefreshCw size={16}/>} loading={busy} disabled={!startAgent || busy} onClick={()=>void syncConsole()}>Xác minh tài khoản</Button>
+        : !consoleConfirmed
         ? <Button leftIcon={<Check size={16}/>} loading={busy} disabled={!consoleRows || !consoleSelection.length || busy} onClick={()=>void confirmConsole()}>Xác nhận {consoleSelection.length || ''} sản phẩm</Button>
-        : <Button leftIcon={<Play size={16}/>} loading={busy} disabled={startOpener == null || !startAgent || !mediaReady || busy}
-            onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, startOpener ?? undefined);setStartOpen(false);openConsole(startAgent)}, 'Sarae đã bắt đầu phát')}>Bắt đầu phát</Button>}
+        : <Button leftIcon={<Play size={16}/>} loading={busy} disabled={(!single && startOpener == null) || !startAgent || !mediaReady || busy}
+            onClick={()=>void run(async ()=>{await sessionsApi.start(chosen, startAgent, single ? undefined : startOpener ?? undefined);setStartOpen(false);openConsole(startAgent)}, 'Sarae đã bắt đầu phát')}>Bắt đầu phát</Button>}
     </>}>
       <div className="ls-start">
         <StartStep n={1} title="Máy phát" done={!!startAgent}>
@@ -491,9 +523,10 @@ export default function LiveSessions(){
           hint={consoleRows ? undefined : `Mở LIVE Console trên máy, đăng nhập @${account?.user_name || account?.nick_name || 'tài khoản của phiên'} rồi bấm Đồng bộ.`}
           action={<Button size="sm" variant={consoleRows ? 'ghost' : 'primary'} leftIcon={<RefreshCw size={14}/>} disabled={!startAgent || busy || consoleConfirmed} loading={busy && !consoleRows} onClick={()=>void syncConsole()}>{consoleRows ? 'Đồng bộ lại' : 'Đồng bộ'}</Button>}>
           {consoleRows && <p className="ls-start-ok"><CheckCircle2 size={15}/>Đúng tài khoản @{account?.user_name || account?.nick_name} · {consoleRows.length} sản phẩm · {timeOnly(syncedAt)}</p>}
+          {consoleRows && single && <p className="ls-muted">Sản phẩm trong lịch ghim mà giỏ LIVE không có sẽ báo lỗi khi tới mốc ghim; video vẫn phát bình thường.</p>}
         </StartStep>
 
-        {consoleRows && <StartStep n={3} title="Chọn sản phẩm sẽ phát" done={consoleConfirmed}
+        {consoleRows && !single && <StartStep n={3} title="Chọn sản phẩm sẽ phát" done={consoleConfirmed}
           hint={consoleConfirmed ? undefined : selectable.length ? 'Bấm vào sản phẩm để chọn. ★ là sản phẩm phát đầu tiên.' : 'Chưa sản phẩm nào có video: gắn video trong Thư viện rồi bấm Tải lại.'}
           action={!consoleConfirmed && <span className="ls-start-tools">
             {selectable.length > 0 && <Button size="sm" variant="ghost" onClick={()=>setConsoleSelection(selectable)}>Chọn tất cả có video</Button>}
@@ -526,7 +559,7 @@ export default function LiveSessions(){
           {!consoleConfirmed && dropped.length > 0 && <p className="ls-start-warn"><CircleAlert size={14}/>Sẽ bỏ khỏi phiên: {dropped.map(productName).join(', ')}</p>}
         </StartStep>}
 
-        {consoleConfirmed && <StartStep n={4} title="Tải video về máy" done={mediaReady}>
+        {consoleConfirmed && <StartStep n={single ? 3 : 4} title={single ? 'Tải video chính về máy' : 'Tải video về máy'} done={mediaReady}>
           <MediaPrepare key={`${chosen.id}:${startAgent}`} sessionId={chosen.id} agentId={startAgent} hostname={agentName(startAgent)} onReady={setMediaReady}/>
           <p className="ls-muted">Sarae phát video trên OBS; trạng thái TikTok LIVE thật được theo dõi riêng.</p>
         </StartStep>}
