@@ -175,3 +175,36 @@ def test_probe_reports_counts_without_typing(open_console):
     assert groups["reply_control"]["visible"] == 3 and groups["mention_list"]["visible"] == 0
     assert groups["send_button"]["selector"].startswith("role=button")
     assert sent(page) == [] and page.locator("textarea").input_value() == ""
+
+
+def test_seller_console_panel_is_found_and_other_textareas_ignored(open_console):
+    page = open_console("seller_console")
+    report = sender().probe(page)
+    groups = report["groups"]
+    assert report["composers"] == 1 and groups["composer"]["selector"].startswith("xpath=//p")
+    assert groups["chat_list"]["visible"] == 1 and groups["message_row"]["visible"] == 0
+    assert groups["send_button"]["visible"] == 0  # "cursor-not-allowed" while the box is empty
+    page.locator(".m4b-input-textarea-mini").fill("hi")
+    assert sender().probe(page)["groups"]["send_button"]["visible"] == 1
+
+
+def test_seller_console_sends_normal_message(open_console):
+    page = open_console("seller_console")
+    result = sender().send(page, request(), ACCOUNT)
+    assert result["status"] == "CONFIRMED" and result["mode"] == "NORMAL", result
+    assert sent(page) == [TEXT] and page.locator(".product-search textarea").input_value() == ""
+
+
+def test_seller_console_reads_real_comment_rows(open_console):
+    page = open_console("seller_console")
+    page.goto((FIXTURES / "seller_console.html").as_uri() + "?rows=1")
+    s = sender()
+    report = s.probe(page)
+    assert report["groups"]["message_row"]["visible"] == 2  # the "just joined" row is not a comment
+    chat_list, _ = s._find(page, "chat_list")
+    rows = s._rows(chat_list)
+    assert [(s._first_text(rows.nth(i), "row_author"), s._first_text(rows.nth(i), "row_text"))
+            for i in range(rows.count())] == [("Lan", "55kg mặc size gì"), ("Hoa", "ship bao lâu vậy shop")]
+    result = s.send(page, request(), ACCOUNT)
+    assert result["status"] == "CONFIRMED" and result["mode"] == "NORMAL", result
+    assert sent(page) == [TEXT] and s._rows(chat_list).count() == 3

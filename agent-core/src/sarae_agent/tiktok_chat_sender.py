@@ -40,10 +40,15 @@ USERNAME = re.compile(r"^[A-Za-z0-9._]{1,64}$")
 MENTION_TOKEN = re.compile(r"@([A-Za-z0-9._]+)")
 
 _LABEL_CHAT = r"bình luận|trò chuyện|nói gì|nhập tin nhắn|comment|chat|say something|add a comment|type a message"
+# LIVE Console (Seller Center, arco/m4b UI): the "Chat" panel is the nearest box around the "Chat" title that also
+# holds a textarea; its composer is a placeholder-only textarea and Send is a <span> wrapping the publish icon.
+_CHAT_PANEL = ("xpath=//p[normalize-space()='Chat' or normalize-space()='Trò chuyện' or normalize-space()='Bình luận']"
+               "/ancestor::div[.//textarea][1]")
 # Candidates are Playwright selectors, tried in order; the first one that finds a visible element wins.
 DEFAULT_SELECTORS: dict[str, list[str]] = {
     "composer": [
         f"role=textbox[name=/{_LABEL_CHAT}/i]",
+        f"{_CHAT_PANEL}//textarea",
         "[data-e2e*='comment-input' i]", "[data-e2e*='chat-input' i]",
         "[class*='chat' i] textarea", "[class*='comment' i] textarea",
         "[class*='chat' i] [contenteditable='true']", "[class*='comment' i] [contenteditable='true']",
@@ -51,22 +56,29 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
     "send_button": [
         "role=button[name=/^\\s*(gửi|send|đăng|post)\\s*$/i]",
         "[data-e2e*='send' i]", "button[class*='send' i]",
+        f"{_CHAT_PANEL}//span[./span/*[local-name()='svg' and contains(@class, 'arco-icon-publish')]]"
+        "[not(contains(@class, 'cursor-not-allowed'))]",
     ],
     "chat_list": [
-        "[data-e2e*='chat-list' i]", "[data-e2e*='comment-list' i]",
+        "[data-e2e*='chat-list' i]", "[data-e2e*='comment-list' i]", f"{_CHAT_PANEL}//*[@role='list']",
         "role=log", f"role=list[name=/{_LABEL_CHAT}/i]",
         "[class*='chat-list' i]", "[class*='comment-list' i]", "[class*='chatList' i]", "[class*='commentList' i]",
     ],
     "message_row": [
         "[data-e2e*='chat-message' i]", "[data-e2e*='comment-item' i]",
-        "role=listitem", "[class*='message-item' i]", "[class*='comment-item' i]", "[class*='chat-item' i]",
+        "role=listitem", ".arco-list-item",
+        # LIVE Console comment: clickable box = [avatar + name] line, then the text line ("just joined" rows differ)
+        "div.cursor-pointer:not([type]):has(> div > [data-tid='m4b_avatar']):has(> div.text-neutral-text1)",
+        "[class*='message-item' i]", "[class*='comment-item' i]", "[class*='chat-item' i]",
     ],
     "row_text": [
         "[data-e2e*='message-content' i]", "[data-e2e*='comment-content' i]", "[data-e2e*='content' i]",
+        ":scope > div.text-neutral-text1",
         "[class*='content' i]", "[class*='comment-text' i]", "[class*='message-text' i]",
     ],
     "row_author": [
         "[data-e2e*='nickname' i]", "[data-e2e*='username' i]", "[data-e2e*='author' i]",
+        "div:has(> [data-tid='m4b_avatar']) > div.truncate",
         "[class*='nickname' i]", "[class*='user-name' i]", "[class*='username' i]", "[class*='author' i]",
     ],
     "reply_control": [
