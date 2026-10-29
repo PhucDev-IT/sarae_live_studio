@@ -104,6 +104,8 @@ export default function TimelineEditor(){
     if (el) el.currentTime = value / 1000
   }
   const toggle = () => {const el = player.current;if (!el) return;if (el.paused) void el.play();else el.pause()}
+  // The frame takes the video's own proportions: a 1080×1920 TikTok video is shown portrait, never cropped or stretched.
+  const videoRatio = video?.width && video?.height ? `${video.width} / ${video.height}` : '9 / 16'
 
   // ----- markers
   const editable = timeline?.status === 'DRAFT' && session?.status !== 'ENDED'
@@ -227,25 +229,26 @@ export default function TimelineEditor(){
       </div>
     </div>
 
-    <div className="te-grid">
-      <div className="te-left">
-      <Card className="te-stage" padding={false}>
-        <div className="te-video">
+    {/* Player and timeline: the video keeps its own proportions (portrait TikTok videos stay portrait). */}
+    <Card className="te-stage" padding={false}>
+      <div className="te-stage-body">
+        <div className="te-video" style={{aspectRatio:videoRatio}}>
           {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video chính trong Thư viện.</p>}
         </div>
-        <div className="te-transport">
-          <Button size="sm" variant="outline" leftIcon={playing ? <Pause size={15}/> : <Play size={15}/>} disabled={!streamUrl} onClick={toggle}>{playing ? 'Tạm dừng' : 'Phát'}</Button>
-          <span className="te-clock"><strong>{hms(now)}</strong> / {hms(duration)}</span>
-          {editable && <Button size="sm" leftIcon={<Plus size={15}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
+        <div className="te-stage-side">
+          <div className="te-clock"><strong>{hms(now)}</strong><span>/ {hms(duration)}</span></div>
+          <div className="te-transport">
+            <Button variant="outline" leftIcon={playing ? <Pause size={16}/> : <Play size={16}/>} disabled={!streamUrl} onClick={toggle}>{playing ? 'Tạm dừng' : 'Phát'}</Button>
+            {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
+          </div>
+          <TimelineBar duration={duration} now={now} markers={markers} selected={selected} editable={!!editable} productName={id=>productById.get(id)?.name}
+            onSeek={seek} onSelect={i=>{setSelected(i);seek(markers[i].at_ms)}} onMove={moveTo}/>
+          <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span></div>
         </div>
-        <TimelineBar duration={duration} now={now} markers={markers} selected={selected} editable={!!editable} productName={id=>productById.get(id)?.name}
-          onSeek={seek} onSelect={i=>{setSelected(i);seek(markers[i].at_ms)}} onMove={moveTo}/>
-        <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span></div>
-      </Card>
-        <TimelineAIPanel sessionId={session.id} disabled={session.status === 'ENDED'} onSeek={seek}
-          onDraft={id=>{if (dirty) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
       </div>
+    </Card>
 
+    <div className="te-grid">
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc ({markers.length})</span>}
         description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>
         {timeline?.note && <p className="te-note"><StickyNote size={14}/>{timeline.note}</p>}
@@ -259,6 +262,9 @@ export default function TimelineEditor(){
           <Button size="sm" variant="ghost" disabled={busy} onClick={()=>{setMarkers(timeline?.markers ?? []);setDirty(false)}}>Hoàn tác</Button>
           <Button size="sm" loading={busy} disabled={local.some(i=>i.level === 'error')} onClick={()=>void save()}>Lưu nháp</Button></div>}
       </Card>
+
+      <TimelineAIPanel sessionId={session.id} disabled={session.status === 'ENDED'} onSeek={seek}
+        onDraft={id=>{if (dirty) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
     </div>
 
     <ConfirmModal open={!!confirm} loading={busy} onClose={()=>setConfirm(null)} onConfirm={onConfirm} tone={confirm?.kind === 'delete' ? 'danger' : 'primary'}

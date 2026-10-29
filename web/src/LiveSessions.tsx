@@ -13,7 +13,8 @@ import {
 import MediaPrepare from './MediaPrepare'
 import SessionLiveChat from './SessionLiveChat'
 import SingleVideoSetup from './SingleVideoSetup'
-import { useLibraryVideos, videoOptions } from './libraryVideos'
+import { useLibraryVideos } from './libraryVideos'
+import VideoPicker from './VideoPicker'
 import './live-sessions.css'
 
 type LiveStatus = { connected:boolean; running:boolean; session_id?:number|null; product_id?:number|null; pending_product_id?:number|null }
@@ -464,23 +465,36 @@ export default function LiveSessions(){
       </div>}
     </div>
 
-    <Modal open={createOpen} title="Tạo phiên LIVE" size="sm" onClose={()=>!busy && setCreateOpen(false)} footer={<>
+    <Modal open={createOpen} title="Tạo phiên LIVE" size={createMode === 'SINGLE_VIDEO_TIMELINE' ? 'lg' : 'md'} onClose={()=>!busy && setCreateOpen(false)} footer={<>
+      {createMode === 'SINGLE_VIDEO_TIMELINE' && <span className="ls-picker-count">{createVideo ? 'Đã chọn video chính' : 'Có thể chọn video chính sau'}</span>}
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
       <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAccount}>{createMode === 'SINGLE_VIDEO_TIMELINE' ? 'Tạo phiên' : 'Tạo & thêm sản phẩm'}</Button>
     </>}>
-      <form id="ls-create-form" className="ls-create-form" onSubmit={create}>
-        <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10" hint={createMode === 'SINGLE_VIDEO_TIMELINE' ? 'Bước tiếp theo: đặt lịch ghim sản phẩm theo thời gian của video.' : 'Bước tiếp theo: chọn sản phẩm sẽ bán và sắp xếp thứ tự.'}/>
-        <Select label="TikTok Account" value={createAccount} onChange={setCreateAccount} options={[{value:'',label:'Chọn tài khoản…'},...accounts.map(a=>({value:String(a.id),label:accountLabel(a.id)}))]} hint="Seller và Affiliate dùng chung TikTok Account. Windows Agent được chọn khi bắt đầu."/>
-        <div className="ls-mode-field">
-          <span className="ls-mode-label">Chế độ phát</span>
-          <SegmentedControl<PlaybackMode> fullWidth value={createMode} onChange={setCreateMode} items={[
-            {value:'SINGLE_VIDEO_TIMELINE', label:MODE_META.SINGLE_VIDEO_TIMELINE.label}, {value:'ADVANCED_LEGACY', label:MODE_META.ADVANCED_LEGACY.label},
-          ]}/>
-          <small className="ls-muted">{MODE_META[createMode].hint}</small>
-        </div>
-        {createMode === 'SINGLE_VIDEO_TIMELINE' && <Select label="Video chính" value={createVideo} onChange={setCreateVideo}
-          options={[{value:'',label:libraryVideos.length ? 'Chọn sau…' : 'Thư viện chưa có video'}, ...videoOptions(libraryVideos)]}
-          hint="Có thể chọn hoặc đổi video chính sau, khi phiên còn ở bước Chuẩn bị."/>}
+      <form id="ls-create-form" className="ls-create" onSubmit={create}>
+        <section className="ls-create-section">
+          <h3>Thông tin phiên</h3>
+          <div className="ls-create-row">
+            <Input label="Tên phiên" autoFocus required maxLength={200} value={nameInput} onChange={e=>setNameInput(e.target.value)} placeholder="VD: LIVE thời trang tối 20/10"/>
+            <Select label="TikTok Account" value={createAccount} onChange={setCreateAccount} options={[{value:'',label:'Chọn tài khoản…'},...accounts.map(a=>({value:String(a.id),label:accountLabel(a.id)}))]}/>
+          </div>
+          <small className="ls-muted">Seller và Affiliate dùng chung TikTok Account. Máy Windows phát LIVE được chọn khi bắt đầu.</small>
+        </section>
+        <section className="ls-create-section">
+          <h3>Chế độ phát</h3>
+          <div className="ls-mode-options" role="radiogroup" aria-label="Chế độ phát">
+            {(['SINGLE_VIDEO_TIMELINE', 'ADVANCED_LEGACY'] as PlaybackMode[]).map(mode=>{
+              const Icon = mode === 'SINGLE_VIDEO_TIMELINE' ? Video : ListPlus
+              return <button key={mode} type="button" role="radio" aria-checked={createMode === mode} className={'ls-mode-option' + (createMode === mode ? ' is-on' : '')} onClick={()=>setCreateMode(mode)}>
+                <span className="ls-mode-icon"><Icon size={18}/></span>
+                <span><strong>{MODE_META[mode].label}{mode === 'SINGLE_VIDEO_TIMELINE' && <em>Khuyên dùng</em>}</strong><small>{MODE_META[mode].hint}</small></span>
+              </button>
+            })}
+          </div>
+        </section>
+        {createMode === 'SINGLE_VIDEO_TIMELINE' && <section className="ls-create-section">
+          <h3>Video chính <small className="ls-muted">· chọn sau cũng được</small></h3>
+          <VideoPicker videos={libraryVideos} value={createVideo || null} onChange={id=>setCreateVideo(id === createVideo ? '' : id)} productName={id=>productById.get(id)?.name} maxHeight={300}/>
+        </section>}
       </form>
     </Modal>
 

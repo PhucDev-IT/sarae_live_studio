@@ -221,3 +221,23 @@
 .sv-products li{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;background:var(--ui-surface);border:1px solid var(--ui-border);font-size:12.5px}
 .ls-mode-field{display:grid;gap:6px}
 .ls-mode-label{font-size:13px;font-weight:600}
+
+/* Create session dialog */
+.ls-create{display:grid;gap:20px}
+.ls-create-section{display:grid;gap:10px}
+.ls-create-section h3{margin:0;font-size:13.5px;font-weight:700}
+.ls-create-section h3 small{font-weight:400}
+.ls-create-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.ls-mode-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.ls-mode-option{display:flex;gap:12px;align-items:flex-start;padding:14px;border:1.5px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.ls-mode-option:hover{border-color:color-mix(in srgb,var(--ui-primary) 50%,var(--ui-border))}
+.ls-mode-option.is-on{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 6%,var(--ui-surface))}
+.ls-mode-option > span:last-child{display:grid;gap:4px;min-width:0}
+.ls-mode-option strong{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.ls-mode-option em{padding:1px 7px;border-radius:99px;background:color-mix(in srgb,var(--ui-primary) 14%,transparent);color:var(--ui-primary);font-style:normal;font-size:10.5px;font-weight:700}
+.ls-mode-option small{color:var(--ui-text-muted);font-size:12px;line-height:1.45}
+.ls-mode-icon{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--ui-surface-2);color:var(--ui-primary)}
+.ls-mode-option.is-on .ls-mode-icon{background:var(--ui-primary);color:#fff}
+@media (max-width:640px){.ls-create-row,.ls-mode-options{grid-template-columns:minmax(0,1fr)}}
+.sv-video-name{font-size:14px;line-height:1.4;overflow-wrap:anywhere}
+.sv-picker{display:grid;gap:12px}

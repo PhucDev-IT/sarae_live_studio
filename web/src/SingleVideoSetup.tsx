@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card, EmptyState, Select, Switch, useToast } from './ui/core'
-import { CircleAlert, Clapperboard, Film, Package, Repeat, Video } from 'lucide-react'
+import { Alert, Badge, Button, Card, EmptyState, Modal, Switch, useToast } from './ui/core'
+import { CircleAlert, Clapperboard, Film, Package, Repeat, Replace, Video } from 'lucide-react'
 import { errorText } from './mediaApi'
-import { useLibraryVideos, videoOptions } from './libraryVideos'
+import { useLibraryVideos } from './libraryVideos'
+import VideoPicker from './VideoPicker'
 import { TIMELINE_STATUS, hms, sessionsApi, timelineHref, timelinesApi, type LiveProduct, type LiveSession, type Timeline } from './liveSessionsApi'
 import VideoThumb from './VideoThumb'
 
@@ -15,6 +16,8 @@ export default function SingleVideoSetup({session, productById, onChanged}:{sess
   const videos = useLibraryVideos()
   const [timelines,setTimelines] = useState<Timeline[]>([])
   const [busy,setBusy] = useState(false)
+  const [picking,setPicking] = useState(false)
+  const [choice,setChoice] = useState<string|null>(null)
   const draft = session.status === 'DRAFT'
   const video = videos.find(v=>v.id === session.main_media_id)
   const active = timelines.find(t=>t.status === 'ACTIVE')
@@ -31,6 +34,8 @@ export default function SingleVideoSetup({session, productById, onChanged}:{sess
     catch(e){toast.push({tone:'danger', title:'Không lưu được', description:errorText(e, '')})}
     finally{setBusy(false)}
   }
+  const productName = (id:number) => productById.get(id)?.name
+  const openPicker = () => {setChoice(session.main_media_id);setPicking(true)}
   const pinned = useMemo(()=>session.product_ids.map(id=>productById.get(id)?.name ?? `Sản phẩm #${id}`),[session.product_ids, productById])
 
   return <Card className="ls-lineup sv-setup" padding={false} title={<span className="ls-card-title"><Clapperboard size={17}/>Video chính & lịch ghim</span>}
@@ -39,11 +44,10 @@ export default function SingleVideoSetup({session, productById, onChanged}:{sess
       <div className="sv-video">
         <div className="sv-thumb">{session.main_media_id ? <VideoThumb src={video?.thumb_url}/> : <Film size={28}/>}</div>
         <div className="sv-video-info">
-          {draft ? <Select label="Video chính" value={session.main_media_id ?? ''} disabled={busy}
-              onChange={id=>{if (id && id !== session.main_media_id) void update({main_media_id:id}, 'Đã đổi video chính')}}
-              options={[...(session.main_media_id ? [] : [{value:'', label:'Chọn video trong Thư viện…'}]), ...videoOptions(videos)]}
-              hint={session.active_timeline_id ? 'Đổi video sẽ gỡ timeline đang dùng (mốc thời gian thuộc video cũ).' : undefined}/>
-            : <><small className="ls-muted">Video chính</small><strong>{video?.display_name ?? video?.filename ?? session.main_media_id ?? '—'}</strong></>}
+          <small className="ls-muted">Video chính</small>
+          <strong className="sv-video-name">{session.main_media_id ? video?.display_name || video?.filename || 'Video không còn trong thư viện' : 'Chưa chọn video chính'}</strong>
+          {draft && <span><Button size="sm" variant={session.main_media_id ? 'outline' : 'primary'} leftIcon={<Replace size={14}/>} disabled={busy || !videos.length} onClick={openPicker}>
+            {session.main_media_id ? 'Đổi video' : 'Chọn video'}</Button></span>}
           <span className="sv-meta">
             {video?.duration_seconds != null && <span><Video size={13}/>{hms(video.duration_seconds * 1000)}</span>}
             <Switch label={session.video_loop ? 'Phát lặp lại' : 'Phát một lượt'} checked={session.video_loop} disabled={busy || session.status === 'ENDED'}
@@ -66,6 +70,16 @@ export default function SingleVideoSetup({session, productById, onChanged}:{sess
           : !pinned.length ? <p className="sv-note"><CircleAlert size={14}/>Lịch ghim không ghim sản phẩm nào.</p>
           : <ul className="sv-products">{pinned.map(name=><li key={name}><Package size={13}/>{name}</li>)}</ul>}
       </div>
+      {picking && <Modal open title="Chọn video chính" size="lg" onClose={()=>setPicking(false)} footer={<>
+        <Button variant="ghost" onClick={()=>setPicking(false)}>Hủy</Button>
+        <Button loading={busy} disabled={!choice || choice === session.main_media_id}
+          onClick={()=>void update({main_media_id:choice!}, 'Đã đổi video chính').then(()=>setPicking(false))}>Dùng video này</Button>
+      </>}>
+        <div className="sv-picker">
+          {session.active_timeline_id != null && <Alert tone="warning">Đổi video sẽ gỡ lịch ghim đang dùng, vì các mốc thời gian thuộc video cũ.</Alert>}
+          <VideoPicker videos={videos} value={choice} onChange={setChoice} productName={productName} maxHeight={460}/>
+        </div>
+      </Modal>}
       {!videos.length && <EmptyState icon={<Film size={24}/>} title="Thư viện chưa có video" description="Tải video lên Thư viện video để chọn làm video chính." actionLabel="Mở Thư viện" onAction={()=>{window.location.hash = '/cloud-media'}}/>}
     </div>
   </Card>

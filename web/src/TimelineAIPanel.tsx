@@ -51,7 +51,7 @@ export default function TimelineAIPanel({sessionId, disabled, onSeek, onDraft}:{
 
   return <Card className="te-ai-panel" padding={false} title={<span className="te-card-title"><Sparkles size={17}/>Gợi ý mốc bằng AI</span>}
     description="Nhận dạng lời nói tiếng Việt, đối chiếu với catalog thật và đề xuất mốc ghim kèm bằng chứng. Bạn duyệt trước khi dùng."
-    actions={<Button size="sm" variant="ghost" leftIcon={<Settings2 size={15}/>} onClick={()=>setSettingsOpen(true)}>Cấu hình</Button>}>
+    actions={<Button size="sm" variant="ghost" aria-label="Cấu hình phân tích AI" title="Cấu hình phân tích AI" onClick={()=>setSettingsOpen(true)}><Settings2 size={16}/></Button>}>
     <div className="te-ai-body">
       <div className="te-ai-actions">
         <Button leftIcon={<Bot size={15}/>} loading={busy && !job} disabled={busy || running || disabled} onClick={()=>void analyze(false)}>Phân tích video</Button>
@@ -60,18 +60,19 @@ export default function TimelineAIPanel({sessionId, disabled, onSeek, onDraft}:{
       </div>
       {running && <div className="te-ai-progress"><span style={{width:`${Math.round((job?.progress ?? 0) * 100)}%`}}/><small>{job?.phase || 'Đang chờ máy chủ'} · {Math.round((job?.progress ?? 0) * 100)}%</small></div>}
       {job?.status === 'FAILED' && <Alert tone="danger" title="Phân tích thất bại">{job.error}</Alert>}
-      {job?.status === 'DONE' && job.summary && <p className="te-muted">
+      {job?.status === 'DONE' && job.summary && <p className="te-ai-summary">
         {job.summary.suggestions} đề xuất · {job.summary.needs_review} cần xem lại{job.summary.dropped_products ? ` · bỏ ${job.summary.dropped_products} sản phẩm AI tự nêu không có trong catalog` : ''}{job.cached ? ' · từ cache' : ''}{job.timeline_id ? ' · đã tạo bản nháp' : ''}
         {job.summary.notes.map(n=><span key={n}> · {n}</span>)}
       </p>}
-      {!!job?.suggestions?.length && <ol className="te-ai-list">{job.suggestions.map((s, i)=><li key={i} className={'is-' + s.review_status.toLowerCase()}>
-        <button type="button" className="te-ai-time" onClick={()=>onSeek(s.start_ms)} title="Tua tới đoạn này">{hms(s.start_ms)}{s.end_ms > s.start_ms ? `–${hms(s.end_ms)}` : ''}</button>
-        <div>
-          <strong>{s.action === 'UNPIN_PRODUCT' ? 'Bỏ ghim' : s.product_name ?? 'Chưa xác định sản phẩm'}</strong>
-          <Badge tone={s.review_status === 'APPROVED' ? 'success' : 'warning'}>{Math.round(s.confidence * 100)}% · {s.review_status === 'APPROVED' ? 'đủ tin cậy' : 'cần xem lại'}</Badge>
-          {s.evidence_transcript && <button type="button" className="te-ai-quote" onClick={()=>onSeek(s.evidence_timestamp_ms)} title="Tua tới câu nói">“{s.evidence_transcript}” · {hms(s.evidence_timestamp_ms)}</button>}
-          <small className="te-muted">{s.match_reason}</small>
+      {!!job?.suggestions?.length && <ol className="te-ai-list">{job.suggestions.map((s, i)=><li key={i} className={'te-ai-item is-' + s.review_status.toLowerCase()}>
+        <div className="te-ai-head">
+          <button type="button" className="te-ai-time" onClick={()=>onSeek(s.start_ms)} title="Tua tới đoạn này">{hms(s.start_ms)}{s.end_ms > s.start_ms ? ` – ${hms(s.end_ms)}` : ''}</button>
+          <strong className="te-ai-name" title={s.product_name ?? undefined}>{s.action === 'UNPIN_PRODUCT' ? 'Bỏ ghim' : s.product_name ?? 'Chưa xác định sản phẩm'}</strong>
+          <Badge tone={s.review_status === 'APPROVED' ? 'success' : 'warning'}>{Math.round(s.confidence * 100)}%</Badge>
         </div>
+        {s.evidence_transcript && <button type="button" className="te-ai-quote" onClick={()=>onSeek(s.evidence_timestamp_ms)} title="Tua tới câu nói">
+          “{s.evidence_transcript}”<span>Nghe lúc {hms(s.evidence_timestamp_ms)} · {s.review_status === 'APPROVED' ? 'đủ tin cậy' : 'cần xem lại'}</span></button>}
+        <small className="te-ai-reason">{s.match_reason}</small>
       </li>)}</ol>}
     </div>
     {settingsOpen && <AISettingsModal onClose={()=>setSettingsOpen(false)}/>}
