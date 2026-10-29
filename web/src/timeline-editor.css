@@ -74,3 +74,21 @@
 .te-row-body > *,.te-row-line > *,.te-row .ui-field{min-width:0}
 .te-row .ui-select,.te-row .ui-select__control{min-width:0;max-width:100%}
 .te-row .ui-select__value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* AI suggestions (TimelineAIPanel.tsx) */
+.te-left{display:grid;gap:14px;min-width:0}
+.te-ai-body{display:grid;gap:10px;padding:0 16px 16px}
+.te-ai-actions{display:flex;gap:8px;flex-wrap:wrap}
+.te-ai-progress{position:relative;height:28px;border-radius:var(--ui-radius-control);background:var(--ui-surface-2);overflow:hidden}
+.te-ai-progress > span{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--ui-primary) 25%,transparent);transition:width .4s}
+.te-ai-progress small{position:relative;display:block;padding:5px 10px;font-size:12.5px}
+.te-ai-list{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:340px;overflow:auto}
+.te-ai-list li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:8px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control)}
+.te-ai-list li.is-needs_review{border-color:color-mix(in srgb,var(--ui-warning,#d48806) 50%,var(--ui-border))}
+.te-ai-list li > div{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.te-ai-list small{flex:1 1 100%}
+.te-ai-time,.te-ai-quote{padding:0;border:0;background:none;color:var(--ui-primary);font:inherit;font-size:12.5px;font-variant-numeric:tabular-nums;cursor:pointer;text-align:left}
+.te-ai-quote{flex:1 1 100%;color:var(--ui-text);font-style:italic}
+.te-ai-settings{display:grid;gap:12px}
+.te-ai-settings fieldset{display:grid;gap:10px;margin:0;padding:10px 12px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control)}
+.te-ai-settings legend{padding:0 4px;font-weight:600;font-size:13px}

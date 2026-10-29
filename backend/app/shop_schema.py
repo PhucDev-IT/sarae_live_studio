@@ -14,6 +14,8 @@ def upgrade(bind=None):
     sales_brain_schema(target)
     from app.live_timeline import ensure_schema as live_timeline_schema
     live_timeline_schema(target)
+    from app.timeline_ai.api import ensure_schema as timeline_ai_schema
+    timeline_ai_schema(target)
     with target.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS tiktok_shops (
             id INTEGER PRIMARY KEY,owner_id VARCHAR(64) NOT NULL,

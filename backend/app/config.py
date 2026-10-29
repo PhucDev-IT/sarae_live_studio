@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # ffmpeg/ffprobe used to cut Media Library videos into clips; empty = found on PATH.
     sarae_ffmpeg_path: str = ""
     sarae_ffprobe_path: str = ""
+    # AI Timeline Analyzer: default local Faster-Whisper model, device and precision (owners can override the model).
+    sarae_whisper_model: str = "small"
+    sarae_whisper_device: str = "auto"
+    sarae_whisper_compute_type: str = "int8"
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""

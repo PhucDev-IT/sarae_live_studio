@@ -9,6 +9,7 @@ import {
   ACTION_LABEL, TIMELINE_STATUS, hms, isSingle, parseHms, sessionHref, timelinesApi,
   type LiveProduct, type LiveSession, type MarkerAction, type Timeline, type TimelineIssue, type TimelineMarker,
 } from './liveSessionsApi'
+import TimelineAIPanel from './TimelineAIPanel'
 import './timeline-editor.css'
 
 const ZOOMS = [1, 2, 4, 8, 16, 32]
@@ -227,6 +228,7 @@ export default function TimelineEditor(){
     </div>
 
     <div className="te-grid">
+      <div className="te-left">
       <Card className="te-stage" padding={false}>
         <div className="te-video">
           {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video chính trong Thư viện.</p>}
@@ -240,6 +242,9 @@ export default function TimelineEditor(){
           onSeek={seek} onSelect={i=>{setSelected(i);seek(markers[i].at_ms)}} onMove={moveTo}/>
         <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span></div>
       </Card>
+        <TimelineAIPanel sessionId={session.id} disabled={session.status === 'ENDED'} onSeek={seek}
+          onDraft={id=>{if (dirty) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
+      </div>
 
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc ({markers.length})</span>}
         description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>

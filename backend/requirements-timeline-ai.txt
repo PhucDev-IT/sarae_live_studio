@@ -1,0 +1,6 @@
+# Optional: AI Timeline Analyzer speech recognition on this server (app/timeline_ai).
+# The Backend runs without these; analysis then fails with a clear "not installed" message.
+# Also needs ffmpeg/ffprobe on PATH (or SARAE_FFMPEG_PATH / SARAE_FFPROBE_PATH).
+faster-whisper>=1.0,<2
+# Optional finer word alignment (alignment provider "whisperx"); pulls PyTorch, install only when needed:
+# whisperx>=3.1
