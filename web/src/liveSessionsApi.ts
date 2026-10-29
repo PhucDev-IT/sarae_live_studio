@@ -82,6 +82,7 @@ export function eventDetail(detail:string){
   if (values.final != null) return `${values.error ?? ''}${values.final === 'True' ? ' · đã ngừng thử lại' : ''}`
   if (values.state && detail.startsWith('state=')) return values.state === 'LIVE' ? 'Đã xác nhận đang LIVE' : values.state === 'OFFLINE' ? 'Chưa LIVE' : 'Chưa xác định'
   if (values.policy) return values.policy === 'RESUME_AT_NEXT_MARKER' ? 'Tự quay lại ở mốc kế tiếp' : 'Giữ đến khi bấm Tiếp tục timeline'
+  if (values.media) return ''  // MAIN_VIDEO_CHANGED: the label says it, the id means nothing to a person
   if (values.mode) return MODE_META[values.mode as PlaybackMode]?.label ?? values.mode
   if (values.version && !values.agent) return `Phiên bản ${values.version}`
   if (values.code === 'video_skipped' || detail.includes('video_skipped')) return 'Bỏ qua video lỗi' + (values.message ? `: ${values.message}` : '')
