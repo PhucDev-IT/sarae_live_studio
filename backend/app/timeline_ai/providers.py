@@ -104,7 +104,7 @@ class FasterWhisperTranscriber:
 
 GPU_LIBRARY_MARKERS = ("cublas", "cudnn", "cudart", "cuda", "libcu")
 GPU_HELP = ("Không chạy được Whisper trên GPU ({missing}). Cài thư viện CUDA 12 vào venv Backend: "
-            "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 (hoặc CUDA Toolkit 12 + cuDNN 9), "
+            "pip install -r requirements-timeline-ai.txt (hoặc CUDA Toolkit 12 + cuDNN 9), "
             "hoặc chọn Thiết bị = CPU / Tự chọn trong Cấu hình phân tích AI.")
 # CTranslate2 12.x builds load these by name (cuDNN 9 ships inside the ctranslate2 wheel on Windows).
 CUDA_LIBRARIES = ("cublas64_12.dll", "cudnn64_9.dll") if os.name == "nt" else ("libcublas.so.12", "libcudnn.so.9")
