@@ -22,6 +22,7 @@ class DryRunPinExecutor:
 
     def __init__(self):
         self.calls: list[tuple[str, dict | None]] = []
+        self.pinned: str | None = None  # the card a real Console would now show pinned
 
     def submit(self, action: str, target: dict | None, current: Callable[[], bool],
                done: Callable[[bool, str | None], None]) -> None:
@@ -30,7 +31,11 @@ class DryRunPinExecutor:
             return
         self.calls.append((action, target))
         log.info("[dry-run] %s %s", action, (target or {}).get("name") or (target or {}).get("tiktok_product_id") or "")
+        self.pinned = (target or {}).get("tiktok_product_id") if action == "PIN_PRODUCT" else None
         done(True, None)
+
+    def read(self, done: Callable[..., None]) -> None:
+        done(True, self.pinned, None)
 
 
 class ConsolePinExecutor:
@@ -52,6 +57,20 @@ class ConsolePinExecutor:
             done(error is None, None if error is None else str(error)[:300])
 
         future.add_done_callback(finished)
+
+    def read(self, done: Callable[..., None]) -> None:
+        def finished(f):
+            error = f.exception()
+            if error is not None:
+                done(False, None, str(error)[:300])
+                return
+            state = f.result() or {}
+            if state.get("multiple_pins"):
+                done(False, None, "Nhiều product card đang ghim")
+                return
+            done(True, state.get("pinned_product_id"), None)
+
+        self.auto_pin.submit_pin_state().add_done_callback(finished)
 
 
 class AssumeLiveGate:

@@ -312,6 +312,9 @@ class AutoPinService:
                      guard=None) -> Future:
         return self._submit("unpin_product", expected_user_id, current, guard)
 
+    def submit_pin_state(self) -> Future:
+        return self._submit("get_pin_state", None)
+
     def submit_live_state(self) -> Future:
         return self._submit("live_state")
 

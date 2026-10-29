@@ -10,7 +10,8 @@ from fastapi import HTTPException
 from support import SaasTestCase
 
 
-class SingleVideoPlayTests(SaasTestCase):
+class SingleVideoBase(SaasTestCase):
+    """A Single Video session of OWNER A on an online Agent (no test of its own)."""
     def setUp(self):
         super().setUp()
         self.ao, self.quan, self.vay = self.tiktok_products(self.owner_a, "Áo", "Quần", "Váy")
@@ -27,6 +28,7 @@ class SingleVideoPlayTests(SaasTestCase):
                                                                "playback_mode": "SINGLE_VIDEO_TIMELINE", "main_media_id": self.main})
         self.sid = created.json()["id"]
         self.base = f"/api/live/sessions/{self.sid}"
+        self.active_version = None
 
     def activate(self, markers):
         tid = self.client.post(f"{self.base}/timelines", json={}).json()["id"]
@@ -35,6 +37,7 @@ class SingleVideoPlayTests(SaasTestCase):
         self.assertEqual(self.client.post(f"{self.base}/timelines/{tid}/approve").status_code, 200)
         activated = self.client.post(f"{self.base}/timelines/{tid}/activate")
         self.assertEqual(activated.status_code, 200, activated.text)
+        self.active_version = activated.json()["version"]
         return activated.json()
 
     def media_ready(self):
@@ -45,7 +48,9 @@ class SingleVideoPlayTests(SaasTestCase):
         started = self.client.post(f"{self.base}/start", json={"agent_id": self.agent["agent_id"]})
         self.assertEqual(started.status_code, 202, started.text)
         commands = self.run_agent(self.agent)
-        self.heartbeat(self.agent, {"running": True, "session_id": self.sid, "session_mode": "video", "connected": True})
+        # The Agent now runs the version it was sent (sarae_agent/timeline status in the heartbeat).
+        self.heartbeat(self.agent, {"running": True, "session_id": self.sid, "session_mode": "video", "connected": True,
+                                    "timeline": {"session_id": self.sid, "version": self.active_version}})
         return commands
 
     def session(self):
@@ -54,6 +59,9 @@ class SingleVideoPlayTests(SaasTestCase):
     def events(self):
         return [e["event_type"] for e in self.client.get(f"{self.base}/events").json()]
 
+
+
+class SingleVideoPlayTests(SingleVideoBase):
     def test_manifest_is_the_main_video_only(self):
         from app.agent_media import session_manifest
         with self.Session() as db:

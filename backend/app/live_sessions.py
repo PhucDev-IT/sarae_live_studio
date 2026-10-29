@@ -354,13 +354,14 @@ def apply_command_outcome(command: dict, context: dict):
 RECONCILE_STOP_SECONDS = 60
 
 
-def stop_sent_recently(agent_id: str, session_id: int) -> bool:
-    """A stop for this session was already sent within the last minute (heartbeats come every few seconds)."""
+def stop_sent_recently(agent_id: str, session_id: int, kind: str = "playback_stop") -> bool:
+    """A stop (or `kind`) for this session was already sent within the last minute (heartbeats come every few
+    seconds)."""
     from app.cloud_agents import _db
     since = (datetime.now(timezone.utc) - timedelta(seconds=RECONCILE_STOP_SECONDS)).isoformat()
     with _db() as db:
-        return db.execute("""SELECT 1 FROM agent_commands WHERE agent_id=? AND session_id=? AND kind='playback_stop'
-            AND status!='CANCELLED' AND created_at>? LIMIT 1""", (agent_id, session_id, since)).fetchone() is not None
+        return db.execute("""SELECT 1 FROM agent_commands WHERE agent_id=? AND session_id=? AND kind=?
+            AND status!='CANCELLED' AND created_at>? LIMIT 1""", (agent_id, session_id, kind, since)).fetchone() is not None
 
 
 def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
@@ -402,6 +403,9 @@ def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
                 event(db, sid, "RECONCILE_STOP", playback.get("product_id"), "agent_still_playing_ended_session")
                 db.commit()
             return
+        if item.status == "RUNNING" and is_single(item):
+            reconcile_timeline(db, owner_id, agent_id, item, playback.get("timeline") or {})
+            return
         reported = playback.get("product_id")
         if item.status == "RUNNING" and reported and reported != item.current_product_id and in_flight(sid, agent_id) is None:
             item.current_product_id = reported
@@ -412,6 +416,22 @@ def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
 # What the Agent's pin scheduler did (sarae_agent/timeline/scheduler.py), kept in the session history.
 TIMELINE_EVENTS = ("TIMELINE_LOADED", "TIMELINE_STOPPED", "TIMELINE_RESUMED", "PIN_APPLIED", "PIN_FAILED",
                    "MANUAL_OVERRIDE", "LIVE_GATE_CHANGED")
+
+
+def reconcile_timeline(db, owner_id: str, agent_id: str, item, reported: dict) -> None:
+    """The Agent plays this Single Video session but runs another timeline version (or none, e.g. it restarted and
+    the session was resumed before an activation reached it): send the active one again, at most once a minute."""
+    from app.live_timeline import LiveTimeline, push_timeline
+    active = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
+    wanted = active.version if active is not None and active.status == "ACTIVE" else None
+    if reported.get("session_id") == item.id and reported.get("version") == wanted:
+        return
+    if stop_sent_recently(agent_id, item.id, "timeline_set"):
+        return
+    sent, _ = push_timeline(owner_id, item.id)
+    if sent:
+        event(db, item.id, "TIMELINE_RECONCILED", detail=f"agent_version={reported.get('version')};version={wanted}")
+        db.commit()
 
 
 def sync_agent_events(owner_id: str):

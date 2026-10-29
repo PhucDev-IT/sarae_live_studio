@@ -11,7 +11,7 @@ Timelines are versioned per session: a DRAFT is edited freely, APPROVED is froze
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.orm import Mapped, mapped_column
@@ -30,6 +30,10 @@ TIMELINE_STATUSES = ("DRAFT", "APPROVED", "ACTIVE", "ARCHIVED")
 MARKER_ACTIONS = ("PIN_PRODUCT", "UNPIN_PRODUCT", "NO_ACTION")
 MARKER_SOURCES = ("MANUAL", "AI")
 REVIEW_STATUSES = ("APPROVED", "NEEDS_REVIEW", "REJECTED")
+# A pin made by hand during LIVE: the timeline waits for "resume" (default, never overwrites the operator) or comes
+# back by itself when the playback reaches the next marker.
+HOLD_UNTIL_RESUME = "HOLD_UNTIL_RESUME"
+RESUME_AT_NEXT_MARKER = "RESUME_AT_NEXT_MARKER"
 
 
 def now():
@@ -387,6 +391,53 @@ def activate_timeline(session_id: int, timeline_id: int, owner: Owner):
     return out
 
 
+@router.get("/{session_id}/pin-state")
+def pin_state(session_id: int, owner: Owner):
+    """Wanted vs actual pin of a running Single Video session, as its Agent last reported (heartbeat)."""
+    from app.live import playback_of
+    from app.live_sessions import agent_by_id
+    with SessionLocal() as db:
+        item = session_of(db, session_id, owner)
+        active = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
+        agent = agent_by_id(owner["id"], item.agent_id) if item.status == "RUNNING" else None
+        playback = playback_of(agent) if agent else {}
+        reported = playback.get("timeline") or {}
+        if reported.get("session_id") != session_id:
+            reported = {}
+        ids = {reported.get("desired_product_id"), reported.get("actual_product_id")} - {None}
+        names = {p.id: p.name for p in db.scalars(select(Product).where(Product.id.in_(ids), Product.owner_id == owner["id"]))} if ids else {}
+        return {"session_id": session_id, "status": item.status,
+                "active_version": active.version if active is not None and active.status == "ACTIVE" else None,
+                "agent_online": bool(agent and agent["online"]), "reported": bool(reported),
+                "position_ms": reported.get("position_ms"), "media_duration_ms": playback.get("media_duration"),
+                "iteration": reported.get("iteration"), "agent_version": reported.get("version"),
+                "desired_product_id": reported.get("desired_product_id"),
+                "desired_product_name": names.get(reported.get("desired_product_id")),
+                "actual_product_id": reported.get("actual_product_id"),
+                "actual_product_name": names.get(reported.get("actual_product_id")),
+                "actual_known": reported.get("actual_known"),
+                "actual_tiktok_product_id": reported.get("actual_tiktok_product_id"),
+                "mode": reported.get("mode"), "manual_policy": reported.get("manual_policy"),
+                "live": reported.get("live"), "in_flight": reported.get("in_flight"),
+                "last_applied": reported.get("last_applied"), "last_error": reported.get("last_error"),
+                "dry_run": reported.get("dry_run")}
+
+
+@router.post("/{session_id}/timeline/resume")
+def resume_timeline(session_id: int, owner: Owner, idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    """End a manual pin hold: the Agent restores the pin wanted at its current position."""
+    from app.live import control
+    from app.live_sessions import event
+    with SessionLocal() as db:
+        item = session_of(db, session_id, owner)
+        if item.status != "RUNNING" or not item.agent_id:
+            raise HTTPException(409, "Phiên chưa LIVE")
+        event(db, session_id, "TIMELINE_RESUME_REQUESTED")
+        db.commit()
+        agent_id = item.agent_id
+    return control(owner, agent_id, "timeline_resume", {"session_id": session_id}, idempotency_key, session_id)
+
+
 @router.delete("/{session_id}/timelines/{timeline_id}", status_code=204)
 def delete_timeline(session_id: int, timeline_id: int, owner: Owner):
     with SessionLocal() as db:
@@ -437,6 +488,18 @@ class VideoPlayCommand(BaseModel):
     timeline: AgentTimeline | None = None
 
 
+class TimelineHoldCommand(BaseModel):
+    model_config = {"extra": "forbid"}
+    session_id: int = Field(ge=1)
+    product_id: int | None = Field(default=None, ge=1)
+    policy: str = Field(default=HOLD_UNTIL_RESUME, pattern=f"^({HOLD_UNTIL_RESUME}|{RESUME_AT_NEXT_MARKER})$")
+
+
+class TimelineResumeCommand(BaseModel):
+    model_config = {"extra": "forbid"}
+    session_id: int = Field(ge=1)
+
+
 class TimelineSetCommand(BaseModel):
     model_config = {"extra": "forbid"}
     session_id: int = Field(ge=1)
@@ -446,7 +509,8 @@ class TimelineSetCommand(BaseModel):
 def validate_command(kind: str, payload: dict) -> dict:
     """Payload check of the `video_play` / `timeline_set` Agent commands (cloud_agents.validate_payload)."""
     from pydantic import ValidationError
-    model = VideoPlayCommand if kind == "video_play" else TimelineSetCommand
+    model = {"video_play": VideoPlayCommand, "timeline_set": TimelineSetCommand, "timeline_hold": TimelineHoldCommand,
+             "timeline_resume": TimelineResumeCommand}[kind]
     try:
         return model.model_validate(payload).model_dump()
     except ValidationError as exc:

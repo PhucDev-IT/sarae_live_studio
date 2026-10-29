@@ -15,6 +15,10 @@ Safety rules:
 - nothing is executed while the LIVE gate is not open (TikTok LIVE not confirmed on the Console), while the session
   is not the one loaded, or while the operator holds a manual pin;
 - ``clear`` (LIVE stopped) drops the timeline and makes any result still on its way stale.
+
+Actual state: what is pinned is read back from the Console when unknown (start, reconnect, timed-out ack) and every
+``reconcile_seconds`` while idle. A pin that changed without the scheduler (someone pinned on the Console) is a manual
+override: the timeline holds (HOLD_UNTIL_RESUME by default) instead of fighting the operator.
 """
 from __future__ import annotations
 
@@ -36,6 +40,9 @@ class PinExecutor(Protocol):
     def submit(self, action: str, target: dict | None, current: Callable[[], bool],
                done: Callable[[bool, str | None], None]) -> None:
         """Start PIN_PRODUCT (target) or UNPIN_PRODUCT on TikTok without blocking; call done(ok, error) once."""
+
+    def read(self, done: Callable[..., None]) -> None:
+        """Read the pinned card without blocking; call done(ok, tiktok_product_id or None, error) once."""
 
 
 class LiveGate(Protocol):
@@ -70,7 +77,8 @@ def marker_at(markers: list[dict], position_ms: int) -> dict | None:
 class TimelineScheduler:
     def __init__(self, executor: PinExecutor, gate: LiveGate, emit: Callable[[dict], None] | None = None, *,
                  clock: Callable[[], float] = time.monotonic, max_attempts: int = 3,
-                 retry_seconds: tuple[float, ...] = (3, 10, 30), ack_timeout: float = 75):
+                 retry_seconds: tuple[float, ...] = (3, 10, 30), ack_timeout: float = 75,
+                 reconcile_seconds: float = 30, drift_policy: str = HOLD_UNTIL_RESUME):
         self.executor = executor
         self.gate = gate
         self.emit = emit
@@ -78,6 +86,8 @@ class TimelineScheduler:
         self.max_attempts = max_attempts
         self.retry_seconds = retry_seconds
         self.ack_timeout = ack_timeout
+        self.reconcile_seconds = reconcile_seconds
+        self.drift_policy = drift_policy
         self.lock = threading.RLock()
         self._token = 0
         self._reset()
@@ -104,6 +114,10 @@ class TimelineScheduler:
         self.live: bool | None = None
         self.last_error: str | None = None
         self.last_applied: dict | None = None
+        self._reading: int | None = None  # token of a Console read on its way
+        self._next_read_at = 0.0
+        self._actions = 0  # actions started: a read begun before the last one says nothing about now
+        self.last_read: dict | None = None
 
     # ----- control ----------------------------------------------------------------------------------------------
 
@@ -176,14 +190,16 @@ class TimelineScheduler:
             self.desired_marker = marker_at(self.markers, self.position_ms)
             self.desired = pin_at(self.markers, self.position_ms)
             self._expire_in_flight()
-            if self.mode == "MANUAL_HOLD":
-                if self.manual_policy == RESUME_AT_NEXT_MARKER and self.desired_marker is not None \
-                        and self._key() != self._hold_key:
-                    self.mode, self._hold_key = "TIMELINE", None
-                    self._event("TIMELINE_RESUMED", {"trigger": "next_marker"})
-                else:
-                    return
+            if self.mode == "MANUAL_HOLD" and self.manual_policy == RESUME_AT_NEXT_MARKER \
+                    and self.desired_marker is not None and self._key() != self._hold_key:
+                self.mode, self._hold_key = "TIMELINE", None
+                self._event("TIMELINE_RESUMED", {"trigger": "next_marker"})
             self.live = self.gate.is_live()
+            reading_due = self.clock() >= self._next_read_at
+            if self.live is True and self.in_flight is None and self._reading is None and reading_due:
+                self._read()
+            if self.mode == "MANUAL_HOLD":
+                return  # the operator's pin stays; a Console read may just have found one
             if self.in_flight is not None or self.desired == self.actual:
                 return
             if self.desired is None and self.actual == UNKNOWN:
@@ -209,6 +225,7 @@ class TimelineScheduler:
                 return
             target = {**target, "expected_user_id": self.expected_user_id}
         self._token += 1
+        self._actions += 1
         token = self._token
         attempt = self._attempts.get(key, 0) + 1
         self._attempts[key] = attempt
@@ -253,6 +270,50 @@ class TimelineScheduler:
             self._fail(key, error or "Ghim thất bại", final=flight["attempt"] >= self.max_attempts,
                        attempt=flight["attempt"])
 
+    def _read(self) -> None:
+        self._token += 1
+        token, actions = self._token, self._actions
+        self._reading = token
+        self._next_read_at = self.clock() + self.reconcile_seconds
+
+        def done(ok: bool, tiktok_product_id: str | None = None, error: str | None = None) -> None:
+            self._read_done(token, actions, ok, tiktok_product_id, error)
+
+        try:
+            self.executor.read(done)
+        except Exception as exc:  # noqa: BLE001
+            self._read_done(token, actions, False, None, f"{type(exc).__name__}: {exc}")
+
+    def _product_of(self, tiktok_product_id: str | None) -> int | None | str:
+        if not tiktok_product_id:
+            return None
+        for pid, target in self.targets.items():
+            if str(target.get("tiktok_product_id") or "") == str(tiktok_product_id):
+                return pid
+        return f"TIKTOK:{tiktok_product_id}"  # a card the timeline does not know
+
+    def _read_done(self, token: int, actions: int, ok: bool, tiktok_product_id: str | None, error: str | None) -> None:
+        with self.lock:
+            if self._reading != token:
+                return
+            self._reading = None
+            if not ok:
+                self.last_read = {"ok": False, "error": (error or "")[:200]}
+                return
+            if actions != self._actions or self.in_flight is not None:
+                return  # an action started meanwhile: this reading may predate it
+            observed = self._product_of(tiktok_product_id)
+            self.last_read = {"ok": True, "tiktok_product_id": tiktok_product_id, "position_ms": self.position_ms}
+            if self.actual == UNKNOWN or self.mode == "MANUAL_HOLD" or observed == self.actual:
+                self.actual = observed
+                return
+            # Changed on TikTok without the scheduler: the operator pinned or unpinned by hand.
+            self.actual = observed
+            self.mode, self.manual_policy, self._hold_key = "MANUAL_HOLD", self.drift_policy, self._key()
+            self._event("MANUAL_OVERRIDE", {"source": "console", "tiktok_product_id": tiktok_product_id,
+                                            "policy": self.drift_policy},
+                        product_id=observed if isinstance(observed, int) else None)
+
     def _fail(self, key: tuple, error: str, final: bool, attempt: int = 1) -> None:
         self.last_error = error[:300]
         if final:
@@ -271,6 +332,7 @@ class TimelineScheduler:
             self.in_flight = None
             # The click may have happened: what is pinned is no longer known for sure.
             self.actual = UNKNOWN
+            self._next_read_at = 0  # read it back at once
             self._fail(flight["key"], "Hết thời gian chờ xác nhận ghim", final=flight["attempt"] >= self.max_attempts,
                        attempt=flight["attempt"])
 
@@ -292,8 +354,11 @@ class TimelineScheduler:
                     "position_ms": self.position_ms, "iteration": self.iteration,
                     "desired_product_id": self.desired,
                     "desired_marker_id": (self.desired_marker or {}).get("id"),
-                    "actual_product_id": None if self.actual == UNKNOWN else self.actual,
-                    "actual_known": self.actual != UNKNOWN, "mode": self.mode, "manual_policy": self.manual_policy,
+                    "actual_product_id": self.actual if isinstance(self.actual, int) else None,
+                    "actual_known": self.actual != UNKNOWN,
+                    "actual_tiktok_product_id": self.actual.split(":", 1)[1]
+                    if isinstance(self.actual, str) and self.actual.startswith("TIKTOK:") else None,
+                    "last_read": self.last_read, "mode": self.mode, "manual_policy": self.manual_policy,
                     "live": self.live, "in_flight": {k: v for k, v in self.in_flight.items() if k != "key"}
                     if self.in_flight else None,
                     "last_applied": self.last_applied, "last_error": self.last_error,

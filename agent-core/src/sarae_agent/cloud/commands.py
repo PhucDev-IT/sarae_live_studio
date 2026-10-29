@@ -18,7 +18,7 @@ MediaId = Field(pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
-BACKGROUND_KINDS = {"PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
+BACKGROUND_KINDS = {"timeline_hold", "timeline_resume", "PIN_PRODUCT", "UNPIN_PRODUCT", "GET_PIN_STATE", "SET_AUTO_PIN", "tts_speak", "tts_prepare", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start", "monitor_stop"}
 # Cloud lane "chat": TikTok LIVE chat replies (docs/AI_AUTO_REPLY.md), never behind a TTS or a product switch.
 CHAT_KINDS = {"chat_send", "chat_probe"}
 
@@ -152,6 +152,17 @@ class TimelineSetPayload(Payload):
     timeline: TimelinePayload | None = None
 
 
+class TimelineHoldPayload(Payload):
+    """The operator pins (product_id) or unpins (None) by hand: the timeline stops acting (docs: manual override)."""
+    session_id: int = Field(ge=1)
+    product_id: int | None = Field(default=None, ge=1)
+    policy: Literal["HOLD_UNTIL_RESUME", "RESUME_AT_NEXT_MARKER"] = "HOLD_UNTIL_RESUME"
+
+
+class TimelineResumePayload(Payload):
+    session_id: int = Field(ge=1)
+
+
 class SetAutoPinPayload(Payload):
     enabled: bool
     session_id: int | None = Field(default=None, ge=1)
@@ -263,6 +274,8 @@ class CommandRouter:
                              lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
             "video_play": (VideoPlayPayload, self._video_play),
             "timeline_set": (TimelineSetPayload, self._timeline_set),
+            "timeline_hold": (TimelineHoldPayload, self._timeline_hold),
+            "timeline_resume": (TimelineResumePayload, self._timeline_resume),
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_policy": (PlaybackPolicyPayload,
                                 lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
@@ -319,6 +332,18 @@ class CommandRouter:
         if not running:
             raise AgentError("SESSION_NOT_PLAYING", f"Phiên LIVE #{b.session_id} không phát trên Agent này")
         return scheduler.load(b.session_id, b.timeline.model_dump() if b.timeline else None)
+
+    def _running_timeline(self, session_id: int):
+        scheduler = self._scheduler()
+        if scheduler.session_id != session_id:
+            raise AgentError("SESSION_NOT_PLAYING", f"Phiên LIVE #{session_id} không chạy timeline trên Agent này")
+        return scheduler
+
+    def _timeline_hold(self, b: TimelineHoldPayload) -> dict:
+        return self._running_timeline(b.session_id).manual_pin(b.product_id, b.policy)
+
+    def _timeline_resume(self, b: TimelineResumePayload) -> dict:
+        return self._running_timeline(b.session_id).resume()
 
     def _stop(self):
         result = self.playback.stop()

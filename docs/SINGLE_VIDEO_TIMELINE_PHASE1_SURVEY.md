@@ -232,3 +232,10 @@ Proposed defaults (unless the user changes them): manual pin → `MANUAL_HOLD` u
 - **Dry-run by default** (`timeline.dry_run: true` in the Agent config.json): the schedule runs and PIN_APPLIED events are reported with `dry_run=True`, nothing is clicked on TikTok. With `assume_live_in_dry_run: true` the LIVE gate is considered open for rehearsals.
 - Real mode: the LIVE gate reads the Console (`LIVE_STATE_JS`, `LIVE_LABELS` in auto_pin.py). **The labels are not verified on the real Console**; unknown means no pin (fail closed).
 - **Deployment order: Backend first, then the Agent.** An older Backend rejects the new event types (422) and the Agent's event outbox would keep retrying the whole batch.
+
+## 8. Step 4 notes (pin state, manual override, reconcile)
+
+- **No `live_pin_state` table** (changed from §2): the wanted/actual pin lives in the Agent's scheduler and reaches the Backend in every heartbeat (`playback.timeline`), which the Backend already persists per Agent. `GET /api/live/sessions/{id}/pin-state` reads it; the pin history is in the session events (PIN_APPLIED, PIN_FAILED, MANUAL_OVERRIDE, TIMELINE_RECONCILED, ...).
+- **Actual state read back from the Console** at start/reconnect (unknown) and every 30 s while idle (only when the LIVE gate is open). A leftover pin from before the session that the timeline does not want at the current position is removed.
+- **Manual override**: `POST /api/live/pin` / `unpin` on a Single Video session first sends `timeline_hold` (same Agent lane as the pin, so it runs first) with `timeline_policy` = `HOLD_UNTIL_RESUME` (default) or `RESUME_AT_NEXT_MARKER`. A pin changed directly on the Console is detected by the read-back and also holds (HOLD_UNTIL_RESUME). `POST /api/live/sessions/{id}/timeline/resume` ends the hold.
+- **Reconcile**: when the heartbeat shows the Agent running another timeline version (or none) than the active one, the Backend sends `timeline_set` again, at most once a minute.
