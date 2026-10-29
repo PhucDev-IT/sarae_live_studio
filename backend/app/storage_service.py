@@ -27,7 +27,7 @@ log = logging.getLogger("sarae.storage.service")
 
 VIDEO_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".m4v": "video/x-m4v"}
 CHUNK_SIZE = 8 * 1024 * 1024  # recommended client chunk
-CHUNK_ALIGN = 256 * 1024  # Google resumable uploads need multiples of 256 KiB (except the last chunk)
+CHUNK_ALIGN = 256 * 1024  # Generic bound for legacy Drive; R2 additionally enforces fixed 8 MiB parts.
 MAX_CHUNK = 32 * 1024 * 1024
 _CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 _RANGE = re.compile(r"^bytes=\d*-\d*$")
@@ -192,8 +192,9 @@ def _apply(db: Session, row: MediaUpload, received: int, stored: StoredObject | 
     with _hash_lock:
         offset, sha, md5 = _hashers.pop(row.id, (-1, None, None))
     complete = sha is not None and offset == row.size_bytes
-    if complete and stored.md5 and md5.hexdigest() != stored.md5:
-        log.error("upload %s md5 mismatch between Backend and provider", row.id)
+    if complete and ((stored.md5 and md5.hexdigest() != stored.md5) or
+                     (stored.sha256 and sha.hexdigest() != stored.sha256)):
+        log.error("upload %s checksum mismatch between Backend and provider", row.id)
         try:
             provider(row.provider, db).delete(stored.object_id)
         except StorageError:
@@ -201,7 +202,7 @@ def _apply(db: Session, row: MediaUpload, received: int, stored: StoredObject | 
         row.status, row.error_code, row.session_enc = "FAILED", "STORAGE_CHECKSUM_MISMATCH", None
         db.commit()
         raise fail(422, "STORAGE_CHECKSUM_MISMATCH", "File trên kho không khớp dữ liệu đã gửi; hãy upload lại")
-    sha256 = sha.hexdigest() if complete else None
+    sha256 = sha.hexdigest() if complete else stored.sha256
     media = db.get(MediaItem, row.media_id)
     if media is None:  # idempotent: a repeated completion keeps the first media row
         media = MediaItem(id=row.media_id, owner_id=row.owner_id, provider=row.provider, provider_file_id=stored.object_id,

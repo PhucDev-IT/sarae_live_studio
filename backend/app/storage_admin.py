@@ -1,10 +1,11 @@
-"""Admin-only connection of the system storage account (Google Drive today).
+"""Admin-only private R2 configuration and legacy Google Drive OAuth.
 
 Customers never see this: every endpoint requires SUPER_ADMIN, except the OAuth callback, which Google calls in the
 admin's browser and which is bound to the admin by a single-use, hashed, short-lived `state` + PKCE.
 The refresh token is encrypted at rest and never leaves the Backend (no API returns it, no log prints it).
 """
 import hashlib
+import json
 import logging
 import secrets
 from datetime import timedelta
@@ -51,6 +52,7 @@ def status_view(db: Session) -> dict:
         MediaItem.id.in_(select(MediaStorageObject.media_id).where(
             MediaStorageObject.status.in_(("ACTIVE", "RETIRED"))))))
     return {
+        "r2": r2_status(db),
         "upload_provider": settings.sarae_storage_provider,
         "google": {
             "configured": google_api.configured(),
@@ -65,6 +67,97 @@ def status_view(db: Session) -> dict:
         "media_bytes": int(media[1]),
         "deleted_media_pending_cleanup": pending,
     }
+
+
+def r2_status(db: Session) -> dict:
+    from app.r2_storage import configuration
+    row = db.get(StorageCredential, "R2")
+    try:
+        config, source = configuration(db)
+    except StorageError:
+        config, source = {}, "DATABASE"
+    return {"source": source, "status": row.status if row else "DISCONNECTED",
+            "account_id": config.get("account_id", ""), "bucket": config.get("bucket", ""),
+            "endpoint": config.get("endpoint", ""), "region": config.get("region", "auto"),
+            "configured": bool(config.get("secret_access_key")),
+            "last_error_code": row.last_error_code if row else None}
+
+
+class R2Configuration(BaseModel):
+    account_id: str = Field(min_length=1, max_length=100)
+    bucket: str = Field(min_length=3, max_length=63, pattern=r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$")
+    access_key_id: str = Field(repr=False)
+    secret_access_key: str = Field(repr=False)
+    endpoint: str = Field(default="", max_length=300)
+    region: str = Field(default="auto", max_length=40)
+
+
+def _no_r2_uploads(db: Session):
+    from app.storage_models import MediaUpload
+    if db.scalar(select(func.count()).select_from(MediaUpload).where(
+            MediaUpload.provider == "R2", MediaUpload.status == "UPLOADING")):
+        raise fail(409, "STORAGE_UPLOAD_ACTIVE", "Hủy hoặc hoàn tất upload R2 trước khi thay cấu hình")
+
+
+@router.put("/r2/config")
+def save_r2(body: R2Configuration, user: Admin, db: DB):
+    from app.r2_storage import configuration, validate_config
+    try:
+        value = validate_config(body.model_dump())
+    except StorageError as exc:
+        raise http_error(exc)
+    _no_r2_uploads(db)
+    try:
+        previous, _source = configuration(db)
+        previous = validate_config(previous)
+    except StorageError:
+        previous = None
+    has_media = db.scalar(select(func.count()).select_from(MediaItem).where(MediaItem.provider == "R2"))
+    if has_media and (previous is None or any(previous[k] != value[k] for k in ("bucket", "endpoint"))):
+        raise fail(409, "STORAGE_ACCOUNT_MISMATCH", "Kho còn metadata video; reset Cloud Media trước khi đổi bucket")
+    row = db.get(StorageCredential, "R2")
+    if row is None:
+        row = StorageCredential(provider="R2")
+        db.add(row)
+    row.account_id, row.root_container_id = value["account_id"], value["bucket"]
+    row.refresh_token_enc = credentials.encrypt(json.dumps(value))
+    row.scopes = ""
+    row.status, row.last_error_code, row.connected_by = "DISCONNECTED", None, user["id"]
+    db.commit()
+    return r2_status(db)
+
+
+@router.post("/r2/check")
+def check_r2(_: Admin, db: DB):
+    from app.r2_storage import CloudflareR2StorageProvider
+    row = db.get(StorageCredential, "R2")
+    if row is None:
+        row = StorageCredential(provider="R2", scopes="ENV", status="DISCONNECTED")
+        db.add(row)
+        db.flush()
+    try:
+        store = CloudflareR2StorageProvider(db, require_connected=False)
+        health = store.health()
+    except StorageError as exc:
+        if row is not None:
+            row.status, row.last_error_code = "ERROR", exc.code
+            db.commit()
+        raise http_error(exc)
+    row.status, row.last_error_code = "CONNECTED", None
+    db.commit()
+    return {"ok": True, **health}
+
+
+@router.delete("/r2/connection")
+def disconnect_r2(_: Admin, db: DB):
+    _no_r2_uploads(db)
+    row = db.get(StorageCredential, "R2")
+    if row is None:
+        row = StorageCredential(provider="R2", scopes="ENV")
+        db.add(row)
+    row.status = "DISCONNECTED"
+    db.commit()
+    return {"status": "DISCONNECTED"}
 
 
 @router.get("/status")

@@ -35,6 +35,12 @@ jobs:
         env:
           PYTHONPATH: backend:backend/tests
         run: python -m unittest discover -s backend/tests -p test_media_library.py
+      - name: Test Cloudflare R2 and scoped reset (mock S3)
+        env:
+          PYTHONPATH: backend:backend/tests
+        run: |
+          python -m unittest discover -s backend/tests -p test_r2_storage.py
+          python -m unittest discover -s backend/tests -p test_cloud_storage_reset.py
 
   web-tsx-parse:
     runs-on: ubuntu-latest

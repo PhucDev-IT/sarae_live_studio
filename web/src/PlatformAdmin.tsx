@@ -27,7 +27,7 @@ const NAV:{id:Tab;title:string;icon:typeof Users;hint:string}[] = [
   {id:'licenses', title:'License & Gói', icon:ShieldCheck, hint:'Thời hạn license, gia hạn nhanh và khóa / mở.'},
   {id:'agents', title:'Windows Agents', icon:HardDrive, hint:'Thiết bị đã kích hoạt trên toàn hệ thống. Chỉ giám sát, không điều khiển LIVE.'},
   {id:'captcha', title:'Mẫu CAPTCHA', icon:ScanEye, hint:'Ảnh mẫu để Agent nhận diện CAPTCHA. Agent tự tải khi khởi động; khách hàng không thấy mục này.'},
-  {id:'storage', title:'Kho lưu trữ', icon:UploadCloud, hint:'Kho video tập trung (Google Drive của hệ thống). Khách hàng không thấy mục này và không truy cập trực tiếp kho.'},
+  {id:'storage', title:'Kho lưu trữ', icon:UploadCloud, hint:'Kho video tập trung (Cloudflare R2 của hệ thống). Khách hàng không thấy mục này và không truy cập trực tiếp kho.'},
   {id:'settings', title:'Cấu hình', icon:Settings2, hint:'Thông tin nền tảng và chính sách phân quyền.'},
 ]
 const STATE_META:Record<LicenseState,{label:string;tone:'success'|'warning'|'danger'|'default'}> = {
@@ -453,98 +453,60 @@ function CaptchaTemplates(){
   </div>
 }
 
-type StorageStatus = { upload_provider:string; media_available:number; media_bytes:number; deleted_media_pending_cleanup:number
-  google:{configured:boolean; status:string; account_email:string; scopes:string[]; root_container_id:string; last_error_code:string|null; connected_at:string|null} }
-const STORAGE_ERRORS:Record<string,string> = {
-  STORAGE_STATE_INVALID:'Liên kết xác thực không hợp lệ hoặc đã dùng. Hãy bấm Kết nối lại.',
-  STORAGE_STATE_EXPIRED:'Phiên xác thực đã quá 10 phút. Hãy bấm Kết nối lại.',
-  STORAGE_CONSENT_DENIED:'Bạn đã từ chối cấp quyền trên Google.',
-  STORAGE_SCOPE_MISSING:'Chưa cấp quyền Google Drive (drive.file). Hãy đánh dấu quyền Drive khi đồng ý.',
-  STORAGE_ACCOUNT_MISMATCH:'Tài khoản Google khác tài khoản đang chứa video. Hãy dùng đúng tài khoản cũ (hoặc migrate trước).',
-  STORAGE_NO_REFRESH_TOKEN:'Google không trả refresh token. Hãy gỡ quyền Sarae trong tài khoản Google rồi kết nối lại.',
-}
+type StorageStatus = { upload_provider:string; media_available:number; media_bytes:number
+  r2:{source:string; status:string; account_id:string; bucket:string; endpoint:string; region:string; configured:boolean; last_error_code:string|null} }
 const bytesLabel = (bytes:number) => bytes >= 1024 ** 3 ? (bytes / 1024 ** 3).toFixed(2) + ' GB' : (bytes / 1024 ** 2).toFixed(1) + ' MB'
 
-/** System storage connection (admin only): customers upload through Sarae and never see the Drive or its credential. */
 function StorageView(){
-  const toast = useToast()
   const [status,setStatus] = useState<StorageStatus|null>(null)
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
+  const [message,setMessage] = useState('')
   const [confirm,setConfirm] = useState(false)
-  const [confirmCleanup,setConfirmCleanup] = useState(false)
-  const result = useMemo(()=>new URLSearchParams(window.location.hash.split('?')[1] ?? ''),[])
+  const [form,setForm] = useState({account_id:'',bucket:'',access_key_id:'',secret_access_key:'',endpoint:'',region:'auto'})
   const load = useCallback(async ()=>{
-    try{setStatus(await call<StorageStatus>('/storage-admin/status'));setError('')}
-    catch(e){setError(e instanceof Error ? e.message : 'Không tải được trạng thái kho')}
+    const next = await call<StorageStatus>('/storage-admin/status')
+    setStatus(next)
+    setForm(f=>({...f,account_id:next.r2.account_id,bucket:next.r2.bucket,endpoint:next.r2.endpoint,region:next.r2.region}))
   },[])
-  useEffect(()=>{void load()},[load])
-  const connect = async () => {
-    setBusy(true)
-    try{window.location.assign((await call<{url:string}>('/storage-admin/google/authorize', {method:'POST'})).url)}
-    catch(e){toast.push({tone:'danger', title:'Không bắt đầu kết nối được', description:e instanceof Error ? e.message : ''});setBusy(false)}
+  useEffect(()=>{void load().catch(e=>setError(String(e)))},[load])
+  const run = async (action:()=>Promise<unknown>, success:string) => {
+    setBusy(true);setError('');setMessage('')
+    try{await action();setMessage(success)}
+    catch(e){setError(e instanceof Error ? e.message : String(e))}
+    finally{try{await load()}catch(e){setError(String(e))}setBusy(false);setConfirm(false)}
   }
-  const check = async () => {
-    setBusy(true)
-    try{const r = await call<{account_email:string}>('/storage-admin/google/check', {method:'POST'});toast.push({tone:'success', title:'Kho hoạt động bình thường', description:r.account_email})}
-    catch(e){toast.push({tone:'danger', title:'Kiểm tra thất bại', description:e instanceof Error ? e.message : ''})}
-    finally{setBusy(false);void load()}
-  }
-  const disconnect = async () => {
-    setBusy(true)
-    try{await call('/storage-admin/google/connection', {method:'DELETE'});toast.push({tone:'success', title:'Đã ngắt kết nối kho'})}
-    catch(e){toast.push({tone:'danger', title:'Không ngắt kết nối được', description:e instanceof Error ? e.message : ''})}
-    finally{setBusy(false);setConfirm(false);void load()}
-  }
-  const cleanup = async () => {
-    setBusy(true)
-    try{
-      const r = await call<{cleaned:number;failed:number;remaining:number}>('/storage-admin/deleted-media/cleanup', {method:'POST'})
-      toast.push({tone:r.failed ? 'danger' : 'success', title:`Đã dọn ${r.cleaned} file`, description:r.failed ? `${r.failed} file chưa xóa được; hãy kiểm tra kết nối kho rồi thử lại.` : `${r.remaining} video còn chờ dọn.`})
-    }catch(e){toast.push({tone:'danger', title:'Không dọn được file đã xóa', description:e instanceof Error ? e.message : ''})}
-    finally{setBusy(false);setConfirmCleanup(false);void load()}
-  }
-  const g = status?.google
-  const connected = g?.status === 'CONNECTED'
-  const callbackError = result.get('storage_error')
-  return <div className="pa-grid">
-    <section className="pa-card"><header className="pa-card-head"><h3><UploadCloud size={17}/>Google Drive hệ thống</h3></header>
-      {result.get('storage') === 'connected' && <Alert tone="success">Đã kết nối kho lưu trữ.</Alert>}
-      {callbackError && <Alert tone="danger" title="Kết nối chưa thành công">{STORAGE_ERRORS[callbackError] ?? callbackError}</Alert>}
-      {error && <Alert tone="danger">{error}</Alert>}
-      {g && !g.configured && <Alert tone="warning" title="Máy chủ chưa cấu hình OAuth">Đặt SARAE_GOOGLE_CLIENT_ID, SARAE_GOOGLE_CLIENT_SECRET và SARAE_GOOGLE_REDIRECT_URI cho Backend.</Alert>}
-      {g && <dl className="pa-dl">
-        <div><dt>Trạng thái</dt><dd>{connected ? 'Đã kết nối' : g.status === 'REVOKED' ? 'Quyền đã bị thu hồi — cần kết nối lại' : g.status === 'DISCONNECTED' ? 'Đã ngắt kết nối' : 'Chưa kết nối'}</dd></div>
-        <div><dt>Tài khoản Google</dt><dd>{g.account_email || '—'}</dd></div>
-        <div><dt>Quyền</dt><dd>{g.scopes.length ? g.scopes.map(s=>s.split('/').pop()).join(', ') : '—'}</dd></div>
-        <div><dt>Thư mục gốc (ID)</dt><dd>{g.root_container_id ? <code>{g.root_container_id}</code> : '—'}</dd></div>
-        <div><dt>Lỗi gần nhất</dt><dd>{g.last_error_code ?? 'Không có'}</dd></div>
-        <div><dt>Video đang lưu</dt><dd>{status?.media_available ?? 0} video · {bytesLabel(status?.media_bytes ?? 0)}</dd></div>
-        <div><dt>Video cũ chờ dọn file</dt><dd>{status?.deleted_media_pending_cleanup ?? 0}</dd></div>
-        <div><dt>Provider cho upload mới</dt><dd>{status?.upload_provider}</dd></div>
-      </dl>}
+  return <div className="pa-grid"><section className="pa-card">
+    <header className="pa-card-head"><h3><UploadCloud size={17}/>Cloudflare R2</h3></header>
+    {error && <Alert tone="danger">{error}</Alert>}
+    {message && <Alert tone="success">{message}</Alert>}
+    <dl className="pa-dl">
+      <div><dt>Trạng thái</dt><dd>{status?.r2.status ?? 'DISCONNECTED'}</dd></div>
+      <div><dt>Bucket</dt><dd>{status?.r2.bucket || 'Chưa cấu hình'}</dd></div>
+      <div><dt>Nguồn cấu hình</dt><dd>{status?.r2.source} (Database ưu tiên hơn ENV)</dd></div>
+      <div><dt>Lỗi gần nhất</dt><dd>{status?.r2.last_error_code || 'Không có'}</dd></div>
+      <div><dt>Thư viện</dt><dd>{status?.media_available ?? 0} video · {bytesLabel(status?.media_bytes ?? 0)}</dd></div>
+    </dl>
+    <form onSubmit={e=>{e.preventDefault();void run(async()=>{
+      await call('/storage-admin/r2/config',body(form,'PUT'))
+      setForm(f=>({...f,access_key_id:'',secret_access_key:''}))
+    },'Đã lưu cấu hình. Nhấn Kiểm tra kết nối để kích hoạt.')}}>
+      {(['account_id','bucket','access_key_id','secret_access_key','endpoint','region'] as const).map(key=><label key={key} style={{display:'block',marginBottom:12}}>
+        {{account_id:'Account ID',bucket:'Bucket Name',access_key_id:'Access Key ID',secret_access_key:'Secret Access Key',endpoint:'Endpoint (để trống để tự sinh)',region:'Region'}[key]}
+        <Input type={key === 'secret_access_key' || key === 'access_key_id' ? 'password' : 'text'} autoComplete="off" required={key !== 'endpoint'} value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))}/>
+      </label>)}
       <div className="pa-storage-actions">
-        <Button leftIcon={<UploadCloud size={16}/>} loading={busy} disabled={!g?.configured} onClick={()=>void connect()}>{connected ? 'Kết nối lại' : 'Kết nối Google Drive'}</Button>
-        {connected && <Button variant="outline" leftIcon={<RefreshCcw size={16}/>} disabled={busy} onClick={()=>void check()}>Kiểm tra</Button>}
-        {connected && !!status?.deleted_media_pending_cleanup && <Button variant="outline" leftIcon={<Trash2 size={16}/>} disabled={busy} onClick={()=>setConfirmCleanup(true)}>Dọn file đã xóa cũ</Button>}
-        {connected && <Button variant="ghost" leftIcon={<Unplug size={16}/>} disabled={busy} onClick={()=>setConfirm(true)}>Ngắt kết nối</Button>}
+        <Button type="submit" disabled={busy}>Lưu cấu hình</Button>
+        <Button type="button" variant="outline" disabled={busy || !status?.r2.configured} onClick={()=>void run(()=>call('/storage-admin/r2/check',{method:'POST'}),'Kết nối R2 thành công')}>Kiểm tra kết nối</Button>
+        <Button type="button" variant="ghost" disabled={busy} onClick={()=>setConfirm(true)}>Ngắt kết nối</Button>
       </div>
-    </section>
-    <section className="pa-card"><header className="pa-card-head"><h3><ShieldCheck size={17}/>Nguyên tắc</h3></header>
-      <ul className="pa-rules">
-        <li><CheckCircle2 size={16}/>Chỉ dùng quyền drive.file: Sarae chỉ thấy file do chính Sarae tạo.</li>
-        <li><CheckCircle2 size={16}/>Token được mã hóa ở Backend; không gửi cho trình duyệt hay Agent.</li>
-        <li><CheckCircle2 size={16}/>Phân quyền theo tài khoản ở Backend, không dựa vào thư mục.</li>
-        <li className="is-no"><X size={16}/>Không chia sẻ thư mục Drive hay sửa file trực tiếp trên Drive.</li>
-      </ul>
-    </section>
-    <ConfirmModal open={confirm} title="Ngắt kết nối kho lưu trữ?" tone="danger" confirmLabel="Ngắt kết nối" loading={busy}
-      description="Khách hàng sẽ không upload và xem video được cho đến khi kết nối lại ĐÚNG tài khoản Google này. File trên Drive không bị xóa."
-      onConfirm={()=>void disconnect()} onClose={()=>setConfirm(false)}/>
-    <ConfirmModal open={confirmCleanup} title="Dọn file của video đã xóa?" tone="danger" confirmLabel="Xóa file" loading={busy}
-      description="Xóa vĩnh viễn file lưu trữ của tối đa 100 video đã bị ẩn trước đây. Thông tin lịch sử vẫn được giữ. Nếu còn file chờ dọn, hãy chạy lại."
-      onConfirm={()=>void cleanup()} onClose={()=>setConfirmCleanup(false)}/>
-  </div>
+    </form>
+    <p className="pa-muted">Dùng bucket private và token Object Read & Write chỉ cho bucket Sarae. Khóa được mã hóa ở Backend, không trả về trình duyệt hoặc Agent. Khi thay cấu hình, nhập lại cả hai khóa.</p>
+    <p className="pa-muted">Thiết lập lại Cloud Media: dừng Backend, chạy công cụ reset có backup theo docs/CLOUDFLARE_R2_SETUP.md. Công cụ giữ nguyên sản phẩm, tài khoản và Agent local.</p>
+    <ConfirmModal open={confirm} title="Ngắt kết nối R2?" tone="danger" confirmLabel="Ngắt kết nối" loading={busy}
+      description="Video sẽ tạm thời không truy cập được. File R2 và dữ liệu nghiệp vụ được giữ lại. Nhấn Kiểm tra kết nối để kết nối lại."
+      onClose={()=>setConfirm(false)} onConfirm={()=>void run(()=>call('/storage-admin/r2/connection',{method:'DELETE'}),'Đã ngắt kết nối')}/>
+  </section></div>
 }
 
 function SettingsView({email}:{email:string}){

@@ -37,6 +37,7 @@ class StoredObject:
     duration_seconds: float | None = None
     width: int | None = None
     height: int | None = None
+    sha256: str | None = None
 
 
 @dataclass
@@ -269,6 +270,9 @@ def unregister(name: str):
 
 
 def provider(name: str, db: Session) -> StorageProvider:
+    if name == "R2":
+        from app.r2_storage import CloudflareR2StorageProvider
+        return CloudflareR2StorageProvider(db)
     factory = _FACTORIES.get(name)
     if factory is None:
         raise StorageError("STORAGE_PROVIDER_UNKNOWN", f"Kho lưu trữ {name} chưa được hỗ trợ")

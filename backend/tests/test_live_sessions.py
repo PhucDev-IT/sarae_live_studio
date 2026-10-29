@@ -118,7 +118,11 @@ class LiveSessionTests(SaasTestCase):
 
     def test_deleted_library_video_is_not_played(self):
         sid = self.create((1,))
-        self.client.delete(f"/api/media-library/{self.ao}")
+        # library_videos seeds metadata with provider TEST, without a blob-store adapter.
+        # This test covers playback after deletion; provider deletion is covered by storage tests.
+        with patch("app.storage_service.delete_media_objects"):
+            deleted = self.client.delete(f"/api/media-library/{self.ao}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
         with self.Session() as db, patch("app.cloud_agents.run_command") as command:
             item = db.get(LiveSession, sid)
             with self.assertRaises(HTTPException) as refused:
