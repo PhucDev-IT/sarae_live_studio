@@ -89,6 +89,8 @@ class SessionPatch(BaseModel):
 class StartInput(BaseModel):
     product_id: int | None = None
     agent_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
+    # Single Video Timeline resume: where the main video continues (ms); the pin in force there is restored.
+    position_ms: int = Field(default=0, ge=0, le=86_400_000)
 
 class SwitchInput(BaseModel):
     product_id: int
@@ -244,12 +246,16 @@ def session_agent(owner: dict, item, free: bool = False):
 LIVE_WAIT_SECONDS = 8
 
 
-def in_flight(session_id: int, agent_id: str, kind: str = "product_play"):
-    """A product command for this session still on its way (PENDING/RUNNING), if any."""
+PLAY_KINDS = ("product_play", "video_play")
+
+
+def in_flight(session_id: int, agent_id: str, kinds: tuple[str, ...] = PLAY_KINDS):
+    """A playback command (product or main video) for this session still on its way (PENDING/RUNNING), if any."""
     from app.cloud_agents import _db, command_view
+    marks = ",".join("?" for _ in kinds)
     with _db() as db:
-        row = db.execute("""SELECT * FROM agent_commands WHERE agent_id=? AND session_id=? AND kind=?
-            AND status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1""", (agent_id, session_id, kind)).fetchone()
+        row = db.execute(f"""SELECT * FROM agent_commands WHERE agent_id=? AND session_id=? AND kind IN ({marks})
+            AND status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1""", (agent_id, session_id, *kinds)).fetchone()
     return command_view(row) if row else None
 
 
@@ -319,6 +325,8 @@ def apply_command_outcome(command: dict, context: dict):
             item.status = "RUNNING"
             item.current_product_id = pid
             event(db, sid, "STARTED", pid, f"agent={item.agent_id}{late}")
+        elif action == "resume" and item.status == "RUNNING" and pid is None:
+            event(db, sid, "RESUMED", None, f"agent={item.agent_id}{late}")
         elif action == "resume" and item.status == "RUNNING":
             ids = ids_for(db, sid)
             if pid not in ids:
@@ -401,6 +409,11 @@ def reconcile_playback(owner_id: str, agent_id: str, playback: dict):
             db.commit()
 
 
+# What the Agent's pin scheduler did (sarae_agent/timeline/scheduler.py), kept in the session history.
+TIMELINE_EVENTS = ("TIMELINE_LOADED", "TIMELINE_STOPPED", "TIMELINE_RESUMED", "PIN_APPLIED", "PIN_FAILED",
+                   "MANUAL_OVERRIDE", "LIVE_GATE_CHANGED")
+
+
 def sync_agent_events(owner_id: str):
     """Apply what the owner's Agents did on their own (pending switch applied, playback ended, errors) and any
     command outcomes not applied yet."""
@@ -417,7 +430,7 @@ def sync_agent_events(owner_id: str):
                 if ev["type"] == "PRODUCT_SWITCHED" and ev.get("product_id") is not None and item.status == "RUNNING":
                     item.current_product_id = ev["product_id"]
                     event(db, item.id, "PRODUCT_SWITCHED", ev["product_id"], detail)
-                elif ev["type"] in ("PLAYBACK_ENDED", "ERROR"):
+                elif ev["type"] in ("PLAYBACK_ENDED", "ERROR") + TIMELINE_EVENTS:
                     event(db, item.id, ev["type"], ev.get("product_id"), detail[:500])
                 db.commit()
 
@@ -554,6 +567,75 @@ def prepare_session(session_id: int, body: PrepareInput, owner: Owner):
     return respond(result,session_id=session_id,agent_id=body.agent_id)
 
 
+def start_agent_and_console(db, owner: dict, item, body):
+    """The Agent a DRAFT starts on (online, idle) and its LIVE Console sync, which must be of the session's TikTok
+    Account and at most 10 minutes old. Returns (agent, snapshot row)."""
+    from sqlalchemy import text
+    from app.owner_agents import owned_agent
+    from app.live import playback_of
+    chosen_agent=body.agent_id or item.agent_id
+    if not chosen_agent:
+        raise HTTPException(422,"Chọn Windows Agent trước khi bắt đầu")
+    agent=owned_agent(owner,chosen_agent,online=True)
+    if playback_of(agent).get("running"):
+        raise HTTPException(409,"Agent đang phát phiên khác")
+    expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
+                        {"a":item.tiktok_account_id}).scalar_one_or_none()
+    from app.tiktok_products import connection as snapshot_connection
+    with snapshot_connection() as snap_db:
+        snap=snap_db.execute("SELECT account_user_id,scanned_at,products_json FROM snapshots WHERE agent_id=? AND owner_id=?",
+                             (agent["id"],owner["id"])).fetchone()
+    if not snap or not snap["account_user_id"] or snap["account_user_id"]!=expected:
+        raise HTTPException(409,"Chưa đồng bộ đúng tài khoản TikTok trên LIVE Console")
+    # Manual sync is mandatory immediately before starting this LIVE, not just any historical sync.
+    from datetime import datetime as _dt
+    try:
+        checked_at=_dt.fromisoformat(snap["scanned_at"].replace("Z","+00:00"))
+        if checked_at.tzinfo is None:
+            checked_at=checked_at.replace(tzinfo=timezone.utc)
+        recent=(datetime.now(timezone.utc)-checked_at).total_seconds() <= 600
+    except (ValueError,TypeError):
+        recent=False
+    if not recent:
+        raise HTTPException(409,"Danh sách LIVE Console đã cũ; đồng bộ sản phẩm lại trước khi LIVE")
+    return agent, snap
+
+
+def play_video(db, owner, agent, item, action: str, idempotency_key: str | None, start_ms: int = 0):
+    """Play the session's main video on its Agent with the active pin timeline (none: the video plays alone)."""
+    from app.cloud_agents import run_command
+    from app.live_timeline import agent_timeline
+    if in_flight(item.id, agent["id"]) is not None and not idempotency_key:
+        raise HTTPException(409, "Lệnh trước của phiên này còn đang được Agent xử lý")
+    payload = {"session_id": item.id, "media_id": item.main_media_id, "loop": item.video_loop is not False,
+               "start_ms": start_ms, "timeline": agent_timeline(db, item)}
+    context = {"module": "live_sessions", "action": action, "session_id": item.id, "product_id": None}
+    return run_command(agent["id"], owner["id"], "video_play", payload, wait=LIVE_WAIT_SECONDS,
+                       idempotency_key=idempotency_key, session_id=item.id, context=context)
+
+
+def start_single(db, owner: dict, item, body, idempotency_key: str | None):
+    """Start a Single Video Timeline session. Products missing from the Console cart do not block it: their pins
+    fail on the Agent (PIN_FAILED in the history) and the video keeps playing."""
+    from sqlalchemy import text
+    from app.live_timeline import main_video
+    if item.tiktok_account_id is None:
+        raise HTTPException(409, "Phiên chưa gắn TikTok Account")
+    if not item.main_media_id:
+        raise HTTPException(409, "Phiên chưa chọn video chính")
+    main_video(db, owner["id"], item.main_media_id)
+    agent, _ = start_agent_and_console(db, owner, item, body)
+    conflict = db.execute(text("""SELECT id FROM live_sessions WHERE tiktok_account_id=:a
+        AND status='RUNNING' AND id<>:id LIMIT 1"""), {"a": item.tiktok_account_id, "id": item.id}).scalar()
+    if conflict:
+        raise HTTPException(409, "TikTok Account đang có LIVE Session khác")
+    require_media_ready(db, owner, agent, item.id)
+    acquire_live_claim(db, item, agent["id"])
+    item.agent_id = agent["id"]
+    db.commit()
+    return play_video(db, owner, agent, item, "start", idempotency_key)
+
+
 @router.post("/{session_id}/start")
 def start_session(session_id: int, body: StartInput, owner: Owner,
                   idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
@@ -568,8 +650,8 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
                 raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
             return answer(prior, owner, session_id)
         if is_single(item):
-            # Playing one main video with a pin timeline needs the Windows Agent support (next step of the refactor).
-            raise HTTPException(409, "Phát phiên Single Video chưa được hỗ trợ trên Windows Agent")
+            view = start_single(db, owner, item, body, idempotency_key)
+            return answer(view, owner, session_id)
         ids = ids_for(db, session_id)
         if item.tiktok_account_id is None:
             raise HTTPException(409,"Phiên chưa gắn TikTok Account")
@@ -579,34 +661,8 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
         if pid not in ids:
             raise HTTPException(422, "Sản phẩm không nằm trong phiên")
         from sqlalchemy import text
-        from app.owner_agents import owned_agent
-        chosen_agent=body.agent_id or item.agent_id
-        if not chosen_agent:
-            raise HTTPException(422,"Chọn Windows Agent trước khi bắt đầu")
-        agent=owned_agent(owner,chosen_agent,online=True)
-        from app.live import playback_of
-        if playback_of(agent).get("running"):
-            raise HTTPException(409,"Agent đang phát phiên khác")
-        expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
-                            {"a":item.tiktok_account_id}).scalar_one_or_none()
-        from app.tiktok_products import connection as snapshot_connection
-        with snapshot_connection() as snap_db:
-            snap=snap_db.execute("SELECT account_user_id,scanned_at,products_json FROM snapshots WHERE agent_id=? AND owner_id=?",
-                                 (agent["id"],owner["id"])).fetchone()
-        if not snap or not snap["account_user_id"] or snap["account_user_id"]!=expected:
-            raise HTTPException(409,"Chưa đồng bộ đúng tài khoản TikTok trên LIVE Console")
-        # Manual sync is mandatory immediately before starting this LIVE, not just any historical sync.
+        agent, snap = start_agent_and_console(db, owner, item, body)
         import json
-        from datetime import datetime as _dt
-        try:
-            checked_at=_dt.fromisoformat(snap["scanned_at"].replace("Z","+00:00"))
-            if checked_at.tzinfo is None:
-                checked_at=checked_at.replace(tzinfo=timezone.utc)
-            recent=(datetime.now(timezone.utc)-checked_at).total_seconds() <= 600
-        except (ValueError,TypeError):
-            recent=False
-        if not recent:
-            raise HTTPException(409,"Danh sách LIVE Console đã cũ; đồng bộ sản phẩm lại trước khi LIVE")
         source=json.loads(snap["products_json"])
         source_keys={(str(x.get("seller_id") or ""),str(x.get("product_id") or "")) for x in source}
         legacy={int(row[0]):str(row[1]) for row in db.execute(text(
@@ -715,7 +771,12 @@ def resume_session(session_id: int, body: StartInput, owner: Owner,
             if prior is None:
                 raise HTTPException(409, "Phiên đang phát bình thường")
             return answer(prior, owner, session_id)
-        require_legacy(item, "Tiếp tục theo sản phẩm")
+        if is_single(item):
+            if body.product_id is not None:
+                raise HTTPException(409, "Phiên Single Video tiếp tục theo vị trí video, không theo sản phẩm")
+            agent = session_agent(owner, item, free=True)
+            view = play_video(db, owner, agent, item, "resume", idempotency_key, start_ms=body.position_ms)
+            return answer(view, owner, session_id)
         ids = ids_for(db, session_id)
         pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
         if pid is None:

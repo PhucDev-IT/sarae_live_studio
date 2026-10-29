@@ -72,7 +72,7 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"timeline_set", "GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
@@ -325,7 +325,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","PIN_PRODUCT","UNPIN_PRODUCT","GET_PIN_STATE","SET_AUTO_PIN","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
-    "product_play","playback_select","playback_seek","obs_configure","obs_inputs",
+    "product_play","video_play","timeline_set","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
 # Payload fields that must not stay in the command log once the command is final.
@@ -512,6 +512,9 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         return {"session_id":_int(payload.get("session_id"),"session_id",1,2**63-1),
                 "product_id":_int(payload.get("product_id"),"product_id",1,2**63-1),
                 "media_ids":_media_ids(payload.get("media_ids")),"mode":mode}
+    if kind in ("video_play","timeline_set"):
+        from app.live_timeline import validate_command as validate_timeline_command
+        return validate_timeline_command(kind,payload)
     if kind=="playback_select":
         return {"index":_int(payload.get("index"),"index",0,9999)}
     if kind=="playback_seek":
@@ -887,7 +890,10 @@ def list_commands(agent_id:str,authorization:str|None=Header(None)):
 
 class AgentEvent(BaseModel):
     seq:int=Field(ge=0)
-    type:Literal["PRODUCT_SWITCHED","PLAYBACK_ENDED","ERROR"]
+    type:Literal["PRODUCT_SWITCHED","PLAYBACK_ENDED","ERROR",
+                 # Single Video Timeline pin scheduler (agent-core sarae_agent/timeline/scheduler.py)
+                 "TIMELINE_LOADED","TIMELINE_STOPPED","TIMELINE_RESUMED","PIN_APPLIED","PIN_FAILED",
+                 "MANUAL_OVERRIDE","LIVE_GATE_CHANGED"]
     session_id:int|None=None
     product_id:int|None=None
     detail:dict=Field(default_factory=dict)

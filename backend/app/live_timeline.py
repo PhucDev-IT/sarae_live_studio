@@ -379,7 +379,12 @@ def activate_timeline(session_id: int, timeline_id: int, owner: Owner):
         running = item.status == "RUNNING"
         event(db, session_id, "TIMELINE_ACTIVATED", detail=f"version={timeline.version};running={running}")
         db.commit()
-        return view(db, owner["id"], item, timeline)
+        out = view(db, owner["id"], item, timeline)
+    if running:
+        # Only the pin schedule changes on the Agent: it recomputes the pin at its current position.
+        sent, error = push_timeline(owner["id"], session_id)
+        out.update(sent=sent, agent_error=error)
+    return out
 
 
 @router.delete("/{session_id}/timelines/{timeline_id}", status_code=204)
@@ -392,3 +397,106 @@ def delete_timeline(session_id: int, timeline_id: int, owner: Owner):
         db.execute(delete(TimelineMarker).where(TimelineMarker.timeline_id == timeline.id))
         db.delete(timeline)
         db.commit()
+
+
+# ----- what the Windows Agent runs (commands video_play / timeline_set) -------------------------------------------
+
+class AgentMarker(BaseModel):
+    model_config = {"extra": "forbid"}
+    id: int = Field(ge=1)
+    at_ms: int = Field(ge=0, le=86_400_000)
+    action: str = Field(pattern=f"^({'|'.join(MARKER_ACTIONS)})$")
+    product_id: int | None = Field(default=None, ge=1)
+    seq: int = Field(default=0, ge=0)
+
+
+class AgentProduct(BaseModel):
+    model_config = {"extra": "forbid"}
+    sarae_product_id: int = Field(ge=1)
+    tiktok_product_id: str | None = Field(default=None, pattern=r"^[0-9]{1,80}$")
+    name: str = Field(min_length=1, max_length=200)
+    image_url: str = Field(default="", max_length=1000)
+    price_text: str = Field(default="", max_length=80)
+    expected_user_id: str = Field(default="", max_length=80)
+
+
+class AgentTimeline(BaseModel):
+    model_config = {"extra": "forbid"}
+    version: int = Field(ge=1)
+    markers: list[AgentMarker] = Field(default_factory=list, max_length=MAX_MARKERS)
+    products: list[AgentProduct] = Field(default_factory=list, max_length=300)
+    expected_user_id: str = Field(default="", pattern=r"^[0-9]{0,80}$")
+
+
+class VideoPlayCommand(BaseModel):
+    model_config = {"extra": "forbid"}
+    session_id: int = Field(ge=1)
+    media_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    loop: bool = True
+    start_ms: int = Field(default=0, ge=0, le=86_400_000)
+    timeline: AgentTimeline | None = None
+
+
+class TimelineSetCommand(BaseModel):
+    model_config = {"extra": "forbid"}
+    session_id: int = Field(ge=1)
+    timeline: AgentTimeline | None = None
+
+
+def validate_command(kind: str, payload: dict) -> dict:
+    """Payload check of the `video_play` / `timeline_set` Agent commands (cloud_agents.validate_payload)."""
+    from pydantic import ValidationError
+    model = VideoPlayCommand if kind == "video_play" else TimelineSetCommand
+    try:
+        return model.model_validate(payload).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, f"{kind} không hợp lệ: {str(exc).splitlines()[0]}") from None
+
+
+def expected_user(db, item) -> str:
+    from sqlalchemy import text
+    if item.tiktok_account_id is None:
+        return ""
+    return str(db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
+                          {"a": item.tiktok_account_id}).scalar_one_or_none() or "")
+
+
+def agent_timeline(db, item) -> dict | None:
+    """The session's active version as the Agent runs it: approved PIN/UNPIN markers and how to find each product's
+    card on the LIVE Console (same mapping as a manual pin). None when no version is active (the video plays alone)."""
+    timeline = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
+    if timeline is None or timeline.status != "ACTIVE" or timeline.media_id != item.main_media_id:
+        return None
+    markers = [m for m in markers_of(db, timeline.id)
+               if m.review_status == "APPROVED" and m.action in ("PIN_PRODUCT", "UNPIN_PRODUCT")]
+    user_id = expected_user(db, item)
+    ids = list(dict.fromkeys(m.product_id for m in markers if m.product_id is not None))
+    products = []
+    for product in db.scalars(select(Product).where(Product.id.in_(ids), Product.owner_id == item.owner_id)) if ids else []:
+        products.append({"sarae_product_id": product.id, "tiktok_product_id": product.tiktok_product_id,
+                         "name": product.name[:200], "image_url": (product.image_url or "")[:1000],
+                         "price_text": str(int(product.price)) if product.price is not None else "",
+                         "expected_user_id": user_id})
+    return {"version": timeline.version, "expected_user_id": user_id if user_id.isdigit() else "",
+            "markers": [{"id": m.id, "at_ms": m.at_ms, "action": m.action, "product_id": m.product_id, "seq": m.seq}
+                        for m in markers],
+            "products": products}
+
+
+def push_timeline(owner_id: str, session_id: int) -> tuple[bool, str | None]:
+    """Send the active version to the Agent of a RUNNING session (playback and OBS are not touched). Never raises."""
+    from app.cloud_agents import create_command
+    from app.live_sessions import LiveSession
+    with SessionLocal() as db:
+        item = db.get(LiveSession, session_id)
+        if item is None or item.status != "RUNNING" or not item.agent_id or not is_single(item):
+            return False, None
+        payload = {"session_id": session_id, "timeline": agent_timeline(db, item)}
+        agent_id = item.agent_id
+    try:
+        create_command(agent_id, owner_id, "timeline_set", payload, session_id=session_id)
+        return True, None
+    except HTTPException as exc:
+        return False, str(exc.detail)
+    except Exception as exc:  # noqa: BLE001 - activation is saved even if the Agent cannot be told right now
+        return False, f"{type(exc).__name__}: {exc}"[:200]

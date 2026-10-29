@@ -224,3 +224,11 @@ flowchart LR
 | Q4 | Pin semantics | **Single pin**: pinning B replaces A | desired/actual hold at most 1 product; `UNPIN_PRODUCT` = remove the current pin |
 
 Proposed defaults (unless the user changes them): manual pin → `MANUAL_HOLD` until "Resume timeline"; activating a new timeline version while running → apply immediately at the current position without resetting playback; in `SINGLE_VIDEO_TIMELINE` mode the old "video auto pin" (pin per product switch) is turned off so the two never conflict.
+
+## 7. Step 3 notes (Windows Agent playback + pin scheduler)
+
+- New Agent commands `video_play` (start/resume, carries the active timeline) and `timeline_set` (new version during LIVE, playback untouched). Stop clears the scheduler and makes any pin still on its way stale.
+- The scheduler is state-based: at every watchdog tick (~1 s) it computes the pin in force at the OBS cursor and acts only when it differs from the known actual pin. One action in flight, at most 3 attempts per wanted state (back-off 3/10/30 s), ack timeout 75 s.
+- **Dry-run by default** (`timeline.dry_run: true` in the Agent config.json): the schedule runs and PIN_APPLIED events are reported with `dry_run=True`, nothing is clicked on TikTok. With `assume_live_in_dry_run: true` the LIVE gate is considered open for rehearsals.
+- Real mode: the LIVE gate reads the Console (`LIVE_STATE_JS`, `LIVE_LABELS` in auto_pin.py). **The labels are not verified on the real Console**; unknown means no pin (fail closed).
+- **Deployment order: Backend first, then the Agent.** An older Backend rejects the new event types (422) and the Agent's event outbox would keep retrying the whole batch.

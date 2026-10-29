@@ -36,6 +36,8 @@ from sarae_agent.obs.controller import ObsController, ObsSettingsStore
 from sarae_agent.playback.engine import PlaybackEngine
 from sarae_agent.playback.service import PlaybackService
 from sarae_agent.tiktok_chat_sender import SELECTORS_FILE, ChatSender
+from sarae_agent.timeline.executors import AssumeLiveGate, ConsoleLiveGate, ConsolePinExecutor, DryRunPinExecutor
+from sarae_agent.timeline.scheduler import TimelineScheduler
 from sarae_agent.voice.tts import VoiceService
 from sarae_agent.windows.win32 import hostname
 
@@ -88,10 +90,39 @@ class AgentRuntime:
                                        chat_sender=ChatSender(paths.root / SELECTORS_FILE))
         self._auto_pin_guard = threading.Lock()
         self._auto_pin_last: tuple | None = None
+        self.timeline = self._timeline_scheduler()
+        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"])
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
-                                    chat=self.auto_pin, auto_pin=self.auto_pin)
+                                    chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
+
+    def _timeline_scheduler(self) -> TimelineScheduler:
+        """Pins of Single Video Timeline sessions: dry-run unless `timeline.dry_run` is off in this PC's config."""
+        options = self.config.get().timeline
+        if options.dry_run:
+            executor = DryRunPinExecutor()
+            gate = AssumeLiveGate() if options.assume_live_in_dry_run else self._console_gate()
+        else:
+            # The engine lock is held while clicking: a stop or a new video cannot interleave with a pin.
+            executor = ConsolePinExecutor(self.auto_pin, guard=self.engine.lock)
+            gate = self._console_gate()
+        log.info("Timeline ghim: %s", "dry-run" if options.dry_run else "LIVE Console")
+        return TimelineScheduler(executor, gate, emit=self._on_timeline_event)
+
+    def _console_gate(self) -> ConsoleLiveGate:
+        def changed(state: str, evidence: list) -> None:
+            timeline = getattr(self, "timeline", None)
+            if timeline is not None and timeline.session_id is not None:
+                self._on_timeline_event({"type": "LIVE_GATE_CHANGED", "session_id": timeline.session_id,
+                                         "product_id": None, "detail": {"state": state, "evidence": evidence[:3]}})
+        return ConsoleLiveGate(self.auto_pin, on_change=changed)
+
+    def _on_timeline_event(self, event: dict) -> None:
+        self.outbox.push(event)
+        worker = self.worker
+        if worker is not None:
+            worker.poke()
 
     def resolve_media(self, media_id: str):
         """Media Library id -> verified file in this Agent's cloud media cache (None if not downloaded).
@@ -135,6 +166,8 @@ class AgentRuntime:
     def _on_playback_event(self, event: dict) -> None:
         """PRODUCT_SWITCHED / PLAYBACK_ENDED / ERROR from the engine: queue for the Cloud, refresh the GUI."""
         self.outbox.push(event)
+        if event.get("type") == "PLAYBACK_ENDED":
+            self.timeline.clear("playback_ended")
         if event.get("type") in ("PRODUCT_SWITCHED", "PLAYBACK_ENDED"):
             self._maybe_pin_current_video()
         worker = self.worker
@@ -317,7 +350,7 @@ class AgentRuntime:
         LIVE sessions with it). ``obs`` and ``local_playback`` are the older subsets the web Agent page reads.
         """
         identity = self.activation.require()
-        play = self.playback.engine_status()
+        play = {**self.playback.engine_status(), "timeline": self.timeline.status()}
         return {
             "agent_id": identity.agent_id,
             "hostname": hostname()[:160],

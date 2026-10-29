@@ -167,8 +167,11 @@ def _close(client):
 class PlaybackEngine:
     def __init__(self, resolve: Callable[[str], Path | None], on_event: Callable[[dict], None] | None = None,
                  config_file: Path | None = None, client_factory: Callable[[ObsConfig], object] | None = None,
-                 store=None, rng: random.Random | None = None):
+                 store=None, rng: random.Random | None = None,
+                 on_position: Callable[[dict], None] | None = None):
         self.resolve = resolve
+        # Single Video Timeline: called by the watchdog with the main video's position (sarae_agent/timeline).
+        self.on_position = on_position
         self.rng = rng or random.Random()
         self.on_event = on_event
         self.config_file = Path(config_file) if config_file else paths.root / "obs_config.json"
@@ -202,6 +205,8 @@ class PlaybackEngine:
         self.last_cursor = None
         self.stall_restarts = 0
         self.session_mode = "playlist"
+        # "video" sessions (Single Video Timeline): how many times the main video restarted from the beginning.
+        self.loop_iteration = 0
         self.product_id = None
         self.pending_product_id = None
         self.session_id = None
@@ -696,6 +701,7 @@ class PlaybackEngine:
 
     def metrics(self):
         return {"session_mode": self.session_mode, "queue_ids": list(self.ids), "product_id": self.product_id,
+                "loop_iteration": self.loop_iteration,
                 "pending_product_id": self.pending_product_id, "session_id": self.session_id,
                 "paused": self.paused, "loop": self.loop, "retry_count": self.retry_count,
                 "error_count": self.error_count, "transition_count": self.transition_count,
@@ -802,6 +808,8 @@ class PlaybackEngine:
                 raise PlaybackError(503, f"Không điều khiển được OBS: {exc}") from exc
             if self.active:
                 self.transition_count += 1
+                if self.session_mode == "video":
+                    self.loop_iteration += 1
             self.index = index
             self.last_progress_at = time.monotonic()
             self.last_cursor = None
@@ -830,6 +838,7 @@ class PlaybackEngine:
         self.paused = False
         self.session_started_at = time.time()
         self.transition_count = self.recovery_count = self.error_count = 0
+        self.loop_iteration = 0
         self.videos_in_product = 0
         self.product_started_at = None
         self._product_starting = mode == "product"
@@ -848,6 +857,37 @@ class PlaybackEngine:
                 raise PlaybackError(409, f"{len(missing)} video chưa tải về cache của Agent")
             self._begin_session(list(media_ids), mode="playlist", loop=bool(loop), playlist_id=playlist_id)
             return self.play(start_index)
+
+    def video_play(self, session_id: int, media_id: str, loop: bool = True, start_ms: int = 0):
+        """Start a Single Video Timeline session: one main video, played continuously (restarted at its end when
+        ``loop``). Never switches file while it runs. The same command again for the running session only updates
+        ``loop`` (a retried start never restarts playback)."""
+        with self.lock:
+            if self.active:
+                if self.session_mode == "video" and self.session_id == session_id and self.ids == [media_id]:
+                    self.loop = bool(loop)
+                    return {"ok": True, "unchanged": True, "media_id": media_id}
+                raise PlaybackError(409, "Agent đang phát nội dung khác; hãy dừng trước")
+            self._refresh_config_when_idle()
+            if self._path(media_id) is None:
+                raise PlaybackError(409, "Video chính chưa tải về cache của Agent")
+            self._begin_session([media_id], mode="video", loop=bool(loop), session_id=session_id)
+            result = self.play(0)
+        if start_ms > 0:
+            try:
+                self.seek(start_ms)
+            except PlaybackError as exc:
+                log.warning("Không tua được video chính tới %sms: %s", start_ms, exc.detail)
+        return result
+
+    def _report_position(self, media_state: str, cursor) -> None:
+        if self.on_position is None or self.session_mode != "video" or not isinstance(cursor, (int, float)):
+            return
+        try:
+            self.on_position({"session_id": self.session_id, "position_ms": int(cursor), "media_state": media_state,
+                              "iteration": self.loop_iteration})
+        except Exception:  # noqa: BLE001 - pin scheduling never breaks the watchdog
+            log.exception("Timeline không nhận được vị trí phát")
 
     def switch_product(self, product_id, trigger: str | None = None, ids: list[str] | None = None,
                        start: int | None = None):
@@ -1140,6 +1180,8 @@ class PlaybackEngine:
                     _close(client)
                 cursor = getattr(report, "media_cursor", None)
                 now = time.monotonic()
+                if media_status in ("OBS_MEDIA_STATE_PLAYING", "OBS_MEDIA_STATE_ENDED"):
+                    self._report_position(media_status, cursor)
                 if media_status == "OBS_MEDIA_STATE_PLAYING" and isinstance(cursor, (int, float)):
                     if self.last_cursor is None or cursor > self.last_cursor + 100 or cursor < self.last_cursor - 500:
                         self.last_cursor = cursor

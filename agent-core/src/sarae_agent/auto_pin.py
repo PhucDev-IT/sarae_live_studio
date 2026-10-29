@@ -94,6 +94,30 @@ PIN_CARD_JS = r"""
 }
 """
 
+# Is the broadcast on air? Read only: visible controls of the LIVE Console. An "end LIVE" control is shown only while
+# live, a "go LIVE" one only before. Labels come from LIVE_LABELS (NOT verified against the real Console yet); both or
+# neither found means UNKNOWN, and the timeline pins nothing until it is LIVE (fail closed).
+LIVE_LABELS = {"live": ["end live", "kết thúc live", "kết thúc phát trực tiếp", "end stream", "stop live"],
+               "offline": ["go live", "bắt đầu live", "bắt đầu phát trực tiếp", "start live", "phát trực tiếp ngay"]}
+LIVE_STATE_JS = r"""
+(labels) => {
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const found = {live: [], offline: []};
+  for (const el of document.querySelectorAll('button, [role="button"], a')) {
+    if (!visible(el)) continue;
+    const text = norm(el.innerText || el.getAttribute('aria-label'));
+    if (!text || text.length > 60) continue;
+    for (const key of ['live', 'offline']) {
+      if (labels[key].some((label) => text === label || text.startsWith(label))) found[key].push(text);
+    }
+  }
+  const state = found.live.length && !found.offline.length ? 'LIVE'
+              : found.offline.length && !found.live.length ? 'OFFLINE' : 'UNKNOWN';
+  return {state, evidence: [...found.live, ...found.offline].slice(0, 5)};
+}
+"""
+
 # Runs in the LIVE Console page (read only). A product row is the largest ancestor of a Ghim/Pin button that
 # contains no other such button; its name is the longest text line that is not a button label, price or count.
 SCAN_PRODUCTS_JS = r"""
@@ -280,6 +304,17 @@ class AutoPinService:
     def get_pin_state(self, target: dict | None = None) -> dict:
         return self._request("get_pin_state", target)
 
+    # Non-blocking forms for the timeline scheduler (sarae_agent/timeline): it runs on the playback watchdog.
+    def submit_pin(self, target: dict, current: Callable[[], bool] | None = None, guard=None) -> Future:
+        return self._submit("pin_product", target, current, guard)
+
+    def submit_unpin(self, expected_user_id: str | None = None, current: Callable[[], bool] | None = None,
+                     guard=None) -> Future:
+        return self._submit("unpin_product", expected_user_id, current, guard)
+
+    def submit_live_state(self) -> Future:
+        return self._submit("live_state")
+
     def queue_video_pin(self, sarae_product_id: int, current: Callable[[], bool], guard=None,
                         session_id: int | None = None) -> None:
         with self._lock:
@@ -392,6 +427,16 @@ class AutoPinService:
                 "candidates": candidates, "ambiguous": len(candidates) > 1 or snapshot_ambiguous,
                 "resolved_product_id": target.get("tiktok_product_id") if target else None,
                 "multiple_pins": len(pinned) > 1}
+
+    def _live_state_on_worker(self) -> dict:
+        """LIVE / OFFLINE / UNKNOWN read from the controlled Console page; UNKNOWN when no Console is open."""
+        try:
+            page = self._console_page()
+        except Exception as exc:  # noqa: BLE001 - no page means not confirmed, never an error for the caller
+            return {"state": "UNKNOWN", "evidence": [], "error": str(exc)[:200]}
+        result = page.evaluate(LIVE_STATE_JS, LIVE_LABELS) or {}
+        state = result.get("state") if result.get("state") in ("LIVE", "OFFLINE") else "UNKNOWN"
+        return {"state": state, "evidence": list(result.get("evidence") or [])[:5]}
 
     def _pin_on_worker(self, target: dict, current: Callable[[], bool] | None, guard=None) -> dict:
         product_id = target.get("tiktok_product_id")
@@ -842,6 +887,8 @@ class AutoPinService:
                     result = self._unpin_on_worker(*args)
                 elif method == "get_pin_state":
                     result = self._pin_state_on_worker(*args)
+                elif method == "live_state":
+                    result = self._live_state_on_worker()
                 elif method == "start":
                     if self._video_auto_enabled:
                         raise RuntimeError("Đang bật tự động ghim theo video; hãy tắt trên Web trước")
