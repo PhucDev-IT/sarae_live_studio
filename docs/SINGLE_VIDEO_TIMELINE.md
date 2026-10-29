@@ -177,7 +177,9 @@ flowchart LR
   vision on/off, thresholds. API keys stay in the AI Assistant settings.
 - Cache: transcript by (video revision, transcript+alignment settings); analysis by (video revision, catalog version,
   resolved settings, pipeline version). `force` re-runs everything.
-- Install on the server: `pip install -r backend/requirements-timeline-ai.txt` (+ ffmpeg on PATH).
+- Install on the server: `pip install -r backend/requirements-timeline-ai.txt` (+ ffmpeg on PATH). It includes the
+  CUDA 12 cuBLAS (and cuDNN on Linux) pip packages, installed into the venv only; with an NVIDIA driver, device
+  "auto" then runs Whisper on the GPU, otherwise on the CPU.
 
 ---
 
