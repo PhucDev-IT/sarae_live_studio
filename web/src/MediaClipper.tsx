@@ -3,7 +3,7 @@ import { Alert, Button, Input, SegmentedControl, Select, Switch } from './ui/cor
 import { Check, ChevronsLeft, ChevronsRight, CircleAlert, CircleCheck, Clock, EyeOff, Loader2, Minus, Pause, Play, Plus, RotateCcw, Scissors, WifiOff, X, ZoomIn } from 'lucide-react'
 import { errorText } from './mediaApi'
 import { assetUrl } from './mediaApi'
-import { createClips, getKeyframes, type ClipMode, type ClipSpec, type CloudMedia } from './cloudMediaApi'
+import { createClips, type ClipMode, type ClipSpec, type CloudMedia } from './cloudMediaApi'
 import { clipJobs, isFinal, useClipJobs, type TrackedClipJob } from './clipJobStore'
 import { clearClipDraft, readClipDraft, writeClipDraft } from './clipDraft'
 import { filmstrip } from './videoFrame'
@@ -54,7 +54,6 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
   const [notice,setNotice] = useState(draft.cuts.length ? 'Đã khôi phục các điểm cắt và lựa chọn của lần trước.' : '')
-  const [keyframes,setKeyframes] = useState<number[]|null>(null)  // null while the server reads them
   const stopAt = useRef<number|null>(null)
   const scrubbing = useRef(false)
   const dragging = useRef<number|null>(null)
@@ -107,19 +106,6 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
       video.removeEventListener('loadedmetadata', onMeta);video.removeEventListener('seeked', onSeek)}
   },[])
 
-  // ----- keyframes: the only places where COPY mode can cut (no re-encoding)
-  useEffect(()=>{
-    let alive = true
-    getKeyframes(media.id).then(r=>{if (alive) setKeyframes(r.keyframes)}).catch(()=>{if (alive) setKeyframes([])})
-    return ()=>{alive = false}
-  },[media.id])
-  const snapping = mode === 'COPY' && !!keyframes?.length
-  /** In COPY mode a cut moves to the nearest keyframe. */
-  const snap = (t:number, list = keyframes) => {
-    if (mode !== 'COPY' || !list?.length) return t
-    return list.reduce((best, k)=>Math.abs(k - t) < Math.abs(best - t) ? k : best, list[0])
-  }
-
   // ----- frame strip, read progressively from the stored video
   const frameCount = duration ? Math.min(60, Math.max(12, Math.ceil(duration))) : 0
   useEffect(()=>{
@@ -152,14 +138,12 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
 
   // ----- cuts
   const cutHere = () => {
-    if (mode === 'COPY' && keyframes == null) return setError('Đang đọc vị trí khung hình gốc, chờ vài giây rồi cắt lại.')
-    const t = snap(now)
+    const t = now
     if (t < MIN_LENGTH || t > duration - MIN_LENGTH) return setError('Không cắt sát đầu hoặc cuối video được.')
     if (cuts.some(c=>Math.abs(c - t) < MIN_LENGTH)) return setError('Đã có điểm cắt ở gần đây.')
     if (cuts.length + 1 >= MAX_CLIPS * 2) return setError('Quá nhiều điểm cắt.')
     setError('')
-    setNotice(Math.abs(t - now) > 0.05 ? `Đã cắt tại khung hình gốc gần nhất ${clipTime(t)} (chế độ giữ nguyên 100%).` : '')
-    if (t !== now) seek(t)
+    setNotice(mode === 'COPY' ? 'Khi lưu, máy chủ sẽ căn điểm bắt đầu về khung hình gốc gần nhất ở phía trước.' : '')
     const owner = segments.find(s=>t > s.start && t < s.end)
     setCuts([...cuts, t].sort((a, b)=>a - b))
     if (owner && dropped.has(owner.key)) setDropped(set=>new Set(set).add(keyOf(t)))  // the new right part stays dropped too
@@ -174,7 +158,7 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
     const i = cuts.indexOf(from)
     if (i < 0) return from
     const low = (i ? cuts[i - 1] : 0) + MIN_LENGTH, high = (i < cuts.length - 1 ? cuts[i + 1] : duration) - MIN_LENGTH
-    const value = Math.max(low, Math.min(high, snap(to)))
+    const value = Math.max(low, Math.min(high, to))
     if (value === from) return from
     const a = keyOf(from), b = keyOf(value)
     setCuts(list=>list.map(c=>c === from ? value : c))
@@ -187,23 +171,10 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
     if (!duration || !step) return
     const list:number[] = []
     for (let t = step; t <= duration - MIN_LENGTH; t += step) {
-      const k = snap(t)
-      if (k >= MIN_LENGTH && k <= duration - MIN_LENGTH && !list.some(c=>Math.abs(c - k) < MIN_LENGTH)) list.push(k)
+      if (t >= MIN_LENGTH && t <= duration - MIN_LENGTH && !list.some(c=>Math.abs(c - t) < MIN_LENGTH)) list.push(t)
     }
     if (list.length + 1 > MAX_CLIPS) return setError(`Sẽ tạo ${list.length + 1} đoạn, tối đa ${MAX_CLIPS}. Hãy chọn đoạn dài hơn.`)
     setError('');setCuts(list);setDropped(new Set());setNames({})
-  }
-  /** Back to COPY: every cut moves to its nearest keyframe (names/kept state follow their piece). */
-  const changeMode = (next:ClipMode) => {
-    setMode(next)
-    if (next !== 'COPY' || !keyframes?.length) return
-    const moved = new Map(cuts.map(c=>[c, keyframes.reduce((best, k)=>Math.abs(k - c) < Math.abs(best - c) ? k : best, keyframes[0])]))
-    const list = [...new Set(moved.values())].filter(k=>k >= MIN_LENGTH && k <= duration - MIN_LENGTH).sort((a, b)=>a - b)
-    const remap = (key:string) => {const c = cuts.find(x=>keyOf(x) === key);return c == null ? key : keyOf(moved.get(c) as number)}
-    setCuts(list)
-    setDropped(set=>new Set([...set].map(remap)))
-    setNames(map=>Object.fromEntries(Object.entries(map).map(([k, v])=>[remap(k), v])))
-    if (list.length !== cuts.length || cuts.some(c=>moved.get(c) !== c)) setNotice('Các điểm cắt đã được dời về khung hình gốc gần nhất.')
   }
   const flip = (segment:Segment) => setDropped(set=>{const next = new Set(set);if (!next.delete(segment.key)) next.add(segment.key);return next})
 
@@ -360,7 +331,6 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
           onPointerDown={onTrackDown} onPointerMove={onTrackMove} onPointerUp={onTrackUp} onPointerCancel={onTrackUp} onPointerLeave={()=>setHover(null)}>
           <div className="mce-ruler">{ticks.map(t=><span key={t} style={{left:pct(t)}}>{clipTime(t).replace(/\.0$/, '')}</span>)}</div>
           <div className="mce-strip">{frames.map((f, i)=><span key={i} style={f ? {backgroundImage:`url(${f})`} : undefined}/>)}</div>
-          {snapping && <div className="mce-keys" aria-hidden="true">{keyframes?.map(k=><i key={k} style={{left:pct(k)}}/>)}</div>}
           <div className="mce-lane">{segments.map(s=>{
             const off = dropped.has(s.key)
             return <button key={s.key} type="button" className={'mce-seg' + (off ? ' is-dropped' : '')} style={{left:pct(s.start), width:`calc(${pct(s.end)} - ${pct(s.start)})`}}
@@ -380,12 +350,11 @@ export default function MediaClipper({media,src,onClose}:{media:CloudMedia;src:s
 
     <footer className="mce-foot">
       <div className="mce-opts">
-        <SegmentedControl<ClipMode> value={mode} onChange={changeMode} items={[
+        <SegmentedControl<ClipMode> value={mode} onChange={setMode} items={[
           {value:'COPY', label:'Giữ nguyên 100% chất lượng'}, {value:'PRECISE', label:'Cắt chính xác từng khung hình'}]}/>
         <Switch checked={keepLinks} onChange={e=>setKeepLinks(e.target.checked)} label="Chép sản phẩm, người, tags sang video mới"/>
         <span className="mce-mode-hint">{mode === 'COPY'
-          ? keyframes == null ? 'Đang đọc vị trí khung hình gốc của video…'
-            : 'Không mã hóa lại: chất lượng và cấu hình y hệt gốc. Chỉ cắt được tại các vạch vàng trên dải hình (khung hình gốc), điểm cắt tự hút vào vạch gần nhất. Muốn cắt ở chỗ bất kỳ, chọn "Cắt chính xác".'
+          ? 'Không mã hóa lại: chất lượng y hệt gốc. Điểm bắt đầu sẽ được căn về khung hình gốc gần nhất ở phía trước khi lưu; đoạn mới có thể bắt đầu sớm hơn điểm bạn chọn. Muốn đúng vị trí, chọn "Cắt chính xác".'
           : 'Bắt đầu đúng khung hình đã cắt; mã hóa lại ở chất lượng gần như không đổi nên chậm hơn.'}</span>
       </div>
       {error ? <Alert tone="warning" onClose={()=>setError('')}>{error}</Alert>
