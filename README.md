@@ -22,6 +22,13 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
+```cmd
+cd backend
+uv venv .venv --python 3.12
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+```
 API health: http://127.0.0.1:8000/api/health
 Swagger: http://127.0.0.1:8000/docs
 
