@@ -16,7 +16,7 @@ desktop/src-tauri (Rust) ──cargo release──▶ SaraeAgent.exe
 | Công cụ | Phiên bản đã dùng | Ghi chú |
 |---|---|---|
 | Windows 10/11 x64 | 11 (26200) | |
-| Python | 3.12 (`py -3.12`) | venv riêng `agent-core/.venv` |
+| Python | 3.12 (`py -3.12`, `python` hoặc `python3` trên PATH) | Hỗ trợ 3.11–3.13; venv riêng `agent-core/.venv` |
 | Node.js / npm | 24 / 11 | |
 | Rust | 1.99 (`x86_64-pc-windows-msvc`) | `rustup` |
 | Visual Studio Build Tools | VS 2026 (C++ workload) | Linker MSVC |
@@ -39,6 +39,9 @@ Máy khách hàng chỉ cần chạy bộ cài: Python, Node, Rust **không** c�
 | Kiểm tra frontend | `cd desktop && npm run build` |
 
 Target triple lấy từ `rustc -vV` (dòng `host:`), mặc định `x86_64-pc-windows-msvc`.
+
+Khi build lỗi, cửa sổ script giữ lại thông báo và chờ nhấn phím. Khi chạy tự động,
+dùng `build-sidecar.bat --no-pause` để nhận exit code ngay mà không chờ nhập.
 
 ## 4. Tách dependency
 

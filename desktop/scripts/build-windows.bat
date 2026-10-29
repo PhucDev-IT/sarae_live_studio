@@ -5,7 +5,7 @@ setlocal EnableExtensions
 set "DESKTOP=%~dp0.."
 pushd "%DESKTOP%" || exit /b 1
 
-call "%~dp0build-sidecar.bat" || goto :fail
+call "%~dp0build-sidecar.bat" --no-pause || goto :fail
 
 echo [build] npm ci
 if exist "package-lock.json" (call npm ci --no-audit --no-fund) else (call npm install --no-audit --no-fund)
@@ -27,4 +27,5 @@ exit /b 0
 :fail
 echo [build] FAILED
 popd
+pause
 exit /b 1
