@@ -270,7 +270,7 @@ def catalog_products(owner: Owner):
     with SessionLocal() as db:
         products=db.scalars(select(Product).where(Product.owner_id==owner["id"]).order_by(Product.id)).all()
         counts=product_video_counts(db,owner["id"])
-        return [{"id":p.id,"shop_id":p.shop_id,"name":p.name,"sku":p.sku,
+        return [{"id":p.id,"shop_id":p.shop_id,"tiktok_product_id":p.tiktok_product_id,"name":p.name,"sku":p.sku,
                  "image_url":public_url(p.image_url,p.owner_id),"status":p.status,
                  "price":p.price,"video_count":counts.get(p.id,0)} for p in products]
 
