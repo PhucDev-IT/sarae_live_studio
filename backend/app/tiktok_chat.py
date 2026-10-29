@@ -79,9 +79,9 @@ class Reader:
             if self.status in ("connecting", "connected", "stopping"):
                 raise HTTPException(409, "Hãy ngắt phiên đọc chat hiện tại trước")
             try:
-                from TikTokLive import TikTokLiveClient  # optional POC dependency
+                from TikTokLive import TikTokLiveClient
             except ImportError as exc:
-                raise HTTPException(503, "Chưa cài TikTokLive. Chạy: python -m pip install TikTokLive==7.0.1") from exc
+                raise HTTPException(503, "Backend chưa cài TikTokLive. Cài lại backend/requirements.txt vào đúng môi trường Python đang chạy Backend, rồi khởi động lại.") from exc
             self.generation += 1
             gen = self.generation
             self.username = username

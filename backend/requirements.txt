@@ -12,3 +12,6 @@ httpx>=0.27,<1
 # Per-OWNER AI provider keys are encrypted at rest (app/credentials.py)
 cryptography>=42,<47
 boto3>=1.40,<2
+
+# Backend TikTok LIVE chat reader (app/tiktok_chat.py).
+TikTokLive==7.0.1

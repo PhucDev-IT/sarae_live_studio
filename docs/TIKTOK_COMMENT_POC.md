@@ -11,7 +11,7 @@ From the repository root:
 ```powershell
 git pull origin dev
 cd backend
-.venv\Scripts\python.exe -m pip install TikTokLive==7.0.1
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe tools\tiktok_chat_poc.py @YOUR_TIKTOK_USERNAME
 ```
 
