@@ -170,7 +170,10 @@ def set_auto_pin(body: AutoPinInput, owner: Owner, agent_id: AgentId,
                 LiveSession.agent_id == agent_id, LiveSession.id == session_id, LiveSession.status == "RUNNING"))
             if session is None:
                 raise HTTPException(409, "Phiên LIVE đã kết thúc")
-            rows = db.scalars(select(Product).where(Product.owner_id == owner["id"])).all()
+            # Pin-per-video would fight the timeline scheduler, which owns the pins of a Single Video session.
+            from app.live_timeline import require_legacy
+            require_legacy(session, "Tự động ghim theo video")
+            rows =db.scalars(select(Product).where(Product.owner_id == owner["id"])).all()
             if len(rows) > 300:
                 raise HTTPException(422, "Catalog có hơn 300 sản phẩm; chưa thể bật tự động ghim cho toàn bộ catalog")
             products = [{"sarae_product_id": p.id, **_pin_mapping(p, account)} for p in rows]

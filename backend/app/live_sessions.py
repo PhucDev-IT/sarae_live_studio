@@ -6,11 +6,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from app.identity import current_owner
 from app.ownership import Owner, owned_ids
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, delete, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, delete, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.catalog import Product
 from app.database import Base, SessionLocal
+from app.live_timeline import (ADVANCED_LEGACY, PLAYBACK_MODE_PATTERN, SINGLE_VIDEO_TIMELINE, is_single, main_video,
+                               require_legacy)
 
 router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"], dependencies=[Depends(current_owner)])
 
@@ -31,6 +33,11 @@ class LiveSession(Base):
     current_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Video order and automatic product rotation (app/playback_policy.py), JSON; empty = the owner's default.
     playback_policy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SINGLE_VIDEO_TIMELINE (one main video, pins by timeline) or ADVANCED_LEGACY (product queue); app/live_timeline.py.
+    playback_mode: Mapped[str] = mapped_column(String(30), default=ADVANCED_LEGACY, server_default=ADVANCED_LEGACY)
+    main_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    video_loop: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    active_timeline_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -60,6 +67,10 @@ class SessionInput(BaseModel):
     shop_id: int | None = Field(default=None, gt=0)
     # A DRAFT may start empty; the lineup is built afterwards and checked when the session starts.
     product_ids: list[int] = Field(default_factory=list, max_length=300)
+    # Omitted by older clients: they keep the product-queue behaviour. The web console sends SINGLE_VIDEO_TIMELINE.
+    playback_mode: str = Field(default=ADVANCED_LEGACY, pattern=PLAYBACK_MODE_PATTERN)
+    main_media_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    video_loop: bool = True
 
 class SessionProducts(BaseModel):
     product_ids: list[int] = Field(default_factory=list, max_length=300)
@@ -70,6 +81,10 @@ class SessionPatch(BaseModel):
     tiktok_account_id: int | None = Field(default=None, gt=0)
     # Moving a LIVE to another PC is only allowed while it is a DRAFT, and only explicitly.
     agent_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
+    # Mode and main video are fixed once the session starts; loop can change while RUNNING.
+    playback_mode: str | None = Field(default=None, pattern=PLAYBACK_MODE_PATTERN)
+    main_media_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    video_loop: bool | None = None
 
 class StartInput(BaseModel):
     product_id: int | None = None
@@ -107,6 +122,8 @@ def ids_for(db, session_id):
 def serialize(db, item):
     return {"id": item.id, "name": item.name, "status": item.status, "agent_id": item.agent_id, "shop_id": item.shop_id, "tiktok_account_id": item.tiktok_account_id,
             "product_ids": ids_for(db, item.id), "current_product_id": item.current_product_id,
+            "playback_mode": item.playback_mode or ADVANCED_LEGACY, "main_media_id": item.main_media_id,
+            "video_loop": item.video_loop is not False, "active_timeline_id": item.active_timeline_id,
             "created_at": item.created_at, "started_at": item.started_at, "ended_at": item.ended_at}
 
 def acquire_live_claim(db, item, agent_id: str):
@@ -426,13 +443,21 @@ def create_session(body: SessionInput, owner: Owner):
         ok=db.execute(text("SELECT 1 FROM user_tiktok_accounts WHERE owner_id=:o AND account_id=:a"),
                       {"o":owner["id"],"a":body.tiktok_account_id}).scalar()
         if not ok: raise HTTPException(422,"TikTok Account chưa liên kết với User")
+        if body.playback_mode == SINGLE_VIDEO_TIMELINE and body.product_ids:
+            raise HTTPException(422, "Phiên Single Video lấy sản phẩm từ timeline, không nhận product_ids")
+        if body.main_media_id is not None:
+            if body.playback_mode != SINGLE_VIDEO_TIMELINE:
+                raise HTTPException(422, "Video chính chỉ dùng cho chế độ Single Video")
+            main_video(db, owner["id"], body.main_media_id)
         ensure_products(db,body.product_ids,owner)
         item=LiveSession(name=body.name.strip(),status="DRAFT",owner_id=owner["id"],
-                         agent_id=None,tiktok_account_id=body.tiktok_account_id,shop_id=None)
+                         agent_id=None,tiktok_account_id=body.tiktok_account_id,shop_id=None,
+                         playback_mode=body.playback_mode,main_media_id=body.main_media_id,
+                         video_loop=body.video_loop)
         db.add(item)
         db.flush()
         replace_products(db, item.id, body.product_ids)
-        event(db, item.id, "CREATED")
+        event(db, item.id, "CREATED", detail=f"mode={item.playback_mode}")
         db.commit()
         return serialize(db, item)
 
@@ -470,6 +495,7 @@ def update_products(session_id: int, body: SessionProducts, owner: Owner):
         item = get_session(db, session_id, owner)
         if item.status == "ENDED":
             raise HTTPException(409, "Không thể chỉnh sửa phiên đã kết thúc")
+        require_legacy(item, "Sửa danh sách sản phẩm")
         ensure_products(db, body.product_ids, owner)
         from app.session_product_readiness import assess
         previous=set(ids_for(db,session_id))
@@ -541,6 +567,9 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
             if prior is None:
                 raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
             return answer(prior, owner, session_id)
+        if is_single(item):
+            # Playing one main video with a pin timeline needs the Windows Agent support (next step of the refactor).
+            raise HTTPException(409, "Phát phiên Single Video chưa được hỗ trợ trên Windows Agent")
         ids = ids_for(db, session_id)
         if item.tiktok_account_id is None:
             raise HTTPException(409,"Phiên chưa gắn TikTok Account")
@@ -686,6 +715,7 @@ def resume_session(session_id: int, body: StartInput, owner: Owner,
             if prior is None:
                 raise HTTPException(409, "Phiên đang phát bình thường")
             return answer(prior, owner, session_id)
+        require_legacy(item, "Tiếp tục theo sản phẩm")
         ids = ids_for(db, session_id)
         pid = body.product_id or item.current_product_id or (ids[0] if ids else None)
         if pid is None:
@@ -702,6 +732,7 @@ def switch_session_product(session_id: int, body: SwitchInput, owner: Owner,
         item = get_session(db, session_id, owner)
         if item.status != "RUNNING":
             raise HTTPException(409, "Phiên chưa bắt đầu hoặc đã kết thúc")
+        require_legacy(item, "Chuyển sản phẩm")
         agent = session_agent(owner, item)
         # The lineup is a prepared pool, not a fixed order: any of the owner's products with videos can go live.
         ensure_products(db, [body.product_id], owner)
@@ -742,6 +773,21 @@ def update_session(session_id: int, body: SessionPatch, owner: Owner):
             event(db,session_id,"ACCOUNT_CHANGED",detail=f"account_id={item.tiktok_account_id}")
         if body.agent_id is not None:
             raise HTTPException(409,"Windows Agent chỉ được chọn khi bắt đầu phiên LIVE")
+        if body.playback_mode is not None and body.playback_mode != (item.playback_mode or ADVANCED_LEGACY):
+            if item.status != "DRAFT":
+                raise HTTPException(409, "Chỉ đổi chế độ phát khi phiên còn là DRAFT")
+            item.playback_mode = body.playback_mode
+            event(db, session_id, "MODE_CHANGED", detail=f"mode={item.playback_mode}")
+        if body.main_media_id is not None and body.main_media_id != item.main_media_id:
+            if item.status != "DRAFT":
+                raise HTTPException(409, "Không đổi video chính khi phiên đã bắt đầu")
+            if not is_single(item):
+                raise HTTPException(422, "Video chính chỉ dùng cho chế độ Single Video")
+            main_video(db, owner["id"], body.main_media_id)
+            item.main_media_id = body.main_media_id
+            event(db, session_id, "MAIN_VIDEO_CHANGED", detail=f"media={item.main_media_id}")
+        if body.video_loop is not None:
+            item.video_loop = body.video_loop
         if body.name is not None:
             item.name = body.name.strip()
         db.commit()
@@ -759,6 +805,10 @@ def delete_session(session_id: int, owner: Owner):
         if claim:
             raise HTTPException(409,"Chưa xác nhận Agent đã ngừng phát; không thể xóa phiên còn giữ khóa LIVE")
         # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
+        from app.live_timeline import LiveTimeline, TimelineMarker
+        db.execute(delete(TimelineMarker).where(TimelineMarker.timeline_id.in_(
+            select(LiveTimeline.id).where(LiveTimeline.session_id == session_id))))
+        db.execute(delete(LiveTimeline).where(LiveTimeline.session_id == session_id))
         db.execute(delete(SessionEvent).where(SessionEvent.session_id == session_id))
         db.execute(delete(SessionProduct).where(SessionProduct.session_id == session_id))
         db.delete(item)
@@ -771,7 +821,9 @@ def duplicate_session(session_id: int, owner: Owner):
         source = get_session(db, session_id, owner)
         existing = set(db.scalars(select(Product.id).where(Product.owner_id == owner["id"])).all())
         ids = [pid for pid in ids_for(db, session_id) if pid in existing]
-        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT", owner_id=owner["id"], agent_id=None, shop_id=None, tiktok_account_id=source.tiktok_account_id)
+        item = LiveSession(name=f"{source.name} (bản sao)"[:200], status="DRAFT", owner_id=owner["id"], agent_id=None, shop_id=None, tiktok_account_id=source.tiktok_account_id,
+                           playback_mode=source.playback_mode or ADVANCED_LEGACY, main_media_id=source.main_media_id,
+                           video_loop=source.video_loop is not False)
         db.add(item)
         db.flush()
         replace_products(db, item.id, ids)
