@@ -175,6 +175,31 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual((result["suggestions"][0]["product_id"], result["suggestions"][0]["review_status"]), (3, "NEEDS_REVIEW"))
 
 
+class WhisperDeviceTests(unittest.TestCase):
+    """The device is decided before loading the model: a GPU that cannot run is never tried, then retried on CPU."""
+
+    def run_on(self, device, missing):
+        from app.timeline_ai import providers
+        used = []
+        with patch.object(providers, "cuda_missing", return_value=missing), \
+                patch.object(providers, "read_wav", return_value=[0.0]), \
+                patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=object)}), \
+                patch.object(providers.FasterWhisperTranscriber, "_run", lambda self, d, samples, language: used.append(d) or []):
+            providers.FasterWhisperTranscriber("small", device).transcribe("a.wav", "vi")
+        return used
+
+    def test_auto_uses_the_gpu_only_when_its_libraries_load(self):
+        self.assertEqual(self.run_on("auto", None), ["cuda"])
+        self.assertEqual(self.run_on("auto", "thiếu cublas64_12.dll"), ["cpu"])
+        self.assertEqual(self.run_on("cpu", "không có GPU CUDA"), ["cpu"])
+
+    def test_a_gpu_chosen_explicitly_explains_what_is_missing(self):
+        with self.assertRaises(ProviderUnavailable) as caught:
+            self.run_on("cuda", "thiếu cublas64_12.dll")
+        self.assertIn("cublas64_12.dll", str(caught.exception))
+        self.assertIn("CPU", str(caught.exception))
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
 class FfmpegTests(unittest.TestCase):
     def test_metadata_audio_and_frame_of_a_generated_video(self):

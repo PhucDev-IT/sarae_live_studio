@@ -2,5 +2,9 @@
 # The Backend runs without these; analysis then fails with a clear "not installed" message.
 # Also needs ffmpeg/ffprobe on PATH (or SARAE_FFMPEG_PATH / SARAE_FFPROBE_PATH).
 faster-whisper>=1.0,<2
+# Optional, NVIDIA GPU (device "auto"/"cuda"): CUDA 12 libraries for CTranslate2 (~ several hundred MB). Without them
+# "auto" runs on the CPU. app/timeline_ai/providers.py loads their DLLs from the venv on Windows.
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12
 # Optional finer word alignment (alignment provider "whisperx"); pulls PyTorch, install only when needed:
 # whisperx>=3.1
