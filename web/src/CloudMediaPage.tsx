@@ -151,8 +151,20 @@ function Stat({label,value,tone,onClick}:{label:string;value:string;tone?:'warn'
     : <div className={'cm-stat' + (tone ? ' is-' + tone : '')}>{body}</div>
 }
 
+function aspectLabel(width:number|null,height:number|null):string|null{
+  if (!width || !height) return null
+  const ratio = width / height
+  for (const [w,h] of [[9,16],[16,9],[1,1],[4,3],[3,4],[21,9],[9,21]]) {
+    if (Math.abs(ratio - w / h) / (w / h) < 0.02) return `${w}:${h}`
+  }
+  const gcd = (a:number,b:number):number => b === 0 ? a : gcd(b,a % b)
+  const divisor = gcd(width,height)
+  return `${width / divisor}:${height / divisor}`
+}
+
 function VideoCard({item,productName,presenterName,onOpen}:{item:CloudMedia;productName:Map<number,string>;presenterName:Map<number,string>;onOpen:()=>void}){
   const duration = durationLabel(item.duration_seconds)
+  const aspect = aspectLabel(item.width,item.height)
   const [broken,setBroken] = useState(false)
   const firstProduct = item.product_ids[0] != null ? productName.get(item.product_ids[0]) : null
   return <button type="button" className="cm-card" onClick={onOpen} aria-label={'Mở ' + item.display_name}>
@@ -164,7 +176,7 @@ function VideoCard({item,productName,presenterName,onOpen}:{item:CloudMedia;prod
     </span>
     <span className="cm-card-body">
       <strong title={item.display_name}>{item.display_name}</strong>
-      <span className="cm-meta">{sizeLabel(item.size_bytes)}{item.width && item.height ? ` · ${item.width}×${item.height}` : ''}</span>
+      <span className="cm-meta">{sizeLabel(item.size_bytes)}{aspect ? ` · ${aspect}` : ''}{item.width && item.height ? ` · ${item.width}×${item.height}` : ''}</span>
       <span className="cm-chips">
         {firstProduct ? <span className="cm-chip"><Package size={12}/>{firstProduct}{item.product_ids.length > 1 ? ` +${item.product_ids.length - 1}` : ''}</span>
           : <span className="cm-chip is-warn"><Package size={12}/>Chưa gắn sản phẩm</span>}
@@ -278,6 +290,7 @@ function MediaDetail({media,products,presenters,onClose,onChanged,onDeleted}:{me
             <Fact label="Dung lượng">{sizeLabel(media.size_bytes)}</Fact>
             <Fact label="Thời lượng">{durationLabel(media.duration_seconds) ?? 'Đang xử lý'}</Fact>
             <Fact label="Kích thước">{media.width && media.height ? `${media.width} × ${media.height}` : '—'}</Fact>
+            <Fact label="Tỷ lệ">{aspectLabel(media.width,media.height) ?? 'Chưa xác định'}</Fact>
             <Fact label="Tải lên">{new Date(media.created_at).toLocaleString('vi-VN')}</Fact>
           </dl>
         </div>
