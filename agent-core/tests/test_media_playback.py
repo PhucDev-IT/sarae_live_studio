@@ -49,7 +49,7 @@ def test_cache_dir_is_per_agent_and_rejects_paths(home):
 def player(cache, events, monkeypatch):
     from sarae_agent.playback import engine as playback_engine
     monkeypatch.setattr(playback_engine, "probe_media", lambda path: type("Info", (), {"rotation": 0})())
-    monkeypatch.setattr(playback_engine, "obs_file", lambda path, info: path)
+    monkeypatch.setattr(playback_engine, "obs_file", lambda path, info, canvas=None: path)
     store = ConfigStore()
     resolve = lambda media_id: cached_path(cache, media_id)  # noqa: E731
     ws = FakeWs()

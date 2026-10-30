@@ -204,13 +204,20 @@
 
 /* Single Video Timeline setup (SingleVideoSetup.tsx), shown instead of the product lineup. Prefix sv-. */
 .sv-body{display:grid;gap:14px;padding:0 16px 16px}
-.sv-video{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;align-items:start}
-.sv-thumb{display:grid;place-items:center;width:96px;aspect-ratio:9/16;border-radius:10px;overflow:hidden;background:var(--ui-surface-2);color:var(--ui-text-subtle)}
+.sv-videos-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sv-videos-head > span{display:inline-flex;align-items:center;gap:5px;font-size:12.5px}
+.sv-videos-head > button{margin-left:auto}
+.sv-videos{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:360px;overflow:auto}
+.sv-video{display:grid;grid-template-columns:22px 40px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 8px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control);background:var(--ui-surface)}
+.sv-index{text-align:center;font-weight:700;font-size:12.5px;color:var(--ui-text-muted)}
+.sv-video-actions{display:flex;gap:2px}
+.sv-thumb{display:grid;place-items:center;width:40px;aspect-ratio:9/16;border-radius:6px;overflow:hidden;background:var(--ui-surface-2);color:var(--ui-text-subtle)}
 /* The shared thumbnail frame is absolutely positioned (media.css): keep it inside this box, image cropped to it. */
 .sv-thumb{position:relative}
 .sv-thumb .media-thumb-frame{position:absolute;inset:0;width:100%;height:100%}
 .sv-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-.sv-video-info{display:grid;gap:8px;min-width:0}
+.sv-video-info{display:grid;gap:2px;min-width:0}
+.sv-video-info > span{display:inline-flex;align-items:center;gap:5px;font-size:12px}
 .sv-meta{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12.5px}
 .sv-meta > span{display:inline-flex;align-items:center;gap:5px}
 .sv-timeline{display:grid;gap:8px;padding:12px;border:1px solid var(--ui-border);border-radius:var(--ui-radius-control);background:var(--ui-surface-2)}
@@ -221,3 +228,23 @@
 .sv-products li{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;background:var(--ui-surface);border:1px solid var(--ui-border);font-size:12.5px}
 .ls-mode-field{display:grid;gap:6px}
 .ls-mode-label{font-size:13px;font-weight:600}
+
+/* Create session dialog */
+.ls-create{display:grid;gap:20px}
+.ls-create-section{display:grid;gap:10px}
+.ls-create-section h3{margin:0;font-size:13.5px;font-weight:700}
+.ls-create-section h3 small{font-weight:400}
+.ls-create-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.ls-mode-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.ls-mode-option{display:flex;gap:12px;align-items:flex-start;padding:14px;border:1.5px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.ls-mode-option:hover{border-color:color-mix(in srgb,var(--ui-primary) 50%,var(--ui-border))}
+.ls-mode-option.is-on{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 6%,var(--ui-surface))}
+.ls-mode-option > span:last-child{display:grid;gap:4px;min-width:0}
+.ls-mode-option strong{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.ls-mode-option em{padding:1px 7px;border-radius:99px;background:color-mix(in srgb,var(--ui-primary) 14%,transparent);color:var(--ui-primary);font-style:normal;font-size:10.5px;font-weight:700}
+.ls-mode-option small{color:var(--ui-text-muted);font-size:12px;line-height:1.45}
+.ls-mode-icon{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--ui-surface-2);color:var(--ui-primary)}
+.ls-mode-option.is-on .ls-mode-icon{background:var(--ui-primary);color:#fff}
+@media (max-width:640px){.ls-create-row,.ls-mode-options{grid-template-columns:minmax(0,1fr)}}
+.sv-video-name{font-size:13.5px;line-height:1.4;overflow-wrap:anywhere}
+.sv-picker{display:grid;gap:12px}

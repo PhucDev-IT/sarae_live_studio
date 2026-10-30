@@ -44,6 +44,12 @@ log = logging.getLogger("sarae.playback")
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 ERROR_CODES = {409: "PLAYBACK_CONFLICT", 422: "INVALID_REQUEST", 502: "OBS_REQUEST_FAILED", 503: "OBS_UNAVAILABLE"}
+# A/B: poll up to 1s (20 x 50ms) for the stand-by source's first frame before pausing it there.
+STAGE_FRAME_POLLS = 20
+# A/B: swap this many ms before the visible video ends, so its end never shows; the 1s watchdog tick
+# schedules the swap when the remaining time falls within SWAP_HORIZON_MS.
+SWAP_LEAD_MS = 250
+SWAP_HORIZON_MS = 1500
 
 
 class PlaybackError(AgentError):
@@ -194,6 +200,8 @@ class PlaybackEngine:
         self.camera_mode = False
         self.camera_scene_item_id: int | None = None
         self._prepared: dict[str, tuple[int, int, str]] = {}
+        # OBS canvas (width, height) the prepared copies are rendered for; re-read when a session starts.
+        self._canvas: tuple[int, int] | None = None
         self.loop = False
         self.retry_count = 0
         self.next_retry_at = 0.0
@@ -205,8 +213,10 @@ class PlaybackEngine:
         self.last_cursor = None
         self.stall_restarts = 0
         self.session_mode = "playlist"
-        # "video" sessions (Single Video Timeline): how many times the main video restarted from the beginning.
+        # "video" sessions (Single Video Timeline): how many times a video of the session started after the first one
+        # (next video or the same one again); with their order (sequential / random / shuffle).
         self.loop_iteration = 0
+        self.video_order = "sequential"
         self.product_id = None
         self.pending_product_id = None
         self.session_id = None
@@ -228,6 +238,8 @@ class PlaybackEngine:
         self._product_rounds = 0
         self._monitor_thread = None
         self._monitor_stop = threading.Event()
+        # A/B: generation whose near-end swap timer is pending (see _schedule_swap).
+        self._swap_generation: int | None = None
 
     # ----- helpers -------------------------------------------------------------------------------
 
@@ -272,6 +284,8 @@ class PlaybackEngine:
         return None
 
     def _video_order(self) -> str:
+        if self.session_mode == "video":
+            return self.video_order
         policy = self._policy()
         return policy.video_order if policy else "sequential"
 
@@ -496,16 +510,48 @@ class PlaybackEngine:
             raise PlaybackError(409, f"Video {media_id[:12]} chưa tải về cache của Agent")
         path = path.resolve()
         stat = path.stat()
-        cached = self._prepared.get(str(path))
+        canvas = self._canvas_size()
+        key = f"{path}|{canvas}"
+        cached = self._prepared.get(key)
         if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns) and Path(cached[2]).is_file():
             return cached[2], path.name
         try:
             info = probe_media(path)
-            playable = obs_file(path, info)
+            playable = obs_file(path, info, canvas)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise PlaybackError(409, f"Không kiểm tra/chuẩn hóa được {path.name}: {exc}") from exc
-        self._prepared[str(path)] = (stat.st_size, stat.st_mtime_ns, str(playable))
+        self._prepared[key] = (stat.st_size, stat.st_mtime_ns, str(playable))
         return str(playable), path.name
+
+    def _canvas_size(self) -> tuple[int, int] | None:
+        """OBS canvas (base) size, read once per session; None when OBS cannot tell (OBS then letterboxes)."""
+        if self._canvas is None:
+            client = None
+            try:
+                client = self.client()
+                settings = client.get_video_settings()
+                width, height = settings.base_width, settings.base_height
+                if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+                    self._canvas = (width, height)
+            except Exception as exc:
+                log.warning("Không đọc được canvas OBS, video khác tỉ lệ sẽ có viền đen: %s", exc)
+            finally:
+                if client is not None:
+                    _close(client)
+        return self._canvas
+
+    def prewarm(self, media_ids: list[str]) -> dict:
+        """Render the OBS copies (rotation, blurred fill) of cached videos ahead of LIVE, outside the engine lock,
+        so starting or switching a video never waits for FFmpeg."""
+        ready, failed = 0, 0
+        for media_id in media_ids:
+            try:
+                self._prepare(media_id)
+                ready += 1
+            except Exception as exc:  # noqa: BLE001 - playback prepares (and reports) the file again when needed
+                failed += 1
+                log.warning("Không chuẩn bị trước được video %s: %s", str(media_id)[:12], exc)
+        return {"ready": ready, "failed": failed}
 
     def _stage(self, client, slot, index):
         path, _ = self._media(index)
@@ -518,10 +564,20 @@ class PlaybackEngine:
     def _stage_path(self, client, slot, path):
         name = self.slots[slot]
         # Keep decoder open when hidden. Mute the stand-by source to avoid audio overlap.
+        # OBS defaults would blank an ended source and restart a source when it is shown: both flash black.
         client.set_input_mute(name, True)
-        client.set_input_settings(name, {"local_file": path, "is_local_file": True,
-                                         "looping": False, "close_when_inactive": False}, overlay=True)
+        client.set_input_settings(name, {"local_file": path, "is_local_file": True, "looping": False,
+                                         "close_when_inactive": False, "restart_on_activate": False,
+                                         "clear_on_media_end": False}, overlay=True)
         client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+        # Hold the stand-by source on its first decoded frame, so showing it later needs no decoding.
+        for _ in range(STAGE_FRAME_POLLS):
+            report = client.get_media_input_status(name)
+            cursor = getattr(report, "media_cursor", None)
+            if report.media_state == "OBS_MEDIA_STATE_PLAYING" and isinstance(cursor, (int, float)) and cursor > 0:
+                break
+            time.sleep(0.05)
+        client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE")
 
     def _verify_input(self, client, name: str, kind: str) -> tuple[str, int]:
         scene = client.get_current_program_scene().current_program_scene_name
@@ -652,8 +708,8 @@ class PlaybackEngine:
                 client.set_input_mute(name, True)
                 client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[slot], False)
             self._stage(client, 0, index)
-            time.sleep(0.2)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[0], True)
+            client.trigger_media_input_action(self.slots[0], "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
             client.set_input_mute(self.slots[0], False)
         else:
             incoming = 1 - self.active_slot
@@ -662,9 +718,9 @@ class PlaybackEngine:
             actual_settings = client.get_input_settings(self.slots[incoming]).input_settings
             if actual_settings.get("local_file") != expected_path:
                 self._stage(client, incoming, index)
-                time.sleep(0.3)
-            # Show the next video first: no empty frame between sources.
+            # Show the next video first: no empty frame between sources. It waits paused on its first frame.
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[incoming], True)
+            client.trigger_media_input_action(self.slots[incoming], "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
             client.set_input_mute(self.slots[self.active_slot], True)
             client.set_input_mute(self.slots[incoming], False)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
@@ -756,6 +812,8 @@ class PlaybackEngine:
                 raise PlaybackError(409, "Playlist rỗng")
             if not 0 <= index < len(self.ids):
                 raise PlaybackError(422, "Vị trí video không hợp lệ")
+            if not self.active:
+                self._canvas = None  # the OBS canvas may have changed between sessions
             path, name = self._media(index)
             fresh = self._product_starting
             count = 1 if fresh else self.videos_in_product + 1
@@ -839,6 +897,7 @@ class PlaybackEngine:
         self.session_started_at = time.time()
         self.transition_count = self.recovery_count = self.error_count = 0
         self.loop_iteration = 0
+        self.video_order = "sequential"
         self.videos_in_product = 0
         self.product_started_at = None
         self._product_starting = mode == "product"
@@ -858,21 +917,38 @@ class PlaybackEngine:
             self._begin_session(list(media_ids), mode="playlist", loop=bool(loop), playlist_id=playlist_id)
             return self.play(start_index)
 
-    def video_play(self, session_id: int, media_id: str, loop: bool = True, start_ms: int = 0):
-        """Start a Single Video Timeline session: one main video, played continuously (restarted at its end when
-        ``loop``). Never switches file while it runs. The same command again for the running session only updates
+    def video_play(self, session_id: int, media_id: str | None = None, loop: bool = True, start_ms: int = 0,
+                   media_ids: list[str] | None = None, video_order: str = "sequential"):
+        """Start a Single Video Timeline session: its videos (``media_ids``, or the one ``media_id``) play one after
+        another in ``video_order``, the whole list again at its end when ``loop``. ``media_id`` is the video to start
+        with (default: the first by the order) and ``start_ms`` the position in it. Without ``loop``, random and
+        shuffle play each video once in a random order. The same command again for the running session only updates
         ``loop`` (a retried start never restarts playback)."""
+        ids = list(media_ids or [media_id])
         with self.lock:
             if self.active:
-                if self.session_mode == "video" and self.session_id == session_id and self.ids == [media_id]:
+                if self.session_mode == "video" and self.session_id == session_id and sorted(self.ids) == sorted(ids):
                     self.loop = bool(loop)
-                    return {"ok": True, "unchanged": True, "media_id": media_id}
+                    return {"ok": True, "unchanged": True, "media_id": self.ids[self.index]}
                 raise PlaybackError(409, "Agent đang phát nội dung khác; hãy dừng trước")
             self._refresh_config_when_idle()
-            if self._path(media_id) is None:
-                raise PlaybackError(409, "Video chính chưa tải về cache của Agent")
-            self._begin_session([media_id], mode="video", loop=bool(loop), session_id=session_id)
-            result = self.play(0)
+            missing = [m for m in ids if self._path(m) is None]
+            if missing:
+                raise PlaybackError(409, f"{len(missing)}/{len(ids)} video của phiên chưa tải về cache của Agent")
+            if video_order != "sequential" and not loop:
+                self.rng.shuffle(ids)  # one round in a random order
+                video_order = "sequential"
+            self._begin_session(ids, mode="video", loop=bool(loop), session_id=session_id)
+            self.video_order = video_order
+            if media_id is not None:
+                start = ids.index(media_id)
+            else:
+                start = 0 if video_order == "sequential" else self.rng.randrange(len(ids))
+            if video_order == "shuffle":
+                # The first round goes through every other video before one repeats.
+                self._video_bag = [m for m in ids if m != ids[start]]
+                self.rng.shuffle(self._video_bag)
+            result = self.play(start)
         if start_ms > 0:
             try:
                 self.seek(start_ms)
@@ -884,8 +960,8 @@ class PlaybackEngine:
         if self.on_position is None or self.session_mode != "video" or not isinstance(cursor, (int, float)):
             return
         try:
-            self.on_position({"session_id": self.session_id, "position_ms": int(cursor), "media_state": media_state,
-                              "iteration": self.loop_iteration})
+            self.on_position({"session_id": self.session_id, "media_id": self.ids[self.index],
+                              "position_ms": int(cursor), "media_state": media_state, "iteration": self.loop_iteration})
         except Exception:  # noqa: BLE001 - pin scheduling never breaks the watchdog
             log.exception("Timeline không nhận được vị trí phát")
 
@@ -1217,6 +1293,8 @@ class PlaybackEngine:
                     if not self._rotate():
                         # Nothing to switch to: stay on this product for another period instead of retrying each tick.
                         self.product_started_at = time.monotonic()
+                elif self.dual_mode and media_status == "OBS_MEDIA_STATE_PLAYING":
+                    self._schedule_swap(cursor, getattr(report, "media_duration", None))
             except Exception as exc:
                 self.retry_count += 1
                 self.error_count += 1
@@ -1225,6 +1303,39 @@ class PlaybackEngine:
                     self._deactivate("obs_error", f"Đã tạm dừng do OBS lỗi nhiều lần: {exc}")
                 else:
                     self.next_retry_at = time.monotonic() + min(2 ** self.retry_count, 20)
+
+    def _schedule_swap(self, cursor, duration):
+        """A/B: swap to the stand-by source just before the visible video ends; the watchdog polls only each second."""
+        if not (isinstance(cursor, (int, float)) and isinstance(duration, (int, float)) and duration > 0):
+            return
+        remaining = duration - cursor
+        if remaining > SWAP_HORIZON_MS or self._swap_generation == self.generation:
+            return
+        self._swap_generation = self.generation
+        timer = threading.Timer(max(0, remaining - SWAP_LEAD_MS) / 1000, self._swap_near_end, args=(self.generation,))
+        timer.daemon = True
+        timer.start()
+
+    def _swap_near_end(self, generation: int):
+        with self.lock:
+            self._swap_generation = None
+            if not self.active or self.paused or self.camera_mode or generation != self.generation:
+                return
+            try:
+                client = self.client()
+                try:
+                    report = client.get_media_input_status(self.active_source())
+                finally:
+                    _close(client)
+                cursor = getattr(report, "media_cursor", None)
+                duration = getattr(report, "media_duration", None)
+                # Paused, already ended (the watchdog advances) or sought back: leave it to the next tick.
+                if (report.media_state != "OBS_MEDIA_STATE_PLAYING" or not isinstance(cursor, (int, float))
+                        or not isinstance(duration, (int, float)) or duration - cursor > SWAP_LEAD_MS + 500):
+                    return
+                self._advance_after_end()
+            except Exception as exc:
+                log.warning("A/B: không chuyển sớm được, chờ video hết: %s", exc)
 
     def _advance_after_end(self):
         if (self.session_mode == "product" and self.pending_product_id is not None

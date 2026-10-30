@@ -5,7 +5,7 @@ Nothing here touches OBS directly. Every call names its Agent (`agent_id`); the 
 two Agents of the same OWNER cannot affect each other. Status is the Agent's latest heartbeat (`PlaybackEngine.status()`);
 commands go through `cloud_agents`. Product LIVE sessions themselves are managed in `live_sessions`.
 """
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
@@ -50,11 +50,16 @@ IDLE = {"connected": False, "running": False, "paused": False, "loop": False, "s
 
 
 def playback_of(agent: dict | None) -> dict:
-    """The Agent's last reported playback (IDLE when unknown); `connected` also requires the Agent online."""
+    """The Agent's last reported playback (IDLE when unknown); `connected` and `running` also require the Agent online:
+    the last heartbeat of an Agent that was closed mid-LIVE still says "running", but nothing plays any more (a RUNNING
+    session it was playing shows as interrupted, to resume or finish)."""
     reported = ((agent or {}).get("status") or {}).get("playback") or {}
     status = {**IDLE, **reported}
     if agent is not None and not agent["online"]:
-        status.update(connected=False, error=f"Windows Agent “{agent['hostname']}” đang offline")
+        offline = f"Windows Agent “{agent['hostname']}” đang offline"
+        status.update(connected=False, running=False, paused=False, session_id=None, product_id=None,
+                      pending_product_id=None, media_state=None, media_cursor=None, media_duration=None,
+                      last_status=offline, error=offline)
     return status
 
 
@@ -88,30 +93,18 @@ def get_status(owner: Owner, agent_id: AgentId):
     return {**playback_of(agent), "pin": ((agent.get("status") or {}).get("pin") or {}), "agent": public(agent)}
 
 
-TIMELINE_POLICY = r"^(HOLD_UNTIL_RESUME|RESUME_AT_NEXT_MARKER)$"
-
-
 class PinInput(BaseModel):
     product_id: int = Field(gt=0)
     confirmed_token: str | None = Field(default=None, pattern=r"^[0-9a-fA-F-]{1,80}$")
-    # Single Video Timeline session: how long the operator's pin wins over the timeline (default: until resume).
-    timeline_policy: str = Field(default="HOLD_UNTIL_RESUME", pattern=TIMELINE_POLICY)
 
 
-def hold_timeline(owner: dict, agent_id: str, session_id: int, product_id: int | None, policy: str,
-                  idempotency_key: str | None):
-    """Before a manual pin of a Single Video session: tell its pin scheduler to stop acting, so it never overwrites
-    the operator. Same Agent lane as the pin, so it always runs first."""
-    from app.cloud_agents import create_command
+def refuse_on_single(db, session_id: int) -> None:
+    """A Single Video session is pinned by its timeline only (the timeline always wins): no manual pin from the Web."""
     from app.live_sessions import LiveSession
     from app.live_timeline import is_single
-    with SessionLocal() as db:
-        item = db.get(LiveSession, session_id)
-        if item is None or not is_single(item):
-            return
-    create_command(agent_id, owner["id"], "timeline_hold",
-                   {"session_id": session_id, "product_id": product_id, "policy": policy},
-                   idempotency_key=f"hold:{idempotency_key}" if idempotency_key else None, session_id=session_id)
+    item = db.get(LiveSession, session_id)
+    if item is not None and is_single(item):
+        raise HTTPException(409, "Phiên Single Video ghim sản phẩm tự động theo lịch ghim; hãy sửa lịch ghim thay vì ghim tay")
 
 
 class AutoPinInput(BaseModel):
@@ -161,21 +154,20 @@ def pin_product(body: PinInput, owner: Owner, agent_id: AgentId,
     owned_agent(owner, agent_id, online=True)
     with SessionLocal() as db:
         account, session_id = _pin_account(db, owner, agent_id)
+        refuse_on_single(db, session_id)
         product = db.get(Product, body.product_id)
         if product is None or product.owner_id != owner["id"]:
             raise HTTPException(404, "Không tìm thấy sản phẩm")
         target = _pin_mapping(product, account)
-    hold_timeline(owner, agent_id, session_id, body.product_id, body.timeline_policy, idempotency_key)
     return control(owner, agent_id, "PIN_PRODUCT", {"session_id": session_id, "target": target,
         "confirmed_token": body.confirmed_token}, idempotency_key, session_id)
 
 
 @router.post("/unpin")
-def unpin_product(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey,
-                  timeline_policy: str = Query("HOLD_UNTIL_RESUME", pattern=TIMELINE_POLICY)):
+def unpin_product(owner: Owner, agent_id: AgentId, idempotency_key: str | None = IdempotencyKey):
     with SessionLocal() as db:
         account, session_id = _pin_account(db, owner, agent_id)
-    hold_timeline(owner, agent_id, session_id, None, timeline_policy, idempotency_key)
+        refuse_on_single(db, session_id)
     return control(owner, agent_id, "UNPIN_PRODUCT", {"session_id": session_id,
         "expected_user_id": account}, idempotency_key, session_id)
 

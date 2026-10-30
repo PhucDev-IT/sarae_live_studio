@@ -85,6 +85,10 @@ class FakeObs:
         if action.endswith("RESTART"):
             self.media_state[name] = PLAYING
             self.cursor[name] = 0
+        elif action.endswith("PAUSE"):
+            self.media_state[name] = "OBS_MEDIA_STATE_PAUSED"
+        elif action.endswith("PLAY"):
+            self.media_state[name] = PLAYING
 
     def set_input_mute(self, name, muted):
         self.muted[name] = muted
@@ -125,7 +129,7 @@ class EngineTestBase(unittest.TestCase):
         media_probe = mock.patch.object(playback_engine, "probe_media", return_value=SimpleNamespace(rotation=0))
         media_probe.start()
         self.addCleanup(media_probe.stop)
-        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info: path)
+        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path)
         media_file.start()
         self.addCleanup(media_file.stop)
 
@@ -346,6 +350,15 @@ class SingleSourceTests(EngineTestBase):
         with self.assertRaises(PlaybackError):
             self.engine.configure(dual_mode=True, source_a="X", source_b="X")
 
+    def test_videos_are_prepared_for_the_obs_canvas_and_prewarmed(self):
+        with mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path) as render:
+            result = self.engine.prewarm(self.ids("pl1", "pl2") + ["0" * 32])
+            self.assertEqual(result, {"ready": 2, "failed": 1})
+            self.assertEqual({c.args[2] for c in render.call_args_list}, {(1080, 1920)})
+            self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+            # Prewarmed copies are reused at play time.
+            self.assertEqual(render.call_count, 2)
+
     def test_list_inputs(self):
         result = self.engine.list_inputs("127.0.0.1", 4455, "")
         self.assertEqual(result["scene"], "LIVE")
@@ -394,6 +407,56 @@ class DualModeTests(EngineTestBase):
         self.assertEqual(self.obs.settings[b]["local_file"], self.path("p2a"))
         self.assertEqual(self.obs.settings[a]["local_file"], self.path("p2b"))
         self.assertEqual(self.events[0]["type"], "PRODUCT_SWITCHED")
+
+    def test_standby_waits_paused_on_first_frame_and_resumes_when_shown(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        a, b = "Sarae Video A", "Sarae Video B"
+        for name in (a, b):
+            self.assertFalse(self.obs.settings[name]["clear_on_media_end"])
+            self.assertFalse(self.obs.settings[name]["restart_on_activate"])
+        self.assertEqual(self.obs.actions[-1], (b, "PAUSE"))
+        self.assertEqual(self.obs.media_state[a], PLAYING)
+        self.obs.actions.clear()
+        self.engine.next()
+        self.assertEqual(self.obs.actions[0], (b, "PLAY"))
+        self.assertEqual(self.obs.media_state[b], PLAYING)
+        self.assertFalse(self.obs.muted[b])
+
+    def test_swaps_just_before_the_visible_video_ends(self):
+        timers = []
+
+        class FakeTimer:
+            def __init__(self, delay, fn, args=()):
+                timers.append((delay, fn, args))
+                self.daemon = False
+
+            def start(self):
+                pass
+
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        a = "Sarae Video A"
+        with mock.patch.object(playback_engine.threading, "Timer", FakeTimer):
+            self.obs.cursor[a] = 30000
+            self.engine.tick()
+            self.assertEqual(timers, [])
+            self.obs.cursor[a] = 59000
+            self.engine.tick()
+            self.engine.tick()
+        self.assertEqual(len(timers), 1)
+        delay, fn, args = timers[0]
+        self.assertAlmostEqual(delay, 0.75)
+        self.obs.cursor[a] = 59760
+        fn(*args)
+        self.assertEqual(self.engine.active_slot, 1)
+        self.assertEqual(self.engine.transition_count, 1)
+
+    def test_near_end_swap_skips_after_seek_back(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        generation = self.engine.generation
+        self.obs.cursor["Sarae Video A"] = 10000
+        self.engine._swap_near_end(generation)
+        self.assertEqual(self.engine.active_slot, 0)
+        self.assertIsNone(self.engine._swap_generation)
 
     def test_dual_requires_both_sources(self):
         del self.obs.scene_items["Sarae Video B"]

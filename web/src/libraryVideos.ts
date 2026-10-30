@@ -1,6 +1,5 @@
 /** Media Library videos usable as the main video of a Single Video LIVE session. */
 import { useEffect, useState } from 'react'
-import { durationLabel } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 
 /** Available videos of the Media Library, loaded while `enabled`. */
@@ -15,4 +14,3 @@ export function useLibraryVideos(enabled = true){
   return videos
 }
 
-export const videoOptions = (videos:CloudMedia[]) => videos.map(v=>({value:v.id, label:`${v.display_name || v.filename}${v.duration_seconds ? ' · ' + durationLabel(v.duration_seconds) : ''}`}))

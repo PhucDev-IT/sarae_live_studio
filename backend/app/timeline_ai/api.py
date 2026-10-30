@@ -1,10 +1,12 @@
 """AI Timeline Analyzer API: settings, analysis jobs (background, persisted), cache, and review drafts.
 
 - GET/PUT /api/ai/timeline-settings: providers and models (owner settings `timeline_ai`; keys stay in app/credentials).
-- POST /api/live/sessions/{id}/timeline-analysis: analyse the session's main video (202 + job; cached results return
-  at once). GET .../timeline-analysis[/{job}]: jobs, progress, suggestions with evidence.
-- POST .../timeline-analysis/{job}/draft: a new DRAFT timeline version with the suggestions as AI markers. Low
-  confidence ones are NEEDS_REVIEW, which blocks approval until a person reviews them (app/live_timeline.py).
+- POST /api/live/sessions/{id}/timeline-analysis: analyse one of the session's videos (`media_id`, default the first;
+  202 + job; cached results return at once). GET .../timeline-analysis[/{job}]: jobs, progress, suggestions with
+  evidence.
+- POST .../timeline-analysis/{job}/draft: a new DRAFT timeline version with the suggestions as AI markers of that
+  video; the other videos keep the markers of the version in use. Low confidence ones are NEEDS_REVIEW, which blocks
+  approval until a person reviews them (app/live_timeline.py).
 
 Cache (table timeline_ai_cache): the transcript by (video revision, transcript + alignment settings); the analysis by
 (video revision, catalog version, every provider/model/setting, pipeline version). Re-running with nothing changed
@@ -185,6 +187,8 @@ def cache_put(db, key: str, kind: str, owner_id: str, data) -> None:
 
 class AnalyzeInput(BaseModel):
     force: bool = False  # ignore the cache (run every step again)
+    # The session video to analyse; empty = the first one.
+    media_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 def start(target) -> None:
@@ -192,20 +196,25 @@ def start(target) -> None:
     threading.Thread(target=target, name="timeline-ai", daemon=True).start()
 
 
-def session_media(db, owner: dict, session_id: int):
-    from app.live_timeline import main_video, session_of
+def session_media(db, owner: dict, session_id: int, media_id: str | None = None):
+    """The session and one of its videos (default: the first)."""
+    from app.live_timeline import main_video, session_of, session_videos
     item = session_of(db, session_id, owner)
-    if not item.main_media_id:
-        raise HTTPException(409, "Phiên chưa có video chính")
-    return item, main_video(db, owner["id"], item.main_media_id)
+    videos = session_videos(item)
+    if not videos:
+        raise HTTPException(409, "Phiên chưa có video")
+    if media_id is not None and media_id not in videos:
+        raise HTTPException(409, "Video không còn trong phiên")
+    return item, main_video(db, owner["id"], media_id or videos[0])
 
 
 @router.post("/{session_id}/timeline-analysis", status_code=202)
 def run_analysis(session_id: int, body: AnalyzeInput, owner: Owner):
     config = load_settings(owner["id"])
     with SessionLocal() as db:
-        item, media = session_media(db, owner, session_id)
+        item, media = session_media(db, owner, session_id, body.media_id)
         running = db.scalar(select(TimelineAnalysis).where(TimelineAnalysis.session_id == session_id,
+                                                           TimelineAnalysis.media_id == media.id,
                                                            TimelineAnalysis.status.in_(("QUEUED", "RUNNING"))))
         if running is not None:
             return job_view(db, running)
@@ -301,8 +310,9 @@ def owned_job(db, owner: dict, session_id: int, job_id: int) -> TimelineAnalysis
 
 @router.get("/{session_id}/timeline-analysis")
 def list_analyses(session_id: int, owner: Owner):
+    from app.live_timeline import session_of
     with SessionLocal() as db:
-        session_media(db, owner, session_id)
+        session_of(db, session_id, owner)
         rows = db.scalars(select(TimelineAnalysis).where(TimelineAnalysis.session_id == session_id,
                                                          TimelineAnalysis.owner_id == owner["id"])
                           .order_by(TimelineAnalysis.id.desc()).limit(20)).all()
@@ -317,21 +327,26 @@ def analysis_detail(session_id: int, job_id: int, owner: Owner):
 
 @router.post("/{session_id}/timeline-analysis/{job_id}/draft", status_code=201)
 def draft_from_analysis(session_id: int, job_id: int, owner: Owner):
-    """A new DRAFT timeline version holding the suggestions as AI markers, for review in the Timeline Editor."""
+    """A new DRAFT timeline version holding the suggestions as AI markers of the analysed video, for review in the
+    Timeline Editor. The session's other videos keep the markers of the version in use (else the latest one)."""
     from app.live_sessions import event
-    from app.live_timeline import TimelineMarker, new_version, view
+    from app.live_timeline import LiveTimeline, TimelineMarker, copy_markers, new_version, session_of, session_videos, view
     with SessionLocal() as db:
-        item, media = session_media(db, owner, session_id)
+        item = session_of(db, session_id, owner)
         job = owned_job(db, owner, session_id, job_id)
         if job.status != "DONE" or not job.result:
             raise HTTPException(409, "Lần phân tích chưa xong")
-        if job.media_id != item.main_media_id:
-            raise HTTPException(409, "Video chính đã đổi sau lần phân tích này; hãy phân tích lại")
+        if job.media_id not in session_videos(item):
+            raise HTTPException(409, "Video của lần phân tích này không còn trong phiên")
         if item.status == "ENDED":
             raise HTTPException(409, "Phiên đã kết thúc")
         result = json.loads(job.result)
         known = set(db.scalars(select(Product.id).where(Product.owner_id == owner["id"])))
+        base = item.active_timeline_id or db.scalar(select(LiveTimeline.id).where(LiveTimeline.session_id == session_id)
+                                                    .order_by(LiveTimeline.version.desc()).limit(1))
         timeline = new_version(db, item, owner["id"], note=f"Đề xuất AI (lần phân tích #{job.id})")
+        if base is not None:
+            copy_markers(db, base, timeline.id, except_media=job.media_id)
         seq: dict[int, int] = {}
         for s in result["suggestions"]:
             product = s["product_id"] if s["product_id"] in known else None
@@ -342,7 +357,7 @@ def draft_from_analysis(session_id: int, job_id: int, owner: Owner):
                         "sources": s.get("sources", []), "analysis_id": job.id}
             n = seq.get(s["start_ms"], 0)
             seq[s["start_ms"]] = n + 1
-            db.add(TimelineMarker(timeline_id=timeline.id, at_ms=s["start_ms"], action=action, product_id=product, seq=n,
+            db.add(TimelineMarker(timeline_id=timeline.id, media_id=job.media_id, at_ms=s["start_ms"], action=action, product_id=product, seq=n,
                                   label=("AI: chưa xác định sản phẩm" if action == "NO_ACTION" else f"AI {s['confidence']:.0%}")[:200],
                                   source="AI", review_status=review, confidence=s["confidence"],
                                   evidence=json.dumps(evidence, ensure_ascii=False)))

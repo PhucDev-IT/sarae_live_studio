@@ -1,13 +1,14 @@
 # Single Video Timeline LIVE — playback & pin timeline
 
-Default mode for new LIVE sessions: **one main video plays continuously and products are pinned on TikTok at
-timestamps of that video**. The former multi-video / product-queue behaviour stays available as `ADVANCED_LEGACY`.
+Default mode for new LIVE sessions: **the session's videos (one or several) play one after another and products are
+pinned on TikTok at timestamps of each video**. The former product-queue behaviour stays available as
+`ADVANCED_LEGACY`. (The mode keeps its historical name `SINGLE_VIDEO_TIMELINE`; it is no longer limited to one video.)
 
 | | `SINGLE_VIDEO_TIMELINE` | `ADVANCED_LEGACY` |
 |---|---|---|
-| What plays | one Media Library video (`main_media_id`), looped or once | each product's videos, queue, rotation |
-| What pins | the active **timeline version** (markers at ms positions) | manual pins, per-video auto pin |
-| Clock | OBS media cursor of the main video (Windows Agent) | video boundaries |
+| What plays | the session's Media Library videos (`video_ids`, in order), `video_order` sequential / random / shuffle, list looped or once | each product's videos, queue, rotation |
+| What pins | the active **timeline version** (markers at ms positions **of their own video**) | manual pins, per-video auto pin |
+| Clock | (video playing, OBS media cursor) on the Windows Agent | video boundaries |
 | Product lineup | derived from the active timeline (Console check, AI chat context) | chosen by the operator |
 | Default for | new sessions created by the Web | sessions created before this mode, API clients that send no mode |
 
@@ -58,9 +59,9 @@ thing that executes the session's schedule. The Backend never pins on a timer; i
 | Table / column | Purpose |
 |---|---|
 | `live_sessions.playback_mode` | `SINGLE_VIDEO_TIMELINE` / `ADVANCED_LEGACY` (existing rows: `ADVANCED_LEGACY`) |
-| `live_sessions.main_media_id`, `video_loop`, `active_timeline_id` | main video, loop, version in use |
+| `live_sessions.video_ids` (JSON), `video_order`, `video_loop`, `active_timeline_id` | the videos in order (empty = `[main_media_id]`; `main_media_id` = the first), order, loop of the whole list, version in use (migration `20261030_0018`) |
 | `live_timelines` | versions per session: `DRAFT → APPROVED → ACTIVE` (one ACTIVE; the previous one returns to APPROVED) |
-| `live_timeline_markers` | `at_ms`, `action` (`PIN_PRODUCT` / `UNPIN_PRODUCT` / `NO_ACTION`), `product_id`, `seq`, `source` (`MANUAL`/`AI`), `review_status`, `confidence`, `evidence` (JSON) |
+| `live_timeline_markers` | `media_id` (the video the marker belongs to), `at_ms` (position in that video), `action` (`PIN_PRODUCT` / `UNPIN_PRODUCT` / `NO_ACTION`), `product_id`, `seq`, `source` (`MANUAL`/`AI`), `review_status`, `confidence`, `evidence` (JSON) |
 | `timeline_analyses` | AI analysis jobs (status, phase, progress, result, draft made from it) |
 | `timeline_ai_cache` | transcript / analysis cache by key |
 
@@ -77,14 +78,16 @@ stateDiagram-v2
   DRAFT --> DRAFT: PUT markers (whole draft)
   DRAFT --> APPROVED: approve (no errors, no NEEDS_REVIEW)
   APPROVED --> ACTIVE: activate
-  ACTIVE --> APPROVED: another version activated / main video changed
+  ACTIVE --> APPROVED: another version activated
   APPROVED --> DRAFT: "Sửa thành bản nháp mới" (copy)
   DRAFT --> [*]: delete
 ```
 
-Validation (`issues`): a PIN needs a product of the owner's catalog (error); position after the video end (error);
-AI marker `NEEDS_REVIEW` (error: blocks approval); timeline made for another main video (error); product without TikTok
-id / not ACTIVE / same position as another marker (warnings; at the same position the later marker wins).
+Validation (`issues`): a PIN needs a product of the owner's catalog (error); position after the end of its video
+(error); AI marker `NEEDS_REVIEW` (error: blocks approval); session without video (error); marker of a video no longer in
+the session (warning: ignored on LIVE); product without TikTok id / not ACTIVE / same position of the same video as
+another marker (warnings; at the same position the later marker wins). Changing the session's videos (DRAFT only)
+never deactivates the timeline: markers stay attached to their own video.
 
 Activating while the session is LIVE sends `timeline_set` to the Agent: **playback and OBS are not touched**, the
 scheduler recomputes the wanted pin at its current position. If the Agent reports another version than the active one
@@ -96,14 +99,16 @@ scheduler recomputes the wanted pin at its current position. If the Agent report
 
 | Command (Agent, lane `live`) | Effect |
 |---|---|
-| `video_play {session_id, media_id, loop, start_ms, timeline}` | start (or resume at `start_ms`) the main video; a retried start of the running session only updates `loop` |
+| `video_play {session_id, media_id?, media_ids?, video_order?, loop, start_ms, timeline}` | start (or resume at `media_id` + `start_ms`) the session's videos; a retried start of the running session only updates `loop`. A one-video sequential session sends `media_id` only (and markers without `media_id`), the shape older Agents accept |
 | `timeline_set {session_id, timeline}` | replace the schedule (keeps actual pin and position) |
 | `playback_pause` / `playback_resume` / `playback_seek` | as before |
 | `playback_stop` | stops OBS **and clears the scheduler** (any pin on its way becomes stale) |
 
-The engine never switches file at a marker. At the end of the video it restarts the same file when `loop` (and
-`loop_iteration` + 1), else the session ends (`PLAYBACK_ENDED`). Start requirements (Backend): main video, TikTok
-account, Agent online and idle, Console sync of that account < 10 min old, main video cached on the Agent. Products
+The engine never switches file at a marker. At the end of a video it plays the next one by `video_order`
+(sequential; random: never the same twice in a row; shuffle: every video once per round) and `loop_iteration` + 1; after
+the last one it starts the list again when `loop`, else the session ends (`PLAYBACK_ENDED`). Without `loop`, random and
+shuffle play each video once in a random order. Start requirements (Backend): at least one video, TikTok account, Agent
+online and idle, Console sync of that account < 10 min old, every video cached on the Agent. Products
 missing from the Console cart do **not** block a Single Video start: their pins fail (`PIN_FAILED`) and the video goes on.
 
 ---
@@ -112,7 +117,7 @@ missing from the Console cart do **not** block a Single Video start: their pins 
 
 ```mermaid
 flowchart TD
-  T["watchdog tick ~1 s<br/>cursor, loop_iteration"] --> W["wanted = last PIN/UNPIN marker ≤ cursor"]
+  T["watchdog tick ~1 s<br/>video, cursor, loop_iteration"] --> W["wanted = last PIN/UNPIN marker of this video ≤ cursor<br/>(none yet: what the previous video left pinned)"]
   W --> H{"MANUAL_HOLD?"}
   H -- "yes (policy RESUME_AT_NEXT_MARKER and a new marker)" --> R[back to TIMELINE]
   H -- yes --> X[do nothing]
@@ -132,7 +137,7 @@ flowchart TD
 |---|---|
 | Polling the same position, pause | nothing (state already matches) |
 | Seek forward/back | only the pin in force at the new position (skipped markers are never replayed) |
-| Loop | the schedule runs again from 0 (new loop iteration → new attempt budget) |
+| Next video / loop | that video's schedule runs from 0; until its first marker the pin of the previous video stays (no unpin at the boundary); new iteration → new attempt budget |
 | Two markers at the same ms | ordered by `seq`, the later wins, one action |
 | LIVE not confirmed on the Console | nothing pinned (fail closed); when LIVE: the pin in force now, not the backlog |
 | Pin API / Console failure | bounded retries, then `PIN_FAILED` (final) — never an infinite loop |
@@ -187,15 +192,15 @@ flowchart LR
 
 | Endpoint | |
 |---|---|
-| `POST /api/live/sessions` | `playback_mode`, `main_media_id`, `video_loop` (omitted mode = `ADVANCED_LEGACY`) |
-| `PATCH /api/live/sessions/{id}` | mode / main video (DRAFT only), loop (any time) |
-| `POST /api/live/sessions/{id}/start` · `/resume {position_ms}` · `/finish` | Single sessions use `video_play` |
+| `POST /api/live/sessions` | `playback_mode`, `media_ids` (or `main_media_id` = one video), `video_order`, `video_loop` (omitted mode = `ADVANCED_LEGACY`) |
+| `PATCH /api/live/sessions/{id}` | mode / `media_ids` / `video_order` (DRAFT only), loop (any time) |
+| `POST /api/live/sessions/{id}/start` · `/resume {media_id, position_ms}` · `/finish` | Single sessions use `video_play` |
 | `GET/POST /api/live/sessions/{id}/timelines` | list / new draft (`copy_from`) |
 | `GET/PATCH/DELETE …/timelines/{tid}` · `PUT …/markers` · `POST …/approve` · `POST …/activate` | |
 | `GET /api/live/sessions/{id}/pin-state` | wanted vs actual pin, mode, gate, dry-run (from the heartbeat) |
 | `POST /api/live/sessions/{id}/timeline/resume` | end a manual hold |
 | `POST /api/live/pin {product_id, timeline_policy}` · `POST /api/live/unpin?timeline_policy=` | manual pin (holds the timeline first) |
-| `GET/PUT /api/ai/timeline-settings` · `POST/GET /api/live/sessions/{id}/timeline-analysis[/{job}]` · `POST …/{job}/draft` | AI |
+| `GET/PUT /api/ai/timeline-settings` · `POST/GET /api/live/sessions/{id}/timeline-analysis[/{job}]` (`media_id`: one video) · `POST …/{job}/draft` (AI markers of that video; the other videos keep the markers of the version in use) | AI |
 
 Refused on Single sessions (409): switch product, edit lineup, rotation policy, per-video auto pin.
 
@@ -206,6 +211,9 @@ Refused on Single sessions (409): switch product, edit lineup, rotation policy, 
 1. **Backend first** (`alembic upgrade head`; startup also adds the columns/tables), **then** the Windows Agent. An
    older Backend rejects the new Agent event types and the Agent's event outbox would keep retrying.
 2. Keep Agents in dry-run; verify the LIVE gate labels and a full rehearsal per Console; then turn dry-run off per PC.
-3. Rollback: deploy the previous code **and** `alembic downgrade 20261023_0015` (drops the new columns/tables:
+3. Several videos need the new Agent: a one-video sequential session keeps the old command shape, so older Agents keep
+   playing those. Rolling back only multi-video: previous code and `alembic downgrade 20261029_0017` (drops `video_ids`,
+   `video_order` and the markers' `media_id`).
+4. Full rollback: deploy the previous code **and** `alembic downgrade 20261023_0015` (drops the new columns/tables:
    timelines and AI analyses are lost; sessions and their history stay). Rolling back only the database is not enough:
    the new code's startup schema would add the columns again.

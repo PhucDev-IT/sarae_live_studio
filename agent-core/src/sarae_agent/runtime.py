@@ -91,7 +91,8 @@ class AgentRuntime:
         self._auto_pin_guard = threading.Lock()
         self._auto_pin_last: tuple | None = None
         self.timeline = self._timeline_scheduler()
-        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"])
+        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"],
+                                                                  media_id=p.get("media_id"))
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
                                     chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline)
@@ -429,6 +430,8 @@ class AgentRuntime:
                 with httpx.Client(base_url=api_url, timeout=120, follow_redirects=False) as client:
                     cache = CloudMediaCache(client, identity.agent_id, identity.credential)
                     result = cache.prepare(session_id, on_progress=self._cache_progress)
+                # Rotated or other-aspect videos get their OBS copy now, while the job still reads PREPARING.
+                self.engine.prewarm([item["media_id"] for item in result.get("ready") or []])
                 self._cache_progress(result)
             except Exception as exc:
                 log.exception("Cloud media cache failed")

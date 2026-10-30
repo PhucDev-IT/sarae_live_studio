@@ -3,19 +3,20 @@ import { agentAction, apiRequest, onAgent, type AgentCommand } from './mediaApi'
 
 export type SessionStatus = 'DRAFT' | 'RUNNING' | 'ENDED'
 /**
- * SINGLE_VIDEO_TIMELINE: one main video plays continuously and products are pinned at its timestamps (default for new
- * sessions). ADVANCED_LEGACY: the product lineup / video queue / rotation of older sessions.
+ * SINGLE_VIDEO_TIMELINE: the session's videos play one after another and products are pinned at timestamps of each
+ * video (default for new sessions). ADVANCED_LEGACY: the product lineup / video queue / rotation of older sessions.
  */
 export type PlaybackMode = 'SINGLE_VIDEO_TIMELINE' | 'ADVANCED_LEGACY'
 /** A LIVE session is bound to the Windows Agent it was created on; every action goes to that Agent, never another. */
 export type LiveSession = {
   id:number; name:string; status:SessionStatus; agent_id:string|null; shop_id:number|null; tiktok_account_id:number|null; product_ids:number[]; current_product_id:number|null
-  playback_mode:PlaybackMode; main_media_id:string|null; video_loop:boolean; active_timeline_id:number|null
+  // Single Video Timeline: the videos in playback order (main_media_id is the first), their order and loop.
+  playback_mode:PlaybackMode; main_media_id:string|null; media_ids:string[]; video_order:PlaybackOrder; video_loop:boolean; active_timeline_id:number|null
   created_at:string; started_at:string|null; ended_at:string|null
 }
 export const isSingle = (s?:Pick<LiveSession,'playback_mode'>|null) => s?.playback_mode === 'SINGLE_VIDEO_TIMELINE'
 export const MODE_META:Record<PlaybackMode,{label:string;hint:string}> = {
-  SINGLE_VIDEO_TIMELINE:{label:'Một video + lịch ghim', hint:'Phát liên tục một video chính, tự ghim sản phẩm theo mốc thời gian của video.'},
+  SINGLE_VIDEO_TIMELINE:{label:'Video + lịch ghim', hint:'Phát liên tục một hoặc nhiều video, tự ghim sản phẩm theo mốc thời gian của từng video.'},
   ADVANCED_LEGACY:{label:'Nâng cao (nhiều video)', hint:'Danh sách sản phẩm, hàng đợi nhiều video, chuyển sản phẩm và xoay vòng như trước.'},
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
@@ -59,6 +60,8 @@ export const EVENT_LABEL:Record<string,string> = {
   AUTO_RESUMED:'Bật lại tự đổi sản phẩm',
   MODE_CHANGED:'Đổi chế độ phát',
   MAIN_VIDEO_CHANGED:'Đổi video chính',
+  VIDEOS_CHANGED:'Đổi danh sách video',
+  VIDEO_ORDER_CHANGED:'Đổi thứ tự phát video',
   TIMELINE_CREATED:'Tạo bản nháp timeline',
   TIMELINE_APPROVED:'Duyệt timeline',
   TIMELINE_ACTIVATED:'Kích hoạt timeline',
@@ -71,6 +74,7 @@ export const EVENT_LABEL:Record<string,string> = {
   PIN_APPLIED:'Đã ghim theo timeline',
   PIN_FAILED:'Ghim theo timeline thất bại',
   MANUAL_OVERRIDE:'Ghim thủ công · tạm giữ timeline',
+  PIN_DRIFT:'Ghim bị đổi ngoài Sarae · ghim lại theo lịch',
   LIVE_GATE_CHANGED:'Trạng thái LIVE trên Console',
 }
 
@@ -83,6 +87,8 @@ export function eventDetail(detail:string){
   if (values.state && detail.startsWith('state=')) return values.state === 'LIVE' ? 'Đã xác nhận đang LIVE' : values.state === 'OFFLINE' ? 'Chưa LIVE' : 'Chưa xác định'
   if (values.policy) return values.policy === 'RESUME_AT_NEXT_MARKER' ? 'Tự quay lại ở mốc kế tiếp' : 'Giữ đến khi bấm Tiếp tục timeline'
   if (values.media) return ''  // MAIN_VIDEO_CHANGED: the label says it, the id means nothing to a person
+  if (values.count != null && values.first != null) return `${values.count} video`
+  if (values.order) return VIDEO_ORDER_LABEL[values.order as PlaybackOrder] ?? values.order
   if (values.mode) return MODE_META[values.mode as PlaybackMode]?.label ?? values.mode
   if (values.version && !values.agent) return `Phiên bản ${values.version}`
   if (values.code === 'video_skipped' || detail.includes('video_skipped')) return 'Bỏ qua video lỗi' + (values.message ? `: ${values.message}` : '')
@@ -110,6 +116,7 @@ export function durationText(from:string|null, to:string|null){
 const json = (data:unknown, method = 'POST'):RequestInit => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
 /** Video order and automatic product rotation of a LIVE session (docs/PLAYBACK_POLICY.md). */
 export type PlaybackOrder = 'sequential' | 'random' | 'shuffle'
+export const VIDEO_ORDER_LABEL:Record<PlaybackOrder,string> = {sequential:'Theo thứ tự', random:'Ngẫu nhiên', shuffle:'Xáo trộn (hết lượt mới lặp)'}
 export type PlaybackPolicy = {
   video_order:PlaybackOrder; product_rotation:'off' | PlaybackOrder
   rotate_after_videos:number|null; rotate_after_minutes:number|null
@@ -125,10 +132,10 @@ export type SessionAction = { command?:AgentCommand; session?:LiveSession; uncha
 export const sessionsApi = {
   list:() => apiRequest<LiveSession[]>('/live/sessions'),
   events:(id:number) => apiRequest<SessionEvent[]>(`/live/sessions/${id}/events`),
-  create:(name:string, accountId:number, mode:PlaybackMode = 'SINGLE_VIDEO_TIMELINE', mainMediaId?:string|null) =>
-    apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], tiktok_account_id:accountId, playback_mode:mode, ...(mainMediaId ? {main_media_id:mainMediaId} : {})})),
-  /** DRAFT only: mode and main video; loop can change during LIVE. */
-  update:(id:number, body:Partial<Pick<LiveSession,'playback_mode'|'main_media_id'|'video_loop'>>) => apiRequest<LiveSession>(`/live/sessions/${id}`, json(body, 'PATCH')),
+  create:(name:string, accountId:number, mode:PlaybackMode = 'SINGLE_VIDEO_TIMELINE', mediaIds:string[] = []) =>
+    apiRequest<LiveSession>('/live/sessions', json({name, product_ids:[], tiktok_account_id:accountId, playback_mode:mode, ...(mediaIds.length ? {media_ids:mediaIds} : {})})),
+  /** DRAFT only: mode, videos and their order; loop can change during LIVE. */
+  update:(id:number, body:Partial<Pick<LiveSession,'playback_mode'|'media_ids'|'video_order'|'video_loop'>>) => apiRequest<LiveSession>(`/live/sessions/${id}`, json(body, 'PATCH')),
   rename:(id:number, name:string) => apiRequest<LiveSession>(`/live/sessions/${id}`, json({name}, 'PATCH')),
   remove:(id:number) => apiRequest<void>(`/live/sessions/${id}`, {method:'DELETE'}),
   duplicate:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/duplicate`, {method:'POST'}),
@@ -139,8 +146,8 @@ export const sessionsApi = {
   start:(session:LiveSession, agentId:string, productId?:number) => agentAction<SessionAction>(agentId, `/live/sessions/${session.id}/start`, json({agent_id:agentId, ...(productId ? {product_id:productId} : {})})),
   switchTo:(session:LiveSession, productId:number, mode:'immediate'|'after_current') => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/switch`, json({product_id:productId, mode})),
   /** Plays a RUNNING session again on its Agent after playback was lost (Agent or OBS restarted). */
-  resume:(session:LiveSession, productId?:number, positionMs?:number) => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/resume`,
-    json(isSingle(session) ? {position_ms:Math.max(0, Math.round(positionMs ?? 0))} : productId ? {product_id:productId} : {})),
+  resume:(session:LiveSession, productId?:number, positionMs?:number, mediaId?:string|null) => agentAction<SessionAction>(session.agent_id!, `/live/sessions/${session.id}/resume`,
+    json(isSingle(session) ? {position_ms:Math.max(0, Math.round(positionMs ?? 0)), ...(mediaId ? {media_id:mediaId} : {})} : productId ? {product_id:productId} : {})),
   finish:(id:number) => apiRequest<LiveSession>(`/live/sessions/${id}/finish`, {method:'POST'}),
   /** The owner's products with how many LIVE videos each has on that Agent. */
   products:(agentId:string) => apiRequest<LiveProduct[]>(onAgent('/live/products', agentId)),
@@ -175,7 +182,8 @@ export function parseHms(text:string){
 export type MarkerAction = 'PIN_PRODUCT' | 'UNPIN_PRODUCT' | 'NO_ACTION'
 export type ReviewStatus = 'APPROVED' | 'NEEDS_REVIEW' | 'REJECTED'
 export type TimelineMarker = {
-  id?:number; at_ms:number; action:MarkerAction; product_id:number|null; seq?:number; label:string
+  // The session video the marker belongs to; at_ms is a position in that video.
+  id?:number; media_id:string|null; at_ms:number; action:MarkerAction; product_id:number|null; seq?:number; label:string
   source:'MANUAL'|'AI'; review_status:ReviewStatus; confidence:number|null; evidence:string|null
 }
 export type TimelineStatus = 'DRAFT' | 'APPROVED' | 'ACTIVE' | 'ARCHIVED'
@@ -190,14 +198,12 @@ export const TIMELINE_STATUS:Record<TimelineStatus,{label:string;tone:'default'|
 }
 export const ACTION_LABEL:Record<MarkerAction,string> = {PIN_PRODUCT:'Ghim sản phẩm', UNPIN_PRODUCT:'Bỏ ghim', NO_ACTION:'Ghi chú (không ghim)'}
 
-/** A manual pin during LIVE: how long it wins over the timeline. */
-export type TimelinePolicy = 'HOLD_UNTIL_RESUME' | 'RESUME_AT_NEXT_MARKER'
 /** Wanted vs actual pin of a running Single Video session, as its Agent last reported. */
 export type PinStateView = {
   session_id:number; status:SessionStatus; active_version:number|null; agent_online:boolean; reported:boolean
-  position_ms:number|null; media_duration_ms:number|null; iteration:number|null; agent_version:number|null
+  media_id:string|null; position_ms:number|null; media_duration_ms:number|null; iteration:number|null; agent_version:number|null
   desired_product_id:number|null; desired_product_name:string|null; actual_product_id:number|null; actual_product_name:string|null
-  actual_known:boolean|null; actual_tiktok_product_id:string|null; mode:'TIMELINE'|'MANUAL_HOLD'|null; manual_policy:TimelinePolicy|null
+  actual_known:boolean|null; actual_tiktok_product_id:string|null
   live:boolean|null; in_flight:{action:string;product_id:number|null;attempt:number}|null
   last_applied:{action:string;product_id:number|null;position_ms:number|null}|null; last_error:string|null; dry_run:boolean|null
 }
@@ -213,7 +219,6 @@ export const timelinesApi = {
   activate:(sessionId:number, id:number) => apiRequest<Timeline>(timelinePath(sessionId, `/${id}/activate`), {method:'POST'}),
   remove:(sessionId:number, id:number) => apiRequest<void>(timelinePath(sessionId, `/${id}`), {method:'DELETE'}),
   pinState:(sessionId:number) => apiRequest<PinStateView>(`/live/sessions/${sessionId}/pin-state`),
-  resume:(session:LiveSession) => agentAction(session.agent_id!, `/live/sessions/${session.id}/timeline/resume`, {method:'POST'}),
 }
 /** `#/timeline?session=3` opens the pin timeline editor of a Single Video session. */
 export const timelineHref = (sessionId:number) => `#/timeline?session=${sessionId}`

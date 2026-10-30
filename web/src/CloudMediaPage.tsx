@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import {
-  Alert, Button, ConfirmModal, EmptyState, Input, LoadingState, SearchInput, SegmentedControl, Select, Sheet, SkeletonCard,
+  Alert, Button, ConfirmModal, EmptyState, Input, LoadingState, Modal, SearchInput, SegmentedControl, Select, Sheet, SkeletonCard,
   TagsInput, Textarea, useToast,
 } from './ui/core'
-import { Check, CloudUpload, Film, ImagePlus, Package, Play, RefreshCw, Scissors, Trash2, UserRound, X } from 'lucide-react'
+import { Check, CheckSquare, CloudUpload, Film, ImagePlus, Package, Play, RefreshCw, Scissors, Trash2, UserRound, X } from 'lucide-react'
 import { apiRequest, assetUrl, durationLabel, errorText, sizeLabel, type Presenter, type Product } from './mediaApi'
 import {
   ACCEPTED_VIDEO, deleteCloudMedia, listCloudMedia, patchCloudMedia, putCover, setCloudMediaPresenters, setCloudMediaProducts,
@@ -19,6 +19,8 @@ type Linked = 'all'|'no-product'|'no-presenter'
 type SortKey = 'newest'|'name'|'longest'|'largest'
 type Tab = 'info'|'products'|'presenters'
 type PickItem = { id:number; title:string; subtitle?:string; image?:string|null }
+type BulkLink = 'products'|'presenters'
+type BulkMode = 'add'|'remove'|'replace'
 
 const parseTags = (value:string) => value.split(',').map(tag=>tag.trim()).filter(Boolean)
 const sameSet = (a:number[], b:number[]) => a.length === b.length && a.every(x=>b.includes(x))
@@ -39,6 +41,13 @@ export default function CloudMediaPage(){
   const [sort,setSort] = useState<SortKey>('newest')
   const [openId,setOpenId] = useState<string|null>(null)
   const [dragging,setDragging] = useState(false)
+  // Multi-select: act on many videos at once (delete, link products / presenters) instead of one by one.
+  const [selecting,setSelecting] = useState(false)
+  const [selected,setSelected] = useState<Set<string>>(()=>new Set())
+  const lastPicked = useRef<string|null>(null)
+  const [bulkLink,setBulkLink] = useState<BulkLink|null>(null)
+  const [bulkDelete,setBulkDelete] = useState(false)
+  const [bulkProgress,setBulkProgress] = useState<{done:number;total:number}|null>(null)
   const dragDepth = useRef(0)
   const picker = useRef<HTMLInputElement>(null)
   const tasks = useUploads()
@@ -76,6 +85,62 @@ export default function CloudMediaPage(){
   const stats = useMemo(()=>({bytes:items.reduce((s,i)=>s + i.size_bytes, 0), noProduct:items.filter(i=>!i.product_ids.length).length}),[items])
   const filtering = !!query.trim() || productFilter !== 'all' || presenterFilter !== 'all' || linked !== 'all'
   const opened = items.find(m=>m.id === openId) ?? null
+  const chosen = items.filter(m=>selected.has(m.id))
+  const allShown = filtered.length > 0 && filtered.every(m=>selected.has(m.id))
+
+  const stopSelecting = () => {setSelecting(false);setSelected(new Set());lastPicked.current = null}
+  /** Toggle one video; Shift extends from the last one picked over the videos shown (in their current order). */
+  const toggle = (id:string, range:boolean) => {
+    setSelecting(true)
+    // Read the anchor now: the updater runs later, after lastPicked already points at this video.
+    const from = lastPicked.current ? filtered.findIndex(m=>m.id === lastPicked.current) : -1
+    const to = filtered.findIndex(m=>m.id === id)
+    setSelected(prev=>{
+      const next = new Set(prev)
+      if (range && from >= 0 && to >= 0) {
+        const on = !prev.has(id)
+        filtered.slice(Math.min(from, to), Math.max(from, to) + 1).forEach(m=>{if (on) next.add(m.id); else next.delete(m.id)})
+      } else if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    lastPicked.current = id
+  }
+  const selectShown = () => setSelected(prev=>{
+    const next = new Set(prev)
+    filtered.forEach(m=>{if (allShown) next.delete(m.id); else next.add(m.id)})
+    return next
+  })
+  /** Run `action` on every chosen video one after another; failures are reported, the others still go through. */
+  const runBulk = async (action:(media:CloudMedia)=>Promise<CloudMedia|null>, done:string) => {
+    const list = chosen
+    const failed:string[] = []
+    setBulkProgress({done:0, total:list.length})
+    for (const [i, media] of list.entries()) {
+      try {
+        const result = await action(media)
+        setItems(prev=>result === null ? prev.filter(m=>m.id !== media.id) : prev.map(m=>m.id === result.id ? result : m))
+      } catch(e) {failed.push(`${media.display_name}: ${errorText(e, 'lỗi')}`)}
+      setBulkProgress({done:i + 1, total:list.length})
+    }
+    setBulkProgress(null)
+    if (failed.length) toast.push({tone:'danger', title:`${failed.length}/${list.length} video không thực hiện được`, description:failed.slice(0, 3).join(' · ')})
+    else toast.push({tone:'success', title:done})
+    setSelected(new Set())
+  }
+  const applyLink = (kind:BulkLink, mode:BulkMode, ids:number[]) => {
+    setBulkLink(null)
+    void runBulk(async media=>{
+      const current = kind === 'products' ? media.product_ids : media.presenter_ids
+      const next = mode === 'replace' ? ids : mode === 'add' ? [...current, ...ids.filter(id=>!current.includes(id))] : current.filter(id=>!ids.includes(id))
+      if (sameSet(next, current)) return media
+      return kind === 'products' ? setCloudMediaProducts(media.id, next) : setCloudMediaPresenters(media.id, next)
+    }, `Đã cập nhật ${kind === 'products' ? 'sản phẩm' : 'người giới thiệu'} cho ${chosen.length} video`)
+  }
+  const removeChosen = () => {
+    setBulkDelete(false)
+    void runBulk(async media=>{await deleteCloudMedia(media.id);return null}, `Đã xóa ${chosen.length} video và file lưu trữ`)
+  }
 
   const pick = () => picker.current?.click()
   const onDrag = (event:DragEvent, delta:number) => {
@@ -101,6 +166,8 @@ export default function CloudMediaPage(){
           onClick={stats.noProduct ? ()=>setLinked('no-product') : undefined}/>
       </div>
       <div className="cm-hero-actions">
+        {items.length > 0 && <Button variant={selecting ? 'primary' : 'outline'} leftIcon={<CheckSquare size={16}/>} onClick={()=>selecting ? stopSelecting() : setSelecting(true)}>
+          {selecting ? 'Xong' : 'Chọn nhiều'}</Button>}
         <Button variant="ghost" aria-label="Tải lại" title="Tải lại" onClick={()=>{setLoading(true);void load()}}><RefreshCw size={16}/></Button>
         <Button leftIcon={<CloudUpload size={16}/>} onClick={pick}>Tải video lên</Button>
       </div>
@@ -134,8 +201,27 @@ export default function CloudMediaPage(){
         actionLabel="Xóa bộ lọc" onAction={()=>{setQuery('');setProductFilter('all');setPresenterFilter('all');setLinked('all')}}/>
     : <>
       {filtering && <p className="cm-count">{filtered.length} / {items.length} video</p>}
-      <div className="cm-grid">{filtered.map(item=><VideoCard key={item.id} item={item} productName={productName} presenterName={presenterName} onOpen={()=>setOpenId(item.id)}/>)}</div>
+      <div className={'cm-grid' + (selecting ? ' is-selecting' : '')}>{filtered.map(item=><VideoCard key={item.id} item={item} productName={productName} presenterName={presenterName}
+        selecting={selecting} selected={selected.has(item.id)} onToggle={range=>toggle(item.id, range)} onOpen={()=>setOpenId(item.id)}/>)}</div>
     </>}
+
+    {selecting && <div className="cm-bulkbar" role="toolbar" aria-label="Thao tác với video đã chọn">
+      <span className="cm-bulk-count"><strong>{selected.size}</strong> video đã chọn{bulkProgress ? ` · đang xử lý ${bulkProgress.done}/${bulkProgress.total}` : ''}</span>
+      <Button size="sm" variant="ghost" disabled={!!bulkProgress || !filtered.length} onClick={selectShown}>{allShown ? 'Bỏ chọn tất cả' : `Chọn tất cả (${filtered.length})`}</Button>
+      <span className="cm-bulk-actions">
+        <Button size="sm" variant="outline" leftIcon={<Package size={14}/>} disabled={!selected.size || !!bulkProgress} onClick={()=>setBulkLink('products')}>Gắn sản phẩm</Button>
+        <Button size="sm" variant="outline" leftIcon={<UserRound size={14}/>} disabled={!selected.size || !!bulkProgress} onClick={()=>setBulkLink('presenters')}>Gắn người giới thiệu</Button>
+        <Button size="sm" variant="danger" leftIcon={<Trash2 size={14}/>} disabled={!selected.size || !!bulkProgress} onClick={()=>setBulkDelete(true)}>Xóa</Button>
+      </span>
+      <Button size="sm" variant="ghost" aria-label="Thoát chế độ chọn" disabled={!!bulkProgress} onClick={stopSelecting}><X size={16}/></Button>
+    </div>}
+    {bulkLink && <BulkLinkModal kind={bulkLink} count={selected.size} items={bulkLink === 'products'
+        ? products.map(p=>({id:p.id, title:p.name, subtitle:p.sku, image:p.image_url}))
+        : presenters.map(p=>({id:p.id, title:p.name, subtitle:p.description, image:p.avatar_url}))}
+      onClose={()=>setBulkLink(null)} onApply={(mode, ids)=>applyLink(bulkLink, mode, ids)}/>}
+    <ConfirmModal open={bulkDelete} tone="danger" title={`Xóa ${selected.size} video khỏi thư viện?`} confirmLabel={`Xóa ${selected.size} video`}
+      description="Video và file lưu trữ của chúng bị xóa vĩnh viễn; các phiên LIVE đang dùng video này sẽ không phát được nó nữa. Không thể hoàn tác."
+      onClose={()=>setBulkDelete(false)} onConfirm={removeChosen}/>
 
     {dragging && <div className="cm-drop-overlay"><CloudUpload size={40}/><strong>Thả video để tải lên</strong></div>}
 
@@ -162,12 +248,16 @@ function aspectLabel(width:number|null,height:number|null):string|null{
   return `${width / divisor}:${height / divisor}`
 }
 
-function VideoCard({item,productName,presenterName,onOpen}:{item:CloudMedia;productName:Map<number,string>;presenterName:Map<number,string>;onOpen:()=>void}){
+function VideoCard({item,productName,presenterName,selecting,selected,onToggle,onOpen}:{item:CloudMedia;productName:Map<number,string>;presenterName:Map<number,string>;
+  selecting:boolean;selected:boolean;onToggle:(range:boolean)=>void;onOpen:()=>void}){
   const duration = durationLabel(item.duration_seconds)
   const aspect = aspectLabel(item.width,item.height)
   const [broken,setBroken] = useState(false)
   const firstProduct = item.product_ids[0] != null ? productName.get(item.product_ids[0]) : null
-  return <button type="button" className="cm-card" onClick={onOpen} aria-label={'Mở ' + item.display_name}>
+  return <div className={'cm-card-wrap' + (selected ? ' is-selected' : '')}>
+    <button type="button" className="cm-select" role="checkbox" aria-checked={selected} aria-label={'Chọn ' + item.display_name}
+      onClick={e=>{e.stopPropagation();onToggle(e.shiftKey)}}>{selected && <Check size={14}/>}</button>
+    <button type="button" className="cm-card" onClick={e=>selecting ? onToggle(e.shiftKey) : onOpen()} aria-label={(selecting ? 'Chọn ' : 'Mở ') + item.display_name}>
     <span className="cm-cover">
       {item.thumb_url && !broken ? <img src={assetUrl(item.thumb_url) ?? undefined} alt="" loading="lazy" onError={()=>setBroken(true)}/>
         : <span className="cm-cover-empty"><Film size={26}/><small>Đang tạo ảnh bìa…</small></span>}
@@ -184,6 +274,30 @@ function VideoCard({item,productName,presenterName,onOpen}:{item:CloudMedia;prod
       </span>
     </span>
   </button>
+  </div>
+}
+
+/** Link (or unlink) products or presenters to every selected video: add to their links, remove from them, or replace. */
+function BulkLinkModal({kind,count,items,onClose,onApply}:{kind:BulkLink;count:number;items:PickItem[];onClose:()=>void;onApply:(mode:BulkMode, ids:number[])=>void}){
+  const [mode,setMode] = useState<BulkMode>('add')
+  const [ids,setIds] = useState<number[]>([])
+  const noun = kind === 'products' ? 'sản phẩm' : 'người giới thiệu'
+  const verb = mode === 'add' ? 'Gắn thêm' : mode === 'remove' ? 'Gỡ' : 'Thay bằng'
+  return <Modal open title={`${kind === 'products' ? 'Gắn sản phẩm' : 'Gắn người giới thiệu'} cho ${count} video`} size="md" onClose={onClose} footer={<>
+    <Button variant="ghost" onClick={onClose}>Hủy</Button>
+    <Button disabled={!ids.length && mode !== 'replace'} onClick={()=>onApply(mode, ids)}>{verb} {ids.length || ''} {noun}</Button>
+  </>}>
+    <div className="cm-bulk-link">
+      <SegmentedControl<BulkMode> fullWidth value={mode} onChange={setMode} items={[
+        {value:'add', label:'Gắn thêm'}, {value:'remove', label:'Gỡ bỏ'}, {value:'replace', label:'Thay thế toàn bộ'},
+      ]}/>
+      <p className="cm-pick-hint">{mode === 'add' ? `Thêm các ${noun} đã chọn vào mỗi video; liên kết cũ được giữ nguyên.`
+        : mode === 'remove' ? `Gỡ các ${noun} đã chọn khỏi mỗi video (nếu có).`
+        : `Mỗi video chỉ còn đúng các ${noun} đã chọn${ids.length ? '' : ' (không chọn gì = gỡ hết)'}.`}</p>
+      <PickList items={items} value={ids} onChange={setIds} icon={kind === 'products' ? <Package size={18}/> : <UserRound size={18}/>}
+        noun={noun} hint="" empty={kind === 'products' ? 'Chưa có sản phẩm nào.' : 'Chưa có người giới thiệu nào.'}/>
+    </div>
+  </Modal>
 }
 
 /** Videos stored before covers existed (or whose cover failed at upload): capture one frame in the background. */

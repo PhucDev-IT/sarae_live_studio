@@ -1,7 +1,7 @@
 """Single Video Timeline: pins scheduled by the OBS playback position (sarae_agent/timeline), dry-run executors only.
 
 The scenarios of the refactor spec (Phase 6): continuous 60-minute video, several products, seek, pause/resume,
-loop, LIVE not confirmed, pin API failures, manual pin, two markers at the same time, a timeline changed during
+loop, LIVE not confirmed, pin API failures, two markers at the same time, a timeline changed during
 LIVE, a product without pin data, and LIVE stopped with an action on its way.
 """
 import unittest
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from sarae_agent.cloud.commands import CommandRouter
 from sarae_agent.errors import AgentError
 from sarae_agent.timeline.executors import ConsoleLiveGate, ConsolePinExecutor, DryRunPinExecutor
-from sarae_agent.timeline.scheduler import RESUME_AT_NEXT_MARKER, TimelineScheduler
+from sarae_agent.timeline.scheduler import TimelineScheduler
 from test_playback_engine import ENDED, EngineTestBase, PLAYING
 
 MIN = 60_000
@@ -106,10 +106,36 @@ class SchedulerTests(unittest.TestCase):
         self.scheduler.observe(7, 15 * MIN, 0)  # backward into product 2
         self.assertEqual(self.actions()[2:], [("UNPIN_PRODUCT", None), ("PIN_PRODUCT", "9002")])
 
-    def test_loop_runs_the_schedule_again_from_the_start(self):
+    def test_loop_runs_the_schedule_again_and_keeps_the_pin_until_the_first_marker(self):
         self.play(0, 60 * MIN)
         self.play(0, 15 * MIN, iteration=1)
-        self.assertEqual(self.actions()[4:], [("UNPIN_PRODUCT", None), ("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002")])
+        self.assertEqual(self.actions()[4:], [("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002")],
+                         "product 3 stays pinned from 0 to the first marker")
+
+    def test_each_video_has_its_markers_and_the_pin_carries_over_to_the_next_one(self):
+        a, b = "a" * 32, "b" * 32
+        self.scheduler.load(8, timeline([{"media_id": a, "at_ms": 1 * MIN, "action": "PIN_PRODUCT", "product_id": 1},
+                                          {"media_id": a, "at_ms": 5 * MIN, "action": "PIN_PRODUCT", "product_id": 2},
+                                          {"media_id": b, "at_ms": 3 * MIN, "action": "PIN_PRODUCT", "product_id": 3},
+                                          {"media_id": b, "at_ms": 4 * MIN, "action": "UNPIN_PRODUCT", "product_id": None}]))
+
+        def play(media_id, iteration, end_ms):
+            for position in range(0, end_ms + 1, 5_000):
+                self.clock.now += 5
+                self.scheduler.observe(8, position, iteration, media_id=media_id)
+
+        play(a, 0, 6 * MIN)
+        play(b, 1, 2 * MIN)
+        self.assertEqual(self.actions(), [("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002")],
+                         "video A's markers never apply to B; product 2 stays pinned into B")
+        self.assertEqual(self.scheduler.status()["media_id"], b)
+        play(b, 1, 5 * MIN)
+        play(a, 2, 30_000)
+        self.assertEqual(self.actions()[2:], [("PIN_PRODUCT", "9003"), ("UNPIN_PRODUCT", None)],
+                         "B unpinned at its end: A starts unpinned until its first marker")
+        play(b, 3, 30_000)
+        self.scheduler.observe(8, 3 * MIN, 3, media_id=b)  # a seek inside B: its own state at the new position
+        self.assertEqual(self.actions()[4:], [("PIN_PRODUCT", "9003")])
 
     def test_nothing_is_pinned_until_live_is_confirmed(self):
         self.gate.live = None
@@ -189,24 +215,6 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9001"))
         self.assertEqual(self.scheduler.status()["version"], 2)
 
-    def test_manual_pin_holds_until_resume(self):
-        self.play(0, 2 * MIN)
-        self.scheduler.manual_pin(3)
-        self.play(2 * MIN, 20 * MIN)
-        self.assertEqual(len(self.executor.calls), 1, "the operator's pin is not overwritten")
-        self.scheduler.resume()
-        self.scheduler.observe(7, 20 * MIN, 0)
-        self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9002"))
-
-    def test_manual_pin_can_return_at_the_next_marker(self):
-        self.play(0, 2 * MIN)
-        self.scheduler.manual_pin(3, RESUME_AT_NEXT_MARKER)
-        self.play(2 * MIN, 9 * MIN)
-        self.assertEqual(len(self.executor.calls), 1)
-        self.scheduler.observe(7, 10 * MIN, 0)
-        self.assertEqual(self.actions()[-1], ("PIN_PRODUCT", "9002"))
-        self.assertEqual(self.scheduler.status()["mode"], "TIMELINE")
-
     def test_same_time_markers_the_later_one_wins_once(self):
         self.scheduler.load(7, timeline([{"at_ms": MIN, "action": "PIN_PRODUCT", "product_id": 1},
                                          {"at_ms": MIN, "action": "PIN_PRODUCT", "product_id": 2, "seq": 1}]))
@@ -268,7 +276,7 @@ class EngineTimelineTests(EngineTestBase):
         self.assertEqual(self.engine.status()["loop_iteration"], 2)
         pins = [(a, (t or {}).get("tiktok_product_id")) for a, t in self.executor.calls]
         one_loop = [("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002"), ("UNPIN_PRODUCT", None), ("PIN_PRODUCT", "9003")]
-        again = [("UNPIN_PRODUCT", None), ("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002")]
+        again = [("PIN_PRODUCT", "9001"), ("PIN_PRODUCT", "9002")]  # product 3 stays pinned until the first marker
         self.assertEqual(pins, one_loop + again + one_loop[2:] + again)
 
     def test_pause_and_seek_through_the_engine(self):
@@ -309,6 +317,63 @@ class EngineTimelineTests(EngineTestBase):
         self.engine.stop()
         with self.assertRaises(Exception):
             self.engine.video_play(7, "f" * 32)
+        with self.assertRaises(Exception):
+            self.engine.video_play(7, media_ids=[self.main, "f" * 32])
+
+    def playing(self):
+        return next(mid for mid, path in self.paths.items() if str(path) == self.obs.settings["Sarae Video"]["local_file"])
+
+    def end_video(self):
+        self.obs.media_state["Sarae Video"] = ENDED
+        self.engine.tick()
+
+    def test_several_videos_play_one_after_another_and_report_which_one(self):
+        positions = []
+        self.engine.on_position = positions.append
+        first, second = self.files["pl1"], self.files["pl2"]
+        self.engine.video_play(7, media_ids=[first, second], loop=True)
+        order = [self.playing()]
+        for _ in range(3):
+            self.end_video()
+            order.append(self.playing())
+        self.assertEqual(order, [first, second, first, second])
+        self.assertEqual(self.engine.loop_iteration, 3)
+        self.obs.media_state["Sarae Video"], self.obs.cursor["Sarae Video"] = PLAYING, 5_000
+        self.engine.tick()
+        self.assertEqual((positions[-1]["media_id"], positions[-1]["position_ms"], positions[-1]["iteration"]),
+                         (second, 5_000, 3))
+        again = self.engine.video_play(7, media_ids=[second, first], loop=False)
+        self.assertTrue(again["unchanged"], "a retried start never restarts")
+        self.end_video()
+        self.assertFalse(self.engine.active, "no loop: the session ends after the last video")
+
+    def test_resume_starts_at_a_given_video_and_position(self):
+        first, second = self.files["pl1"], self.files["pl2"]
+        self.engine.video_play(7, second, media_ids=[first, second], start_ms=30_000)
+        self.assertEqual((self.playing(), self.obs.cursor_calls[-1]), (second, ("Sarae Video", 30_000)))
+
+    def test_random_orders_never_play_the_same_video_twice_in_a_row(self):
+        ids = self.ids("pl1", "pl2", "p1a")
+        for order in ("random", "shuffle"):
+            self.engine.video_play(7, media_ids=ids, video_order=order, loop=True)
+            played = [self.playing()]
+            for _ in range(11):
+                self.end_video()
+                played.append(self.playing())
+            self.assertTrue(all(a != b for a, b in zip(played, played[1:])), order)
+            if order == "shuffle":
+                self.assertEqual([set(played[i:i + 3]) for i in (0, 3, 6, 9)], [set(ids)] * 4, "every video once per round")
+            self.engine.stop()
+
+    def test_random_without_loop_plays_each_video_once(self):
+        ids = self.ids("pl1", "pl2", "p1a")
+        self.engine.video_play(7, media_ids=ids, video_order="random", loop=False)
+        played = [self.playing()]
+        while self.engine.active:
+            self.end_video()
+            if self.engine.active:
+                played.append(self.playing())
+        self.assertEqual(sorted(played), sorted(ids))
 
 
 class RouterTimelineTests(EngineTestBase):
@@ -329,6 +394,19 @@ class RouterTimelineTests(EngineTestBase):
         self.assertIsNone(self.scheduler.status()["session_id"])
         with self.assertRaises(AgentError):
             self.router.execute("timeline_set", {"session_id": 7, "timeline": None})
+
+    def test_video_play_of_several_videos(self):
+        ids = self.ids("pl1", "pl2")
+        result = self.router.execute("video_play", {"session_id": 7, "media_ids": ids, "video_order": "shuffle",
+                                                    "timeline": timeline([{"media_id": ids[1], "at_ms": 0,
+                                                                            "action": "PIN_PRODUCT", "product_id": 1}])})
+        self.assertIn(result["media_id"], ids)
+        self.assertEqual((self.engine.video_order, sorted(self.engine.ids)), ("shuffle", sorted(ids)))
+        for bad in ({"session_id": 7}, {"session_id": 7, "media_ids": [ids[0], ids[0]]},
+                    {"session_id": 7, "media_ids": ids[:1], "media_id": ids[1]},
+                    {"session_id": 7, "media_ids": ids, "video_order": "backwards"}):
+            with self.assertRaises(AgentError):
+                self.router.execute("video_play", bad)
 
     def test_payloads_are_validated(self):
         bad = {"session_id": 7, "media_id": self.main,

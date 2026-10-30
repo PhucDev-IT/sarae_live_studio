@@ -50,7 +50,8 @@ def upgrade(bind=None):
             "live_sessions":{"shop_id":"INTEGER","tiktok_account_id":"INTEGER","playback_policy":"TEXT",
                              "playback_mode":"VARCHAR(30) NOT NULL DEFAULT 'ADVANCED_LEGACY'",
                              "main_media_id":"VARCHAR(32)","video_loop":"BOOLEAN NOT NULL DEFAULT 1",
-                             "active_timeline_id":"INTEGER"},
+                             "active_timeline_id":"INTEGER","video_ids":"TEXT",
+                             "video_order":"VARCHAR(20) NOT NULL DEFAULT 'sequential'"},
         }.items():
             present={c["name"] for c in inspect(conn).get_columns(table)}
             for name,kind in columns.items():
