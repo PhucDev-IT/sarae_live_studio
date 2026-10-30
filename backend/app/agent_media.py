@@ -40,14 +40,14 @@ def manifest_item(media: MediaItem, product_ids: list[int]) -> dict:
 def session_manifest(db: Session, owner_id: str, session_id: int) -> dict:
     """Every AVAILABLE Media Library video of the session's products (random playback may pick any of them).
 
-    A Single Video Timeline session needs its main video only."""
-    from app.live_timeline import is_single
+    A Single Video Timeline session needs its own videos only."""
+    from app.live_timeline import is_single, session_videos
     session = db.get(LiveSession, session_id)
     if session is not None and is_single(session):
-        media = db.get(MediaItem, session.main_media_id) if session.main_media_id else None
-        ok = media is not None and media.owner_id == owner_id and media.status == "AVAILABLE"
-        return {"session_id": session_id, "product_ids": [], "items": [manifest_item(media, [])] if ok else [],
-                "total_bytes": media.size_bytes if ok else 0, "products_without_video": []}
+        found = [db.get(MediaItem, media_id) for media_id in session_videos(session)]
+        ok = [m for m in found if m is not None and m.owner_id == owner_id and m.status == "AVAILABLE"]
+        return {"session_id": session_id, "product_ids": [], "items": [manifest_item(m, []) for m in ok],
+                "total_bytes": sum(m.size_bytes for m in ok), "products_without_video": []}
     product_ids = list(db.scalars(select(SessionProduct.product_id).where(SessionProduct.session_id == session_id)
                                   .order_by(SessionProduct.sort_order)))
     rows = db.execute(select(ProductMedia.product_id, MediaItem)

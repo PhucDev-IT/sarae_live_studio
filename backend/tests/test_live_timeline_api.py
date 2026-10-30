@@ -139,12 +139,36 @@ class TimelineApiTests(SaasTestCase):
         self.assertIn("PRODUCT_MISSING", [i["code"] for i in detail["issues"]])
         self.assertEqual(self.client.post(f"{self.base}/{tid}/activate").status_code, 409)
 
-    def test_changing_the_main_video_deactivates_the_timeline_made_for_the_old_one(self):
-        old = self.approved_and_active([{"at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.ao}])
-        patched = self.client.patch(f"/api/live/sessions/{self.sid}", json={"main_media_id": self.other})
-        self.assertEqual(patched.json()["active_timeline_id"], None)
-        self.assertEqual(self.client.post(f"{self.base}/{old}/activate").status_code, 409, "made for another video")
-        self.assertEqual(self.new()["media_id"], self.other)
+    def test_markers_belong_to_their_own_video(self):
+        self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.main, self.other]})
+        tid = self.new()["id"]
+        saved = self.save(tid, [{"at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.ao},
+                                {"media_id": self.other, "at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.quan},
+                                {"media_id": self.other, "at_ms": 5_000, "action": "UNPIN_PRODUCT"}])
+        self.assertEqual([(m["media_id"], m["at_ms"], m["product_id"]) for m in saved["markers"]],
+                         [(self.main, 0, self.ao), (self.other, 0, self.quan), (self.other, 5_000, None)],
+                         "no media_id (older clients) = the first video")
+        self.assertNotIn("SAME_TIME", [i["code"] for i in saved["issues"]], "the same position of two videos")
+        self.save(tid, [{"media_id": self.other, "at_ms": 13_000, "action": "UNPIN_PRODUCT"}], status=422)
+        stranger, = self.library_videos(self.owner_a, "stranger.mp4")
+        self.save(tid, [{"media_id": stranger, "at_ms": 0, "action": "UNPIN_PRODUCT"}], status=422)
+
+    def test_changing_the_videos_keeps_the_timeline_and_ignores_markers_of_a_removed_video(self):
+        from app.live_sessions import LiveSession
+        from app.live_timeline import agent_timeline
+        self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.main, self.other]})
+        active = self.approved_and_active([{"at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.ao},
+                                           {"media_id": self.other, "at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.quan}])
+        patched = self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.other]})
+        self.assertEqual((patched.json()["active_timeline_id"], patched.json()["media_ids"], patched.json()["main_media_id"]),
+                         (active, [self.other], self.other))
+        detail = self.client.get(f"{self.base}/{active}").json()
+        self.assertIn("VIDEO_NOT_IN_SESSION", [i["code"] for i in detail["issues"]])
+        with self.Session() as db:
+            sent = agent_timeline(db, db.get(LiveSession, self.sid))
+        self.assertEqual([m["product_id"] for m in sent["markers"]], [self.quan])
+        self.assertNotIn("media_id", sent["markers"][0], "one video: the shape older Agents understand")
+        self.assertEqual(self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.other, self.other]}).status_code, 422)
 
     def test_duplicate_session_starts_from_the_timeline_that_ran(self):
         self.approved_and_active([{"at_ms": 4_000, "action": "PIN_PRODUCT", "product_id": self.quan}])

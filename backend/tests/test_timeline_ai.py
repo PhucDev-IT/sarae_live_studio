@@ -308,6 +308,25 @@ class AnalysisApiTests(SaasTestCase):
         self.assertEqual(self.client.post(f"{tl}/approve").status_code, 200)
         self.assertEqual(self.client.get(f"{self.base}/{job['id']}").json()["timeline_id"], draft["id"])
 
+    def test_each_video_is_analysed_alone_and_its_draft_keeps_the_other_videos_markers(self):
+        with self.Session() as db:
+            from app.storage_models import MediaItem
+            db.get(MediaItem, self.other).duration_seconds = 650.0
+            db.commit()
+        self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.main, self.other]})
+        tl = f"/api/live/sessions/{self.sid}/timelines"
+        manual = self.client.post(tl, json={}).json()["id"]
+        self.client.put(f"{tl}/{manual}/markers", json={"markers": [
+            {"media_id": self.main, "at_ms": 1_000, "action": "PIN_PRODUCT", "product_id": self.vay},
+            {"media_id": self.other, "at_ms": 2_000, "action": "PIN_PRODUCT", "product_id": self.vay}]})
+        job = self.analyze(media_id=self.other)
+        self.assertEqual(job["media_id"], self.other)
+        draft = self.client.post(f"{self.base}/{job['id']}/draft").json()
+        by_video = {(m["media_id"], m["source"]) for m in draft["markers"]}
+        self.assertEqual(by_video, {(self.main, "MANUAL"), (self.other, "AI")},
+                         "the main video keeps its markers; the analysed one gets the suggestions instead of its own")
+        self.assertEqual(self.client.post(self.base, json={"media_id": "f" * 32}).status_code, 409)
+
     def test_failures_are_reported_not_hidden(self):
         with patch.object(api, "build_providers", side_effect=ProviderUnavailable("Chưa có API key Gemini")):
             job = self.analyze()
@@ -316,8 +335,8 @@ class AnalysisApiTests(SaasTestCase):
 
     def test_video_changed_and_scoping(self):
         job = self.analyze()
-        self.client.patch(f"/api/live/sessions/{self.sid}", json={"main_media_id": self.other})
-        self.assertEqual(self.client.post(f"{self.base}/{job['id']}/draft").status_code, 409)
+        self.client.patch(f"/api/live/sessions/{self.sid}", json={"media_ids": [self.other]})
+        self.assertEqual(self.client.post(f"{self.base}/{job['id']}/draft").status_code, 409, "its video left the session")
         self.assertEqual(self.client.get(f"{self.base}/{job['id']}", headers=self.B).status_code, 404)
         legacy = self.client.post("/api/live/sessions", json={"name": "L", "tiktok_account_id": 1}).json().get("id")
         if legacy:

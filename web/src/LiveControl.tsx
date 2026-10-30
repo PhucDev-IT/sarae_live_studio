@@ -261,7 +261,7 @@ function Console({agent}:{agent:OwnerAgent}){
       <div className="lc-status-head">
         <span className={'lc-onair' + (onAir ? ' is-on' : status?.paused ? ' is-paused' : '')}><Radio size={14}/>{onAir ? 'ĐANG PHÁT' : status?.paused ? 'TẠM DỪNG' : 'CHƯA PHÁT'}</span>
         <div className="lc-status-text">
-          <strong title={liveProduct?.name}>{single ? `Một video + lịch ghim · ${current?.display_name ?? 'video chính'}` : liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
+          <strong title={liveProduct?.name}>{single ? `Video + lịch ghim · ${current?.display_name ?? 'video của phiên'}` : liveProduct ? liveProduct.name : running ? 'Đang phát ngoài Phiên LIVE' : 'Chưa có phiên phát'}</strong>
           <small title={activeSession ? activeSession.name + (status?.last_status ? ' · ' + status.last_status : '') : status?.last_status}>{activeSession ? <><a href={sessionHref(activeSession.id)}>{activeSession.name}</a>{status?.last_status ? ' · ' + status.last_status : ''}</> : status?.last_status || 'Chọn một phiên LIVE đã chuẩn bị để bắt đầu.'}</small>
         </div>
         <button type="button" className={'lc-obs' + (status?.connected ? ' is-ok' : ' is-off')} onClick={openObs}

@@ -1,15 +1,20 @@
-"""Single Video Timeline LIVE: one main video per session, products pinned at video timestamps.
+"""Single Video Timeline LIVE: the session's videos play one after another, products pinned at video timestamps.
 
 A session's `playback_mode` decides how it plays:
-- SINGLE_VIDEO_TIMELINE: one Media Library video (`main_media_id`) plays continuously (optionally looped); the active
-  timeline version says which product is pinned from which position of that video.
+- SINGLE_VIDEO_TIMELINE: the session's Media Library videos (`video_ids`, in order; `main_media_id` is the first) play
+  continuously in `video_order` (sequential / random / shuffle), optionally looped; the active timeline version says
+  which product is pinned from which position of which video. Moving to the next video keeps the pin until that
+  video's first marker.
 - ADVANCED_LEGACY: the product lineup / video queue / rotation behaviour of app.live_sessions and app.playback_policy.
   Every session created before this mode existed is ADVANCED_LEGACY (migration 20261029_0016 backfills it).
 
 Timelines are versioned per session: a DRAFT is edited freely, APPROVED is frozen, exactly one version may be ACTIVE
-(the one the Windows Agent runs). Positions are in milliseconds of the main video.
+(the one the Windows Agent runs). Each marker belongs to one video (`media_id`); its position is in milliseconds of
+that video, so reordering, adding or removing videos never shifts the other videos' markers.
 """
+import json
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -30,6 +35,10 @@ TIMELINE_STATUSES = ("DRAFT", "APPROVED", "ACTIVE", "ARCHIVED")
 MARKER_ACTIONS = ("PIN_PRODUCT", "UNPIN_PRODUCT", "NO_ACTION")
 MARKER_SOURCES = ("MANUAL", "AI")
 REVIEW_STATUSES = ("APPROVED", "NEEDS_REVIEW", "REJECTED")
+VIDEO_ORDERS = ("sequential", "random", "shuffle")
+VIDEO_ORDER_PATTERN = f"^({'|'.join(VIDEO_ORDERS)})$"
+MEDIA_ID_PATTERN = r"^[0-9a-f]{32}$"
+MAX_VIDEOS = 50
 
 
 def now():
@@ -44,7 +53,7 @@ class LiveTimeline(Base):
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
     version: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
-    # The main video this version was made for; markers are positions of exactly this file.
+    # The session's first video when this version was made (each marker carries its own video: TimelineMarker.media_id).
     media_id: Mapped[str] = mapped_column(String(32))
     media_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -59,6 +68,8 @@ class TimelineMarker(Base):
     __tablename__ = "live_timeline_markers"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     timeline_id: Mapped[int] = mapped_column(ForeignKey("live_timelines.id", ondelete="CASCADE"), index=True)
+    # The video this marker belongs to; `at_ms` is a position of exactly this file.
+    media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     at_ms: Mapped[int] = mapped_column(Integer)
     action: Mapped[str] = mapped_column(String(20))
     product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -73,9 +84,15 @@ class TimelineMarker(Base):
 
 
 def ensure_schema(bind) -> None:
-    """Create the timeline tables if missing (startup; Alembic 20261029_0016 does the same)."""
+    """Create the timeline tables if missing (startup; Alembic 20261029_0016 and 20261030_0018 do the same)."""
+    from sqlalchemy import inspect, text
     LiveTimeline.__table__.create(bind=bind, checkfirst=True)
     TimelineMarker.__table__.create(bind=bind, checkfirst=True)
+    if "media_id" not in {c["name"] for c in inspect(bind).get_columns("live_timeline_markers")}:
+        with bind.begin() as conn:
+            conn.execute(text("ALTER TABLE live_timeline_markers ADD COLUMN media_id VARCHAR(32)"))
+            conn.execute(text("""UPDATE live_timeline_markers SET media_id =
+                (SELECT media_id FROM live_timelines WHERE live_timelines.id = live_timeline_markers.timeline_id)"""))
 
 
 def is_single(item) -> bool:
@@ -90,13 +107,45 @@ def require_legacy(item, what: str = "Thao tác này"):
 
 
 def main_video(db, owner_id: str, media_id: str):
-    """The owner's AVAILABLE Media Library video usable as a session's main video, else 422."""
+    """The owner's AVAILABLE Media Library video usable as a session video, else 422."""
     from app.storage_models import MediaItem
     media = db.get(MediaItem, media_id)
     if (media is None or media.owner_id != owner_id or media.deleted_at is not None
             or media.status != "AVAILABLE" or (media.mime_type and not media.mime_type.startswith("video/"))):
-        raise HTTPException(422, "Video chính không tồn tại hoặc chưa sẵn sàng trong Thư viện video")
+        raise HTTPException(422, "Video không tồn tại hoặc chưa sẵn sàng trong Thư viện video")
     return media
+
+
+def session_videos(item) -> list[str]:
+    """The session's videos in the operator's order (sessions made before the list: their main video)."""
+    try:
+        ids = json.loads(item.video_ids) if item.video_ids else None
+    except ValueError:
+        ids = None
+    if isinstance(ids, list):
+        return [m for m in ids if isinstance(m, str)]
+    return [item.main_media_id] if item.main_media_id else []
+
+
+def set_videos(db, owner_id: str, item, media_ids: list[str]) -> None:
+    """Replace the session's video list (each an AVAILABLE video of the owner, no duplicates)."""
+    if len(media_ids) != len(set(media_ids)):
+        raise HTTPException(422, "Mỗi video chỉ được chọn một lần trong phiên")
+    if len(media_ids) > MAX_VIDEOS:
+        raise HTTPException(422, f"Tối đa {MAX_VIDEOS} video mỗi phiên")
+    for media_id in media_ids:
+        main_video(db, owner_id, media_id)
+    item.video_ids = json.dumps(media_ids)
+    item.main_media_id = media_ids[0] if media_ids else None
+
+
+def video_durations(db, media_ids) -> dict[str, int | None]:
+    """Duration (ms) of each video, None when unknown."""
+    from app.storage_models import MediaItem
+    ids = [m for m in dict.fromkeys(media_ids) if m]
+    rows = db.scalars(select(MediaItem).where(MediaItem.id.in_(ids))).all() if ids else []
+    found = {m.id: round(m.duration_seconds * 1000) if m.duration_seconds else None for m in rows}
+    return {media_id: found.get(media_id) for media_id in ids}
 
 
 # ----- pin state at a position -----------------------------------------------------------------------------------
@@ -106,13 +155,14 @@ def ordered(markers):
     return sorted(markers, key=lambda m: (m.at_ms, m.seq, m.id or 0))
 
 
-def pin_at(markers, position_ms: int) -> int | None:
-    """The product that should be pinned at `position_ms`: the effect of the last PIN/UNPIN marker at or before it.
+def pin_at(markers, position_ms: int, carried: int | None = None) -> int | None:
+    """The product that should be pinned at `position_ms` of one video: the effect of the last PIN/UNPIN marker at or
+    before it; before its first marker, `carried` (what the previous video left pinned).
 
     Positions skipped by a seek are never replayed; only the state in force at the new position counts. Markers that
     are not approved (AI suggestions under review) have no effect.
     """
-    pinned = None
+    pinned = carried
     for marker in ordered(markers):
         if marker.at_ms > position_ms:
             break
@@ -132,6 +182,8 @@ MAX_MARKERS = 2000
 
 
 class MarkerInput(BaseModel):
+    # The session video the marker belongs to; omitted by older clients = the session's first video.
+    media_id: str | None = Field(default=None, pattern=MEDIA_ID_PATTERN)
     at_ms: int = Field(ge=0, le=86_400_000)
     action: str = Field(pattern=f"^({'|'.join(MARKER_ACTIONS)})$")
     product_id: int | None = Field(default=None, gt=0)
@@ -187,17 +239,23 @@ def markers_of(db, timeline_id: int) -> list[TimelineMarker]:
 def issues(db, owner_id: str, item, timeline: LiveTimeline, markers) -> list[dict]:
     """What blocks approval (`level: error`) or deserves a look (`warning`), per marker index where it applies."""
     found = []
-    if timeline.media_id != item.main_media_id:
-        found.append({"level": "error", "code": "MEDIA_CHANGED",
-                      "message": "Video chính của phiên đã đổi; timeline này làm cho video khác"})
-    if timeline.duration_ms is None:
+    videos = session_videos(item)
+    if not videos:
+        found.append({"level": "error", "code": "NO_VIDEO", "message": "Phiên chưa có video nào"})
+    durations = video_durations(db, videos + [m.media_id for m in markers])
+    unknown = [v for v in videos if durations.get(v) is None]
+    if unknown:
         found.append({"level": "warning", "code": "DURATION_UNKNOWN",
-                      "message": "Chưa biết thời lượng video; chưa kiểm tra được mốc vượt quá cuối video"})
+                      "message": f"Chưa biết thời lượng của {len(unknown)} video; chưa kiểm tra được mốc vượt quá cuối video"})
     ids = {m.product_id for m in markers if m.product_id is not None}
     products = {p.id: p for p in db.scalars(select(Product).where(Product.id.in_(ids), Product.owner_id == owner_id))} if ids else {}
     seen = {}
     for index, m in enumerate(markers):
-        if timeline.duration_ms is not None and m.at_ms > timeline.duration_ms:
+        if m.media_id not in videos:
+            found.append({"level": "warning", "code": "VIDEO_NOT_IN_SESSION", "marker": index,
+                          "message": "Video của mốc này không còn trong phiên; mốc bị bỏ qua khi LIVE"})
+        duration = durations.get(m.media_id)
+        if duration is not None and m.at_ms > duration:
             found.append({"level": "error", "code": "AFTER_END", "marker": index, "message": "Mốc nằm sau cuối video"})
         if m.action == "PIN_PRODUCT":
             product = products.get(m.product_id)
@@ -213,15 +271,16 @@ def issues(db, owner_id: str, item, timeline: LiveTimeline, markers) -> list[dic
         if m.review_status == "NEEDS_REVIEW":
             found.append({"level": "error", "code": "NEEDS_REVIEW", "marker": index, "message": "Đề xuất AI chưa được duyệt"})
         if m.review_status == "APPROVED":
-            if m.at_ms in seen:
+            at = (m.media_id, m.at_ms)
+            if at in seen:
                 found.append({"level": "warning", "code": "SAME_TIME", "marker": index,
-                              "message": f"Trùng thời điểm với mốc #{seen[m.at_ms] + 1}; mốc sau được áp dụng"})
-            seen.setdefault(m.at_ms, index)
+                              "message": f"Trùng thời điểm với mốc #{seen[at] + 1}; mốc sau được áp dụng"})
+            seen.setdefault(at, index)
     return found
 
 
 def marker_view(m: TimelineMarker) -> dict:
-    return {"id": m.id, "at_ms": m.at_ms, "action": m.action, "product_id": m.product_id, "seq": m.seq, "label": m.label,
+    return {"id": m.id, "media_id": m.media_id, "at_ms": m.at_ms, "action": m.action, "product_id": m.product_id, "seq": m.seq, "label": m.label,
             "source": m.source, "review_status": m.review_status, "confidence": m.confidence, "evidence": m.evidence}
 
 
@@ -239,12 +298,13 @@ def view(db, owner_id: str, item, timeline: LiveTimeline, detail: bool = True) -
 
 def new_version(db, item, owner_id: str, note: str = "") -> LiveTimeline:
     from app.storage_models import MediaItem
-    if not item.main_media_id:
-        raise HTTPException(409, "Chọn video chính trước khi tạo timeline")
-    media = db.get(MediaItem, item.main_media_id)
+    videos = session_videos(item)
+    if not videos:
+        raise HTTPException(409, "Chọn video cho phiên trước khi tạo timeline")
+    media = db.get(MediaItem, videos[0])
     latest = db.scalar(select(func.max(LiveTimeline.version)).where(LiveTimeline.session_id == item.id)) or 0
     timeline = LiveTimeline(session_id=item.id, owner_id=owner_id, version=latest + 1, status="DRAFT",
-                            media_id=item.main_media_id, media_sha256=media.sha256 if media else None,
+                            media_id=videos[0], media_sha256=media.sha256 if media else None,
                             duration_ms=round(media.duration_seconds * 1000) if media and media.duration_seconds else None,
                             note=note)
     db.add(timeline)
@@ -252,10 +312,11 @@ def new_version(db, item, owner_id: str, note: str = "") -> LiveTimeline:
     return timeline
 
 
-def copy_markers(db, source_id: int, target_id: int) -> None:
-    db.add_all(TimelineMarker(timeline_id=target_id, at_ms=m.at_ms, action=m.action, product_id=m.product_id, seq=m.seq,
-                              label=m.label, source=m.source, review_status=m.review_status, confidence=m.confidence,
-                              evidence=m.evidence) for m in markers_of(db, source_id))
+def copy_markers(db, source_id: int, target_id: int, except_media: str | None = None) -> None:
+    db.add_all(TimelineMarker(timeline_id=target_id, media_id=m.media_id, at_ms=m.at_ms, action=m.action,
+                              product_id=m.product_id, seq=m.seq, label=m.label, source=m.source,
+                              review_status=m.review_status, confidence=m.confidence, evidence=m.evidence)
+               for m in markers_of(db, source_id) if except_media is None or m.media_id != except_media)
 
 
 @router.get("/{session_id}/timelines")
@@ -303,8 +364,9 @@ def update_timeline(session_id: int, timeline_id: int, body: TimelinePatch, owne
 
 @router.put("/{session_id}/timelines/{timeline_id}/markers")
 def save_markers(session_id: int, timeline_id: int, body: MarkersInput, owner: Owner):
-    """Replace every marker of a DRAFT (the editor saves the whole draft). A PIN needs a product of the owner's catalog;
-    markers at the same position keep the order given (the later one wins)."""
+    """Replace every marker of a DRAFT, of every video (the editor saves the whole draft). A marker belongs to one of
+    the session's videos; a PIN needs a product of the owner's catalog; markers at the same position of a video keep
+    the order given (the later one wins)."""
     with SessionLocal() as db:
         item = session_of(db, session_id, owner)
         timeline = timeline_of(db, item, timeline_id)
@@ -314,16 +376,23 @@ def save_markers(session_id: int, timeline_id: int, body: MarkersInput, owner: O
         known = set(db.scalars(select(Product.id).where(Product.id.in_(ids), Product.owner_id == owner["id"]))) if ids else set()
         if ids - known:
             raise HTTPException(422, "Sản phẩm không có trong catalog: " + ", ".join(f"#{i}" for i in sorted(ids - known)))
-        if timeline.duration_ms is not None:
-            late = [m.at_ms for m in body.markers if m.at_ms > timeline.duration_ms]
-            if late:
-                raise HTTPException(422, f"Có {len(late)} mốc nằm sau cuối video")
+        videos = session_videos(item)
+        for m in body.markers:
+            m.media_id = m.media_id or (videos[0] if videos else None)
+        # Markers of a video removed from the session may stay (ignored on LIVE); new ones need a session video.
+        kept = {m.media_id for m in markers_of(db, timeline.id)}
+        if {m.media_id for m in body.markers} - set(videos) - kept:
+            raise HTTPException(422, "Có mốc thuộc video không có trong phiên")
+        durations = video_durations(db, [m.media_id for m in body.markers])
+        late = [m for m in body.markers if durations.get(m.media_id) is not None and m.at_ms > durations[m.media_id]]
+        if late:
+            raise HTTPException(422, f"Có {len(late)} mốc nằm sau cuối video")
         db.execute(delete(TimelineMarker).where(TimelineMarker.timeline_id == timeline.id))
         position_seq = {}
         rows = []
         for m in sorted(body.markers, key=lambda m: m.at_ms):  # stable: the same position keeps the given order
-            seq = position_seq.get(m.at_ms, 0)
-            position_seq[m.at_ms] = seq + 1
+            seq = position_seq.get((m.media_id, m.at_ms), 0)
+            position_seq[(m.media_id, m.at_ms)] = seq + 1
             rows.append(TimelineMarker(timeline_id=timeline.id, seq=seq, **m.model_dump()))
         db.add_all(rows)
         timeline.updated_at = now()
@@ -405,6 +474,7 @@ def pin_state(session_id: int, owner: Owner):
         return {"session_id": session_id, "status": item.status,
                 "active_version": active.version if active is not None and active.status == "ACTIVE" else None,
                 "agent_online": bool(agent and agent["online"]), "reported": bool(reported),
+                "media_id": reported.get("media_id"),
                 "position_ms": reported.get("position_ms"), "media_duration_ms": playback.get("media_duration"),
                 "iteration": reported.get("iteration"), "agent_version": reported.get("version"),
                 "desired_product_id": reported.get("desired_product_id"),
@@ -435,6 +505,8 @@ def delete_timeline(session_id: int, timeline_id: int, owner: Owner):
 class AgentMarker(BaseModel):
     model_config = {"extra": "forbid"}
     id: int = Field(ge=1)
+    # Omitted for a one-video session (older Agents do not know it): the marker applies to the video playing.
+    media_id: str | None = Field(default=None, pattern=MEDIA_ID_PATTERN)
     at_ms: int = Field(ge=0, le=86_400_000)
     action: str = Field(pattern=f"^({'|'.join(MARKER_ACTIONS)})$")
     product_id: int | None = Field(default=None, ge=1)
@@ -462,10 +534,23 @@ class AgentTimeline(BaseModel):
 class VideoPlayCommand(BaseModel):
     model_config = {"extra": "forbid"}
     session_id: int = Field(ge=1)
-    media_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    # The video to start with (resume: the one to continue; omitted: the first by `video_order`). `media_ids` (the
+    # whole list) and `video_order` are omitted for a one-video sequential session, so that older Agents still play it.
+    media_id: str | None = Field(default=None, pattern=MEDIA_ID_PATTERN)
+    media_ids: list[Annotated[str, Field(pattern=MEDIA_ID_PATTERN)]] | None = Field(default=None, min_length=1,
+                                                                                     max_length=MAX_VIDEOS)
+    video_order: str | None = Field(default=None, pattern=VIDEO_ORDER_PATTERN)
     loop: bool = True
     start_ms: int = Field(default=0, ge=0, le=86_400_000)
     timeline: AgentTimeline | None = None
+
+    @model_validator(mode="after")
+    def a_video(self):
+        if self.media_id is None and not self.media_ids:
+            raise ValueError("video_play cần media_id hoặc media_ids")
+        if self.media_id is not None and self.media_ids and self.media_id not in self.media_ids:
+            raise ValueError("media_id không thuộc media_ids")
+        return self
 
 
 class TimelineSetCommand(BaseModel):
@@ -479,9 +564,17 @@ def validate_command(kind: str, payload: dict) -> dict:
     from pydantic import ValidationError
     model = VideoPlayCommand if kind == "video_play" else TimelineSetCommand
     try:
-        return model.model_validate(payload).model_dump()
+        out = model.model_validate(payload).model_dump()
     except ValidationError as exc:
         raise HTTPException(422, f"{kind} không hợp lệ: {str(exc).splitlines()[0]}") from None
+    # Multi-video fields stay out of a one-video session's command: older Agents refuse fields they do not know.
+    for key in ("media_id", "media_ids", "video_order"):
+        if key in out and out[key] is None:
+            del out[key]
+    for marker in (out.get("timeline") or {}).get("markers", []):
+        if marker["media_id"] is None:
+            del marker["media_id"]
+    return out
 
 
 def expected_user(db, item) -> str:
@@ -492,14 +585,22 @@ def expected_user(db, item) -> str:
                           {"a": item.tiktok_account_id}).scalar_one_or_none() or "")
 
 
+def plays_one_video(item) -> bool:
+    """A one-video sequential session: its Agent commands keep the shape older Agents understand."""
+    return len(session_videos(item)) <= 1 and (item.video_order or "sequential") == "sequential"
+
+
 def agent_timeline(db, item) -> dict | None:
-    """The session's active version as the Agent runs it: approved PIN/UNPIN markers and how to find each product's
-    card on the LIVE Console (same mapping as a manual pin). None when no version is active (the video plays alone)."""
+    """The session's active version as the Agent runs it: approved PIN/UNPIN markers of the session's videos and how
+    to find each product's card on the LIVE Console (same mapping as a manual pin). None when no version is active
+    (the videos play alone)."""
     timeline = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
-    if timeline is None or timeline.status != "ACTIVE" or timeline.media_id != item.main_media_id:
+    if timeline is None or timeline.status != "ACTIVE":
         return None
-    markers = [m for m in markers_of(db, timeline.id)
-               if m.review_status == "APPROVED" and m.action in ("PIN_PRODUCT", "UNPIN_PRODUCT")]
+    videos = set(session_videos(item))
+    markers = [m for m in markers_of(db, timeline.id) if m.media_id in videos
+               and m.review_status == "APPROVED" and m.action in ("PIN_PRODUCT", "UNPIN_PRODUCT")]
+    one_video = plays_one_video(item)
     user_id = expected_user(db, item)
     ids = list(dict.fromkeys(m.product_id for m in markers if m.product_id is not None))
     products = []
@@ -509,8 +610,8 @@ def agent_timeline(db, item) -> dict | None:
                          "price_text": str(int(product.price)) if product.price is not None else "",
                          "expected_user_id": user_id})
     return {"version": timeline.version, "expected_user_id": user_id if user_id.isdigit() else "",
-            "markers": [{"id": m.id, "at_ms": m.at_ms, "action": m.action, "product_id": m.product_id, "seq": m.seq}
-                        for m in markers],
+            "markers": [{"id": m.id, **({} if one_video else {"media_id": m.media_id}), "at_ms": m.at_ms,
+                         "action": m.action, "product_id": m.product_id, "seq": m.seq} for m in markers],
             "products": products}
 
 

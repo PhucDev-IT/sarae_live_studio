@@ -21,13 +21,14 @@ const sessionIdFromHash = () => {
 const isTyping = (target:EventTarget|null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target.tagName))
 /** Markers are kept in the order they take effect: position, then the order given (the later one wins). */
 const sorted = (list:TimelineMarker[]) => list.map((m, i)=>({m, i})).sort((a, b)=>a.m.at_ms - b.m.at_ms || a.i - b.i).map(x=>x.m)
-const blankMarker = (at_ms:number):TimelineMarker => ({at_ms, action:'PIN_PRODUCT', product_id:null, label:'', source:'MANUAL', review_status:'APPROVED', confidence:null, evidence:null})
+const blankMarker = (media_id:string, at_ms:number):TimelineMarker => ({media_id, at_ms, action:'PIN_PRODUCT', product_id:null, label:'', source:'MANUAL', review_status:'APPROVED', confidence:null, evidence:null})
 type Confirm = null | {kind:'discard'; next:number} | {kind:'activate'|'delete'}
 
 /**
- * Pin timeline editor of a Single Video session (#/timeline?session=ID): preview the main video, place markers on its
- * timeline (drag, or type an exact HH:MM:SS), choose the product each one pins, save the draft, approve and activate a
- * version. Approved versions are read-only: edit a new draft made from them.
+ * Pin timeline editor of a Single Video session (#/timeline?session=ID): pick one of the session's videos, preview it,
+ * place its markers on its timeline (drag, or type an exact HH:MM:SS), choose the product each one pins, save the draft
+ * (every video's markers), approve and activate a version. Approved versions are read-only: edit a new draft made from
+ * them.
  */
 export default function TimelineEditor(){
   const toast = useToast()
@@ -38,7 +39,9 @@ export default function TimelineEditor(){
     return ()=>window.removeEventListener('hashchange', sync)
   },[])
   const [session,setSession] = useState<LiveSession|null>(null)
-  const [video,setVideo] = useState<CloudMedia|null>(null)
+  const [media,setMedia] = useState<CloudMedia[]>([])
+  // The video whose markers are shown and edited (markers of the other videos are kept as they are).
+  const [videoId,setVideoId] = useState<string|null>(null)
   const [products,setProducts] = useState<LiveProduct[]>([])
   const [timelines,setTimelines] = useState<Timeline[]>([])
   const [versionId,setVersionId] = useState<number|null>(null)
@@ -58,8 +61,8 @@ export default function TimelineEditor(){
       apiRequest<LiveSession>(`/live/sessions/${sessionId}`), timelinesApi.list(sessionId).catch(()=>[] as Timeline[]),
       apiRequest<LiveProduct[]>('/live/catalog-products'), listCloudMedia().then(r=>r.items),
     ])
-    setSession(s);setTimelines(list);setProducts(catalog)
-    setVideo(media.find(v=>v.id === s.main_media_id) ?? null)
+    setSession(s);setTimelines(list);setProducts(catalog);setMedia(media)
+    setVideoId(current=>current && s.media_ids.includes(current) ? current : s.media_ids[0] ?? null)
     const pick = list.find(t=>t.id === keepVersion) ?? list.find(t=>t.status === 'DRAFT') ?? list.find(t=>t.status === 'ACTIVE') ?? list[0]
     setVersionId(pick?.id ?? null)
     setRevision(r=>r + 1)
@@ -79,12 +82,20 @@ export default function TimelineEditor(){
   const [now,setNow] = useState(0)        // ms
   const [playing,setPlaying] = useState(false)
   const [mediaDuration,setMediaDuration] = useState<number|null>(null)
-  const duration = timeline?.duration_ms ?? mediaDuration ?? (video?.duration_seconds != null ? video.duration_seconds * 1000 : null)
+  const mediaById = useMemo(()=>new Map(media.map(v=>[v.id, v])),[media])
+  const video = videoId ? mediaById.get(videoId) ?? null : null
+  const duration = mediaDuration ?? (video?.duration_seconds != null ? video.duration_seconds * 1000 : null)
+  const durationOf = (mediaId:string|null) => {
+    if (mediaId === videoId) return duration
+    const seconds = mediaId ? mediaById.get(mediaId)?.duration_seconds : null
+    return seconds != null ? seconds * 1000 : null
+  }
   // The signed URL changes on every list call; keep the first one per video so a reload does not restart playback.
   const streamUrl = useMemo(()=>assetUrl(video?.stream_url) ?? undefined,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [video?.id])
   useEffect(()=>{
+    setMediaDuration(null);setNow(0);setPlaying(false)
     const el = player.current
     if (!el) return
     let frame = 0
@@ -111,30 +122,34 @@ export default function TimelineEditor(){
   const editable = timeline?.status === 'DRAFT' && session?.status !== 'ENDED'
   const productById = useMemo(()=>new Map(products.map(p=>[p.id, p])),[products])
   const change = (next:TimelineMarker[]) => {setMarkers(next);setDirty(true)}
+  // The markers of the video shown, with their index in `markers` (the whole draft).
+  const shown = markers.map((m, i)=>({m, i})).filter(x=>x.m.media_id === videoId)
+  const localIndex = (list:TimelineMarker[], index:number) => list.slice(0, index).filter(m=>m.media_id === list[index]?.media_id).length
   const update = (index:number, patch:Partial<TimelineMarker>) => change(markers.map((m, i)=>i === index ? {...m, ...patch, ...(patch.action && patch.action !== 'PIN_PRODUCT' ? {product_id:null} : {})} : m))
   const addAt = (ms:number) => {
+    if (!videoId) return
     const at = Math.round(Math.max(0, Math.min(ms, duration ?? ms)) / STEP_MS) * STEP_MS
-    const next = sorted([...markers, blankMarker(at)])
+    const next = sorted([...markers, blankMarker(videoId, at)])
     change(next)
-    setSelected(next.findIndex(m=>m.at_ms === at && m.product_id == null && m.action === 'PIN_PRODUCT'))
+    setSelected(next.findIndex(m=>m.media_id === videoId && m.at_ms === at && m.product_id == null && m.action === 'PIN_PRODUCT'))
   }
   const remove = (index:number) => {change(markers.filter((_, i)=>i !== index));setSelected(null)}
   const moveTo = (index:number, ms:number) => {
     const at = Math.round(Math.max(0, Math.min(ms, duration ?? ms)) / STEP_MS) * STEP_MS
-    if (at === markers[index]?.at_ms) return index
+    if (at === markers[index]?.at_ms) return localIndex(markers, index)
     const moved = {...markers[index], at_ms:at}
     const rest = markers.filter((_, i)=>i !== index)
     const next = sorted([...rest, moved])
     change(next)
     const to = next.indexOf(moved)
     setSelected(to)
-    return to
+    return localIndex(next, to)  // its place among the markers of its video (the timeline bar)
   }
   /** What the editor itself can tell before saving; the server repeats these checks and adds its own. */
   const local:TimelineIssue[] = markers.flatMap((m, i)=>[
     ...(m.action === 'PIN_PRODUCT' && m.product_id == null ? [{level:'error' as const, code:'NO_PRODUCT', marker:i, message:'Chưa chọn sản phẩm để ghim'}] : []),
     ...(m.product_id != null && !productById.has(m.product_id) ? [{level:'error' as const, code:'PRODUCT_MISSING', marker:i, message:`Sản phẩm #${m.product_id} không có trong catalog`}] : []),
-    ...(duration != null && m.at_ms > duration ? [{level:'error' as const, code:'AFTER_END', marker:i, message:'Mốc nằm sau cuối video'}] : []),
+    ...((durationOf(m.media_id) ?? Infinity) < m.at_ms ? [{level:'error' as const, code:'AFTER_END', marker:i, message:'Mốc nằm sau cuối video'}] : []),
   ])
   const issues = dirty ? local : [...local, ...(timeline?.issues ?? []).filter(i=>!local.some(l=>l.code === i.code && l.marker === i.marker))]
   const markerIssues = (i:number) => issues.filter(x=>x.marker === i)
@@ -198,13 +213,15 @@ export default function TimelineEditor(){
     return ()=>window.removeEventListener('beforeunload', warn)
   },[dirty])
 
-  if (sessionId == null) return <Card><EmptyState title="Chưa chọn phiên LIVE" description="Mở Timeline Editor từ một phiên ở chế độ Một video + lịch ghim." actionLabel="Về Phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/></Card>
+  if (sessionId == null) return <Card><EmptyState title="Chưa chọn phiên LIVE" description="Mở Timeline Editor từ một phiên ở chế độ Video + lịch ghim." actionLabel="Về Phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/></Card>
   if (!loaded || !session) return <Card><p className="te-muted">Đang tải…</p></Card>
-  if (!isSingle(session)) return <Alert tone="warning" title="Phiên này dùng chế độ nâng cao">Lịch ghim theo thời gian chỉ dùng cho phiên Một video + lịch ghim. <a href={sessionHref(session.id)}>Về phiên</a></Alert>
-  if (!session.main_media_id) return <Alert tone="warning" title="Phiên chưa có video chính">Chọn video chính ở trang phiên trước khi tạo lịch ghim. <a href={sessionHref(session.id)}>Về phiên</a></Alert>
+  if (!isSingle(session)) return <Alert tone="warning" title="Phiên này dùng chế độ nâng cao">Lịch ghim theo thời gian chỉ dùng cho phiên Video + lịch ghim. <a href={sessionHref(session.id)}>Về phiên</a></Alert>
+  if (!session.media_ids.length || !videoId) return <Alert tone="warning" title="Phiên chưa có video">Chọn video ở trang phiên trước khi tạo lịch ghim. <a href={sessionHref(session.id)}>Về phiên</a></Alert>
 
   const status = timeline ? TIMELINE_STATUS[timeline.status] : null
   const versionOptions = timelines.map(t=>({value:String(t.id), label:`Phiên bản ${t.version} · ${TIMELINE_STATUS[t.status].label} · ${t.marker_count} mốc`}))
+  // The session's videos, then those that only markers of this version still name (removed from the session).
+  const videoTabs = [...session.media_ids, ...new Set(markers.map(m=>m.media_id).filter((id):id is string=>!!id && !session.media_ids.includes(id)))]
   const productOptions = [{value:'', label:'Chọn sản phẩm…'}, ...products.map(p=>({value:String(p.id), label:`${p.name}${p.sku ? ' · ' + p.sku : ''}${p.status === 'INACTIVE' ? ' (tạm ẩn)' : ''}${p.tiktok_product_id ? '' : ' · chưa đồng bộ TikTok'}`}))]
 
   return <div className="te-page">
@@ -229,11 +246,25 @@ export default function TimelineEditor(){
       </div>
     </div>
 
+    {videoTabs.length > 1 && <div className="te-videos" role="tablist" aria-label="Video của phiên">
+      {videoTabs.map((id, n)=>{
+        const item = mediaById.get(id)
+        const count = markers.filter(m=>m.media_id === id).length
+        const removed = !session.media_ids.includes(id)
+        return <button key={id} type="button" role="tab" aria-selected={id === videoId} className={'te-video-tab' + (id === videoId ? ' is-on' : '') + (removed ? ' is-removed' : '')}
+          onClick={()=>{player.current?.pause();setSelected(null);setVideoId(id)}} title={removed ? 'Video không còn trong phiên: các mốc của nó bị bỏ qua khi LIVE' : undefined}>
+          <span className="te-video-no">{removed ? '!' : n + 1}</span>
+          <span className="te-video-name">{item ? item.display_name || item.filename : 'Video không còn trong thư viện'}</span>
+          <small>{count} mốc{item?.duration_seconds != null ? ` · ${hms(item.duration_seconds * 1000)}` : ''}</small>
+        </button>
+      })}
+    </div>}
+
     {/* Player and timeline: the video keeps its own proportions (portrait TikTok videos stay portrait). */}
     <Card className="te-stage" padding={false}>
       <div className="te-stage-body">
         <div className="te-video" style={{aspectRatio:videoRatio}}>
-          {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video chính trong Thư viện.</p>}
+          {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video này trong Thư viện.</p>}
         </div>
         <div className="te-stage-side">
           <div className="te-clock"><strong>{hms(now)}</strong><span>/ {hms(duration)}</span></div>
@@ -241,21 +272,21 @@ export default function TimelineEditor(){
             <Button variant="outline" leftIcon={playing ? <Pause size={16}/> : <Play size={16}/>} disabled={!streamUrl} onClick={toggle}>{playing ? 'Tạm dừng' : 'Phát'}</Button>
             {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
           </div>
-          <TimelineBar duration={duration} now={now} markers={markers} selected={selected} editable={!!editable} productName={id=>productById.get(id)?.name}
-            onSeek={seek} onSelect={i=>{setSelected(i);seek(markers[i].at_ms)}} onMove={moveTo}/>
+          <TimelineBar duration={duration} now={now} markers={shown.map(x=>x.m)} selected={shown.findIndex(x=>x.i === selected)} editable={!!editable} productName={id=>productById.get(id)?.name}
+            onSeek={seek} onSelect={n=>{setSelected(shown[n].i);seek(shown[n].m.at_ms)}} onMove={(n, ms)=>moveTo(shown[n].i, ms)}/>
           <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span></div>
         </div>
       </div>
     </Card>
 
     <div className="te-grid">
-      <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc ({markers.length})</span>}
-        description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>
+      <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc của video này ({shown.length}{markers.length !== shown.length ? ` / ${markers.length} cả phiên` : ''})</span>}
+        description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó của video. Sang video mới, sản phẩm đang ghim được giữ tới mốc đầu của video đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>
         {timeline?.note && <p className="te-note"><StickyNote size={14}/>{timeline.note}</p>}
         {issues.length > 0 && <ul className="te-issues">{issues.filter(i=>i.marker == null).map(i=><li key={i.code} className={'is-' + i.level}><CircleAlert size={14}/>{i.message}</li>)}</ul>}
         {!timeline ? <EmptyState icon={<Pin size={26}/>} title="Chưa có lịch ghim" description="Tạo lịch ghim để đặt các mốc ghim sản phẩm theo thời gian của video."/>
-          : !markers.length ? <EmptyState icon={<Plus size={26}/>} title="Chưa có mốc nào" description={editable ? 'Tua video tới chỗ giới thiệu sản phẩm rồi bấm “Thêm mốc”, hoặc nhấn M.' : 'Phiên bản này không có mốc.'}/>
-          : <ol className="te-list">{markers.map((m, i)=><MarkerRow key={`${i}-${m.at_ms}-${m.id ?? 'new'}`} marker={m} index={i} selected={selected === i} editable={!!editable}
+          : !shown.length ? <EmptyState icon={<Plus size={26}/>} title="Video này chưa có mốc nào" description={editable ? 'Tua video tới chỗ giới thiệu sản phẩm rồi bấm “Thêm mốc”, hoặc nhấn M.' : 'Phiên bản này không có mốc cho video này.'}/>
+          : <ol className="te-list">{shown.map(({m, i}, n)=><MarkerRow key={`${i}-${m.at_ms}-${m.id ?? 'new'}`} marker={m} index={n} selected={selected === i} editable={!!editable}
               issues={markerIssues(i)} productOptions={productOptions} product={m.product_id != null ? productById.get(m.product_id) : undefined} duration={duration} now={now}
               onSelect={()=>{setSelected(i);seek(m.at_ms)}} onChange={patch=>update(i, patch)} onMove={ms=>moveTo(i, ms)} onRemove={()=>remove(i)}/>)}</ol>}
         {dirty && <div className="te-savebar"><span><CircleAlert size={15}/>Có thay đổi chưa lưu</span>
@@ -263,7 +294,7 @@ export default function TimelineEditor(){
           <Button size="sm" loading={busy} disabled={local.some(i=>i.level === 'error')} onClick={()=>void save()}>Lưu nháp</Button></div>}
       </Card>
 
-      <TimelineAIPanel sessionId={session.id} disabled={session.status === 'ENDED'} onSeek={seek}
+      <TimelineAIPanel sessionId={session.id} mediaId={videoId} disabled={session.status === 'ENDED'} onSeek={seek}
         onDraft={id=>{if (dirty) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
     </div>
 

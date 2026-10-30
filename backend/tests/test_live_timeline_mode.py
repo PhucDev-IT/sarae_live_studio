@@ -68,7 +68,7 @@ class PlaybackModeTests(SaasTestCase):
                          ("SINGLE_VIDEO_TIMELINE", self.other, False))
         self.assertEqual(self.client.patch(f"/api/live/sessions/{sid}", json={"main_media_id": self.foreign}).status_code, 422)
         events = [e["event_type"] for e in self.client.get(f"/api/live/sessions/{sid}/events").json()]
-        self.assertEqual(events, ["CREATED", "MODE_CHANGED", "MAIN_VIDEO_CHANGED"])
+        self.assertEqual(events, ["CREATED", "MODE_CHANGED", "VIDEOS_CHANGED"])
         legacy = self.create().json()["id"]
         self.assertEqual(self.client.patch(f"/api/live/sessions/{legacy}", json={"main_media_id": self.main}).status_code, 422)
 

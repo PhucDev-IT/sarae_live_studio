@@ -213,8 +213,10 @@ class PlaybackEngine:
         self.last_cursor = None
         self.stall_restarts = 0
         self.session_mode = "playlist"
-        # "video" sessions (Single Video Timeline): how many times the main video restarted from the beginning.
+        # "video" sessions (Single Video Timeline): how many times a video of the session started after the first one
+        # (next video or the same one again); with their order (sequential / random / shuffle).
         self.loop_iteration = 0
+        self.video_order = "sequential"
         self.product_id = None
         self.pending_product_id = None
         self.session_id = None
@@ -282,6 +284,8 @@ class PlaybackEngine:
         return None
 
     def _video_order(self) -> str:
+        if self.session_mode == "video":
+            return self.video_order
         policy = self._policy()
         return policy.video_order if policy else "sequential"
 
@@ -893,6 +897,7 @@ class PlaybackEngine:
         self.session_started_at = time.time()
         self.transition_count = self.recovery_count = self.error_count = 0
         self.loop_iteration = 0
+        self.video_order = "sequential"
         self.videos_in_product = 0
         self.product_started_at = None
         self._product_starting = mode == "product"
@@ -912,21 +917,38 @@ class PlaybackEngine:
             self._begin_session(list(media_ids), mode="playlist", loop=bool(loop), playlist_id=playlist_id)
             return self.play(start_index)
 
-    def video_play(self, session_id: int, media_id: str, loop: bool = True, start_ms: int = 0):
-        """Start a Single Video Timeline session: one main video, played continuously (restarted at its end when
-        ``loop``). Never switches file while it runs. The same command again for the running session only updates
+    def video_play(self, session_id: int, media_id: str | None = None, loop: bool = True, start_ms: int = 0,
+                   media_ids: list[str] | None = None, video_order: str = "sequential"):
+        """Start a Single Video Timeline session: its videos (``media_ids``, or the one ``media_id``) play one after
+        another in ``video_order``, the whole list again at its end when ``loop``. ``media_id`` is the video to start
+        with (default: the first by the order) and ``start_ms`` the position in it. Without ``loop``, random and
+        shuffle play each video once in a random order. The same command again for the running session only updates
         ``loop`` (a retried start never restarts playback)."""
+        ids = list(media_ids or [media_id])
         with self.lock:
             if self.active:
-                if self.session_mode == "video" and self.session_id == session_id and self.ids == [media_id]:
+                if self.session_mode == "video" and self.session_id == session_id and sorted(self.ids) == sorted(ids):
                     self.loop = bool(loop)
-                    return {"ok": True, "unchanged": True, "media_id": media_id}
+                    return {"ok": True, "unchanged": True, "media_id": self.ids[self.index]}
                 raise PlaybackError(409, "Agent đang phát nội dung khác; hãy dừng trước")
             self._refresh_config_when_idle()
-            if self._path(media_id) is None:
-                raise PlaybackError(409, "Video chính chưa tải về cache của Agent")
-            self._begin_session([media_id], mode="video", loop=bool(loop), session_id=session_id)
-            result = self.play(0)
+            missing = [m for m in ids if self._path(m) is None]
+            if missing:
+                raise PlaybackError(409, f"{len(missing)}/{len(ids)} video của phiên chưa tải về cache của Agent")
+            if video_order != "sequential" and not loop:
+                self.rng.shuffle(ids)  # one round in a random order
+                video_order = "sequential"
+            self._begin_session(ids, mode="video", loop=bool(loop), session_id=session_id)
+            self.video_order = video_order
+            if media_id is not None:
+                start = ids.index(media_id)
+            else:
+                start = 0 if video_order == "sequential" else self.rng.randrange(len(ids))
+            if video_order == "shuffle":
+                # The first round goes through every other video before one repeats.
+                self._video_bag = [m for m in ids if m != ids[start]]
+                self.rng.shuffle(self._video_bag)
+            result = self.play(start)
         if start_ms > 0:
             try:
                 self.seek(start_ms)
@@ -938,8 +960,8 @@ class PlaybackEngine:
         if self.on_position is None or self.session_mode != "video" or not isinstance(cursor, (int, float)):
             return
         try:
-            self.on_position({"session_id": self.session_id, "position_ms": int(cursor), "media_state": media_state,
-                              "iteration": self.loop_iteration})
+            self.on_position({"session_id": self.session_id, "media_id": self.ids[self.index],
+                              "position_ms": int(cursor), "media_state": media_state, "iteration": self.loop_iteration})
         except Exception:  # noqa: BLE001 - pin scheduling never breaks the watchdog
             log.exception("Timeline không nhận được vị trí phát")
 

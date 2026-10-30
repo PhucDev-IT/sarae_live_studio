@@ -91,7 +91,8 @@ class AgentRuntime:
         self._auto_pin_guard = threading.Lock()
         self._auto_pin_last: tuple | None = None
         self.timeline = self._timeline_scheduler()
-        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"])
+        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"],
+                                                                  media_id=p.get("media_id"))
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
                                     chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline)

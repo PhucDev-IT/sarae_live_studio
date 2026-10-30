@@ -1,12 +1,14 @@
 """Pin scheduler of a Single Video Timeline session (docs/SINGLE_VIDEO_TIMELINE.md).
 
 The playback position reported by OBS is the clock: the engine's watchdog calls ``observe`` about once a second with
-the cursor of the main video and its loop iteration. Wall-clock time is used only for retry back-off and ack timeouts.
+the video playing, its cursor and the play iteration (+1 at every video start). Wall-clock time is used only for
+retry back-off and ack timeouts.
 
-State, not events: at every observation the scheduler computes the pin the timeline wants at that position (the last
-PIN/UNPIN marker at or before it, see ``pin_at``) and acts only when it differs from the pin it knows is on TikTok.
-So a seek never replays the markers it jumped over, a pause does nothing, a loop starts the schedule again from 0,
-and polling the same position twice never pins twice.
+State, not events: at every observation the scheduler computes the pin the timeline wants at that position of that
+video (the last PIN/UNPIN marker of the video at or before it, see ``pin_at``) and acts only when it differs from the
+pin it knows is on TikTok. Before a video's first marker, the pin the previous video left stays (``carried``): moving
+to the next video, or the same one again on loop, never unpins by itself. So a seek never replays the markers it
+jumped over, a pause does nothing, and polling the same position twice never pins twice.
 
 Safety rules:
 - one action in flight at a time; its result is matched by token, a late or stale result never starts another one;
@@ -48,9 +50,10 @@ class LiveGate(Protocol):
         """True only when TikTok LIVE is confirmed; False when it is known not to be live; None when unknown."""
 
 
-def pin_at(markers: list[dict], position_ms: int) -> int | None:
-    """Product to be pinned at ``position_ms`` (markers already ordered by at_ms, seq)."""
-    pinned = None
+def pin_at(markers: list[dict], position_ms: int, carried: int | None = None) -> int | None:
+    """Product to be pinned at ``position_ms`` of one video (its markers, ordered by at_ms, seq); before its first
+    marker, ``carried``."""
+    pinned = carried
     for marker in markers:
         if marker["at_ms"] > position_ms:
             break
@@ -95,8 +98,11 @@ class TimelineScheduler:
         self.markers: list[dict] = []
         self.targets: dict[int, dict] = {}
         self.expected_user_id = ""
+        self.media_id: str | None = None
         self.position_ms: int | None = None
         self.iteration = 0
+        # What the previous video left pinned: wanted in this video until its first marker.
+        self.carried: int | None = None
         self.desired: int | None = None
         self.desired_marker: dict | None = None
         # What is pinned on TikTok as far as this Agent knows; UNKNOWN until an action of ours succeeded.
@@ -123,12 +129,12 @@ class TimelineScheduler:
         """
         with self.lock:
             same_session = session_id == self.session_id
-            actual, position, iteration = self.actual, self.position_ms, self.iteration
+            kept = (self.actual, self.media_id, self.position_ms, self.iteration, self.carried)
             self._token += 1  # a result of the previous version may still arrive: it only updates `actual`
             self._reset()
             self.session_id = session_id
             if same_session:
-                self.actual, self.position_ms, self.iteration = actual, position, iteration
+                self.actual, self.media_id, self.position_ms, self.iteration, self.carried = kept
             if timeline:
                 self.version = int(timeline.get("version") or 0)
                 self.markers = sorted((dict(m) for m in timeline.get("markers") or []),
@@ -153,14 +159,22 @@ class TimelineScheduler:
 
     # ----- the clock --------------------------------------------------------------------------------------------
 
-    def observe(self, session_id: int | None, position_ms: int | None, iteration: int = 0) -> None:
+    def markers_of(self, media_id: str | None) -> list[dict]:
+        """The markers of one video (a marker without media_id, from a one-video session, belongs to any)."""
+        return [m for m in self.markers if m.get("media_id") in (None, media_id)]
+
+    def observe(self, session_id: int | None, position_ms: int | None, iteration: int = 0,
+                media_id: str | None = None) -> None:
         """One playback observation (engine watchdog, ~1 s). Never blocks: an action is only submitted."""
         with self.lock:
             if session_id is None or session_id != self.session_id or not isinstance(position_ms, (int, float)):
                 return
-            self.position_ms, self.iteration = int(position_ms), int(iteration)
-            self.desired_marker = marker_at(self.markers, self.position_ms)
-            self.desired = pin_at(self.markers, self.position_ms)
+            if self.position_ms is not None and (media_id, int(iteration)) != (self.media_id, self.iteration):
+                self.carried = self.desired  # another video (or the same one again) starts: the pin stays
+            self.media_id, self.position_ms, self.iteration = media_id, int(position_ms), int(iteration)
+            markers = self.markers_of(media_id)
+            self.desired_marker = marker_at(markers, self.position_ms)
+            self.desired = pin_at(markers, self.position_ms, self.carried)
             self._expire_in_flight()
             self.live = self.gate.is_live()
             reading_due = self.clock() >= self._next_read_at
@@ -227,8 +241,8 @@ class TimelineScheduler:
                 self.last_error = None
                 self._attempts.pop(key, None)
                 self.last_applied = {"action": flight["action"], "product_id": flight["product_id"],
-                                     "marker_id": flight["marker_id"], "position_ms": self.position_ms,
-                                     "iteration": self.iteration}
+                                     "marker_id": flight["marker_id"], "media_id": self.media_id,
+                                     "position_ms": self.position_ms, "iteration": self.iteration}
                 self._event("PIN_APPLIED", {**self.last_applied, "version": self.version,
                                             "dry_run": bool(getattr(self.executor, "dry_run", False))},
                             product_id=flight["product_id"])
@@ -315,7 +329,7 @@ class TimelineScheduler:
         """Heartbeat view (inside `playback.timeline`): wanted vs actual pin, mode, gate."""
         with self.lock:
             return {"session_id": self.session_id, "version": self.version, "markers": len(self.markers),
-                    "position_ms": self.position_ms, "iteration": self.iteration,
+                    "media_id": self.media_id, "position_ms": self.position_ms, "iteration": self.iteration,
                     "desired_product_id": self.desired,
                     "desired_marker_id": (self.desired_marker or {}).get("id"),
                     "actual_product_id": self.actual if isinstance(self.actual, int) else None,

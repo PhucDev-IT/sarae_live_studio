@@ -39,7 +39,7 @@ const descriptions: Record<Page, string> = {
   'ai-answers': 'Câu hỏi khách hay hỏi và cách AI trả lời cho từng sản phẩm. Thử AI mà không cần LIVE.',
   presenters: 'Người mẫu / người dẫn xuất hiện trong video: ảnh, mô tả và số video đã gắn.',
   sessions: 'Lên kế hoạch từng buổi LIVE: chọn sản phẩm sẽ bán, kiểm tra sẵn sàng và xem lại lịch sử.',
-  timeline: 'Đặt mốc ghim sản phẩm theo thời gian của video chính: kéo thả trên thanh thời gian hoặc nhập giờ chính xác, duyệt rồi kích hoạt.',
+  timeline: 'Đặt mốc ghim sản phẩm theo thời gian của từng video: kéo thả trên thanh thời gian hoặc nhập giờ chính xác, duyệt rồi kích hoạt.',
   live: 'Vận hành phiên LIVE đang chạy: đưa bất kỳ sản phẩm nào lên LIVE, điều khiển video trên OBS.',
   'tiktok-chat': 'Kết nối đến LIVE công khai bằng username và theo dõi bình luận realtime.',
   ai: 'Chuyển nhà cung cấp, cấu hình model và thử phân tích bình luận bằng AI thực tế.',

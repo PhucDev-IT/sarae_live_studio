@@ -130,6 +130,35 @@ class SingleVideoPlayTests(SingleVideoBase):
         self.assertEqual((commands[0]["kind"], commands[0]["payload"]["start_ms"]), ("video_play", 7_000))
         self.assertIn("RESUMED", self.events())
 
+    def test_several_videos_play_in_their_order_with_markers_per_video(self):
+        second, = self.library_videos(self.owner_a, "second.mp4")
+        patched = self.client.patch(self.base, json={"media_ids": [second, self.main], "video_order": "shuffle"})
+        self.assertEqual((patched.json()["media_ids"], patched.json()["video_order"]), ([second, self.main], "shuffle"))
+        self.activate([{"media_id": self.main, "at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.ao},
+                       {"media_id": second, "at_ms": 3_000, "action": "PIN_PRODUCT", "product_id": self.quan}])
+        from app.agent_media import session_manifest
+        with self.Session() as db:
+            self.assertEqual({i["media_id"] for i in session_manifest(db, self.owner_a["id"], self.sid)["items"]},
+                             {self.main, second})
+        payload = self.start()[0]["payload"]
+        self.assertEqual((payload["media_ids"], payload["video_order"], payload["loop"]), ([second, self.main], "shuffle", True))
+        self.assertNotIn("media_id", payload, "the Agent picks the first video by the order")
+        self.assertEqual([(m["media_id"], m["product_id"]) for m in payload["timeline"]["markers"]],
+                         [(self.main, self.ao), (second, self.quan)])
+        self.assertEqual(self.client.patch(self.base, json={"media_ids": [self.main]}).status_code, 409, "fixed once started")
+        self.heartbeat(self.agent, {"running": False})
+        self.assertEqual(self.client.post(f"{self.base}/resume", json={"media_id": "f" * 32}).status_code, 422)
+        self.client.post(f"{self.base}/resume", json={"media_id": self.main, "position_ms": 2_000})
+        resumed = self.run_agent(self.agent)[0]["payload"]
+        self.assertEqual((resumed["media_id"], resumed["start_ms"], resumed["media_ids"]), (self.main, 2_000, [second, self.main]))
+
+    def test_a_one_video_session_keeps_the_command_older_agents_understand(self):
+        self.activate([{"at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.ao}])
+        payload = self.start()[0]["payload"]
+        self.assertEqual(payload["media_id"], self.main)
+        self.assertFalse({"media_ids", "video_order"} & set(payload))
+        self.assertNotIn("media_id", payload["timeline"]["markers"][0])
+
     def test_pin_scheduler_events_land_in_the_history(self):
         self.start()
         events = [{"seq": 1, "type": "PIN_APPLIED", "session_id": self.sid, "product_id": self.ao,

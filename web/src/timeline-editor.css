@@ -9,6 +9,17 @@
 .te-card-title{display:inline-flex;align-items:center;gap:8px}
 .te-card-title svg{color:var(--ui-primary)}
 
+/* the session's videos: each has its own markers */
+.te-videos{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}
+.te-video-tab{flex:none;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;column-gap:8px;align-items:center;max-width:240px;padding:8px 12px;border:1.5px solid var(--ui-border);border-radius:10px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
+.te-video-tab:hover{border-color:color-mix(in srgb,var(--ui-primary) 50%,var(--ui-border))}
+.te-video-tab.is-on{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 6%,var(--ui-surface))}
+.te-video-tab.is-removed{border-style:dashed;color:var(--ui-text-muted)}
+.te-video-no{grid-row:span 2;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--ui-surface-2);font-size:12px;font-weight:700}
+.te-video-tab.is-on .te-video-no{background:var(--ui-primary);color:#fff}
+.te-video-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.te-video-tab small{color:var(--ui-text-muted);font-size:11.5px}
+
 /* player + timeline */
 .te-stage-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:28px;align-items:start;padding:20px}
 .te-video{position:relative;height:min(62vh,480px);max-width:min(100%,480px);background:#000;border-radius:14px;overflow:hidden}

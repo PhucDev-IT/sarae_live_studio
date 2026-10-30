@@ -39,9 +39,9 @@ export default function LiveSessions(){
   const agentById = useMemo(()=>new Map(agents.map(a=>[a.id,a])),[agents])
   // TikTok Accounts the user verified through a Console sync (account_info.user_id), not Seller IDs.
   const [createAccount,setCreateAccount] = useState('')
-  // New sessions default to one main video with a pin timeline; the multi-video mode stays available.
+  // New sessions default to videos with a pin timeline; the product-queue mode stays available.
   const [createMode,setCreateMode] = useState<PlaybackMode>('SINGLE_VIDEO_TIMELINE')
-  const [createVideo,setCreateVideo] = useState('')
+  const [createVideos,setCreateVideos] = useState<string[]>([])
   const [accountChoice,setAccountChoice] = useState('')
   const [accounts,setAccounts] = useState<TikTokAccount[]>([])
   useEffect(()=>{void apiRequest<TikTokAccount[]>('/tiktok-catalog/accounts').then(setAccounts).catch(()=>setAccounts([]))},[])
@@ -172,14 +172,14 @@ export default function LiveSessions(){
   }
   const onDrop = (event:DragEvent, to:number) => {event.preventDefault();if (dragIndex != null) move(dragIndex, to);setDragIndex(null)}
 
-  const openCreate = () => {setNameInput('');setCreateAccount(accounts.length===1?String(accounts[0].id):'');setCreateMode('SINGLE_VIDEO_TIMELINE');setCreateVideo('');setCreateOpen(true)}
+  const openCreate = () => {setNameInput('');setCreateAccount(accounts.length===1?String(accounts[0].id):'');setCreateMode('SINGLE_VIDEO_TIMELINE');setCreateVideos([]);setCreateOpen(true)}
   const create = (event:FormEvent) => {
     event.preventDefault()
     const name = nameInput.trim()
     if (!name) return
     const single = createMode === 'SINGLE_VIDEO_TIMELINE'
     void run(async ()=>{
-      const created = await sessionsApi.create(name, Number(createAccount), createMode, single ? createVideo : null)
+      const created = await sessionsApi.create(name, Number(createAccount), createMode, single ? createVideos : [])
       setCreateOpen(false);setSelected(created.id);setDraft(null);setFilter('ALL')
       if (!single) setPickerOpen(true)
     }, single ? 'Đã tạo phiên — tạo lịch ghim trong Timeline Editor' : 'Đã tạo phiên — thêm sản phẩm để chuẩn bị')
@@ -213,9 +213,9 @@ export default function LiveSessions(){
     {ok:missingVideo.length === 0, label:missingVideo.length ? `${missingVideo.length} sản phẩm chưa có video (chưa đưa lên LIVE được)` : 'Mọi sản phẩm đều đã có video', blocking:false, href:'#/cloud-media'},
   ]
   const single = isSingle(chosen)
-  // A Single Video session needs its main video; without an active timeline it plays without pins (advised only).
+  // A Single Video session needs a video; without an active timeline it plays without pins (advised only).
   const singleChecks = chosen ? [
-    {ok:!!chosen.main_media_id, label:'Đã chọn video chính', blocking:true, href:'#/cloud-media'},
+    {ok:chosen.media_ids.length > 0, label:chosen.media_ids.length > 1 ? `Đã chọn ${chosen.media_ids.length} video` : 'Đã chọn video', blocking:true, href:'#/cloud-media'},
     {ok:chosen.active_timeline_id != null, label:chosen.active_timeline_id != null ? 'Có lịch ghim đang dùng' : 'Chưa kích hoạt lịch ghim (video vẫn phát, không tự ghim)', blocking:false, href:timelineHref(chosen.id)},
     {ok:true, label:'Chọn Agent và xác minh LIVE Console trước khi phát', blocking:false},
   ] : []
@@ -466,7 +466,7 @@ export default function LiveSessions(){
     </div>
 
     <Modal open={createOpen} title="Tạo phiên LIVE" size={createMode === 'SINGLE_VIDEO_TIMELINE' ? 'lg' : 'md'} onClose={()=>!busy && setCreateOpen(false)} footer={<>
-      {createMode === 'SINGLE_VIDEO_TIMELINE' && <span className="ls-picker-count">{createVideo ? 'Đã chọn video chính' : 'Có thể chọn video chính sau'}</span>}
+      {createMode === 'SINGLE_VIDEO_TIMELINE' && <span className="ls-picker-count">{createVideos.length ? `Đã chọn ${createVideos.length} video` : 'Có thể chọn video sau'}</span>}
       <Button variant="ghost" disabled={busy} onClick={()=>setCreateOpen(false)}>Hủy</Button>
       <Button type="submit" form="ls-create-form" loading={busy} disabled={!nameInput.trim() || !createAccount}>{createMode === 'SINGLE_VIDEO_TIMELINE' ? 'Tạo phiên' : 'Tạo & thêm sản phẩm'}</Button>
     </>}>
@@ -492,8 +492,8 @@ export default function LiveSessions(){
           </div>
         </section>
         {createMode === 'SINGLE_VIDEO_TIMELINE' && <section className="ls-create-section">
-          <h3>Video chính <small className="ls-muted">· chọn sau cũng được</small></h3>
-          <VideoPicker videos={libraryVideos} value={createVideo || null} onChange={id=>setCreateVideo(id === createVideo ? '' : id)} productName={id=>productById.get(id)?.name} maxHeight={300}/>
+          <h3>Video <small className="ls-muted">· chọn một hoặc nhiều, phát theo thứ tự chọn · chọn sau cũng được</small></h3>
+          <VideoPicker videos={libraryVideos} value={createVideos} onChange={id=>setCreateVideos(prev=>prev.includes(id) ? prev.filter(v=>v !== id) : [...prev, id])} productName={id=>productById.get(id)?.name} maxHeight={300}/>
         </section>}
       </form>
     </Modal>
@@ -573,7 +573,7 @@ export default function LiveSessions(){
           {!consoleConfirmed && dropped.length > 0 && <p className="ls-start-warn"><CircleAlert size={14}/>Sẽ bỏ khỏi phiên: {dropped.map(productName).join(', ')}</p>}
         </StartStep>}
 
-        {consoleConfirmed && <StartStep n={single ? 3 : 4} title={single ? 'Tải video chính về máy' : 'Tải video về máy'} done={mediaReady}>
+        {consoleConfirmed && <StartStep n={single ? 3 : 4} title={single ? 'Tải video của phiên về máy' : 'Tải video về máy'} done={mediaReady}>
           <MediaPrepare key={`${chosen.id}:${startAgent}`} sessionId={chosen.id} agentId={startAgent} hostname={agentName(startAgent)} onReady={setMediaReady}/>
           <p className="ls-muted">Sarae phát video trên OBS; trạng thái TikTok LIVE thật được theo dõi riêng.</p>
         </StartStep>}

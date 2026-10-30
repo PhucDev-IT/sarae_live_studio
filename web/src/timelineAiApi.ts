@@ -30,6 +30,7 @@ export const timelineAiApi = {
   saveSettings:(body:TimelineAISettings) => apiRequest<TimelineAISettingsView>('/ai/timeline-settings', json(body, 'PUT')),
   list:(sessionId:number) => apiRequest<AnalysisJob[]>(base(sessionId)),
   get:(sessionId:number, id:number) => apiRequest<AnalysisJob>(`${base(sessionId)}/${id}`),
-  run:(sessionId:number, force = false) => apiRequest<AnalysisJob>(base(sessionId), json({force})),
+  /** Analyses one video of the session (its markers only); the backend defaults to the first video. */
+  run:(sessionId:number, mediaId:string, force = false) => apiRequest<AnalysisJob>(base(sessionId), json({force, media_id:mediaId})),
   draft:(sessionId:number, id:number) => apiRequest<Timeline>(`${base(sessionId)}/${id}/draft`, {method:'POST'}),
 }

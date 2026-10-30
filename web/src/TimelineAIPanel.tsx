@@ -8,12 +8,13 @@ import { timelineAiApi, type AnalysisJob, type TimelineAISettings, type Timeline
 const POLL_MS = 2000
 
 /**
- * AI suggestions for the pin timeline of a Single Video session: run the analysis of the main video (cached when nothing
- * changed), read the suggestions with their evidence, and turn them into a new draft to review. Nothing is applied by
- * itself: suggestions under the confidence threshold need a person's review before the draft can be approved.
+ * AI suggestions for the pin timeline of a Single Video session: run the analysis of the video shown in the editor
+ * (cached when nothing changed), read the suggestions with their evidence, and turn them into a new draft to review
+ * (the other videos keep their markers). Nothing is applied by itself: suggestions under the confidence threshold need
+ * a person's review before the draft can be approved.
  */
-export default function TimelineAIPanel({sessionId, disabled, onSeek, onDraft}:{
-  sessionId:number; disabled:boolean; onSeek:(ms:number)=>void; onDraft:(timelineId:number)=>void
+export default function TimelineAIPanel({sessionId, mediaId, disabled, onSeek, onDraft}:{
+  sessionId:number; mediaId:string; disabled:boolean; onSeek:(ms:number)=>void; onDraft:(timelineId:number)=>void
 }){
   const toast = useToast()
   const [job,setJob] = useState<AnalysisJob|null>(null)
@@ -21,8 +22,9 @@ export default function TimelineAIPanel({sessionId, disabled, onSeek, onDraft}:{
   const [settingsOpen,setSettingsOpen] = useState(false)
   const loadLatest = useCallback(async ()=>{
     const list = await timelineAiApi.list(sessionId).catch(()=>[] as AnalysisJob[])
-    setJob(list[0] ? await timelineAiApi.get(sessionId, list[0].id) : null)
-  },[sessionId])
+    const latest = list.find(j=>j.media_id === mediaId)
+    setJob(latest ? await timelineAiApi.get(sessionId, latest.id) : null)
+  },[sessionId, mediaId])
   useEffect(()=>{void loadLatest()},[loadLatest])
   const running = job?.status === 'QUEUED' || job?.status === 'RUNNING'
   useEffect(()=>{
@@ -33,7 +35,7 @@ export default function TimelineAIPanel({sessionId, disabled, onSeek, onDraft}:{
 
   const analyze = async (force:boolean) => {
     setBusy(true)
-    try {const started = await timelineAiApi.run(sessionId, force);setJob(await timelineAiApi.get(sessionId, started.id))}
+    try {const started = await timelineAiApi.run(sessionId, mediaId, force);setJob(await timelineAiApi.get(sessionId, started.id))}
     catch(e){toast.push({tone:'danger', title:'Không chạy được phân tích', description:errorText(e, '')})}
     finally{setBusy(false)}
   }

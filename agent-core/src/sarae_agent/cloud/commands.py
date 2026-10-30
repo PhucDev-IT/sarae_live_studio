@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Callable, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from sarae_agent.errors import AgentError
 from sarae_agent.media.cloud_cache import MEDIA_ID
@@ -15,6 +15,7 @@ from sarae_agent.playback.engine import PolicyUpdate
 
 # Sarae Media Library ids (32-hex); the files come from the Agent cloud media cache.
 MediaId = Field(pattern=MEDIA_ID.pattern)
+MediaIdOrNone = Field(default=None, pattern=MEDIA_ID.pattern)
 MediaIds = Field(min_length=1, max_length=300)
 
 # Cloud lane "background"; everything else is the "live" lane (OBS playback).
@@ -125,6 +126,8 @@ class AutoPinProduct(PinTarget):
 
 class TimelineMarker(Payload):
     id: int = Field(ge=1)
+    # The video the marker belongs to; omitted (one-video session): the video playing.
+    media_id: str | None = MediaIdOrNone
     at_ms: int = Field(ge=0, le=24 * 3600 * 1000)
     action: Literal["PIN_PRODUCT", "UNPIN_PRODUCT", "NO_ACTION"]
     product_id: int | None = Field(default=None, ge=1)
@@ -140,11 +143,30 @@ class TimelinePayload(Payload):
 
 
 class VideoPlayPayload(Payload):
+    """Single Video Timeline: the session's videos (``media_ids``; a one-video session sends ``media_id`` only),
+    their order, and the video (``media_id``) and position (``start_ms``) to start at."""
     session_id: int = Field(ge=1)
-    media_id: str = MediaId
+    media_id: str | None = MediaIdOrNone
+    media_ids: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    video_order: Literal["sequential", "random", "shuffle"] = "sequential"
     loop: bool = True
     start_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
     timeline: TimelinePayload | None = None
+
+    @field_validator("media_ids")
+    @classmethod
+    def _ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and (any(not MEDIA_ID.fullmatch(m) for m in value) or len(set(value)) != len(value)):
+            raise ValueError("Danh sách media_ids không hợp lệ")
+        return value
+
+    @model_validator(mode="after")
+    def _a_video(self):
+        if self.media_id is None and not self.media_ids:
+            raise ValueError("video_play cần media_id hoặc media_ids")
+        if self.media_id is not None and self.media_ids and self.media_id not in self.media_ids:
+            raise ValueError("media_id không thuộc media_ids")
+        return self
 
 
 class TimelineSetPayload(Payload):
@@ -305,7 +327,8 @@ class CommandRouter:
 
     def _video_play(self, b: VideoPlayPayload) -> dict:
         scheduler = self._scheduler()
-        result = self.playback.video_play(b.session_id, b.media_id, loop=b.loop, start_ms=b.start_ms)
+        result = self.playback.video_play(b.session_id, b.media_id, loop=b.loop, start_ms=b.start_ms,
+                                          media_ids=b.media_ids, video_order=b.video_order)
         if not result.get("unchanged"):
             scheduler.load(b.session_id, b.timeline.model_dump() if b.timeline else None)
         return {**result, "timeline": scheduler.status()}
