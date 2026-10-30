@@ -317,13 +317,13 @@ function Console({agent}:{agent:OwnerAgent}){
           <div className="lc-shortcuts"><span><Kbd>Space</Kbd> tạm dừng</span>{!single && <><span><Kbd>←</Kbd> trước</span><span><Kbd>→</Kbd> tiếp</span></>}<span>Kéo thanh thời gian để tua{single ? ' (lịch ghim tự tính lại theo vị trí mới)' : ''}</span></div>
         </Card>
 
-        {activeSession && single && <TimelinePinPanel key={activeSession.id} session={activeSession}
+        {activeSession && single && <TimelinePinPanel key={`pins-${activeSession.id}`} session={activeSession}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
 
-        {activeSession && !single && <PlaybackSettings key={activeSession.id} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
+        {activeSession && !single && <PlaybackSettings key={`policy-${activeSession.id}`} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
 
-        {activeSession && <SessionLiveChat key={activeSession.id} sessionId={activeSession.id} handle="" agent={agent}/>}
+        {activeSession && <SessionLiveChat key={`chat-${activeSession.id}`} sessionId={activeSession.id} handle="" agent={agent}/>}
 
         {/* Queue of the running session */}
         <Card className="lc-queue" padding={false} title={<span className="lc-card-title"><ListVideo size={17}/>Hàng đợi phát</span>}
