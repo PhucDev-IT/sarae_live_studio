@@ -13,7 +13,8 @@
 - FFprobe reads dimensions, frame rate, display-matrix/rotate metadata, audio presence, sample rate and channels. The Agent logs this per file.
 - Rotation of 90°, 180° or 270° is baked into a cached copy using FFmpeg autorotation; the copy is checked again for upright dimensions, zero rotation metadata and the same audio presence. Unsupported rotation and failed probes block playback.
 - The active OBS Media Source is unmuted and read back. A/B keeps the standby source muted and mutes the outgoing source before unmuting the incoming source. The next file is staged in the hidden source, paused on its first decoded frame, with OBS "Restart playback when source becomes active" and "Show nothing when playback ends" turned off. The swap shows and resumes it about 250 ms before the visible video ends, so neither an ended source nor a restarting decoder is ever on screen.
-- OBS scene items use fit-inside bounds, so different source aspect ratios are letterboxed instead of stretched or cropped.
+- OBS scene items use fit-inside bounds, so a video is never stretched or cropped. A video with the canvas aspect ratio (720×1280 on a 1080×1920 canvas) plays as is, and OBS scales it. A video of another ratio (16:9, 1:1…) plays from a cached canvas-sized copy: the video fitted in the middle over a darkened, blurred, canvas-filling copy of itself, instead of black bars. The copy is rendered for the OBS base canvas read at session start, right after the session's videos are downloaded (`media_prepare`, while the cache job still reads PREPARING), so playback does not wait for FFmpeg. Changing the OBS canvas renders new copies. If OBS cannot report its canvas, the original plays letterboxed.
+- Keep one fixed OBS canvas for LIVE (normally Base 1080×1920; the Output resolution may be lower, such as 720×1280, to save bandwidth). Do not change the canvas per video.
 
 ## Verification matrix
 

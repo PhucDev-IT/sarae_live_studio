@@ -129,7 +129,7 @@ class EngineTestBase(unittest.TestCase):
         media_probe = mock.patch.object(playback_engine, "probe_media", return_value=SimpleNamespace(rotation=0))
         media_probe.start()
         self.addCleanup(media_probe.stop)
-        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info: path)
+        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path)
         media_file.start()
         self.addCleanup(media_file.stop)
 
@@ -349,6 +349,15 @@ class SingleSourceTests(EngineTestBase):
             self.engine.configure(host="10.0.0.5")
         with self.assertRaises(PlaybackError):
             self.engine.configure(dual_mode=True, source_a="X", source_b="X")
+
+    def test_videos_are_prepared_for_the_obs_canvas_and_prewarmed(self):
+        with mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path) as render:
+            result = self.engine.prewarm(self.ids("pl1", "pl2") + ["0" * 32])
+            self.assertEqual(result, {"ready": 2, "failed": 1})
+            self.assertEqual({c.args[2] for c in render.call_args_list}, {(1080, 1920)})
+            self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+            # Prewarmed copies are reused at play time.
+            self.assertEqual(render.call_count, 2)
 
     def test_list_inputs(self):
         result = self.engine.list_inputs("127.0.0.1", 4455, "")

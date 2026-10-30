@@ -429,6 +429,8 @@ class AgentRuntime:
                 with httpx.Client(base_url=api_url, timeout=120, follow_redirects=False) as client:
                     cache = CloudMediaCache(client, identity.agent_id, identity.credential)
                     result = cache.prepare(session_id, on_progress=self._cache_progress)
+                # Rotated or other-aspect videos get their OBS copy now, while the job still reads PREPARING.
+                self.engine.prewarm([item["media_id"] for item in result.get("ready") or []])
                 self._cache_progress(result)
             except Exception as exc:
                 log.exception("Cloud media cache failed")
