@@ -82,8 +82,10 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
         "[class*='nickname' i]", "[class*='user-name' i]", "[class*='username' i]", "[class*='author' i]",
     ],
     "reply_control": [
-        "role=button[name=/^\\s*(trả lời|reply)\\s*$/i]", "text=/^\\s*(Trả lời|Reply)\\s*$/i",
-        "[data-e2e*='reply' i]", "[class*='reply' i]",
+        "role=button[name=/^\\s*(trả lời|reply)\\s*$/i]",
+        # LIVE Console: hover popup [reply ↩ | pin 📌 | more …]; only the ↩ icon (arco "recover") is Reply
+        "button:has(> svg.arco-icon-recover)",
+        "text=/^\\s*(Trả lời|Reply)\\s*$/i", "[data-e2e*='reply' i]", "[class*='reply' i]",
     ],
     "mention_list": [
         "role=listbox", "[data-e2e*='mention' i]", "[class*='mention' i]", "[class*='suggest' i]",
@@ -468,7 +470,16 @@ class ChatSender:
             run.step("DIRECT_REPLY_SKIPPED", detail="dòng không có đúng một nút Trả lời")
             return False
         reply.click(timeout=2000)
-        run.step("REPLY_SELECTED", action=f"reply: {sel}")
+        # The Console pre-fills "@username " after Reply: any pre-filled text must name exactly this viewer.
+        composer, _ = self._composer(page)
+        self._wait(page, self.wait_ms["mention"], lambda: bool(normalize(self._value(composer))))
+        prefill = self._value(composer)
+        if normalize(prefill) and mention_tokens(prefill) != {normalize(request.target.username)}:
+            self._clear(composer)
+            run.step("DIRECT_REPLY_SKIPPED", detail=f"ô bình luận sau Trả lời là {prefill.strip()[:60]!r}, "
+                                                    f"không phải @{request.target.username}")
+            return False
+        run.step("REPLY_SELECTED", action=f"reply: {sel}", detail=prefill.strip()[:60] or None)
         return True
 
     def _mention(self, page, composer, request: ChatRequest, run: _Run) -> bool:

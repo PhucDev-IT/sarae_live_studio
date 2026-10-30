@@ -12,12 +12,19 @@
 <script>
   // Behaviour: Send is "cursor-not-allowed" while the box is empty; Enter or Send posts the text as a comment row.
   // ?rows=1 starts with real-shaped comment rows plus a "just joined" row (which is not a comment).
+  // Hovering a comment shows the real popup [reply ↩ | pin 📌 | more …]; reply pre-fills "@username "
+  // (?prefill=other pre-fills someone else). Any pin / more click is recorded in window.FORBIDDEN.
   window.SENT = [];
+  window.FORBIDDEN = [];
   const box = document.querySelector(".m4b-input-textarea-mini");
   const send = document.getElementById("send");
   const list = document.getElementById("rows");
   function sync() { send.classList.toggle("cursor-not-allowed", !box.value.trim()); }
-  function addRow(nick, text) {  // shape copied from a real LIVE Console comment
+  const icon = (name) => '<div class="w-24 h-24 rounded-4 bg-white shadow-downM"><button data-tid="m4b_button" '
+    + 'class="arco-btn arco-btn-text arco-btn-icon-only m4b-button" type="button" data-act="' + name + '">'
+    + '<svg class="arco-icon arco-icon-' + name + ' " width="16" height="16" viewBox="0 0 16 16"><path d="M1 1h14v14H1z"></path></svg>'
+    + '</button></div>';
+  function addRow(nick, text, user) {  // shape copied from a real LIVE Console comment
     document.getElementById("empty")?.remove();
     const row = document.createElement("div");
     row.className = "rounded-8 relative hover:bg-[#F5F5F5] cursor-pointer mr-6 p-4 mt-4";
@@ -26,6 +33,24 @@
       + '<div class="text-neutral-text1 pl-32 text-body-s-regular"></div>';
     row.querySelector(".nick").textContent = nick;
     row.querySelector(".pl-32").textContent = text;
+    if (user) {
+      const popup = document.createElement("div");
+      popup.className = "absolute top-0 right-0";
+      popup.style.display = "none";
+      popup.innerHTML = '<div class="flex items-center gap-8">' + icon("recover") + icon("pin")
+        + '<div class="m4b-dropdown" data-tid="m4b_dropdown">' + icon("more") + '</div></div>';
+      row.appendChild(popup);
+      row.addEventListener("mouseenter", () => { popup.style.display = ""; });
+      row.addEventListener("mouseleave", () => { popup.style.display = "none"; });
+      popup.addEventListener("click", (e) => {
+        const act = e.target.closest("button")?.dataset.act;
+        if (act !== "recover") { window.FORBIDDEN.push(act); return; }
+        const other = location.search.includes("prefill=other");
+        box.value = "@" + (other ? "someone.else" : user) + " ";
+        sync();
+        box.focus();
+      });
+    }
     list.appendChild(row);
   }
   function addJoin(nick) {
@@ -40,9 +65,9 @@
     list.appendChild(row);
   }
   if (location.search.includes("rows=1")) {
-    addRow("Lan", "55kg mặc size gì");
+    addRow("Lan", "55kg mặc size gì", "lan.nguyen");
     addJoin("Hoa");
-    addRow("Hoa", "ship bao lâu vậy shop");
+    addRow("Hoa", "ship bao lâu vậy shop", "hoa.tran");
   }
   function post() {
     if (!box.value.trim()) return;
