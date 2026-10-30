@@ -12,7 +12,7 @@
 
 - FFprobe reads dimensions, frame rate, display-matrix/rotate metadata, audio presence, sample rate and channels. The Agent logs this per file.
 - Rotation of 90°, 180° or 270° is baked into a cached copy using FFmpeg autorotation; the copy is checked again for upright dimensions, zero rotation metadata and the same audio presence. Unsupported rotation and failed probes block playback.
-- The active OBS Media Source is unmuted and read back. A/B keeps the standby source muted and mutes the outgoing source before unmuting the incoming source. The next file is staged in the hidden source.
+- The active OBS Media Source is unmuted and read back. A/B keeps the standby source muted and mutes the outgoing source before unmuting the incoming source. The next file is staged in the hidden source, paused on its first decoded frame, with OBS "Restart playback when source becomes active" and "Show nothing when playback ends" turned off. The swap shows and resumes it about 250 ms before the visible video ends, so neither an ended source nor a restarting decoder is ever on screen.
 - OBS scene items use fit-inside bounds, so different source aspect ratios are letterboxed instead of stretched or cropped.
 
 ## Verification matrix

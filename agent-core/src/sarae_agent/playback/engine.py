@@ -44,6 +44,12 @@ log = logging.getLogger("sarae.playback")
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 ERROR_CODES = {409: "PLAYBACK_CONFLICT", 422: "INVALID_REQUEST", 502: "OBS_REQUEST_FAILED", 503: "OBS_UNAVAILABLE"}
+# A/B: poll up to 1s (20 x 50ms) for the stand-by source's first frame before pausing it there.
+STAGE_FRAME_POLLS = 20
+# A/B: swap this many ms before the visible video ends, so its end never shows; the 1s watchdog tick
+# schedules the swap when the remaining time falls within SWAP_HORIZON_MS.
+SWAP_LEAD_MS = 250
+SWAP_HORIZON_MS = 1500
 
 
 class PlaybackError(AgentError):
@@ -228,6 +234,8 @@ class PlaybackEngine:
         self._product_rounds = 0
         self._monitor_thread = None
         self._monitor_stop = threading.Event()
+        # A/B: generation whose near-end swap timer is pending (see _schedule_swap).
+        self._swap_generation: int | None = None
 
     # ----- helpers -------------------------------------------------------------------------------
 
@@ -518,10 +526,20 @@ class PlaybackEngine:
     def _stage_path(self, client, slot, path):
         name = self.slots[slot]
         # Keep decoder open when hidden. Mute the stand-by source to avoid audio overlap.
+        # OBS defaults would blank an ended source and restart a source when it is shown: both flash black.
         client.set_input_mute(name, True)
-        client.set_input_settings(name, {"local_file": path, "is_local_file": True,
-                                         "looping": False, "close_when_inactive": False}, overlay=True)
+        client.set_input_settings(name, {"local_file": path, "is_local_file": True, "looping": False,
+                                         "close_when_inactive": False, "restart_on_activate": False,
+                                         "clear_on_media_end": False}, overlay=True)
         client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
+        # Hold the stand-by source on its first decoded frame, so showing it later needs no decoding.
+        for _ in range(STAGE_FRAME_POLLS):
+            report = client.get_media_input_status(name)
+            cursor = getattr(report, "media_cursor", None)
+            if report.media_state == "OBS_MEDIA_STATE_PLAYING" and isinstance(cursor, (int, float)) and cursor > 0:
+                break
+            time.sleep(0.05)
+        client.trigger_media_input_action(name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE")
 
     def _verify_input(self, client, name: str, kind: str) -> tuple[str, int]:
         scene = client.get_current_program_scene().current_program_scene_name
@@ -652,8 +670,8 @@ class PlaybackEngine:
                 client.set_input_mute(name, True)
                 client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[slot], False)
             self._stage(client, 0, index)
-            time.sleep(0.2)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[0], True)
+            client.trigger_media_input_action(self.slots[0], "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
             client.set_input_mute(self.slots[0], False)
         else:
             incoming = 1 - self.active_slot
@@ -662,9 +680,9 @@ class PlaybackEngine:
             actual_settings = client.get_input_settings(self.slots[incoming]).input_settings
             if actual_settings.get("local_file") != expected_path:
                 self._stage(client, incoming, index)
-                time.sleep(0.3)
-            # Show the next video first: no empty frame between sources.
+            # Show the next video first: no empty frame between sources. It waits paused on its first frame.
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[incoming], True)
+            client.trigger_media_input_action(self.slots[incoming], "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
             client.set_input_mute(self.slots[self.active_slot], True)
             client.set_input_mute(self.slots[incoming], False)
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[self.active_slot], False)
@@ -1217,6 +1235,8 @@ class PlaybackEngine:
                     if not self._rotate():
                         # Nothing to switch to: stay on this product for another period instead of retrying each tick.
                         self.product_started_at = time.monotonic()
+                elif self.dual_mode and media_status == "OBS_MEDIA_STATE_PLAYING":
+                    self._schedule_swap(cursor, getattr(report, "media_duration", None))
             except Exception as exc:
                 self.retry_count += 1
                 self.error_count += 1
@@ -1225,6 +1245,39 @@ class PlaybackEngine:
                     self._deactivate("obs_error", f"Đã tạm dừng do OBS lỗi nhiều lần: {exc}")
                 else:
                     self.next_retry_at = time.monotonic() + min(2 ** self.retry_count, 20)
+
+    def _schedule_swap(self, cursor, duration):
+        """A/B: swap to the stand-by source just before the visible video ends; the watchdog polls only each second."""
+        if not (isinstance(cursor, (int, float)) and isinstance(duration, (int, float)) and duration > 0):
+            return
+        remaining = duration - cursor
+        if remaining > SWAP_HORIZON_MS or self._swap_generation == self.generation:
+            return
+        self._swap_generation = self.generation
+        timer = threading.Timer(max(0, remaining - SWAP_LEAD_MS) / 1000, self._swap_near_end, args=(self.generation,))
+        timer.daemon = True
+        timer.start()
+
+    def _swap_near_end(self, generation: int):
+        with self.lock:
+            self._swap_generation = None
+            if not self.active or self.paused or self.camera_mode or generation != self.generation:
+                return
+            try:
+                client = self.client()
+                try:
+                    report = client.get_media_input_status(self.active_source())
+                finally:
+                    _close(client)
+                cursor = getattr(report, "media_cursor", None)
+                duration = getattr(report, "media_duration", None)
+                # Paused, already ended (the watchdog advances) or sought back: leave it to the next tick.
+                if (report.media_state != "OBS_MEDIA_STATE_PLAYING" or not isinstance(cursor, (int, float))
+                        or not isinstance(duration, (int, float)) or duration - cursor > SWAP_LEAD_MS + 500):
+                    return
+                self._advance_after_end()
+            except Exception as exc:
+                log.warning("A/B: không chuyển sớm được, chờ video hết: %s", exc)
 
     def _advance_after_end(self):
         if (self.session_mode == "product" and self.pending_product_id is not None
