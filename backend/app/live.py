@@ -50,11 +50,16 @@ IDLE = {"connected": False, "running": False, "paused": False, "loop": False, "s
 
 
 def playback_of(agent: dict | None) -> dict:
-    """The Agent's last reported playback (IDLE when unknown); `connected` also requires the Agent online."""
+    """The Agent's last reported playback (IDLE when unknown); `connected` and `running` also require the Agent online:
+    the last heartbeat of an Agent that was closed mid-LIVE still says "running", but nothing plays any more (a RUNNING
+    session it was playing shows as interrupted, to resume or finish)."""
     reported = ((agent or {}).get("status") or {}).get("playback") or {}
     status = {**IDLE, **reported}
     if agent is not None and not agent["online"]:
-        status.update(connected=False, error=f"Windows Agent “{agent['hostname']}” đang offline")
+        offline = f"Windows Agent “{agent['hostname']}” đang offline"
+        status.update(connected=False, running=False, paused=False, session_id=None, product_id=None,
+                      pending_product_id=None, media_state=None, media_cursor=None, media_duration=None,
+                      last_status=offline, error=offline)
     return status
 
 
