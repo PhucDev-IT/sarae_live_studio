@@ -1,7 +1,8 @@
-import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Badge, Button, Card, EmptyState, Input, Modal, Select, Switch, useToast } from '../ui/core'
 import {
-  ArrowDown, ArrowUp, BookmarkPlus, CircleAlert, ClipboardPaste, Copy, CopyPlus, Crosshair, Image as ImageIcon, Layers, Play, Plus, Redo2, Shapes, Tag, Trash2, Type, Undo2, Upload,
+  ArrowDown, ArrowUp, BookmarkPlus, CircleAlert, ClipboardPaste, Copy, CopyPlus, Crosshair, Eye, EyeOff, Image as ImageIcon, Layers, MoreVertical, Play, Plus, Redo2, Shapes, Tag,
+  Trash2, Type, Undo2, Upload, X,
 } from 'lucide-react'
 import {
   ANIMATIONS, CANVAS, MAX_ELEMENTS, PRODUCT_FIELDS, clampFrame, endOf, normalizeElement, round4, safeImageUrl,
@@ -12,6 +13,8 @@ import { hms } from '../liveSessionsApi'
 import type { LiveProduct } from '../liveSessionsApi'
 import { errorText } from '../mediaApi'
 import { overlaysApi, type OverlayAsset } from '../overlaysApi'
+import { assetUrl } from '../mediaApi'
+import { overlayThumb } from '../timeline/thumbs'
 
 const ANIMATION_LABEL:Record<AnimationName, string> = {
   none:'Không', fade:'Mờ dần', slide_up:'Trượt lên', slide_down:'Trượt xuống', slide_left:'Trượt sang trái', slide_right:'Trượt sang phải', zoom:'Phóng to',
@@ -36,7 +39,11 @@ type Props = {
   onAssetsChanged:(assets:OverlayAsset[])=>void; readOnlyAction?:ReactNode
   /** Reload the templates after one was saved, duplicated or removed (presets include the owner's templates). */
   onTemplatesChanged:()=>void
+  /** Turn an overlay on / off (kept in the version, not shown). */
+  onToggle:(index:number)=>void
 }
+
+const durationText = (ms:number) => {const s = Math.round(ms / 1000);return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`}
 
 /**
  * Overlays of the video shown (list + "new from preset"), and the inspector of the selected one: timing, box, z-index,
@@ -49,8 +56,8 @@ export default function OverlayPanel(p:Props){
   const [presetOpen,setPresetOpen] = useState(false)
   const general = p.issues.filter(i=>i.overlay == null && (i.media_id == null || i.media_id === p.mediaId))
   return <div className="ove-panel">
-    <Card className="ove-list" padding={false} title={<span className="te-card-title"><Layers size={17}/>Overlay của video này ({shown.length}{p.overlays.length !== shown.length ? ` / ${p.overlays.length} cả phiên` : ''})</span>}
-      description={p.editable ? 'Mỗi overlay là một khung ghép từ các khối (chữ, thông tin sản phẩm, ảnh, hình nền). Mẫu chỉ là điểm bắt đầu; nhãn mẫu tùy ý, mỗi nhãn là một track.' : 'Phiên bản đã duyệt / đang dùng chỉ xem; muốn sửa hãy tạo bản nháp mới (không đổi phiên bản đang dùng).'}
+    <Card className="ove-list" padding={false} title={<span className="te-card-title"><Layers size={17}/>Danh sách overlay ({shown.length}{p.overlays.length !== shown.length ? ` / ${p.overlays.length} cả phiên` : ''})</span>}
+      description={p.editable ? undefined : 'Phiên bản đã duyệt / đang dùng chỉ xem; muốn sửa hãy tạo bản nháp mới (không đổi phiên bản đang dùng).'}
       actions={p.editable ? <div className="ove-toolbar">
         <button type="button" className="te-icon-btn" title="Hoàn tác (Ctrl+Z)" aria-label="Hoàn tác" disabled={!p.canUndo} onClick={p.onUndo}><Undo2 size={15}/></button>
         <button type="button" className="te-icon-btn" title="Làm lại (Ctrl+Shift+Z / Ctrl+Y)" aria-label="Làm lại" disabled={!p.canRedo} onClick={p.onRedo}><Redo2 size={15}/></button>
@@ -63,12 +70,20 @@ export default function OverlayPanel(p:Props){
       {!shown.length ? <EmptyState icon={<Layers size={26}/>} title="Video này chưa có overlay" description={p.editable ? 'Tua tới chỗ cần hiện rồi bấm “Thêm overlay”, chọn một mẫu hoặc khung trống.' : 'Phiên bản này không có overlay cho video này.'}/>
         : <ol className="ove-items">{shown.map(({o, i})=>{
           const errors = p.issues.filter(x=>x.overlay === i)
-          return <li key={i} className={'ove-item' + (i === p.selected ? ' is-selected' : '') + (o.enabled === false ? ' is-off' : '')}>
-            <button type="button" className="ove-item-main" onClick={()=>{p.onSelect(i);p.onSeek(o.start_ms)}}>
-              <strong>{overlayName(o, p.presets)}</strong>
-              <small>{trackName(o.template, p.presets)} · {hms(o.start_ms)} → {hms(endOf(o))}{o.enabled === false ? ' · đang tắt' : ''}</small>
+          const on = o.enabled !== false
+          const product = o.product_id != null ? p.products.find(x=>x.id === o.product_id) : undefined
+          return <li key={i} className={'ove-card' + (i === p.selected ? ' is-selected' : '') + (on ? '' : ' is-off')}>
+            <button type="button" className="ove-card-main" onClick={()=>{p.onSelect(i);p.onSeek(o.start_ms)}}>
+              <span className="ove-radio" aria-hidden/>
+              <CardThumb src={overlayThumb(o, id=>p.products.find(x=>x.id === id), id=>{const a = p.assets.find(x=>x.id === id);return a ? assetUrl(a.url) ?? undefined : undefined})}/>
+              <span className="ove-card-text">
+                <span className="ove-card-title"><strong>{overlayName(o, p.presets)}</strong><span className={'st-chip' + (on ? ' is-on' : '')}>{on ? 'Đang bật' : 'Tạm ẩn'}</span>
+                  {errors.some(x=>x.level === 'error') ? <Badge tone="danger">Lỗi</Badge> : errors.length ? <Badge tone="warning">Chú ý</Badge> : null}</span>
+                <small>{hms(o.start_ms)} – {hms(endOf(o))} ({durationText(o.duration_ms)}) · {trackName(o.template, p.presets)}</small>
+                {product && <span className="ove-card-product">{product.name}</span>}
+              </span>
             </button>
-            {errors.some(x=>x.level === 'error') ? <Badge tone="danger">Lỗi</Badge> : errors.length ? <Badge tone="warning">Chú ý</Badge> : null}
+            <ItemMenu editable={p.editable} on={on} onDuplicate={()=>p.onDuplicate(i)} onCopy={()=>p.onCopy(i)} onToggle={()=>p.onToggle(i)} onRemove={()=>p.onRemove(i)}/>
           </li>
         })}</ol>}
       {p.dirty && <div className="te-savebar"><span><CircleAlert size={15}/>Overlay có thay đổi chưa lưu</span>
@@ -82,6 +97,34 @@ export default function OverlayPanel(p:Props){
     <Modal open={presetOpen} onClose={()=>setPresetOpen(false)} title={`Thêm overlay tại ${hms(p.now)}`} size="lg">
       <TemplateLibrary presets={p.presets} onPick={preset=>{setPresetOpen(false);p.onAdd(preset)}} onChanged={p.onTemplatesChanged}/>
     </Modal>
+  </div>
+}
+
+function CardThumb({src}:{src?:string}){
+  const [broken,setBroken] = useState(false)
+  return <span className="ove-card-thumb">{src && !broken ? <img src={src} alt="" loading="lazy" onError={()=>setBroken(true)}/> : <Layers size={20}/>}</span>
+}
+
+/** ⋮ menu of an overlay card. */
+function ItemMenu({editable, on, onDuplicate, onCopy, onToggle, onRemove}:{editable:boolean; on:boolean; onDuplicate:()=>void; onCopy:()=>void; onToggle:()=>void; onRemove:()=>void}){
+  const [open,setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    if (!open) return
+    const close = (e:MouseEvent) => {if (!box.current?.contains(e.target as Node)) setOpen(false)}
+    document.addEventListener('mousedown', close)
+    return ()=>document.removeEventListener('mousedown', close)
+  },[open])
+  const item = (label:string, icon:ReactNode, run:()=>void, danger = false) => <button type="button" role="menuitem" className={danger ? 'is-danger' : undefined}
+    onClick={()=>{setOpen(false);run()}}>{icon}{label}</button>
+  return <div ref={box} className="ove-menu">
+    <button type="button" className="te-icon-btn" aria-label="Thao tác" aria-haspopup="menu" aria-expanded={open} onClick={()=>setOpen(v=>!v)}><MoreVertical size={16}/></button>
+    {open && <div className="ove-menu-list" role="menu">
+      {item('Sao chép', <Copy size={14}/>, onCopy)}
+      {editable && item('Nhân bản', <CopyPlus size={14}/>, onDuplicate)}
+      {editable && item(on ? 'Tạm ẩn' : 'Bật', on ? <EyeOff size={14}/> : <Eye size={14}/>, onToggle)}
+      {editable && item('Xóa', <Trash2 size={14}/>, onRemove, true)}
+    </div>}
   </div>
 }
 
@@ -171,21 +214,28 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
   const issues = p.issues.filter(i=>i.overlay === index)
   const productOptions = [{value:'', label:'Không có'}, ...p.products.map(x=>({value:String(x.id), label:x.name + (x.sku ? ' · ' + x.sku : '')}))]
   const labels = [...new Set([...p.presets.map(x=>x.template), ...p.overlays.map(x=>x.template)].filter(Boolean))]
+  const on = o.enabled !== false
+  const product = o.product_id != null ? p.products.find(x=>x.id === o.product_id) : undefined
   return <Card className="ove-inspector" padding={false}
-    title={<span className="te-card-title"><Layers size={17}/>{overlayName(o, p.presets)}</span>}
+    title={<span className="te-card-title"><Layers size={17}/>Thuộc tính overlay <span className="ove-insp-name">{overlayName(o, p.presets)}</span></span>}
+    description="Thông tin, thời gian hiển thị và nội dung của overlay đang chọn."
     actions={<div className="ove-toolbar">
+      <span className={'st-chip' + (on ? ' is-on' : '')}>{on ? 'Đang bật' : 'Tạm ẩn'}</span>
       <button type="button" className="te-icon-btn" title="Xem hiệu ứng vào" aria-label="Xem hiệu ứng vào" onClick={()=>p.onPreview(index, 'in')}><Play size={15}/></button>
       <button type="button" className="te-icon-btn" title="Sao chép (Ctrl+C)" aria-label="Sao chép" onClick={()=>p.onCopy(index)}><Copy size={15}/></button>
       <button type="button" className="te-icon-btn" title="Lưu làm mẫu (dùng lại ở mọi phiên)" aria-label="Lưu làm mẫu" onClick={()=>setSaving(true)}><BookmarkPlus size={15}/></button>
       {editable && <>
-        <button type="button" className="te-icon-btn" title="Nhân bản (Ctrl+D)" aria-label="Nhân bản" onClick={()=>p.onDuplicate(index)}><CopyPlus size={15}/></button>
-        <button type="button" className="te-icon-btn is-danger" title="Xóa overlay (Delete)" aria-label="Xóa overlay" onClick={()=>p.onRemove(index)}><Trash2 size={15}/></button>
+        <Button size="sm" variant="outline" leftIcon={<CopyPlus size={14}/>} onClick={()=>p.onDuplicate(index)} title="Nhân bản (Ctrl+D)">Nhân bản</Button>
+        <Button size="sm" variant="ghost" className="ove-danger" leftIcon={<Trash2 size={14}/>} onClick={()=>p.onRemove(index)} title="Xóa overlay (Delete)">Xóa</Button>
       </>}
     </div>}>
     <fieldset className="ove-form" disabled={!editable} onBlur={p.onSeal}>
       {issues.length > 0 && <ul className="te-issues ove-issues">{issues.map(i=><li key={i.code + i.message} className={'is-' + i.level}><CircleAlert size={14}/>{i.message}</li>)}</ul>}
+      <div className="ove-cols">
+      <section className="ove-col">
+      <h4 className="ove-col-title">Thông tin cơ bản</h4>
       <div className="ove-row">
-        <Switch label={o.enabled === false ? 'Đang tắt' : 'Đang bật'} checked={o.enabled !== false} onChange={e=>change({enabled:e.target.checked}, newStep('enabled'))}/>
+        <Switch label={on ? 'Đang bật' : 'Tạm ẩn'} checked={on} onChange={e=>change({enabled:e.target.checked}, newStep('enabled'))}/>
       </div>
       <div className="ove-row ove-2">
         <Input label="Tên hiển thị" placeholder="(không bắt buộc)" maxLength={200} value={o.label} onChange={e=>change({label:e.target.value}, 'label')}/>
@@ -196,7 +246,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         </div>
       </div>
 
-      <h4>Thời gian</h4>
+      <h4 className="ove-col-title">Thời gian hiển thị</h4>
       <div className="ove-row ove-3">
         <Input label="Bắt đầu (giây)" type="number" min={0} step={0.1} value={String(o.start_ms / 1000)} onChange={e=>change({start_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'start')}/>
         <Input label="Thời lượng (giây)" type="number" min={0.5} step={0.1} value={String(o.duration_ms / 1000)} onChange={e=>change({duration_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'duration')}/>
@@ -224,9 +274,16 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         <AnimationField label="Ra" value={o.animation_out} onChange={v=>change({animation_out:v}, 'anim-out')} onPreview={()=>p.onPreview(index, 'out')}/>
       </div>
       </details>
+      </section>
 
+      <section className="ove-col">
+      <h4 className="ove-col-title">Nội dung hiển thị</h4>
       <h4>Sản phẩm của overlay</h4>
-      <Select aria-label="Sản phẩm của overlay" value={o.product_id != null ? String(o.product_id) : ''} onChange={v=>change({product_id:v ? Number(v) : null}, newStep('product'))} options={productOptions}/>
+      {product ? <div className="ove-product">
+        <CardThumb src={product.image_url ? assetUrl(product.image_url) ?? undefined : undefined}/>
+        <span className="ove-product-name" title={product.name}>{product.name}</span>
+        {editable && <button type="button" className="te-icon-btn" aria-label="Bỏ sản phẩm" title="Bỏ sản phẩm của overlay" onClick={()=>change({product_id:null}, newStep('product'))}><X size={15}/></button>}
+      </div> : <Select aria-label="Sản phẩm của overlay" value="" onChange={v=>change({product_id:v ? Number(v) : null}, newStep('product'))} options={productOptions}/>}
       <small className="te-muted">Các khối thông tin / ảnh sản phẩm không chọn sản phẩm riêng sẽ đọc sản phẩm này.</small>
 
       <h4>Các khối ({o.elements.length}/{MAX_ELEMENTS}) <small className="te-muted">vẽ theo thứ tự, khối sau đè lên khối trước</small></h4>
@@ -239,6 +296,8 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
           return <Button key={kind} size="sm" variant="outline" leftIcon={<Icon size={14}/>} onClick={()=>change({elements:[...o.elements, normalizeElement(NEW_BLOCK[kind])]}, newStep('blocks'))}>{BLOCK_LABEL[kind]}</Button>
         })}
       </div>}
+      </section>
+      </div>
     </fieldset>
     {saving && <SaveTemplateModal overlay={o} presets={p.presets} onClose={()=>setSaving(false)} onSaved={p.onTemplatesChanged}/>}
   </Card>

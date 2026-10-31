@@ -1,0 +1,87 @@
+/* StudioTimeline: one timeline for pins and overlays, like a video editor. Prefix st-. The header column (196px) sticks
+   to the left; the time area scrolls. Positions are px computed from the zoom (see HEAD in StudioTimeline.tsx). */
+.st{display:grid;gap:10px;min-width:0}
+.st-zoom{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.st-zoom-presets{display:inline-flex;padding:3px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface-2)}
+.st-zoom-presets button{min-width:44px;height:28px;padding:0 8px;border:0;border-radius:7px;background:none;color:var(--ui-text-muted);font:inherit;font-size:12.5px;cursor:pointer}
+.st-zoom-presets button.is-on{background:color-mix(in srgb,var(--ui-primary) 22%,transparent);color:var(--ui-text);box-shadow:inset 0 0 0 1.5px var(--ui-primary);font-weight:600}
+.st-icon{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface-2);color:var(--ui-text-muted);cursor:pointer}
+.st-icon:hover:not(:disabled){color:var(--ui-text);border-color:var(--ui-border-strong)}
+.st-icon:disabled{opacity:.4;cursor:default}
+.st-slider{flex:1;min-width:120px;max-width:280px;accent-color:var(--ui-primary)}
+
+.st-scroll{position:relative;overflow:auto;max-height:520px;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface-2)}
+.st-content{position:relative;min-width:100%;touch-action:none;user-select:none;cursor:pointer}
+.st-head{position:sticky;left:0;z-index:4;width:196px;box-sizing:border-box;background:var(--ui-surface);border-right:1px solid var(--ui-border)}
+.st-muted{color:var(--ui-text-subtle);font-size:11.5px}
+
+/* ruler */
+.st-ruler{position:sticky;top:0;z-index:5;height:44px;border-bottom:1px solid var(--ui-border);background:var(--ui-surface)}
+.st-corner{height:100%}
+.st-tick{position:absolute;top:22px;bottom:0;border-left:1px solid color-mix(in srgb,var(--ui-text-subtle) 45%,transparent);pointer-events:none}
+.st-tick small{position:absolute;top:-17px;left:-26px;width:52px;text-align:center;font-size:10.5px;color:var(--ui-text-subtle);font-variant-numeric:tabular-nums}
+.st-tick.is-minor{top:34px}
+.st-ruler-pin{position:absolute;top:24px;transform:translateX(-50%);display:grid;place-items:center;min-width:16px;height:16px;padding:0 3px;border-radius:5px;
+  background:var(--ui-primary);color:#fff;font-size:10px;font-weight:700;pointer-events:none}
+.st-ruler-pin.is-selected{outline:2px solid color-mix(in srgb,var(--ui-primary) 45%,transparent)}
+.st-bubble{position:absolute;top:2px;z-index:6;transform:translateX(-50%);padding:1px 8px;border-radius:7px;background:var(--ui-primary);color:#fff;
+  font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+.st-playhead{position:absolute;top:22px;bottom:0;z-index:3;width:2px;margin-left:-1px;background:var(--ui-primary);pointer-events:none}
+.st-hover{position:absolute;top:22px;bottom:0;z-index:2;width:1px;background:color-mix(in srgb,var(--ui-text) 25%,transparent);pointer-events:none}
+
+/* groups and rows */
+.st-group{position:relative;height:34px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-surface) 60%,var(--ui-surface-2))}
+.st-group-head{display:flex;align-items:center;gap:6px;height:100%;padding:0 10px;white-space:nowrap;overflow:hidden;border-top:0;border-bottom:0;border-left:0;color:var(--ui-text);font:inherit;font-size:12.5px;font-weight:700;text-align:left;cursor:pointer}
+.st-group-head small{color:var(--ui-text-subtle);font-weight:500}
+.st-row{position:relative;height:44px;border-bottom:1px solid var(--ui-border)}
+.st-row-head{display:flex;align-items:center;gap:6px;height:100%;padding:0 8px}
+.st-row.st-ov.is-selected{background:color-mix(in srgb,var(--ui-primary) 7%,transparent)}
+.st-row.st-ov.is-selected .st-row-head{box-shadow:inset 3px 0 0 var(--ui-primary)}
+.st-eye{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:6px;background:none;color:var(--ui-text-muted);cursor:pointer}
+.st-eye:hover:not(:disabled){background:var(--ui-surface-3);color:var(--ui-text)}
+.st-row-name{flex:1;min-width:0;padding:4px 6px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface-2);color:var(--ui-text);
+  font:inherit;font-size:12px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.st-chip{flex:none;display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:999px;background:var(--ui-surface-3);color:var(--ui-text-muted);font-size:10.5px;font-weight:600}
+.st-chip::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--ui-text-subtle)}
+.st-chip.is-on{background:color-mix(in srgb,var(--ui-primary) 20%,transparent);color:var(--ui-text)}
+.st-chip.is-on::before{background:var(--ui-primary)}
+
+/* pin cards */
+.st-pins{background:color-mix(in srgb,var(--ui-surface-2) 70%,transparent)}
+.st-pin{position:absolute;z-index:1;display:flex;align-items:center;gap:8px;height:50px;box-sizing:border-box;padding:4px 8px 4px 4px;
+  border:1px solid var(--ui-border);border-radius:9px;background:var(--ui-surface);color:var(--ui-text);cursor:grab}
+.st-pin::before{content:'';position:absolute;left:-1px;top:-6px;bottom:-6px;width:2px;background:var(--ui-primary);border-radius:1px}
+.st-pin.is-unpin_product::before{background:var(--ui-warning)}
+.st-pin.is-no_action::before{background:var(--ui-text-subtle)}
+.st-pin.is-selected{border-color:var(--ui-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--ui-primary) 35%,transparent);z-index:2}
+.st-pin.is-review{border-style:dashed}
+.st-pin-text{display:grid;min-width:0;font-size:11.5px;line-height:1.3}
+.st-pin-text b{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.st-pin-text b i{display:grid;place-items:center;min-width:16px;height:16px;border-radius:5px;background:var(--ui-primary);color:#fff;font-style:normal;font-size:10px}
+.st-pin-text span{color:var(--ui-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-thumb{flex:none;display:grid;place-items:center;overflow:hidden;border-radius:7px;background:var(--ui-surface-3);color:var(--ui-text-muted)}
+.st-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+
+/* overlay clips */
+.st-overlays{position:relative}
+.st-clip{position:absolute;top:5px;bottom:5px;z-index:1;display:flex;align-items:center;gap:8px;min-width:8px;padding:0 10px 0 4px;box-sizing:border-box;
+  border:1.5px solid color-mix(in srgb,var(--ui-primary) 75%,#000);border-radius:8px;background:color-mix(in srgb,var(--ui-primary) 30%,var(--ui-surface));
+  color:var(--ui-text);font:inherit;font-size:11.5px;cursor:grab;overflow:hidden}
+.st-clip::before,.st-clip::after{content:'';position:absolute;top:6px;bottom:6px;width:3px;border-radius:2px;background:color-mix(in srgb,var(--ui-text) 55%,transparent)}
+.st-clip::before{left:2px}.st-clip::after{right:2px}
+.st-row.st-ov.is-selected .st-clip{background:color-mix(in srgb,var(--ui-primary) 55%,var(--ui-surface));box-shadow:0 0 0 2px color-mix(in srgb,var(--ui-primary) 40%,transparent)}
+.st-clip.is-off{opacity:.55;border-style:dashed;background:var(--ui-surface-3)}
+.st-clip.is-error{border-color:var(--ui-danger);background:color-mix(in srgb,var(--ui-danger) 30%,var(--ui-surface))}
+.st-clip.is-warn{border-color:var(--ui-warning)}
+.st-clip:active{cursor:grabbing}
+.st-clip-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;pointer-events:none}
+.st-clip-time{flex:none;color:var(--ui-text-muted);font-variant-numeric:tabular-nums;pointer-events:none}
+.st-add-row{display:flex;align-items:center;height:52px;border-bottom:0}
+/* Sticky: always the visible width of the time area, whatever the zoom. */
+.st-add{position:sticky;left:206px;flex:none;height:36px;margin-left:10px;display:flex;align-items:center;justify-content:center;gap:6px;
+  border:1.5px dashed var(--ui-border-strong);border-radius:10px;background:none;color:var(--ui-primary);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.st-add:hover{background:color-mix(in srgb,var(--ui-primary) 8%,transparent)}
+
+@media (max-width:760px){
+  .st-chip{display:none}
+}

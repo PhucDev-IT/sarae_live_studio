@@ -1,0 +1,101 @@
+/* Timeline Editor page laid out like a video editor (prefix ts-, plus the overlay list / inspector look). */
+.ts-page{gap:16px}
+.ts-head{display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap}
+
+/* video chips + draft actions */
+.ts-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ts-videos{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;min-width:0}
+.ts-video{display:flex;align-items:center;gap:10px;min-width:0;max-width:280px;padding:8px 14px 8px 10px;border:1.5px solid var(--ui-border);border-radius:12px;
+  background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
+.ts-video:hover{border-color:var(--ui-border-strong)}
+.ts-video.is-on{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 9%,var(--ui-surface))}
+.ts-video.is-removed{opacity:.6}
+.ts-video-no{flex:none;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--ui-surface-3);font-size:12px;font-weight:700}
+.ts-video.is-on .ts-video-no{background:var(--ui-primary);color:#fff}
+.ts-video-text{display:grid;min-width:0}
+.ts-video-text b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ts-video-text small{color:var(--ui-text-muted);font-size:11.5px;white-space:nowrap}
+.ts-new-draft{gap:6px;padding:8px 14px;border-style:dashed;color:var(--ui-text-muted);font-size:13px;font-weight:600}
+.ts-new-draft:disabled{opacity:.5;cursor:default}
+
+/* preview + timeline */
+.ts-stage{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:16px;align-items:start}
+.ts-preview{min-width:0}
+.ts-preview .ui-card__body{display:grid;gap:10px;padding:14px}
+.ts-preview-tools{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
+.ts-preview-tools .ui-segmented button{white-space:nowrap}
+.ts-frame{display:grid;justify-items:center}
+.ts-frame .ove-frame{height:min(64vh,600px)}
+.ts-frame:fullscreen{place-content:center;background:#000}
+.ts-frame:fullscreen .ove-frame{height:100vh;border-radius:0}
+.ts-preview .ove-note{max-width:none}
+
+.ts-player{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface-2)}
+.ts-player-btn{display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:8px;background:none;color:var(--ui-text);cursor:pointer}
+.ts-player-btn:hover:not(:disabled){background:var(--ui-surface-3)}
+.ts-player-btn:disabled{opacity:.4;cursor:default}
+.ts-player-seek{flex:1;min-width:60px;height:4px;appearance:none;border-radius:2px;cursor:pointer;
+  background:linear-gradient(to right,var(--ui-primary) var(--ts-progress,0%),color-mix(in srgb,var(--ui-text-subtle) 40%,transparent) var(--ts-progress,0%))}
+.ts-player-seek::-webkit-slider-thumb{appearance:none;width:13px;height:13px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px var(--ui-primary)}
+.ts-player-seek::-moz-range-thumb{width:13px;height:13px;border:0;border-radius:50%;background:#fff;box-shadow:0 0 0 2px var(--ui-primary)}
+.ts-player-time{flex:none;font-size:12px;color:var(--ui-text-muted);font-variant-numeric:tabular-nums}
+.ts-player-time b{color:var(--ui-text);font-weight:600}
+
+.ts-timeline{min-width:0}
+.ts-timeline .ui-card__body{display:grid;gap:12px;padding:14px 16px}
+.ts-transport{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap}
+.ts-transport .te-clock strong{font-size:30px}
+.ts-transport-btns{display:flex;gap:6px}
+.ts-tbtn{display:grid;place-items:center;width:40px;height:36px;border:1px solid var(--ui-border);border-radius:9px;background:var(--ui-surface-2);color:var(--ui-text);cursor:pointer}
+.ts-tbtn:hover:not(:disabled){border-color:var(--ui-border-strong)}
+.ts-tbtn:disabled{opacity:.4;cursor:default}
+.ts-spacer{flex:1}
+
+/* overlay list: cards */
+.ove-card{position:relative;display:flex;align-items:stretch;gap:4px;border:1.5px solid var(--ui-border);border-radius:12px;background:var(--ui-surface)}
+.ove-card.is-selected{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 8%,var(--ui-surface));box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-primary) 18%,transparent)}
+.ove-card.is-off .ove-card-thumb{opacity:.55}
+.ove-card-main{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:10px 4px 10px 12px;border:0;background:none;color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
+.ove-radio{flex:none;width:16px;height:16px;border:2px solid var(--ui-border-strong);border-radius:50%}
+.ove-card.is-selected .ove-radio{border-color:var(--ui-primary);box-shadow:inset 0 0 0 3px var(--ui-surface);background:var(--ui-primary)}
+.ove-card-thumb{flex:none;display:grid;place-items:center;width:56px;height:56px;overflow:hidden;border-radius:10px;background:var(--ui-surface-3);color:var(--ui-text-muted)}
+.ove-card-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.ove-card-text{display:grid;gap:3px;min-width:0}
+.ove-card-title{display:flex;align-items:center;gap:8px;min-width:0}
+.ove-card-title strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ove-card-text small{color:var(--ui-text-muted);font-size:12px;font-variant-numeric:tabular-nums}
+.ove-card-product{font-size:12.5px;color:var(--ui-text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ove-menu{position:relative;align-self:center;padding-right:6px}
+.ove-menu-list{position:absolute;right:6px;top:calc(100% + 4px);z-index:20;display:grid;min-width:150px;padding:4px;border:1px solid var(--ui-border);border-radius:10px;
+  background:var(--ui-surface);box-shadow:var(--ui-shadow-md)}
+.ove-menu-list button{display:flex;align-items:center;gap:8px;padding:8px 10px;border:0;border-radius:7px;background:none;color:var(--ui-text);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.ove-menu-list button:hover{background:var(--ui-surface-3)}
+.ove-menu-list button.is-danger{color:var(--ui-danger)}
+
+/* inspector: two columns */
+.ove-insp-name{margin-left:6px;padding:2px 8px;border-radius:7px;background:var(--ui-surface-3);font-size:12px;font-weight:600;color:var(--ui-text-muted);
+  max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ove-danger{color:var(--ui-danger)}
+.ove-cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.ove-col{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0;padding:12px 14px;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface-2)}
+.ove-col-title{margin:0 !important;color:var(--ui-primary);font-size:13px !important}
+.ove-product{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 8px 6px 6px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}
+.ove-product .ove-card-thumb{width:44px;height:44px}
+.ove-product-name{flex:1;min-width:0;font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+@media (max-width:1180px){
+  .ts-stage{grid-template-columns:minmax(0,1fr)}
+  .ts-frame .ove-frame{height:min(70vh,560px)}
+}
+@media (max-width:900px){
+  .ove-cols{grid-template-columns:minmax(0,1fr)}
+}
+
+/* More room for the two-column inspector on the studio page; time fields two per row, the end below them. */
+.ts-page .ove-panel{grid-template-columns:minmax(300px,.72fr) minmax(0,1.6fr)}
+.ove-col .ove-3{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ove-col .ove-3 > .ove-field-note{grid-column:1 / -1;flex-direction:row;align-items:center;gap:10px}
+.ove-col .ove-block-toggle b{white-space:nowrap}
+@media (max-width:1180px){
+  .ts-page .ove-panel{grid-template-columns:minmax(0,1fr)}
+}

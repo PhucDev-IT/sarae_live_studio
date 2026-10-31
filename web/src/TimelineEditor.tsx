@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, Modal, SegmentedControl, Select, Switch, useToast } from './ui/core'
 import {
-  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, Info, Layers, Pause, Pin, PinOff, Play, Plus, Rocket, Save, StickyNote, Trash2, ZoomIn,
+  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, FilePlus2, Info, Layers, MonitorCheck, Pause, Pin, PinOff, Play, Plus, Rocket, Save, SkipBack,
+  SkipForward, StickyNote, Trash2,
 } from 'lucide-react'
 import { api, apiRequest, assetUrl, errorText } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
@@ -12,13 +13,15 @@ import {
 import TimelineAIPanel from './TimelineAIPanel'
 import { overlaysApi, type OverlayAsset, type OverlayTemplates } from './overlaysApi'
 import { EXTRA_PRESETS, endOf, fromPreset, MIN_DURATION_MS, type Overlay, type OverlayIssue, type OverlayPreset, type OverlayScene } from './overlay/overlayModel'
-import { blocksSave, copyOverlay, hasClipboard, localIssues, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
-import { OverlayPreview, OverlayTracks, type PreviewMode } from './overlay/OverlayStage'
+import { blocksSave, copyOverlay, hasClipboard, localIssues, newStep, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
+import { OverlayPreview, type PreviewMode } from './overlay/OverlayStage'
 import OverlayPanel, { TemplateLibrary } from './overlay/OverlayPanel'
 import OverlayReadinessPanel from './overlay/OverlayReadinessPanel'
-import { ZOOMS, ticksOf, useLinkedScroll } from './timelineView'
+import StudioTimeline from './timeline/StudioTimeline'
+import PreviewPlayerBar from './timeline/PreviewPlayerBar'
 import './timeline-editor.css'
 import './overlay/overlay-editor.css'
+import './timeline/studio-editor.css'
 
 const STEP_MS = 1000
 const sessionIdFromHash = () => {
@@ -74,12 +77,13 @@ export default function TimelineEditor(){
   const [ovSelected,setOvSelected] = useState<number|null>(null)
   const [templates,setTemplates] = useState<OverlayTemplates|null>(null)
   const [assets,setAssets] = useState<OverlayAsset[]|null>(null)
-  const [tab,setTab] = useState<'pins'|'overlays'>('pins')
-  // One zoom and one horizontal scroll for the pin timeline and the overlay tracks: the same time is at the same x.
+  const [tab,setTab] = useState<'overlays'|'pins'|'obs'>('overlays')
+  // Zoom of the timeline (pins and overlays together).
   const [zoom,setZoom] = useState(1)
-  // "Thêm overlay" next to "Thêm mốc" (same template library as the Overlay tab).
+  // "Thêm overlay" of the timeline (same template library as the Overlay tab).
   const [addingOverlay,setAddingOverlay] = useState(false)
-  const linkScroll = useLinkedScroll()
+  const [muted,setMuted] = useState(false)
+  const frameBox = useRef<HTMLDivElement>(null)
   const [previewMode,setPreviewMode] = useState<PreviewMode>('obs')
   const [showZones,setShowZones] = useState(false)
   const [canPaste,setCanPaste] = useState(hasClipboard)
@@ -158,6 +162,8 @@ export default function TimelineEditor(){
     if (el) el.currentTime = value / 1000
   }
   const toggle = () => {const el = player.current;stopAt.current = null;if (!el) return;if (el.paused) void el.play();else el.pause()}
+  const toggleMute = () => {const el = player.current;if (!el) return;el.muted = !el.muted;setMuted(el.muted)}
+  const fullscreen = () => {const el = frameBox.current;if (el && !document.fullscreenElement) void el.requestFullscreen?.().catch(()=>{});else void document.exitFullscreen?.()}
 
   // ----- markers
   const editable = timeline?.status === 'DRAFT' && session?.status !== 'ENDED'
@@ -165,7 +171,6 @@ export default function TimelineEditor(){
   const change = (next:TimelineMarker[]) => {setMarkers(next);setDirty(true)}
   // The markers of the video shown, with their index in `markers` (the whole draft).
   const shown = markers.map((m, i)=>({m, i})).filter(x=>x.m.media_id === videoId)
-  const localIndex = (list:TimelineMarker[], index:number) => list.slice(0, index).filter(m=>m.media_id === list[index]?.media_id).length
   const update = (index:number, patch:Partial<TimelineMarker>) => change(markers.map((m, i)=>i === index ? {...m, ...patch, ...(patch.action && patch.action !== 'PIN_PRODUCT' ? {product_id:null} : {})} : m))
   const addAt = (ms:number) => {
     if (!videoId) return
@@ -177,14 +182,14 @@ export default function TimelineEditor(){
   const remove = (index:number) => {change(markers.filter((_, i)=>i !== index));setSelected(null)}
   const moveTo = (index:number, ms:number) => {
     const at = Math.round(Math.max(0, Math.min(ms, duration ?? ms)) / STEP_MS) * STEP_MS
-    if (at === markers[index]?.at_ms) return localIndex(markers, index)
+    if (at === markers[index]?.at_ms) return index
     const moved = {...markers[index], at_ms:at}
     const rest = markers.filter((_, i)=>i !== index)
     const next = sorted([...rest, moved])
     change(next)
     const to = next.indexOf(moved)
     setSelected(to)
-    return localIndex(next, to)  // its place among the markers of its video (the timeline bar)
+    return to  // its new index in `markers` (a drag on the timeline goes on with it)
   }
   /** What the editor itself can tell before saving; the server repeats these checks and adds its own. */
   const local:TimelineIssue[] = markers.flatMap((m, i)=>[
@@ -216,6 +221,14 @@ export default function TimelineEditor(){
   const blocking = issues.some(i=>i.level === 'error') || overlayIssues.some(i=>i.level === 'error')
   const unsaved = dirty || draft.dirty
   const selectOverlay = (index:number|null) => {setOvSelected(index);if (index != null) setTab('overlays')}
+  const selectMarker = (index:number) => {setSelected(index);setTab('pins')}
+  const toggleOverlay = (index:number) => draft.set(list=>list.map((o, i)=>i === index ? {...o, enabled:o.enabled === false} : o), newStep('enabled'))
+  /** Previous / next event of the video shown (a marker, an overlay's start or end). */
+  const jump = (direction:-1|1) => {
+    const times = [...new Set([0, ...shown.map(x=>x.m.at_ms), ...overlays.filter(o=>o.media_id === videoId).flatMap(o=>[o.start_ms, endOf(o)])])].sort((a, b)=>a - b)
+    const target = direction > 0 ? times.find(t=>t > now + 200) : [...times].reverse().find(t=>t < now - 200)
+    if (target != null) seek(target)
+  }
   /** Start and length that fit in the video shown. */
   const fitTime = (start:number, length:number) => {
     if (duration == null) return {start_ms:start, duration_ms:length}
@@ -366,13 +379,34 @@ export default function TimelineEditor(){
   const videoTabs = [...session.media_ids, ...new Set(markers.map(m=>m.media_id).filter((id):id is string=>!!id && !session.media_ids.includes(id)))]
   const productOptions = [{value:'', label:'Chọn sản phẩm…'}, ...products.map(p=>({value:String(p.id), label:`${p.name}${p.sku ? ' · ' + p.sku : ''}${p.status === 'INACTIVE' ? ' (tạm ẩn)' : ''}${p.tiktok_product_id ? '' : ' · chưa đồng bộ TikTok'}`}))]
 
-  return <div className="te-page">
-    <div className="te-head">
+  const assetUrlOf = (id:string) => assets?.find(a=>a.id === id)?.url ? assetUrl(assets.find(a=>a.id === id)!.url) ?? undefined : undefined
+  const videoOverlays = overlays.map((overlay, index)=>({overlay, index})).filter(x=>x.overlay.media_id === videoId)
+
+  return <div className="te-page ts-page">
+    <div className="ts-head">
       <a className="te-back" href={sessionHref(session.id)}><ArrowLeft size={16}/>{session.name}</a>
       <div className="te-version">
         {timelines.length > 0 && <Select aria-label="Phiên bản timeline" value={String(versionId ?? '')} onChange={v=>chooseVersion(Number(v))} options={versionOptions}/>}
         {status && <Badge tone={status.tone}>{status.label}</Badge>}
         {session.status === 'RUNNING' && <Badge tone="danger" dot>Phiên đang LIVE</Badge>}
+      </div>
+    </div>
+
+    <div className="ts-bar">
+      <div className="ts-videos" role="tablist" aria-label="Video của phiên">
+        {videoTabs.map((id, n)=>{
+          const item = mediaById.get(id)
+          const count = markers.filter(m=>m.media_id === id).length
+          const removed = !session.media_ids.includes(id)
+          return <button key={id} type="button" role="tab" aria-selected={id === videoId} className={'ts-video' + (id === videoId ? ' is-on' : '') + (removed ? ' is-removed' : '')}
+            onClick={()=>{player.current?.pause();setSelected(null);setOvSelected(null);setVideoId(id)}} title={removed ? 'Video không còn trong phiên: các mốc của nó bị bỏ qua khi LIVE' : item?.display_name || item?.filename}>
+            <span className="ts-video-no">{removed ? '!' : n + 1}</span>
+            <span className="ts-video-text"><b>{item ? item.display_name || item.filename : 'Video không còn trong thư viện'}</b>
+              <small>{count} mốc · {overlays.filter(o=>o.media_id === id).length} overlay{item?.duration_seconds != null ? ` · ${hms(item.duration_seconds * 1000)}` : ''}</small></span>
+          </button>
+        })}
+        {timeline && session.status !== 'ENDED' && <button type="button" className="ts-video ts-new-draft" disabled={busy} onClick={()=>void newDraft(timeline.id)}
+          title="Tạo bản nháp mới chép từ phiên bản đang xem (cả mốc và overlay)"><FilePlus2 size={16}/>Bản nháp</button>}
       </div>
       <div className="te-actions">
         {editable && <>
@@ -389,74 +423,69 @@ export default function TimelineEditor(){
       </div>
     </div>
 
-    {videoTabs.length > 1 && <div className="te-videos" role="tablist" aria-label="Video của phiên">
-      {videoTabs.map((id, n)=>{
-        const item = mediaById.get(id)
-        const count = markers.filter(m=>m.media_id === id).length
-        const removed = !session.media_ids.includes(id)
-        return <button key={id} type="button" role="tab" aria-selected={id === videoId} className={'te-video-tab' + (id === videoId ? ' is-on' : '') + (removed ? ' is-removed' : '')}
-          onClick={()=>{player.current?.pause();setSelected(null);setOvSelected(null);setVideoId(id)}} title={removed ? 'Video không còn trong phiên: các mốc của nó bị bỏ qua khi LIVE' : undefined}>
-          <span className="te-video-no">{removed ? '!' : n + 1}</span>
-          <span className="te-video-name">{item ? item.display_name || item.filename : 'Video không còn trong thư viện'}</span>
-          <small>{count} mốc · {overlays.filter(o=>o.media_id === id).length} overlay{item?.duration_seconds != null ? ` · ${hms(item.duration_seconds * 1000)}` : ''}</small>
-        </button>
-      })}
-    </div>}
-
-    {/* Player and timeline: the 9:16 output frame (the video fitted inside, never cropped or stretched) with the overlays
-        drawn on top by the shared renderer; the source video is never changed. */}
-    <Card className="te-stage" padding={false}>
-      <div className="te-stage-body">
-        <div className="ove-preview">
-          <div className="ove-preview-tools">
-            <SegmentedControl<PreviewMode> value={previewMode} onChange={setPreviewMode} items={[{value:'obs', label:'OBS Preview'}, {value:'tiktok', label:'TikTok Viewer Preview'}]}/>
-            <Switch label="Vùng an toàn" checked={showZones} onChange={e=>setShowZones(e.target.checked)}/>
-          </div>
+    {/* Preview (the 9:16 output frame with the overlays drawn on top by the shared renderer; the source video is never
+        changed) and the timeline of the video shown. */}
+    <div className="ts-stage">
+      <Card className="ts-preview" padding={false}>
+        <div className="ts-preview-tools">
+          <SegmentedControl<PreviewMode> value={previewMode} onChange={setPreviewMode} items={[{value:'obs', label:'Xem trước video'}, {value:'tiktok', label:'Xem trước TikTok Viewer'}]}/>
+          <Switch label="Vùng an toàn" checked={showZones} onChange={e=>setShowZones(e.target.checked)}/>
+        </div>
+        <div ref={frameBox} className="ts-frame">
           <OverlayPreview scene={scene} mediaId={videoId} now={now} animate={playing} apiBase={api} mode={previewMode} showZones={showZones}
             selected={ovSelected} editable={!!editable} onSelect={selectOverlay} onGestureEnd={draft.seal}
             onLayout={(index, layout, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, layout} : o), gesture)}>
             {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video này trong Thư viện.</p>}
           </OverlayPreview>
-          {previewMode === 'tiktok'
-            ? <p className="ove-note"><Info size={14}/>Mô phỏng gần đúng giao diện người xem TikTok (bình luận, thẻ sản phẩm, thanh công cụ): vị trí thật thay đổi theo phiên bản app, điện thoại và cài đặt, không chính xác 100%.</p>
-            : <p className="ove-note"><Info size={14}/>Khung OBS thật 1080×1920. Khi tạm dừng, overlay hiện đầy đủ để dễ chỉnh; hiệu ứng vào/ra chạy khi phát.</p>}
         </div>
-        <div className="te-stage-side">
+        <PreviewPlayerBar playing={playing} muted={muted} now={now} duration={duration} disabled={!streamUrl} onToggle={toggle} onMute={toggleMute} onSeek={seek} onFullscreen={fullscreen}/>
+        <p className="ove-note"><Info size={14}/>{previewMode === 'tiktok'
+          ? 'Mô phỏng gần đúng giao diện người xem TikTok (bình luận, thẻ sản phẩm, thanh công cụ): vị trí thật thay đổi theo phiên bản app, điện thoại và cài đặt, không chính xác 100%.'
+          : 'Khung OBS thật 1080×1920. Khi tạm dừng, overlay hiện đầy đủ để dễ chỉnh; hiệu ứng vào/ra chạy khi phát.'}</p>
+      </Card>
+
+      <Card className="ts-timeline" padding={false}>
+        <div className="ts-transport">
           <div className="te-clock"><strong>{hms(now)}</strong><span>/ {hms(duration)}</span></div>
-          <div className="te-transport">
-            <Button variant="outline" leftIcon={playing ? <Pause size={16}/> : <Play size={16}/>} disabled={!streamUrl} onClick={toggle}>{playing ? 'Tạm dừng' : 'Phát'}</Button>
-            {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
-            {editable && <Button variant="outline" leftIcon={<Layers size={16}/>} disabled={!videoId} onClick={()=>setAddingOverlay(true)}>Thêm overlay tại {hms(now)}</Button>}
+          <div className="ts-transport-btns">
+            <button type="button" className="ts-tbtn" disabled={!streamUrl} onClick={toggle} aria-label={playing ? 'Tạm dừng' : 'Phát'} title={playing ? 'Tạm dừng (Space)' : 'Phát (Space)'}>{playing ? <Pause size={17}/> : <Play size={17}/>}</button>
+            <button type="button" className="ts-tbtn" onClick={()=>jump(-1)} aria-label="Mốc trước" title="Tới mốc / overlay trước"><SkipBack size={16}/></button>
+            <button type="button" className="ts-tbtn" onClick={()=>jump(1)} aria-label="Mốc sau" title="Tới mốc / overlay sau"><SkipForward size={16}/></button>
           </div>
-          <TimelineBar duration={duration} now={now} markers={shown.map(x=>x.m)} selected={shown.findIndex(x=>x.i === selected)} editable={!!editable} productName={id=>productById.get(id)?.name}
-            zoom={zoom} onZoom={setZoom} scrollRef={linkScroll('pins')}
-            onSeek={seek} onSelect={n=>{setSelected(shown[n].i);seek(shown[n].m.at_ms)}} onMove={(n, ms)=>moveTo(shown[n].i, ms)}/>
-          <OverlayTracks overlays={overlays} mediaId={videoId} duration={duration} now={now} selected={ovSelected} editable={!!editable} presets={presets} issues={overlayIssues}
-            onSelect={selectOverlay} onSeek={seek} onGestureEnd={draft.seal} zoom={zoom} scrollRef={linkScroll('overlays')}
-            onTime={(index, start_ms, duration_ms, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, start_ms, duration_ms} : o), gesture)}/>
-          <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc / overlay đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span>
-            {editable && <span>Overlay: kéo trên khung để dời, kéo tay nắm để đổi cỡ, kéo thanh track để đổi giờ · <Kbd>Ctrl</Kbd>+<Kbd>Z</Kbd>/<Kbd>Y</Kbd> hoàn tác/làm lại · <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd>/<Kbd>V</Kbd>/<Kbd>D</Kbd></span>}</div>
+          <span className="ts-spacer"/>
+          {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
+          {editable && <Button variant="outline" leftIcon={<Layers size={16}/>} disabled={!videoId} onClick={()=>setAddingOverlay(true)}>Thêm overlay tại {hms(now)}</Button>}
         </div>
-      </div>
-    </Card>
+        <StudioTimeline duration={duration} now={now} zoom={zoom} onZoom={setZoom} editable={!!editable}
+          markers={shown.map(x=>({marker:x.m, index:x.i}))} selectedMarker={selected} product={id=>productById.get(id)}
+          overlays={videoOverlays} selectedOverlay={ovSelected} presets={presets} issues={overlayIssues} assetUrlOf={assetUrlOf}
+          onSeek={seek} onSelectMarker={i=>{selectMarker(i);seek(markers[i].at_ms)}} onMoveMarker={moveTo}
+          onSelectOverlay={selectOverlay} onGestureEnd={draft.seal} onToggleOverlay={toggleOverlay} onAddOverlay={()=>setAddingOverlay(true)}
+          onTimeOverlay={(index, start_ms, duration_ms, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, start_ms, duration_ms} : o), gesture)}/>
+        <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc / overlay đang chọn</span></>}
+          <span><Kbd>Ctrl</Kbd> + lăn chuột: thu phóng</span>
+          {editable && <span>Overlay: kéo thanh để đổi giờ, kéo mép để cắt, kéo trên khung xem trước để dời · <Kbd>Ctrl</Kbd>+<Kbd>Z</Kbd>/<Kbd>Y</Kbd> · <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd>/<Kbd>V</Kbd>/<Kbd>D</Kbd></span>}</div>
+      </Card>
+    </div>
 
     <div className="ove-tabs">
-      <SegmentedControl<'pins'|'overlays'> value={tab} onChange={setTab}
-        items={[{value:'pins', label:`Mốc ghim (${shown.length})`}, {value:'overlays', label:`Overlay (${shownOverlays})`}]}/>
+      <SegmentedControl<'overlays'|'pins'|'obs'> value={tab} onChange={setTab}
+        items={[{value:'overlays', label:`Overlay (${shownOverlays})`}, {value:'pins', label:`Mốc ghim (${shown.length})`}, {value:'obs', label:'Kiểm tra OBS'}]}/>
       {overlayIssues.some(i=>i.level === 'error') && <Badge tone="danger">Overlay có lỗi</Badge>}
+      {tab === 'obs' && <span className="te-muted"><MonitorCheck size={14}/> Chạy trước khi LIVE</span>}
     </div>
 
     <Modal open={addingOverlay} onClose={()=>setAddingOverlay(false)} title={`Thêm overlay tại ${hms(now)}`} size="lg">
       <TemplateLibrary presets={presets} onChanged={loadTemplates} onPick={preset=>{setAddingOverlay(false);addOverlay(preset);setTab('overlays')}}/>
     </Modal>
-    {tab === 'overlays' && session && <OverlayReadinessPanel sessionId={session.id} sessionAgentId={session.agent_id ?? null}/>}
-    {tab === 'overlays' ? <OverlayPanel overlays={overlays} selected={ovSelected} mediaId={videoId} now={now} editable={!!editable} dirty={draft.dirty} busy={busy}
+    {tab === 'obs' && <OverlayReadinessPanel sessionId={session.id} sessionAgentId={session.agent_id ?? null}/>}
+    {tab === 'overlays' && <OverlayPanel overlays={overlays} selected={ovSelected} mediaId={videoId} now={now} editable={!!editable} dirty={draft.dirty} busy={busy}
       presets={presets} products={products} assets={assets ?? []} issues={overlayIssues} apiBase={api} canUndo={draft.canUndo} canRedo={draft.canRedo} canPaste={canPaste}
       blocking={overlayBlocking || local.some(i=>i.level === 'error')} onSelect={selectOverlay} onAdd={addOverlay} onChange={changeOverlay} onSeal={draft.seal}
       onRemove={removeOverlay} onDuplicate={duplicateOverlay} onCopy={copySelected} onPaste={paste} onUndo={draft.undo} onRedo={draft.redo}
       onPreview={previewAnimation} onSeek={seek} onSave={()=>void save()} onRevert={()=>{resetOverlays(timelineOverlays.current);setOvSelected(null)}}
-      onAssetsChanged={setAssets} readOnlyAction={readOnlyAction} onTemplatesChanged={loadTemplates}/>
-    : <div className="te-grid">
+      onAssetsChanged={setAssets} readOnlyAction={readOnlyAction} onTemplatesChanged={loadTemplates} onToggle={toggleOverlay}/>}
+    {tab === 'pins' && <div className="te-grid">
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc của video này ({shown.length}{markers.length !== shown.length ? ` / ${markers.length} cả phiên` : ''})</span>}
         description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó của video. Sang video mới, sản phẩm đang ghim được giữ tới mốc đầu của video đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>
         {timeline?.note && <p className="te-note"><StickyNote size={14}/>{timeline.note}</p>}
@@ -526,85 +555,4 @@ function MarkerRow({marker:m, index, selected, editable, issues, productOptions,
       {issues.map(i=><small key={i.code} className={'te-issue is-' + i.level}><CircleAlert size={13}/>{i.message}</small>)}
     </div>
   </li>
-}
-
-/**
- * The video's timeline with its markers: click/drag the track to seek, click a marker to jump to it, drag a marker to
- * move it (whole seconds). Zoom in for precise placement on long videos; the playhead stays in view.
- */
-function TimelineBar({duration, now, markers, selected, editable, productName, onSeek, onSelect, onMove, zoom, onZoom, scrollRef}:{
-  duration:number|null; now:number; markers:TimelineMarker[]; selected:number|null; editable:boolean; productName:(id:number)=>string|undefined
-  onSeek:(ms:number)=>void; onSelect:(index:number)=>void; onMove:(index:number, ms:number)=>number
-  /** Shared with the overlay tracks (same zoom, scroll kept in step through `scrollRef`). */
-  zoom:number; onZoom:(zoom:number)=>void; scrollRef:(el:HTMLDivElement|null)=>void
-}){
-  const scroller = useRef<HTMLDivElement>(null)
-  const track = useRef<HTMLDivElement>(null)
-  const dragging = useRef<{index:number;moved:boolean}|null>(null)
-  const scrubbing = useRef(false)
-  const [hover,setHover] = useState<number|null>(null)
-  const total = duration ?? 0
-  const pct = (ms:number) => total ? Math.max(0, Math.min(100, ms / total * 100)) : 0
-  /** Keeps receiving the pointer outside the track; a pointer that is already gone has nothing to capture. */
-  const capture = (pointerId:number) => {try{track.current?.setPointerCapture(pointerId)}catch{/* released already */}}
-  const msAt = (clientX:number) => {
-    const box = track.current?.getBoundingClientRect()
-    return box && total ? Math.max(0, Math.min(total, (clientX - box.left) / box.width * total)) : 0
-  }
-  useEffect(()=>{
-    const box = scroller.current
-    if (!box || zoom === 1 || !total) return
-    const x = now / total * box.scrollWidth
-    if (x < box.scrollLeft + 40 || x > box.scrollLeft + box.clientWidth - 40) box.scrollLeft = x - box.clientWidth / 2
-  },[now, zoom, total])
-  const ticks = ticksOf(total, zoom)
-
-  const onTrackDown = (e:ReactPointerEvent<HTMLDivElement>) => {
-    if (!total || e.button !== 0) return
-    capture(e.pointerId)
-    scrubbing.current = true
-    onSeek(msAt(e.clientX))
-  }
-  const onTrackMove = (e:ReactPointerEvent<HTMLDivElement>) => {
-    const ms = msAt(e.clientX)
-    setHover(ms)
-    const drag = dragging.current
-    if (drag) {drag.index = onMove(drag.index, ms);drag.moved = true;onSeek(Math.round(ms / STEP_MS) * STEP_MS);return}
-    if (scrubbing.current) onSeek(ms)
-  }
-  const onTrackUp = () => {scrubbing.current = false;dragging.current = null}
-  const onMarkerDown = (e:ReactPointerEvent<HTMLButtonElement>, index:number) => {
-    e.stopPropagation()
-    if (e.button !== 0) return
-    onSelect(index)
-    if (!editable) return
-    capture(e.pointerId)
-    dragging.current = {index, moved:false}
-  }
-
-  return <div className="te-bar">
-    <div className="te-bar-tools">
-      <ZoomIn size={15}/><span className="te-muted">Thu phóng</span>
-      {ZOOMS.map(z=><button key={z} type="button" className={'te-zoom' + (z === zoom ? ' is-on' : '')} onClick={()=>onZoom(z)}>{z}×</button>)}
-      <small className="te-muted">(cả mốc ghim và overlay)</small>
-    </div>
-    <div ref={el=>{scroller.current = el;scrollRef(el)}} className="te-scroller">
-      <div ref={track} className={'te-track' + (total ? '' : ' is-disabled')} style={{width:`${zoom * 100}%`}}
-        onPointerDown={onTrackDown} onPointerMove={onTrackMove} onPointerUp={onTrackUp} onPointerCancel={onTrackUp} onPointerLeave={()=>setHover(null)}
-        role="slider" aria-label="Thanh thời gian video" aria-valuemin={0} aria-valuemax={Math.round(total / 1000)} aria-valuenow={Math.round(now / 1000)} aria-valuetext={hms(now)}>
-        {ticks.map(t=><span key={t} className="te-tick" style={{left:`${pct(t)}%`}}><small>{hms(t)}</small></span>)}
-        <span className="te-lane"/>
-        {markers.map((m, i)=>{
-          const name = m.product_id != null ? productName(m.product_id) : undefined
-          return <button key={`${i}-${m.at_ms}`} type="button" className={'te-marker is-' + m.action.toLowerCase() + (i === selected ? ' is-selected' : '') + (m.review_status !== 'APPROVED' ? ' is-review' : '')}
-            style={{left:`${pct(m.at_ms)}%`}} onPointerDown={e=>onMarkerDown(e, i)}
-            title={`${hms(m.at_ms)} · ${ACTION_LABEL[m.action]}${name ? ' · ' + name : ''}`} aria-label={`Mốc ${i + 1} lúc ${hms(m.at_ms)}`}>
-            <span>{i + 1}</span>
-          </button>
-        })}
-        <span className="te-playhead" style={{left:`${pct(now)}%`}}/>
-        {hover != null && <span className="te-hover" style={{left:`${pct(hover)}%`}}>{hms(hover)}</span>}
-      </div>
-    </div>
-  </div>
 }
