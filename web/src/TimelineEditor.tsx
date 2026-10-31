@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, Select, useToast } from './ui/core'
+import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, SegmentedControl, Select, Switch, useToast } from './ui/core'
 import {
-  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, Pause, Pin, PinOff, Play, Plus, Rocket, Save, StickyNote, Trash2, ZoomIn,
+  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, Info, Pause, Pin, PinOff, Play, Plus, Rocket, Save, StickyNote, Trash2, ZoomIn,
 } from 'lucide-react'
-import { apiRequest, assetUrl, errorText } from './mediaApi'
+import { api, apiRequest, assetUrl, errorText } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import {
   ACTION_LABEL, TIMELINE_STATUS, hms, isSingle, parseHms, sessionHref, timelinesApi,
   type LiveProduct, type LiveSession, type MarkerAction, type Timeline, type TimelineIssue, type TimelineMarker,
 } from './liveSessionsApi'
 import TimelineAIPanel from './TimelineAIPanel'
+import { overlaysApi, type OverlayAsset, type OverlayTemplates } from './overlaysApi'
+import { EXTRA_PRESETS, endOf, fromPreset, MIN_DURATION_MS, type Overlay, type OverlayIssue, type OverlayPreset, type OverlayScene } from './overlay/overlayModel'
+import { blocksSave, copyOverlay, hasClipboard, localIssues, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
+import { OverlayPreview, OverlayTracks, type PreviewMode } from './overlay/OverlayStage'
+import OverlayPanel from './overlay/OverlayPanel'
 import './timeline-editor.css'
+import './overlay/overlay-editor.css'
 
 const ZOOMS = [1, 2, 4, 8, 16, 32]
 const STEP_MS = 1000
@@ -29,6 +35,10 @@ type Confirm = null | {kind:'discard'; next:number} | {kind:'activate'|'delete'}
  * place its markers on its timeline (drag, or type an exact HH:MM:SS), choose the product each one pins, save the draft
  * (every video's markers), approve and activate a version. Approved versions are read-only: edit a new draft made from
  * them.
+ *
+ * The same version holds the overlays drawn over the video (docs/LIVE_OVERLAYS.md): the preview shows them through the
+ * shared OverlayRenderer at the current position, overlay tracks sit under the pin timeline, and the "Overlay" tab edits
+ * them (blocks, box, timing, animations) with undo / redo. Saving the draft saves markers and overlays.
  */
 export default function TimelineEditor(){
   const toast = useToast()
@@ -54,6 +64,23 @@ export default function TimelineEditor(){
   const [confirm,setConfirm] = useState<Confirm>(null)
   // Bumped by every reload, so the version shown is fetched again even when it stays selected (approved, activated).
   const [revision,setRevision] = useState(0)
+  // ----- overlays of the version shown (every video), with undo / redo
+  const draft = useOverlayDraft()
+  const {overlays, reset:resetOverlays} = draft
+  // The overlays as last loaded or saved ("discard changes" goes back to them).
+  const timelineOverlays = useRef<Overlay[]>([])
+  const [serverOverlayIssues,setServerOverlayIssues] = useState<OverlayIssue[]>([])
+  const [ovSelected,setOvSelected] = useState<number|null>(null)
+  const [templates,setTemplates] = useState<OverlayTemplates|null>(null)
+  const [assets,setAssets] = useState<OverlayAsset[]|null>(null)
+  const [tab,setTab] = useState<'pins'|'overlays'>('pins')
+  const [previewMode,setPreviewMode] = useState<PreviewMode>('obs')
+  const [showZones,setShowZones] = useState(false)
+  const [canPaste,setCanPaste] = useState(hasClipboard)
+  useEffect(()=>{
+    void overlaysApi.templates().then(setTemplates).catch(()=>{})
+    void overlaysApi.assets().then(setAssets).catch(()=>setAssets([]))
+  },[])
 
   const load = useCallback(async (keepVersion?:number|null)=>{
     if (sessionId == null) return
@@ -70,18 +97,23 @@ export default function TimelineEditor(){
   },[sessionId])
   useEffect(()=>{void load().catch(e=>{setLoaded(true);toast.push({tone:'danger', title:'Không tải được timeline', description:errorText(e, '')})})},[load,toast])
   useEffect(()=>{
-    if (sessionId == null || versionId == null) {setTimeline(null);setMarkers([]);return}
+    if (sessionId == null || versionId == null) {setTimeline(null);setMarkers([]);resetOverlays([]);setServerOverlayIssues([]);return}
     let alive = true
-    void timelinesApi.get(sessionId, versionId).then(t=>{if (!alive) return;setTimeline(t);setMarkers(t.markers ?? []);setDirty(false);setSelected(null)})
-      .catch(e=>toast.push({tone:'danger', title:'Không tải được phiên bản', description:errorText(e, '')}))
+    void Promise.all([timelinesApi.get(sessionId, versionId), overlaysApi.list(sessionId, versionId)]).then(([t, view])=>{
+      if (!alive) return
+      setTimeline(t);setMarkers(t.markers ?? []);setDirty(false);setSelected(null)
+      timelineOverlays.current = view.overlays;resetOverlays(view.overlays);setServerOverlayIssues(view.issues);setOvSelected(null)
+    }).catch(e=>toast.push({tone:'danger', title:'Không tải được phiên bản', description:errorText(e, '')}))
     return ()=>{alive = false}
-  },[sessionId, versionId, revision, toast])
+  },[sessionId, versionId, revision, toast, resetOverlays])
 
   // ----- the preview player
   const player = useRef<HTMLVideoElement>(null)
   const [now,setNow] = useState(0)        // ms
   const [playing,setPlaying] = useState(false)
   const [mediaDuration,setMediaDuration] = useState<number|null>(null)
+  // Position where playback pauses by itself (previewing an overlay's animation).
+  const stopAt = useRef<number|null>(null)
   const mediaById = useMemo(()=>new Map(media.map(v=>[v.id, v])),[media])
   const video = videoId ? mediaById.get(videoId) ?? null : null
   const duration = mediaDuration ?? (video?.duration_seconds != null ? video.duration_seconds * 1000 : null)
@@ -99,7 +131,11 @@ export default function TimelineEditor(){
     const el = player.current
     if (!el) return
     let frame = 0
-    const tick = () => {setNow(el.currentTime * 1000);if (!el.paused) frame = requestAnimationFrame(tick)}
+    const tick = () => {
+      setNow(el.currentTime * 1000)
+      if (stopAt.current != null && el.currentTime * 1000 >= stopAt.current) {stopAt.current = null;el.pause()}
+      if (!el.paused) frame = requestAnimationFrame(tick)
+    }
     const onPlay = () => {setPlaying(true);frame = requestAnimationFrame(tick)}
     const onPause = () => {setPlaying(false);cancelAnimationFrame(frame);setNow(el.currentTime * 1000)}
     const onMeta = () => {if (Number.isFinite(el.duration) && el.duration > 0) setMediaDuration(Math.round(el.duration * 1000))}
@@ -114,9 +150,7 @@ export default function TimelineEditor(){
     setNow(value)
     if (el) el.currentTime = value / 1000
   }
-  const toggle = () => {const el = player.current;if (!el) return;if (el.paused) void el.play();else el.pause()}
-  // The frame takes the video's own proportions: a 1080×1920 TikTok video is shown portrait, never cropped or stretched.
-  const videoRatio = video?.width && video?.height ? `${video.width} / ${video.height}` : '9 / 16'
+  const toggle = () => {const el = player.current;stopAt.current = null;if (!el) return;if (el.paused) void el.play();else el.pause()}
 
   // ----- markers
   const editable = timeline?.status === 'DRAFT' && session?.status !== 'ENDED'
@@ -153,7 +187,72 @@ export default function TimelineEditor(){
   ])
   const issues = dirty ? local : [...local, ...(timeline?.issues ?? []).filter(i=>!local.some(l=>l.code === i.code && l.marker === i.marker))]
   const markerIssues = (i:number) => issues.filter(x=>x.marker === i)
-  const blocking = issues.some(i=>i.level === 'error')
+
+  // ----- overlays
+  const presets = useMemo<OverlayPreset[]>(()=>{
+    const list = templates?.templates ?? []
+    return [...list, ...EXTRA_PRESETS.filter(p=>!list.some(t=>t.template === p.template))]
+  },[templates])
+  /** Snapshot-shaped input of the renderer: the draft's overlays with the catalog products and images they can read. */
+  const scene = useMemo<OverlayScene>(()=>({
+    overlays,
+    products:Object.fromEntries(products.map(p=>[String(p.id), {name:p.name, sku:p.sku, price:p.price ?? null, origin_price:p.origin_price ?? null, image_url:p.image_url}])),
+    assets:Object.fromEntries((assets ?? []).map(a=>[a.id, a])),
+  }),[overlays, products, assets])
+  const overlayLocal = localIssues(overlays, {durationOf, hasProduct:id=>productById.has(id), hasAsset:id=>assets ? assets.some(a=>a.id === id) : null,
+    maxConcurrent:templates?.max_concurrent ?? 4})
+  const overlayIssues = draft.dirty ? overlayLocal
+    : [...overlayLocal, ...serverOverlayIssues.filter(i=>!overlayLocal.some(l=>l.code === i.code && l.overlay === i.overlay && l.media_id === i.media_id))]
+  const overlayBlocking = overlayLocal.some(blocksSave)
+  const blocking = issues.some(i=>i.level === 'error') || overlayIssues.some(i=>i.level === 'error')
+  const unsaved = dirty || draft.dirty
+  const selectOverlay = (index:number|null) => {setOvSelected(index);if (index != null) setTab('overlays')}
+  /** Start and length that fit in the video shown. */
+  const fitTime = (start:number, length:number) => {
+    if (duration == null) return {start_ms:start, duration_ms:length}
+    const duration_ms = Math.max(MIN_DURATION_MS, Math.min(length, duration))
+    return {start_ms:Math.max(0, Math.min(start, duration - duration_ms)), duration_ms}
+  }
+  /** The product pinned at `ms` of the video shown (the last pin marker before it), the default of a new overlay. */
+  const pinnedAt = (ms:number) => {
+    const last = shown.map(x=>x.m).filter(m=>m.at_ms <= ms && m.action !== 'NO_ACTION').at(-1)
+    return last?.action === 'PIN_PRODUCT' ? last.product_id : null
+  }
+  const addOverlay = (preset:OverlayPreset|null) => {
+    if (!videoId) return
+    const created = fromPreset(preset, videoId, 0, pinnedAt(now))
+    const next = {...created, ...fitTime(Math.round(now / 100) * 100, created.duration_ms)}
+    draft.set(list=>[...list, next])
+    selectOverlay(overlays.length)
+  }
+  const changeOverlay = (index:number, next:Overlay, field:string) => draft.set(list=>list.map((o, i)=>i === index ? next : o), `${index}-${field}`)
+  const removeOverlay = (index:number) => {draft.set(list=>list.filter((_, i)=>i !== index));setOvSelected(null)}
+  const duplicateOverlay = (index:number) => {
+    const {id:_id, ...source} = overlays[index]
+    const copy:Overlay = structuredClone(source)
+    // Right after the original when it fits, else at the same time slightly lower.
+    if (duration == null || endOf(copy) + copy.duration_ms <= duration) copy.start_ms = endOf(copy)
+    else copy.layout = {...copy.layout, y:Math.min(1 - copy.layout.height, copy.layout.y + 0.03)}
+    draft.set(list=>[...list.slice(0, index + 1), copy, ...list.slice(index + 1)])
+    selectOverlay(index + 1)
+  }
+  const copySelected = (index:number) => {copyOverlay(overlays[index]);setCanPaste(true);toast.push({tone:'success', title:'Đã sao chép overlay', description:'Dán (Ctrl+V) tại vị trí đang xem, ở video hoặc phiên bản nháp khác.'})}
+  const paste = () => {
+    if (!videoId) return
+    const pasted = pastedOverlay(videoId, Math.round(now / 100) * 100, duration)
+    if (!pasted) return
+    draft.set(list=>[...list, pasted])
+    selectOverlay(overlays.length)
+  }
+  /** Plays the overlay's entry (or exit) from just before it, then pauses: the animations run from the clock. */
+  const previewAnimation = (index:number, part:'in'|'out') => {
+    const o = overlays[index], el = player.current
+    if (!o || !el) return
+    const from = part === 'in' ? o.start_ms - 400 : endOf(o) - o.animation_out.duration_ms - 600
+    seek(Math.max(0, from))
+    stopAt.current = part === 'in' ? o.start_ms + o.animation_in.duration_ms + 800 : endOf(o) + 400
+    void el.play()
+  }
 
   const run = async (action:()=>Promise<unknown>, success:string) => {
     setBusy(true)
@@ -161,10 +260,21 @@ export default function TimelineEditor(){
     catch(e){toast.push({tone:'danger', title:'Không thực hiện được', description:errorText(e, '')});return false}
     finally{setBusy(false)}
   }
+  // Markers and overlays are saved separately (separate tables); each only when it changed.
   const save = () => timeline && run(async ()=>{
-    const saved = await timelinesApi.saveMarkers(timeline.session_id, timeline.id, markers)
-    setTimeline(saved);setMarkers(saved.markers ?? []);setDirty(false)
-    setTimelines(list=>list.map(t=>t.id === saved.id ? {...t, marker_count:saved.marker_count, updated_at:saved.updated_at} : t))
+    if (dirty) {
+      const saved = await timelinesApi.saveMarkers(timeline.session_id, timeline.id, markers)
+      setTimeline(saved);setMarkers(saved.markers ?? []);setDirty(false)
+      setTimelines(list=>list.map(t=>t.id === saved.id ? {...t, marker_count:saved.marker_count, updated_at:saved.updated_at} : t))
+    }
+    if (draft.dirty) {
+      const view = await overlaysApi.save(timeline.session_id, timeline.id, overlays)
+      timelineOverlays.current = view.overlays;resetOverlays(view.overlays);setServerOverlayIssues(view.issues)
+      // The version's own issues (OVERLAY_ERRORS) follow its overlays.
+      const fresh = await timelinesApi.get(timeline.session_id, timeline.id)
+      setTimeline(t=>t ? {...t, issues:fresh.issues, overlay_count:fresh.overlay_count, updated_at:fresh.updated_at} : fresh)
+      setTimelines(list=>list.map(t=>t.id === fresh.id ? {...t, overlay_count:fresh.overlay_count, updated_at:fresh.updated_at} : t))
+    }
   }, 'Đã lưu bản nháp')
   const approve = () => timeline && run(async ()=>{
     await timelinesApi.approve(timeline.session_id, timeline.id);await load(timeline.id)
@@ -180,7 +290,7 @@ export default function TimelineEditor(){
   const removeDraft = () => timeline && run(async ()=>{
     await timelinesApi.remove(timeline.session_id, timeline.id);await load()
   }, 'Đã xóa bản nháp')
-  const chooseVersion = (id:number) => {if (id === versionId) return;if (dirty) setConfirm({kind:'discard', next:id});else setVersionId(id)}
+  const chooseVersion = (id:number) => {if (id === versionId) return;if (unsaved) setConfirm({kind:'discard', next:id});else setVersionId(id)}
   const onConfirm = () => {
     const c = confirm
     setConfirm(null)
@@ -190,14 +300,30 @@ export default function TimelineEditor(){
     if (c.kind === 'delete') void removeDraft()
   }
 
-  // Keyboard: Space play/pause, M add a marker here, ←/→ 1 s (Shift 10 s), Delete removes the selected marker.
+  // Keyboard: Space play/pause, M add a marker here, ←/→ 1 s (Shift 10 s), Delete removes the selected marker (or the
+  // selected overlay in the Overlay tab). Overlay tab: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo / redo, Ctrl+C / V / D.
   useEffect(()=>{
     const onKey = (e:KeyboardEvent) => {
-      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.ui-modal__backdrop')) return
+      if (isTyping(e.target) || document.querySelector('.ui-modal__backdrop')) return
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        if (tab !== 'overlays') return
+        const key = e.key.toLowerCase()
+        const has = ovSelected != null && overlays[ovSelected]?.media_id === videoId
+        const shortcuts:Record<string, ()=>void> = {
+          ...(has ? {c:()=>copySelected(ovSelected!)} : {}),
+          ...(editable ? {z:e.shiftKey ? draft.redo : draft.undo, y:draft.redo, v:paste, ...(has ? {d:()=>duplicateOverlay(ovSelected!)} : {})} : {}),
+        }
+        if (shortcuts[key]) {e.preventDefault();shortcuts[key]()}
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
       const step = e.shiftKey ? 10_000 : 1000
       const actions:Record<string, ()=>void> = {
         ' ':toggle, ArrowLeft:()=>seek(now - step), ArrowRight:()=>seek(now + step),
-        ...(editable ? {m:()=>addAt(now), M:()=>addAt(now), Delete:()=>{if (selected != null) remove(selected)}} : {}),
+        ...(editable ? {m:()=>addAt(now), M:()=>addAt(now), Delete:()=>{
+          if (tab === 'overlays') {if (ovSelected != null) removeOverlay(ovSelected)}
+          else if (selected != null) remove(selected)
+        }} : {}),
       }
       const action = actions[e.key]
       if (action) {e.preventDefault();action()}
@@ -205,13 +331,13 @@ export default function TimelineEditor(){
     window.addEventListener('keydown', onKey)
     return ()=>window.removeEventListener('keydown', onKey)
   })
-  // Leaving the page with unsaved markers.
+  // Leaving the page with unsaved markers or overlays.
   useEffect(()=>{
-    if (!dirty) return
+    if (!unsaved) return
     const warn = (e:BeforeUnloadEvent) => {e.preventDefault()}
     window.addEventListener('beforeunload', warn)
     return ()=>window.removeEventListener('beforeunload', warn)
-  },[dirty])
+  },[unsaved])
 
   if (sessionId == null) return <Card><EmptyState title="Chưa chọn phiên LIVE" description="Mở Timeline Editor từ một phiên ở chế độ Video + lịch ghim." actionLabel="Về Phiên LIVE" onAction={()=>{window.location.hash = '/sessions'}}/></Card>
   if (!loaded || !session) return <Card><p className="te-muted">Đang tải…</p></Card>
@@ -219,7 +345,14 @@ export default function TimelineEditor(){
   if (!session.media_ids.length || !videoId) return <Alert tone="warning" title="Phiên chưa có video">Chọn video ở trang phiên trước khi tạo lịch ghim. <a href={sessionHref(session.id)}>Về phiên</a></Alert>
 
   const status = timeline ? TIMELINE_STATUS[timeline.status] : null
-  const versionOptions = timelines.map(t=>({value:String(t.id), label:`Phiên bản ${t.version} · ${TIMELINE_STATUS[t.status].label} · ${t.marker_count} mốc`}))
+  const versionOptions = timelines.map(t=>({value:String(t.id), label:`Phiên bản ${t.version} · ${TIMELINE_STATUS[t.status].label} · ${t.marker_count} mốc${t.overlay_count ? ` · ${t.overlay_count} overlay` : ''}`}))
+  const shownOverlays = overlays.filter(o=>o.media_id === videoId).length
+  const readOnlyAction = !timeline ? <Alert tone="info">Tạo lịch ghim (bản nháp) trước để thêm overlay.</Alert>
+    : (timeline.status === 'APPROVED' || timeline.status === 'ACTIVE') && session.status !== 'ENDED'
+      ? <Alert tone="info" title={timeline.status === 'ACTIVE' ? 'Phiên bản đang dùng: chỉ xem' : 'Phiên bản đã duyệt: chỉ xem'}>
+          <p className="te-muted">Tạo bản nháp mới từ phiên bản này (chép cả mốc và overlay) rồi sửa; phiên bản đang dùng giữ nguyên tới khi bạn kích hoạt bản mới.</p>
+          <Button size="sm" variant="outline" leftIcon={<Copy size={14}/>} disabled={busy} onClick={()=>void newDraft(timeline.id)}>Sửa thành bản nháp mới</Button>
+        </Alert> : undefined
   // The session's videos, then those that only markers of this version still name (removed from the session).
   const videoTabs = [...session.media_ids, ...new Set(markers.map(m=>m.media_id).filter((id):id is string=>!!id && !session.media_ids.includes(id)))]
   const productOptions = [{value:'', label:'Chọn sản phẩm…'}, ...products.map(p=>({value:String(p.id), label:`${p.name}${p.sku ? ' · ' + p.sku : ''}${p.status === 'INACTIVE' ? ' (tạm ẩn)' : ''}${p.tiktok_product_id ? '' : ' · chưa đồng bộ TikTok'}`}))]
@@ -235,8 +368,9 @@ export default function TimelineEditor(){
       <div className="te-actions">
         {editable && <>
           <Button variant="ghost" leftIcon={<Trash2 size={15}/>} disabled={busy} onClick={()=>setConfirm({kind:'delete'})}>Xóa nháp</Button>
-          <Button variant="outline" leftIcon={<Save size={15}/>} loading={busy && dirty} disabled={busy || !dirty || local.some(i=>i.level === 'error')} onClick={()=>void save()}>Lưu nháp</Button>
-          <Button leftIcon={<Check size={15}/>} disabled={busy || dirty || blocking || !markers.length} title={dirty ? 'Lưu nháp trước khi duyệt' : blocking ? 'Sửa các lỗi trước khi duyệt' : undefined} onClick={()=>void approve()}>Duyệt</Button>
+          <Button variant="outline" leftIcon={<Save size={15}/>} loading={busy && unsaved} disabled={busy || !unsaved || local.some(i=>i.level === 'error') || overlayBlocking}
+            title={overlayBlocking ? 'Overlay còn lỗi (xem tab Overlay)' : undefined} onClick={()=>void save()}>Lưu nháp</Button>
+          <Button leftIcon={<Check size={15}/>} disabled={busy || unsaved || blocking || !markers.length} title={unsaved ? 'Lưu nháp trước khi duyệt' : blocking ? 'Sửa các lỗi trước khi duyệt' : undefined} onClick={()=>void approve()}>Duyệt</Button>
         </>}
         {timeline && (timeline.status === 'APPROVED' || timeline.status === 'ACTIVE') && <>
           <Button variant="outline" leftIcon={<Copy size={15}/>} disabled={busy || session.status === 'ENDED'} onClick={()=>void newDraft(timeline.id)}>Sửa thành bản nháp mới</Button>
@@ -252,19 +386,31 @@ export default function TimelineEditor(){
         const count = markers.filter(m=>m.media_id === id).length
         const removed = !session.media_ids.includes(id)
         return <button key={id} type="button" role="tab" aria-selected={id === videoId} className={'te-video-tab' + (id === videoId ? ' is-on' : '') + (removed ? ' is-removed' : '')}
-          onClick={()=>{player.current?.pause();setSelected(null);setVideoId(id)}} title={removed ? 'Video không còn trong phiên: các mốc của nó bị bỏ qua khi LIVE' : undefined}>
+          onClick={()=>{player.current?.pause();setSelected(null);setOvSelected(null);setVideoId(id)}} title={removed ? 'Video không còn trong phiên: các mốc của nó bị bỏ qua khi LIVE' : undefined}>
           <span className="te-video-no">{removed ? '!' : n + 1}</span>
           <span className="te-video-name">{item ? item.display_name || item.filename : 'Video không còn trong thư viện'}</span>
-          <small>{count} mốc{item?.duration_seconds != null ? ` · ${hms(item.duration_seconds * 1000)}` : ''}</small>
+          <small>{count} mốc · {overlays.filter(o=>o.media_id === id).length} overlay{item?.duration_seconds != null ? ` · ${hms(item.duration_seconds * 1000)}` : ''}</small>
         </button>
       })}
     </div>}
 
-    {/* Player and timeline: the video keeps its own proportions (portrait TikTok videos stay portrait). */}
+    {/* Player and timeline: the 9:16 output frame (the video fitted inside, never cropped or stretched) with the overlays
+        drawn on top by the shared renderer; the source video is never changed. */}
     <Card className="te-stage" padding={false}>
       <div className="te-stage-body">
-        <div className="te-video" style={{aspectRatio:videoRatio}}>
-          {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video này trong Thư viện.</p>}
+        <div className="ove-preview">
+          <div className="ove-preview-tools">
+            <SegmentedControl<PreviewMode> value={previewMode} onChange={setPreviewMode} items={[{value:'obs', label:'OBS Preview'}, {value:'tiktok', label:'TikTok Viewer Preview'}]}/>
+            <Switch label="Vùng an toàn" checked={showZones} onChange={e=>setShowZones(e.target.checked)}/>
+          </div>
+          <OverlayPreview scene={scene} mediaId={videoId} now={now} animate={playing} apiBase={api} mode={previewMode} showZones={showZones}
+            selected={ovSelected} editable={!!editable} onSelect={selectOverlay} onGestureEnd={draft.seal}
+            onLayout={(index, layout, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, layout} : o), gesture)}>
+            {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video này trong Thư viện.</p>}
+          </OverlayPreview>
+          {previewMode === 'tiktok'
+            ? <p className="ove-note"><Info size={14}/>Mô phỏng gần đúng giao diện người xem TikTok (bình luận, thẻ sản phẩm, thanh công cụ): vị trí thật thay đổi theo phiên bản app, điện thoại và cài đặt, không chính xác 100%.</p>
+            : <p className="ove-note"><Info size={14}/>Khung OBS thật 1080×1920. Khi tạm dừng, overlay hiện đầy đủ để dễ chỉnh; hiệu ứng vào/ra chạy khi phát.</p>}
         </div>
         <div className="te-stage-side">
           <div className="te-clock"><strong>{hms(now)}</strong><span>/ {hms(duration)}</span></div>
@@ -274,12 +420,28 @@ export default function TimelineEditor(){
           </div>
           <TimelineBar duration={duration} now={now} markers={shown.map(x=>x.m)} selected={shown.findIndex(x=>x.i === selected)} editable={!!editable} productName={id=>productById.get(id)?.name}
             onSeek={seek} onSelect={n=>{setSelected(shown[n].i);seek(shown[n].m.at_ms)}} onMove={(n, ms)=>moveTo(shown[n].i, ms)}/>
-          <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span></div>
+          <OverlayTracks overlays={overlays} mediaId={videoId} duration={duration} now={now} selected={ovSelected} editable={!!editable} presets={presets} issues={overlayIssues}
+            onSelect={selectOverlay} onSeek={seek} onGestureEnd={draft.seal}
+            onTime={(index, start_ms, duration_ms, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, start_ms, duration_ms} : o), gesture)}/>
+          <div className="te-shortcuts"><span><Kbd>Space</Kbd> phát/dừng</span><span><Kbd>←</Kbd><Kbd>→</Kbd> 1 giây (Shift: 10 giây)</span>{editable && <><span><Kbd>M</Kbd> thêm mốc</span><span><Kbd>Delete</Kbd> xóa mốc / overlay đang chọn</span></>}<span>Bấm mốc để tua tới đó{editable ? ', kéo để dời' : ''}</span>
+            {editable && <span>Overlay: kéo trên khung để dời, kéo tay nắm để đổi cỡ, kéo thanh track để đổi giờ · <Kbd>Ctrl</Kbd>+<Kbd>Z</Kbd>/<Kbd>Y</Kbd> hoàn tác/làm lại · <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd>/<Kbd>V</Kbd>/<Kbd>D</Kbd></span>}</div>
         </div>
       </div>
     </Card>
 
-    <div className="te-grid">
+    <div className="ove-tabs">
+      <SegmentedControl<'pins'|'overlays'> value={tab} onChange={setTab}
+        items={[{value:'pins', label:`Mốc ghim (${shown.length})`}, {value:'overlays', label:`Overlay (${shownOverlays})`}]}/>
+      {overlayIssues.some(i=>i.level === 'error') && <Badge tone="danger">Overlay có lỗi</Badge>}
+    </div>
+
+    {tab === 'overlays' ? <OverlayPanel overlays={overlays} selected={ovSelected} mediaId={videoId} now={now} editable={!!editable} dirty={draft.dirty} busy={busy}
+      presets={presets} products={products} assets={assets ?? []} issues={overlayIssues} apiBase={api} canUndo={draft.canUndo} canRedo={draft.canRedo} canPaste={canPaste}
+      blocking={overlayBlocking || local.some(i=>i.level === 'error')} onSelect={selectOverlay} onAdd={addOverlay} onChange={changeOverlay} onSeal={draft.seal}
+      onRemove={removeOverlay} onDuplicate={duplicateOverlay} onCopy={copySelected} onPaste={paste} onUndo={draft.undo} onRedo={draft.redo}
+      onPreview={previewAnimation} onSeek={seek} onSave={()=>void save()} onRevert={()=>{resetOverlays(timelineOverlays.current);setOvSelected(null)}}
+      onAssetsChanged={setAssets} readOnlyAction={readOnlyAction}/>
+    : <div className="te-grid">
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc của video này ({shown.length}{markers.length !== shown.length ? ` / ${markers.length} cả phiên` : ''})</span>}
         description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó của video. Sang video mới, sản phẩm đang ghim được giữ tới mốc đầu của video đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>
         {timeline?.note && <p className="te-note"><StickyNote size={14}/>{timeline.note}</p>}
@@ -295,8 +457,8 @@ export default function TimelineEditor(){
       </Card>
 
       <TimelineAIPanel sessionId={session.id} mediaId={videoId} disabled={session.status === 'ENDED'} onSeek={seek}
-        onDraft={id=>{if (dirty) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
-    </div>
+        onDraft={id=>{if (unsaved) {toast.push({tone:'warning', title:'Bản nháp đang sửa chưa lưu', description:'Mở bản nháp AI sau khi lưu hoặc hoàn tác.'});void load(versionId)} else void load(id)}}/>
+    </div>}
 
     <ConfirmModal open={!!confirm} loading={busy} onClose={()=>setConfirm(null)} onConfirm={onConfirm} tone={confirm?.kind === 'delete' ? 'danger' : 'primary'}
       title={confirm?.kind === 'discard' ? 'Bỏ thay đổi chưa lưu?' : confirm?.kind === 'delete' ? 'Xóa bản nháp?' : `Kích hoạt phiên bản ${timeline?.version}?`}

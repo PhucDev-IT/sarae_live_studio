@@ -21,7 +21,7 @@ export const MODE_META:Record<PlaybackMode,{label:string;hint:string}> = {
 }
 export type SessionEvent = { id:number; event_type:string; product_id:number|null; detail:string; created_at:string }
 /** Catalog product with the number of videos linked for LIVE (GET /live/products). */
-export type LiveProduct = { id:number; shop_id:number|null; tiktok_product_id?:string|null; name:string; sku:string; image_url?:string; status?:'ACTIVE'|'INACTIVE'; price?:number|null; video_count:number }
+export type LiveProduct = { id:number; shop_id:number|null; tiktok_product_id?:string|null; name:string; sku:string; image_url?:string; status?:'ACTIVE'|'INACTIVE'; price?:number|null; origin_price?:number|null; video_count:number }
 
 export const STATUS_META:Record<SessionStatus,{label:string;tone:'default'|'danger'|'primary'}> = {
   DRAFT:{label:'Chuẩn bị', tone:'primary'},
@@ -190,7 +190,7 @@ export type TimelineStatus = 'DRAFT' | 'APPROVED' | 'ACTIVE' | 'ARCHIVED'
 export type TimelineIssue = { level:'error'|'warning'; code:string; message:string; marker?:number }
 export type Timeline = {
   id:number; session_id:number; version:number; status:TimelineStatus; media_id:string; duration_ms:number|null; note:string
-  marker_count:number; created_at:string; updated_at:string; approved_at:string|null; activated_at:string|null
+  marker_count:number; overlay_count?:number; created_at:string; updated_at:string; approved_at:string|null; activated_at:string|null
   markers?:TimelineMarker[]; issues?:TimelineIssue[]; sent?:boolean; agent_error?:string|null
 }
 export const TIMELINE_STATUS:Record<TimelineStatus,{label:string;tone:'default'|'primary'|'success'|'warning'}> = {

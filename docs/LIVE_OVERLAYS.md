@@ -1,8 +1,8 @@
-# LIVE Overlays — Phase 1 (data model & API)
+# LIVE Overlays — Phase 1 (data model & API) and Phase 2 (editor & renderer)
 
 Overlay events extend the [Single Video Timeline](SINGLE_VIDEO_TIMELINE.md): besides the pin markers, a timeline
-version holds what is drawn over the LIVE video, on which video, when, and where. Phase 1 is the data and API only:
-no editor, no OBS, nothing is drawn yet.
+version holds what is drawn over the LIVE video, on which video, when, and where. Phase 1 is the data and API;
+Phase 2 (§8) adds the visual editor and the one shared renderer. Nothing is sent to OBS or the Agent yet (Phase 3).
 
 Code: `backend/app/live_overlays.py`. Migration: `20261031_0019_live_overlays`. Tests: `backend/tests/test_live_overlays.py`.
 
@@ -142,3 +142,54 @@ renderer re-syncs only then and caches images by `sha256`. Phase 1 does **not** 
 - `alembic upgrade head` (or startup `shop_schema.upgrade`) creates the two tables; nothing existing is altered.
 - Rollback: `alembic downgrade 20261030_0018` drops the two tables; pins and timelines are untouched.
 - LIVE sessions running now are unaffected: the Agent commands and the pin scheduler did not change.
+
+## 8. Phase 2 — visual editor and shared renderer
+
+Code: `web/src/overlay/` (`overlayModel.ts`, `OverlayRenderer.tsx` + `overlay-renderer.css`, `OverlayStage.tsx`,
+`OverlayPanel.tsx`, `overlayDraft.ts`, `overlay-editor.css`), API client `web/src/overlaysApi.ts`, wired into
+`web/src/TimelineEditor.tsx` (`#/timeline?session=ID`). Backend: unchanged except `origin_price` in
+`GET /api/live/catalog-products` (so `origin_price` blocks preview).
+
+```
+TimelineEditor (one version, every video of the session)
+├─ Preview 9:16 ─ <video> (untouched) ─ OverlayRenderer (scene, video, position) ─ editor layer (box, handles, zones)
+│                 mode: OBS Preview | TikTok Viewer Preview (simulated UI, approximate)
+├─ Pin timeline (unchanged) + overlay tracks (one track per `template` label, drag bar / edges = start / end)
+└─ Tabs: Mốc ghim (markers + AI, unchanged) | Overlay (list, "new from preset", inspector: blocks, box, timing, animations)
+```
+
+### Renderer contract (`OverlayRenderer`, reused as the OBS browser source in Phase 3)
+
+| Input | Meaning |
+|---|---|
+| `scene` | Snapshot-shaped: `{overlays, products: {id: {name, sku, price, origin_price, image_url}}, assets: {id: {url}}}` — `GET …/overlays/snapshot` fits as is |
+| `mediaId`, `positionMs` | Shows the overlays where `enabled !== false`, `media_id` matches and `start_ms ≤ position < start_ms + duration_ms` |
+| `apiBase` | Origin the signed `/api/…` URLs resolve against |
+| `animate` | `true`: in/out animation from the clock (`animationState`, no CSS keyframes: the same position always looks the same, after a seek too). The editor passes `false` while paused so a box is fully visible while it is edited |
+| `placeholders` | Editor only: dashed box for a missing image / empty product field. OBS leaves them empty |
+
+- Fixed logical canvas **1080×1920**, scaled to the container with one CSS `transform: scale()` (ResizeObserver); every
+  size inside is a canvas pixel, so the picture does not depend on the viewport or the page CSS (`all: initial` on the
+  canvas). Font stack fixed (`--ovr-font`: Segoe UI, Helvetica Neue, Arial, Noto Sans), `line-height 1.2`, no
+  letter-spacing; text is vertically centred in its frame, `max_lines` clamps. Phase 3 may bundle one web font to make
+  it pixel-identical on every machine.
+- Drawing order: `z_index`, then list order; blocks in list order. Shape radius / image radius are fractions of the
+  block's shorter side, `stroke_width` canvas px. Product prices: `vi-VN` thousands separators + prefix/suffix.
+- Animations: `fade`; `slide_*` move 80 canvas px and fade; `zoom` scales from 85 %; ease-out cubic; `none` = instant.
+- Images: only asset URLs and product photos present in the scene, and only `/api/…` (signed) or `https://`
+  (`safeImageUrl`), same rule as the snapshot.
+
+### Editor behaviour
+
+| Feature | How |
+|---|---|
+| Overlay kinds | No closed list. "Thêm overlay" starts from `GET /api/live/overlay-templates` presets (plus the web-side data preset `PRODUCT_SPOTLIGHT` when the API lacks it) or a blank box; any block can be added / removed / reordered; the `template` label is free text (A–Z 0–9 _ -) and names the track |
+| Box | Drag to move, 8 handles to resize, or numeric X / Y / W / H in canvas px; stored as fractions rounded to 4 decimals and clamped inside the canvas; z-index, opacity |
+| Time | Start / duration fields (0.1 s), "start here", drag the track bar (0.1 s steps) or its edges; clamped to the video |
+| Edit history | Undo / redo (Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y, 100 steps; one drag or one field = one step); copy / paste (Ctrl+C / Ctrl+V at the playhead, also into another video or draft of the tab), duplicate (Ctrl+D), Delete, enable / disable |
+| Animations | Select in / out + duration; ▶ plays the video from just before the entry (or exit) and pauses after it |
+| Product default | A new overlay reads the product pinned at the playhead (last pin marker of that video) |
+| Saving | "Lưu nháp" saves markers (`PUT …/markers`) and overlays (`PUT …/overlays`, whole list) — each only when changed. Only DRAFT is editable; APPROVED / ACTIVE are read-only with "Sửa thành bản nháp mới" (`copy_from`, the active version never changes) |
+| Issues | Local checks before saving (no image chosen, no product, after the end, animations longer than the overlay, empty text, deleted image, too many at once) plus the API `issues` of the saved list, next to each overlay; errors that would be 422 block saving, `TOO_MANY_AT_ONCE` only blocks approval |
+| Safe zones | "Vùng an toàn" draws the TikTok zones and a safe area; an overlay covered ≥ 20 % by a zone gets a warning. TikTok Viewer Preview draws a simulated viewer UI and says it is approximate |
+| Images | "Chọn ảnh" opens the owner's overlay image library: upload (`POST /api/live/overlay-assets`, PNG/JPEG/WebP ≤ 5 MB checked in the browser and again by the Backend), pick, delete |
