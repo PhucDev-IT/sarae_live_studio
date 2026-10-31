@@ -42,7 +42,7 @@ class OverlayApiTests(SaasTestCase):
         super().setUp()
         self.ao, self.quan = self.tiktok_products(self.owner_a, "Áo", "Quần")
         self.foreign_product, = self.tiktok_products(self.owner_b, "B", seller="6001")
-        agent = self.activate_agent(self.owner_a, "PC-A")
+        agent = self.agent = self.activate_agent(self.owner_a, "PC-A")
         self.account = self.console_sync(agent, product_ids=(1, 2))
         self.main, self.other, self.outside = self.library_videos(self.owner_a, "main.mp4", "other.mp4", "outside.mp4")  # 12.5 s each
         created = self.client.post("/api/live/sessions", json={"name": "Single", "tiktok_account_id": self.account,
@@ -259,6 +259,28 @@ class OverlayApiTests(SaasTestCase):
         with self.Session() as db:
             timeline = agent_timeline(db, db.get(LiveSession, self.sid))
         self.assertEqual(set(timeline), {"version", "expected_user_id", "markers", "products"}, "older Agents refuse unknown fields")
+
+    def test_the_agent_fetches_the_active_snapshot_of_its_own_sessions_only(self):
+        url, params = "/api/agent-media/overlay-snapshot", {"agent_id": self.agent["agent_id"], "session_id": self.sid}
+        key = {"X-Sarae-Agent-Key": self.agent["agent_credential"]}
+        self.assertIsNone(self.client.get(url, params=params, headers=key).json()["snapshot"])
+        asset = self.asset()
+        tid = self.new()
+        self.put(tid, [self.image_overlay(asset["id"])])
+        self.client.post(f"{self.base}/{tid}/approve")
+        self.client.post(f"{self.base}/{tid}/activate")
+        body = self.client.get(url, params=params, headers=key).json()
+        snap = body["snapshot"]
+        self.assertEqual((body["session_id"], body["agent_id"], snap["version"], len(snap["overlays"])),
+                         (self.sid, self.agent["agent_id"], 1, 1))
+        self.assertEqual(self.client.get(snap["assets"][asset["id"]]["url"], headers={}).content[:8], png()[:8],
+                         "the signed URL alone downloads the image")
+        self.assertEqual(snap["revision"], self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()["revision"])
+        other = self.activate_agent(self.owner_b, "PC-B")
+        foreign = self.client.get(url, params={"agent_id": other["agent_id"], "session_id": self.sid},
+                                  headers={"X-Sarae-Agent-Key": other["agent_credential"]})
+        self.assertEqual(foreign.status_code, 404)
+        self.assertIn(self.client.get(url, params=params, headers={"X-Sarae-Agent-Key": "wrong"}).status_code, (401, 403))
 
     def test_templates_are_starting_points(self):
         found = self.client.get("/api/live/overlay-templates").json()

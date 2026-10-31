@@ -92,6 +92,10 @@ class Paths:
         return self._dir("voice")
 
     @property
+    def overlay_cache(self) -> Path:
+        return self._dir("overlay-cache")
+
+    @property
     def legacy_data(self) -> Path:
         """Folder used by the retired backend/agent runtime (PyInstaller build of backend)."""
         return self.root / "data"
@@ -143,6 +147,19 @@ class TimelineConfig(BaseModel):
     assume_live_in_dry_run: bool = True
 
 
+class OverlayConfig(BaseModel):
+    """LIVE overlays (sarae_agent/overlay): the Agent serves the renderer on this PC and keeps one OBS Browser Source."""
+    enabled: bool = True
+    # Local renderer server (127.0.0.1 only); the OBS Browser Source loads http://127.0.0.1:<port>/overlay/.
+    port: int = Field(default=17891, ge=1024, le=65535)
+    source_name: str = Field(default="Sarae Overlay", min_length=1, max_length=200)
+    # The Browser Source this Agent created, per OBS scene collection (obs-websocket inputUuid): only those inputs are
+    # ever changed; a source of the same name made by the operator is left alone.
+    input_uuids: dict[str, str] = Field(default_factory=dict)
+    # Secret in the Browser Source URL, so other local pages cannot read or drive the renderer.
+    token: str = Field(default="", max_length=64)
+
+
 class AgentConfig(BaseModel):
     # Unknown keys are ignored, so config.json files written by older Agents (with the retired
     # "media": {"folders", "rescan_minutes"} section) still load; the next save drops them.
@@ -152,6 +169,7 @@ class AgentConfig(BaseModel):
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     agent: AgentOptions = Field(default_factory=AgentOptions)
     timeline: TimelineConfig = Field(default_factory=TimelineConfig)
+    overlay: OverlayConfig = Field(default_factory=OverlayConfig)
 
 
 class ConfigError(ValueError):

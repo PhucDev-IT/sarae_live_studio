@@ -157,6 +157,10 @@ class ObsController:
                 raise AgentError("OBS_DISCONNECTED", "Mất kết nối OBS", {"reason": _short(exc)},
                                  retryable=True) from exc
 
+    def request(self, request: str, data: dict | None = None) -> dict:
+        """One obs-websocket request on the shared connection (overlay source management)."""
+        return self._call(request, data)
+
     def ensure_connected(self) -> bool:
         """Background reconnect used by the watchdog; never raises."""
         with self._lock:
