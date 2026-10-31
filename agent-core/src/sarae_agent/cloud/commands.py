@@ -174,6 +174,10 @@ class TimelineSetPayload(Payload):
     timeline: TimelinePayload | None = None
 
 
+class OverlayCheckPayload(Payload):
+    session_id: int = Field(ge=1)
+
+
 class SetAutoPinPayload(Payload):
     enabled: bool
     session_id: int | None = Field(default=None, ge=1)
@@ -247,7 +251,8 @@ class MonitorConfigPayload(Payload):
 
 class CommandRouter:
     def __init__(self, *, playback, monitor, voice, tiktok_sync: Callable[[], dict] | None = None,
-                 media_prepare: Callable[[int], dict] | None = None, chat=None, auto_pin=None, timeline=None):
+                 media_prepare: Callable[[int], dict] | None = None, chat=None, auto_pin=None, timeline=None,
+                 overlay=None):
         """``playback`` is playback.engine.PlaybackEngine; ``tiktok_sync`` scans TikTok and syncs the Cloud;
         ``media_prepare`` starts downloading a LIVE session's videos into the cache (returns at once);
         ``chat`` (auto_pin.AutoPinService) posts LIVE chat replies: chat_send(payload) / chat_probe()."""
@@ -259,6 +264,7 @@ class CommandRouter:
         self.chat = chat
         self.auto_pin = auto_pin
         self.timeline = timeline
+        self.overlay = overlay  # overlay.service.OverlayService (LIVE overlays in OBS)
         p = playback
 
         def obs_configure(b: ObsConfigurePayload) -> dict:
@@ -285,6 +291,7 @@ class CommandRouter:
                              lambda b: p.product_play(b.session_id, b.product_id, b.media_ids, b.mode)),
             "video_play": (VideoPlayPayload, self._video_play),
             "timeline_set": (TimelineSetPayload, self._timeline_set),
+            "overlay_check": (OverlayCheckPayload, self._overlay_check),
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_policy": (PlaybackPolicyPayload,
                                 lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
@@ -342,6 +349,12 @@ class CommandRouter:
         if not running:
             raise AgentError("SESSION_NOT_PLAYING", f"Phiên LIVE #{b.session_id} không phát trên Agent này")
         return scheduler.load(b.session_id, b.timeline.model_dump() if b.timeline else None)
+
+    def _overlay_check(self, b: OverlayCheckPayload) -> dict:
+        """Pre-LIVE check of the OBS overlay: prepares the session's overlays and the Browser Source, never shows it."""
+        if self.overlay is None:
+            raise AgentError("OVERLAY_UNAVAILABLE", "Agent chưa hỗ trợ overlay OBS")
+        return self.overlay.check(b.session_id)
 
     def _stop(self):
         result = self.playback.stop()

@@ -1,0 +1,16 @@
+/* "Kiểm tra OBS Overlay trước LIVE" (OverlayReadinessPanel). Prefix orp-. */
+.orp-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
+.orp-body{display:grid;gap:8px;padding:0 16px 16px}
+.orp-body h4{margin:6px 0 0;font-size:13px}
+.orp-summary{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.orp-list{display:grid;gap:4px;margin:0;padding:0;list-style:none}
+.orp-list li{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start;padding:6px 8px;border-radius:8px;font-size:13px;background:var(--ui-surface-muted,rgba(0,0,0,.03))}
+.orp-list li.is-ok svg{color:var(--ui-success,#15803d)}
+.orp-list li.is-warning svg{color:var(--ui-warning,#b45309)}
+.orp-list li.is-error svg{color:var(--ui-danger,#b91c1c)}
+.orp-list code{font-size:11px;color:var(--ui-text-muted)}
+.orp-error{display:flex;gap:6px;align-items:center;margin:0;color:var(--ui-danger,#b91c1c);font-size:13px}
+@media (max-width:640px){
+  .orp-list li{grid-template-columns:auto 1fr}
+  .orp-list code{grid-column:2}
+}

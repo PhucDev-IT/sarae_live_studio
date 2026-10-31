@@ -23,7 +23,9 @@ export async function apiRequest<T>(url:string, options?:RequestInit):Promise<T>
   if (response.status === 401) clearAuth()
   if (!response.ok) {
     const result = await response.json().catch(()=>({}))
-    throw new Error(typeof result.detail === 'string' ? result.detail : 'HTTP ' + response.status)
+    // FastAPI validation errors (422) come as a list: keep their messages and where they apply.
+    const detail = Array.isArray(result.detail) ? result.detail.slice(0, 3).map((d:{msg?:string;loc?:unknown[]})=>`${d.msg ?? ''}${d.loc ? ` (${d.loc.slice(1).join('.')})` : ''}`).join('; ') : result.detail
+    throw new Error(typeof detail === 'string' && detail ? detail : 'HTTP ' + response.status)
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>
 }

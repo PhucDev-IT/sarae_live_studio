@@ -9,7 +9,8 @@ A session's `playback_mode` decides how it plays:
   Every session created before this mode existed is ADVANCED_LEGACY (migration 20261029_0016 backfills it).
 
 Timelines are versioned per session: a DRAFT is edited freely, APPROVED is frozen, exactly one version may be ACTIVE
-(the one the Windows Agent runs). Each marker belongs to one video (`media_id`); its position is in milliseconds of
+(the one the Windows Agent runs). A version also holds overlay events (app.live_overlays), under the same lifecycle.
+Each marker belongs to one video (`media_id`); its position is in milliseconds of
 that video, so reordering, adding or removing videos never shifts the other videos' markers.
 """
 import json
@@ -285,14 +286,16 @@ def marker_view(m: TimelineMarker) -> dict:
 
 
 def view(db, owner_id: str, item, timeline: LiveTimeline, detail: bool = True) -> dict:
+    from app.live_overlays import count_events, summary_issue
     markers = markers_of(db, timeline.id)
     out = {"id": timeline.id, "session_id": timeline.session_id, "version": timeline.version, "status": timeline.status,
            "media_id": timeline.media_id, "duration_ms": timeline.duration_ms, "note": timeline.note,
-           "marker_count": len(markers), "created_at": timeline.created_at, "updated_at": timeline.updated_at,
+           "marker_count": len(markers), "overlay_count": count_events(db, timeline.id),
+           "created_at": timeline.created_at, "updated_at": timeline.updated_at,
            "approved_at": timeline.approved_at, "activated_at": timeline.activated_at}
     if detail:
         out["markers"] = [marker_view(m) for m in markers]
-        out["issues"] = issues(db, owner_id, item, timeline, markers)
+        out["issues"] = issues(db, owner_id, item, timeline, markers) + summary_issue(db, owner_id, item, timeline.id)
     return out
 
 
@@ -338,7 +341,9 @@ def create_timeline(session_id: int, body: TimelineCreate, owner: Owner):
         source = timeline_of(db, item, body.copy_from) if body.copy_from else None
         timeline = new_version(db, item, owner["id"], body.note)
         if source is not None:
+            from app.live_overlays import copy_events
             copy_markers(db, source.id, timeline.id)
+            copy_events(db, source.id, timeline.id)
         copied = f";copy_of={source.version}" if source else ""
         event(db, session_id, "TIMELINE_CREATED", detail=f"version={timeline.version}{copied}")
         db.commit()
@@ -401,7 +406,10 @@ def save_markers(session_id: int, timeline_id: int, body: MarkersInput, owner: O
 
 
 def blocking(db, owner_id: str, item, timeline: LiveTimeline, markers, verb: str):
-    errors = [i for i in issues(db, owner_id, item, timeline, markers) if i["level"] == "error"]
+    """409 while the markers or the overlays of a version have errors."""
+    from app.live_overlays import summary_issue
+    errors = [i for i in issues(db, owner_id, item, timeline, markers) + summary_issue(db, owner_id, item, timeline.id)
+              if i["level"] == "error"]
     if errors:
         raise HTTPException(409, f"Chưa {verb} được: " + "; ".join(i["message"] for i in errors[:10]))
 
@@ -495,6 +503,8 @@ def delete_timeline(session_id: int, timeline_id: int, owner: Owner):
         timeline = timeline_of(db, item, timeline_id)
         if timeline.status != "DRAFT":
             raise HTTPException(409, "Chỉ xóa được timeline DRAFT")
+        from app.live_overlays import delete_events
+        delete_events(db, [timeline.id])
         db.execute(delete(TimelineMarker).where(TimelineMarker.timeline_id == timeline.id))
         db.delete(timeline)
         db.commit()

@@ -1,0 +1,159 @@
+/* Overlay editor inside the timeline editor (#/timeline). Prefix ove-. The overlay picture itself is overlay-renderer.css. */
+
+/* preview: 9:16 output frame, mode switch and notes */
+.ove-preview{display:grid;gap:10px;justify-items:start;min-width:0}
+.ove-preview-tools{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;width:100%}
+.ove-preview-tools .ui-segmented button{white-space:nowrap}
+.ove-frame{position:relative;height:min(70vh,640px);aspect-ratio:9 / 16;max-width:100%;background:#000;border-radius:14px;overflow:hidden;touch-action:none;user-select:none}
+.ove-frame video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;cursor:pointer}
+.ove-frame > p{position:absolute;inset:0;display:grid;place-items:center;margin:0;padding:16px;color:#c9c9dc;text-align:center}
+.ove-note{display:flex;gap:6px;align-items:flex-start;max-width:360px;margin:0;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.45;
+  background:color-mix(in srgb,var(--ui-warning,#d48806) 12%,var(--ui-surface));color:var(--ui-text)}
+.ove-note svg{flex:none;margin-top:1px;color:var(--ui-warning,#d48806)}
+
+/* editor layer: hit areas, selection box, handles */
+.ove-hit{position:absolute;padding:0;border:0;background:transparent;cursor:pointer;z-index:6}
+.ove-hit:hover{outline:2px dashed rgba(255,255,255,.75);outline-offset:-1px}
+.ove-sel{position:absolute;z-index:8;outline:2px solid #7c5cff;outline-offset:-1px;box-shadow:0 0 0 9999px rgba(0,0,0,0)}
+.ove-sel.is-editable{cursor:move}
+.ove-sel.is-hidden{outline-style:dashed;background:rgba(124,92,255,.12)}
+.ove-sel.is-covered{outline-color:#ff9f1a}
+.ove-sel-size,.ove-sel-note{position:absolute;left:0;padding:1px 6px;border-radius:4px;background:#7c5cff;color:#fff;font-size:10.5px;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}
+.ove-sel-size{top:-20px}
+.ove-sel-note{bottom:-20px;background:#3b3a52}
+.ove-sel.is-covered .ove-sel-size{background:#ff9f1a}
+.ove-handle{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border:2px solid #7c5cff;border-radius:3px;background:#fff;z-index:9}
+.ove-handle.is-nw{left:0;top:0;cursor:nwse-resize}.ove-handle.is-n{left:50%;top:0;cursor:ns-resize}.ove-handle.is-ne{left:100%;top:0;cursor:nesw-resize}
+.ove-handle.is-e{left:100%;top:50%;cursor:ew-resize}.ove-handle.is-se{left:100%;top:100%;cursor:nwse-resize}.ove-handle.is-s{left:50%;top:100%;cursor:ns-resize}
+.ove-handle.is-sw{left:0;top:100%;cursor:nesw-resize}.ove-handle.is-w{left:0;top:50%;cursor:ew-resize}
+@media (pointer:coarse){.ove-handle{width:20px;height:20px;margin:-10px 0 0 -10px}}
+
+/* safe zones */
+.ove-zones{position:absolute;inset:0;pointer-events:none;z-index:5}
+.ove-zone,.ove-safe{position:absolute;box-sizing:border-box}
+.ove-zone{border:1px dashed rgba(255,159,26,.9);background:rgba(255,159,26,.08)}
+.ove-safe{border:2px dashed rgba(46,204,113,.95)}
+.ove-zone small,.ove-safe small{position:absolute;left:3px;top:2px;max-width:calc(100% - 6px);font-size:9.5px;line-height:1.2;color:#fff;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ove-safe small{color:#b8ffd2}
+
+/* TikTok viewer simulation (approximate) */
+.ove-tiktok{position:absolute;inset:0;pointer-events:none;z-index:4;color:#fff;font-size:12px}
+.ove-frame{container-type:size}
+.ove-tiktok > div{position:absolute;box-sizing:border-box}
+.ove-tt-top{left:3%;right:3%;top:2.2%;height:5.5%;display:flex;align-items:center;gap:2%}
+.ove-tt-avatar{width:4.5cqh;height:4.5cqh;border-radius:50%;background:linear-gradient(135deg,#ff5f8f,#8a5cff);flex:none}
+.ove-tt-host{display:grid;padding:.6cqh 3% .6cqh 2%;border-radius:999px;background:rgba(0,0,0,.35);line-height:1.15}
+.ove-tt-host b{font-size:1.25cqh}.ove-tt-host small{font-size:1cqh;opacity:.8}
+.ove-tt-pill{padding:.3cqh 2%;border-radius:4px;background:#fe2c55;font-size:1.1cqh;font-weight:700}
+.ove-tt-viewers{margin-left:auto;padding:.4cqh 3%;border-radius:999px;background:rgba(0,0,0,.35);font-size:1.15cqh}
+.ove-tt-product{left:2%;top:47.5%;width:64%;height:11%;display:flex;align-items:center;gap:4%;padding:2%;border-radius:1.2cqh;background:rgba(255,255,255,.95);color:#111}
+.ove-tt-product b{display:block;font-size:1.35cqh}.ove-tt-product small{font-size:1.2cqh;color:#fe2c55;font-weight:700}
+.ove-tt-thumb{width:7cqh;height:7cqh;flex:none;border-radius:.8cqh;background:#ddd}
+.ove-tt-comments{left:3%;top:61%;width:70%;height:28%;display:flex;flex-direction:column;justify-content:flex-end;gap:.7cqh}
+.ove-tt-comments p{margin:0;padding:.5cqh 3%;width:max-content;max-width:100%;border-radius:1cqh;background:rgba(0,0,0,.35);font-size:1.3cqh;line-height:1.3}
+.ove-tt-actions{right:2.5%;top:60%;width:11%;display:grid;gap:2cqh;justify-items:center}
+.ove-tt-actions span{display:grid;place-items:center;width:5cqh;height:5cqh;border-radius:50%;background:rgba(0,0,0,.35);font-size:2.2cqh}
+.ove-tt-bar{left:3%;right:3%;bottom:2%;height:5.5%;display:flex;align-items:center;gap:3%}
+.ove-tt-bar span{flex:1;padding:1cqh 4%;border-radius:999px;background:rgba(0,0,0,.4);font-size:1.3cqh;opacity:.85}
+.ove-tt-bar i{width:4.6cqh;height:4.6cqh;border-radius:50%;background:rgba(0,0,0,.4)}
+
+/* overlay tracks under the pin timeline */
+.ove-tracks{display:grid;gap:8px;min-width:0}
+.ove-spacer{flex:1}
+.ove-tracks-body{display:grid;grid-template-columns:minmax(84px,130px) minmax(0,1fr);border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface-2);overflow:hidden}
+.ove-track-names{display:grid;align-content:start;border-right:1px solid var(--ui-border);background:var(--ui-surface)}
+.ove-ruler-name{height:22px;border-bottom:1px solid var(--ui-border)}
+.ove-track-name{display:flex;align-items:center;padding:0 10px;border-bottom:1px solid var(--ui-border);font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ove-tracks-scroll{overflow-x:auto;overflow-y:hidden}
+.ove-tracks-area{position:relative;min-width:100%;min-height:60px;touch-action:none;user-select:none}
+.ove-ruler{position:relative;height:22px;border-bottom:1px solid var(--ui-border);cursor:pointer;background:color-mix(in srgb,var(--ui-primary) 5%,transparent)}
+.ove-crowded{position:absolute;top:2px;transform:translateX(-50%);display:grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--ui-danger);color:#fff;font-size:11px;font-weight:800}
+.ove-track{position:relative;border-bottom:1px solid var(--ui-border)}
+.ove-bar{position:absolute;height:26px;display:flex;align-items:center;padding:0 8px;border:1.5px solid color-mix(in srgb,var(--ui-primary) 70%,#000);border-radius:7px;
+  background:color-mix(in srgb,var(--ui-primary) 75%,#fff);color:#fff;font:inherit;font-size:11.5px;font-weight:600;cursor:grab;overflow:hidden;z-index:2}
+.ove-bar span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.ove-bar::before,.ove-bar::after{content:'';position:absolute;top:3px;bottom:3px;width:3px;border-radius:2px;background:rgba(255,255,255,.7)}
+.ove-bar::before{left:2px}.ove-bar::after{right:2px}
+.ove-bar.is-selected{outline:3px solid color-mix(in srgb,var(--ui-primary) 45%,transparent);z-index:3}
+.ove-bar.is-off{opacity:.45;border-style:dashed}
+.ove-bar.is-error{background:var(--ui-danger);border-color:color-mix(in srgb,var(--ui-danger) 70%,#000)}
+.ove-bar:active{cursor:grabbing}
+.ove-tracks-empty{margin:0;padding:12px;color:var(--ui-text-muted);font-size:12.5px}
+
+/* bottom: list + inspector */
+.ove-panel{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:20px;align-items:start}
+.ove-list{display:flex;flex-direction:column;max-height:calc(100vh - 160px);min-height:320px}
+.ove-list .ui-card__body{display:flex;flex-direction:column;min-height:0;flex:1}
+.ove-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ove-toolbar .te-icon-btn:disabled{opacity:.4;cursor:default}
+.ove-readonly{margin:0 20px 12px}
+.ove-items{list-style:none;margin:0;padding:0 12px 12px;display:grid;gap:6px;overflow:auto}
+.ove-item{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border:1.5px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}
+.ove-item.is-selected{border-color:var(--ui-primary);background:color-mix(in srgb,var(--ui-primary) 6%,var(--ui-surface))}
+.ove-item.is-off{opacity:.6}
+.ove-item-main{flex:1;min-width:0;display:grid;gap:2px;padding:6px 8px;border:0;background:transparent;color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
+.ove-item-main strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ove-item-main small{color:var(--ui-text-muted);font-size:11.5px}
+.ove-link{display:inline-flex;align-items:center;gap:4px;margin-left:6px;padding:0;border:0;background:none;color:var(--ui-primary);font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.ove-presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:12px}
+.ove-preset{display:grid;gap:4px;padding:14px;border:1.5px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
+.ove-preset:hover{border-color:var(--ui-primary)}
+.ove-preset small{color:var(--ui-text-muted);font-size:11.5px}
+.ove-preset-group{margin:16px 0 0;font-size:13.5px}
+.ove-preset-group small{font-weight:400;font-size:12px}
+.ove-preset-wrap{position:relative;display:grid}
+.ove-preset-wrap .ove-preset{padding-right:64px}
+.ove-preset-actions{position:absolute;top:8px;right:8px;display:flex;gap:2px}
+.ove-preset .ove-preset-warn{display:flex;align-items:center;gap:4px;color:var(--ui-warning,#b45309)}
+.ove-more{border-top:1px solid var(--ui-border);margin-top:6px;padding-top:6px}
+.ove-more > summary{cursor:pointer;font-weight:600;font-size:13px;padding:4px 0}
+.ove-more[open] > summary{margin-bottom:4px}
+
+.ove-inspector{min-width:0}
+.ove-form{display:grid;gap:12px;margin:0;padding:0 20px 20px;border:0;min-width:0}
+.ove-form h4{margin:8px 0 0;font-size:13px}
+.ove-form h5{margin:4px 0 0;font-size:12px}
+.ove-form h4 small,.ove-form h5 small{font-weight:400}
+.ove-form:disabled .ove-add-blocks{display:none}
+.ove-issues{margin:0}
+.ove-row{display:grid;gap:10px;align-items:end}
+.ove-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ove-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.ove-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.ove-field-note{display:grid;gap:2px;font-size:13px;font-variant-numeric:tabular-nums}
+.ove-field-note .ove-link{margin:0}
+.ove-range{display:grid;gap:6px;font-size:12.5px;color:var(--ui-text-muted)}
+.ove-range input{width:100%;accent-color:var(--ui-primary)}
+.ove-anim{display:grid;grid-template-columns:minmax(0,1fr) 84px auto;gap:6px;align-items:end}
+.ove-color{display:grid;grid-template-columns:minmax(0,1fr) 36px;gap:6px;align-items:end}
+.ove-color input[type=color]{width:36px;height:36px;padding:2px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface);cursor:pointer}
+.ove-blocks{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.ove-block{border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}
+.ove-block.is-open{border-color:color-mix(in srgb,var(--ui-primary) 45%,var(--ui-border))}
+.ove-block-head{display:flex;align-items:center;gap:4px;padding:4px 6px}
+.ove-block-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:6px;border:0;background:none;color:var(--ui-text);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.ove-block-toggle span{color:var(--ui-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ove-block-body{display:grid;gap:10px;padding:4px 12px 12px}
+.ove-add-blocks{display:flex;gap:8px;flex-wrap:wrap}
+.ove-asset-pick{display:flex;align-items:center;gap:8px}
+.ove-asset-pick img,.ove-asset-empty{width:48px;height:48px;border-radius:8px;object-fit:contain;background:var(--ui-surface-2)}
+.ove-asset-empty{display:grid;place-items:center;font-size:10px;color:var(--ui-text-muted);text-align:center}
+.ove-assets{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-top:12px}
+.ove-asset{position:relative;display:grid;gap:4px;padding:6px;border:1.5px solid var(--ui-border);border-radius:10px}
+.ove-asset.is-selected{border-color:var(--ui-primary)}
+.ove-asset > button:first-child{padding:0;border:0;background:var(--ui-surface-2);border-radius:6px;cursor:pointer;aspect-ratio:1;overflow:hidden}
+.ove-asset img{width:100%;height:100%;object-fit:contain}
+.ove-asset small{font-size:11px;color:var(--ui-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:26px}
+.ove-asset .te-icon-btn{position:absolute;right:6px;bottom:4px}
+
+.ove-tabs{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+@media (max-width:1100px){
+  .ove-panel{grid-template-columns:minmax(0,1fr)}
+  .ove-list{max-height:none;min-height:0}
+}
+@media (max-width:640px){
+  .ove-frame{height:auto;width:100%}
+  .ove-3,.ove-4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ove-tracks-body{grid-template-columns:72px minmax(0,1fr)}
+}

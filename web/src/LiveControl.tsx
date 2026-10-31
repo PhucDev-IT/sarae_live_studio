@@ -11,6 +11,7 @@ import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import { isSingle, sessionHref, sessionsApi, type LiveProduct, type LiveSession, type PlaybackPolicy, type RotationStatus } from './liveSessionsApi'
 import PlaybackSettings from './PlaybackSettings'
 import TimelinePinPanel from './TimelinePinPanel'
+import OverlayReadinessPanel from './overlay/OverlayReadinessPanel'
 import SessionLiveChat from './SessionLiveChat'
 import { WithAgent, useAgent } from './agentContext'
 import VideoThumb from './VideoThumb'
@@ -319,6 +320,9 @@ function Console({agent}:{agent:OwnerAgent}){
 
         {activeSession && single && <TimelinePinPanel key={`pins-${activeSession.id}`} session={activeSession}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
+
+        {activeSession && single && <OverlayReadinessPanel key={`overlay-check-${activeSession.id}`} sessionId={activeSession.id}
+          sessionAgentId={activeSession.agent_id ?? null}/>}
 
         {activeSession && !single && <PlaybackSettings key={`policy-${activeSession.id}`} sessionId={activeSession.id} rotation={status?.rotation} agentPolicy={status?.policy}
           productName={id=>productById.get(id)?.name ?? `Sản phẩm #${id}`}/>}
