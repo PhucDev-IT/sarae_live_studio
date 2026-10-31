@@ -60,16 +60,16 @@
 /* overlay tracks under the pin timeline */
 .ove-tracks{display:grid;gap:8px;min-width:0}
 .ove-spacer{flex:1}
-.ove-tracks-body{display:grid;grid-template-columns:minmax(84px,130px) minmax(0,1fr);border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface-2);overflow:hidden}
-.ove-track-names{display:grid;align-content:start;border-right:1px solid var(--ui-border);background:var(--ui-surface)}
-.ove-ruler-name{height:22px;border-bottom:1px solid var(--ui-border)}
-.ove-track-name{display:flex;align-items:center;padding:0 10px;border-bottom:1px solid var(--ui-border);font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ove-tracks-scroll{overflow-x:auto;overflow-y:hidden}
-.ove-tracks-area{position:relative;min-width:100%;min-height:60px;touch-action:none;user-select:none}
-.ove-ruler{position:relative;height:22px;border-bottom:1px solid var(--ui-border);cursor:pointer;background:color-mix(in srgb,var(--ui-primary) 5%,transparent)}
+/* Same box as the pin timeline (.te-scroller / .te-track) so a time is at the same x in both. */
+.ove-tracks-scroll{overflow-x:auto;overflow-y:hidden;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface-2)}
+.ove-tracks-area{position:relative;min-width:100%;min-height:76px;padding-bottom:22px;cursor:pointer;touch-action:none;user-select:none}
+.ove-tick small{bottom:4px}
+.ove-ruler{position:relative;height:18px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-primary) 5%,transparent)}
+.ove-track-label{position:sticky;left:0;z-index:1;display:inline-block;max-width:180px;height:16px;padding:0 8px;line-height:16px;
+  color:var(--ui-text-muted);font-size:10.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .ove-crowded{position:absolute;top:2px;transform:translateX(-50%);display:grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--ui-danger);color:#fff;font-size:11px;font-weight:800}
 .ove-track{position:relative;border-bottom:1px solid var(--ui-border)}
-.ove-bar{position:absolute;height:26px;display:flex;align-items:center;padding:0 8px;border:1.5px solid color-mix(in srgb,var(--ui-primary) 70%,#000);border-radius:7px;
+.ove-bar{position:absolute;height:26px;cursor:grab;display:flex;align-items:center;padding:0 8px;border:1.5px solid color-mix(in srgb,var(--ui-primary) 70%,#000);border-radius:7px;
   background:color-mix(in srgb,var(--ui-primary) 75%,#fff);color:#fff;font:inherit;font-size:11.5px;font-weight:600;cursor:grab;overflow:hidden;z-index:2}
 .ove-bar span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .ove-bar::before,.ove-bar::after{content:'';position:absolute;top:3px;bottom:3px;width:3px;border-radius:2px;background:rgba(255,255,255,.7)}
@@ -155,5 +155,4 @@
 @media (max-width:640px){
   .ove-frame{height:auto;width:100%}
   .ove-3,.ove-4{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .ove-tracks-body{grid-template-columns:72px minmax(0,1fr)}
 }
