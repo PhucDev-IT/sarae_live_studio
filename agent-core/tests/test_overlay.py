@@ -495,6 +495,17 @@ class ServiceTests(unittest.TestCase):
         self.step()
         self.assertEqual([r for r, _ in self.obs.requests].count("PressInputPropertiesButton"), refreshes, "an up-to-date page is left alone")
 
+    def test_each_agent_run_has_its_own_clock_epoch(self):
+        self.service.observe(5, "m" * 32, 1000, "OBS_MEDIA_STATE_PLAYING", 0)
+        first = self.service.renderer_state()["clock"]
+        restarted = OverlayService(self.config, self.obs, lambda: True, lambda: [VIDEO], self.fetch_snapshot, lambda url: PNG,
+                                   OverlayCache(Path(tempfile.mkdtemp())), clock=lambda: self.now,
+                                   server=SimpleNamespace(port=17891, start=lambda p: 17891, stop=lambda: None))
+        restarted.observe(5, "m" * 32, 1000, "OBS_MEDIA_STATE_PLAYING", 0)
+        again = restarted.renderer_state()["clock"]
+        self.assertEqual((first["seq"], again["seq"]), (1, 1))
+        self.assertNotEqual(first["epoch"], again["epoch"], "a page that outlived the restart must not drop seq 1 again")
+
     def test_an_overlay_failure_never_raises_into_the_loop(self):
         self.snapshots[5] = self.snap()
         self.obs.video["baseWidth"] = 1920  # canvas not 9:16

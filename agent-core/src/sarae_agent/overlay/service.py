@@ -98,6 +98,9 @@ class OverlayService:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self.token = self._token()
+        # This run of the service: clock seqs restart at 1 after an Agent restart, so the renderer compares seqs of
+        # the same epoch only (a page that outlived the restart must not ignore the new, lower seqs).
+        self.epoch = secrets.token_hex(4)
         self.source = ObsOverlaySource(obs_call, lambda: self._config.get().overlay.source_name,
                                        lambda: dict(self._config.get().overlay.input_uuids), self._remember_input)
         self.server = server or OverlayServer(self)
@@ -198,7 +201,7 @@ class OverlayService:
         if self.clock is None or self.observed_at is None:
             return None
         paused = self._paused()
-        return {**self.clock, "age_ms": int((now - self.observed_at) * 1000),
+        return {**self.clock, "epoch": self.epoch, "age_ms": int((now - self.observed_at) * 1000),
                 "playing": self.clock.get("media_state") == "OBS_MEDIA_STATE_PLAYING" and not paused}
 
     def active_ids(self) -> list:

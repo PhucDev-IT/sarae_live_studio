@@ -16,7 +16,7 @@ import { safeImageUrl, type OverlayScene } from '../overlayModel'
 const POLL_MS = 250
 const MAX_AHEAD_MS = 1500
 
-type Clock = {session_id:number; media_id:string|null; position_ms:number; media_state:string|null; iteration:number; seq:number; age_ms:number; playing:boolean}
+type Clock = {epoch:string; session_id:number; media_id:string|null; position_ms:number; media_state:string|null; iteration:number; seq:number; age_ms:number; playing:boolean}
 type AgentState = {revision:string|null; show:boolean; clock:Clock|null; receivedAt:number}
 
 const token = new URLSearchParams(location.search).get('t') ?? ''
@@ -63,7 +63,7 @@ export default function ObsOverlayApp(){
   const [state,setState] = useState<AgentState|null>(null)
   const loading = useRef<{revision:string; since:number}|null>(null)
   // What is on screen (revision, clock seq): sent back with every poll (ACK), and used to drop late answers.
-  const drawn = useRef<{revision:string; seq:number; session:number|null}>({revision:'', seq:0, session:null})
+  const drawn = useRef<{revision:string; seq:number; session:number|null; epoch:string}>({revision:'', seq:0, session:null, epoch:''})
   // Time of the last animation frame (requestAnimationFrame), so render itself stays pure.
   const [frameAt,setFrameAt] = useState(0)
 
@@ -76,9 +76,10 @@ export default function ObsOverlayApp(){
         if (!response.ok) return
         const next = await response.json() as AgentState
         if (!alive) return
-        // A late answer (an older clock of the same session) never moves the picture back.
+        // A late answer (an older clock of the same Agent run and session) never moves the picture back. After an Agent
+        // restart the seqs start again at 1: another epoch, never ignored.
         const c = next.clock
-        if (c && c.session_id === drawn.current.session && c.seq < drawn.current.seq) return
+        if (c && c.epoch === drawn.current.epoch && c.session_id === drawn.current.session && c.seq < drawn.current.seq) return
         setState({...next, receivedAt:performance.now()})
       } catch {/* the Agent restarts: keep polling */}
     }
@@ -125,7 +126,7 @@ export default function ObsOverlayApp(){
 
   const clock = state?.clock
   useEffect(()=>{
-    if (clock) drawn.current = {revision:scene?.revision ?? '', seq:clock.seq, session:clock.session_id}
+    if (clock) drawn.current = {revision:scene?.revision ?? '', seq:clock.seq, session:clock.session_id, epoch:clock.epoch}
   },[clock, scene?.revision])
   if (!state?.show || !scene || !clock?.media_id) return null
   const ahead = clock.playing ? Math.min(clock.age_ms + Math.max(0, frameAt - state.receivedAt), MAX_AHEAD_MS) : 0
