@@ -54,6 +54,8 @@ ASSET_ID = r"^[0-9a-f]{32}$"
 # Overlay images: ≤ 5 MB, ≤ 4096 px a side; content must match the declared type.
 ASSET_MAX_BYTES = 5 * 1024 * 1024
 ASSET_MAX_SIDE = 4096
+# All the distinct images one version shows (the Agent keeps them on the LIVE PC; it refuses more as well).
+MAX_VERSION_ASSET_BYTES = 60 * 1024 * 1024
 ASSET_TYPES = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "image/webp": b"RIFF"}
 SIGN_KIND = "overlay_asset"
 EPSILON = 1e-6
@@ -312,6 +314,10 @@ def overlay_issues(db, owner_id: str, item, events) -> list[dict]:
                           "message": "Sản phẩm không còn trong catalog: " + ", ".join(f"#{i}" for i in missing)})
         if asset_refs(els) - set(assets):
             found.append({"level": "error", "code": "ASSET_MISSING", "overlay": index, "message": "Ảnh của overlay đã bị xóa khỏi kho"})
+    total = sum(a.size_bytes for a in assets.values())
+    if total > MAX_VERSION_ASSET_BYTES:
+        found.append({"level": "error", "code": "ASSETS_TOO_LARGE",
+                      "message": f"Tổng ảnh overlay {total // (1024 * 1024)} MB (tối đa {MAX_VERSION_ASSET_BYTES // (1024 * 1024)} MB)"})
     for media_id in dict.fromkeys(e.media_id for e in events):
         peak, at = busiest([e for e in events if e.media_id == media_id and e.enabled])
         if peak > MAX_CONCURRENT:

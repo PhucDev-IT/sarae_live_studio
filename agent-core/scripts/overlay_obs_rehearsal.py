@@ -242,6 +242,35 @@ check("overlay never hidden while switching version", not seen_hidden, str(len(s
 time.sleep(1)
 shot("Sarae Overlay", "obs_source_v2.png")
 
+# Timing against the real OBS cursor: an overlay from cursor+4 s for 3 s must appear and disappear on time.
+state, cursor, duration = (lambda st: (st.get("mediaState"), st.get("mediaCursor") or 0, st.get("mediaDuration") or 0))(
+    obs.request("GetMediaInputStatus", {"inputName": "Sarae Video A"}))
+if state == "OBS_MEDIA_STATE_PLAYING" and duration - cursor > 15_000:
+    start = int(cursor) + 4_000
+    timed = snapshot("rev-3")
+    timed["overlays"] = [overlay(id=7, start_ms=start, duration_ms=3_000, elements=timed["overlays"][0]["elements"])]
+    current["snap"] = timed
+    svc.request_sync()
+    wait(lambda: svc.status()["revision"] == "rev-3", 20)
+    # Measure from the moment the renderer says (ACK) it draws rev-3, not the frame of rev-2 still on screen.
+    wait(lambda: (svc.status()["renderer_ack"] or {}).get("revision") == "rev-3", 10)
+    seen = []
+    end = time.time() + 12
+    while time.time() < end:
+        cur = obs.request("GetMediaInputStatus", {"inputName": "Sarae Video A"}).get("mediaCursor") or 0
+        frame = shot("Sarae Overlay", "timing.png")
+        red_now = ((frame[:, :, 2] > 200) & (frame[:, :, 1] < 60) & (frame[:, :, 3] > 200))[1400:1600, 100:1000].mean() > 0.5
+        seen.append((int(cur) - start, bool(red_now)))
+        time.sleep(0.15)
+    shown_at = [d for d, red in seen if red]
+    first, last = (min(shown_at), max(shown_at)) if shown_at else (None, None)
+    # Tolerance: one screenshot round trip + one position report (500 ms here; the engine reports every 1 s).
+    check("timed overlay appears at its start (+-700 ms)", first is not None and -700 <= first <= 700, f"first red at {first} ms")
+    check("timed overlay disappears at its end (+-700 ms)", last is not None and 2_300 <= last <= 3_700, f"last red at {last} ms")
+    check("nothing shown well before or after", not any(red for d, red in seen if d < -800 or d > 3_800), str(seen[:3]))
+else:
+    print("SKIP timing: Sarae Video A is not playing with 15 s left", state, cursor, duration)
+
 v1 = video()
 print("video after", v1)
 check("video kept its state (not restarted by the overlay)",

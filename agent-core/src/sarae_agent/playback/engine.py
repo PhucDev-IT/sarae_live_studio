@@ -883,6 +883,8 @@ class PlaybackEngine:
                     self.product_started_at = time.monotonic()
             self._product_starting = False
             self.last_status = f"Đang phát {name}"
+            # The new video (and loop iteration) is known now: no wait for the next watchdog tick.
+            self._report_position("OBS_MEDIA_STATE_PLAYING", 0)
             return {"ok": True, "index": index, "filename": name, "media_id": self.ids[index]}
 
     def _begin_session(self, ids, *, mode, loop, playlist_id=None, session_id=None, product_id=None):
@@ -955,6 +957,21 @@ class PlaybackEngine:
             except PlaybackError as exc:
                 log.warning("Không tua được video chính tới %sms: %s", start_ms, exc.detail)
         return result
+
+    def _report_now(self, media_state: str) -> None:
+        """Report the cursor right after a pause / resume (the watchdog does not report while paused)."""
+        if self.on_position is None or self.session_mode != "video":
+            return
+        try:
+            client = self.client()
+            try:
+                cursor = getattr(client.get_media_input_status(self.active_source()), "media_cursor", None)
+            finally:
+                _close(client)
+        except Exception as exc:  # noqa: BLE001 - the next tick reports anyway
+            log.debug("Không đọc được vị trí phát: %s", exc)
+            return
+        self._report_position(media_state, cursor)
 
     def _report_position(self, media_state: str, cursor) -> None:
         if self.on_position is None or self.session_mode != "video" or not isinstance(cursor, (int, float)):
@@ -1072,6 +1089,7 @@ class PlaybackEngine:
             self._media_action("OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE", "Pause")
             self.paused = True
             self.last_status = "Đã tạm dừng"
+            self._report_now("OBS_MEDIA_STATE_PAUSED")
             return {"ok": True}
 
     def resume(self):
@@ -1083,6 +1101,7 @@ class PlaybackEngine:
             self.last_cursor = None
             self.last_progress_at = time.monotonic()
             self.last_status = "Đã tiếp tục phát"
+            self._report_now("OBS_MEDIA_STATE_PLAYING")
             return {"ok": True}
 
     def next(self):
@@ -1138,6 +1157,8 @@ class PlaybackEngine:
             self.last_progress_at = time.monotonic()
             self.last_cursor = milliseconds
             self.last_status = f"Đã tua đến {milliseconds / 1000:.1f}s"
+            # Pins and overlays recompute at the new position at once (skipped markers are never replayed).
+            self._report_position("OBS_MEDIA_STATE_PAUSED" if self.paused else "OBS_MEDIA_STATE_PLAYING", milliseconds)
             return {"ok": True}
 
     def stop(self):

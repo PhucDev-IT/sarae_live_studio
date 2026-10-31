@@ -95,7 +95,9 @@ class AgentRuntime:
         self.timeline = self._timeline_scheduler()
         self.overlay = OverlayService(self.config, self.obs.request, lambda: self.obs.status().get("connected", False),
                                       self._video_sources, self._overlay_snapshot, self._overlay_image,
-                                      OverlayCache(paths.overlay_cache))
+                                      OverlayCache(paths.overlay_cache),
+                                      playback_state=lambda: {"active": self.engine.active, "paused": self.engine.paused,
+                                                              "session_id": self.engine.session_id})
         self.engine.on_position = self._on_position
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
@@ -175,6 +177,12 @@ class AgentRuntime:
         return ConsoleLiveGate(self.auto_pin, on_change=changed)
 
     def _on_timeline_event(self, event: dict) -> None:
+        overlay = getattr(self, "overlay", None)
+        if overlay is not None:
+            if event.get("type") == "TIMELINE_LOADED":
+                overlay.request_sync()  # a new active version: its overlays follow without waiting for the poll
+            elif event.get("type") == "TIMELINE_STOPPED":
+                overlay.clear("timeline_stopped")
         self.outbox.push(event)
         worker = self.worker
         if worker is not None:
