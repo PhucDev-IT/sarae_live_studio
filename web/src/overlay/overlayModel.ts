@@ -22,6 +22,7 @@ export type TextStyle = {
   font_size:number         // px of the 1080×1920 canvas
   font_weight:number; font_family:string; color:string; background:string|null
   align:'left'|'center'|'right'; max_lines:number  // 0 = no limit
+  shadow:boolean           // soft dark shadow under the letters (readable on the video)
 }
 type BlockBase = {frame:Frame; opacity:number}
 export type TextElement = BlockBase & {kind:'text'; text:string; style:TextStyle}
@@ -59,7 +60,7 @@ export type OverlayIssue = {level:'error'|'warning'; code:string; message:string
 const clamp = (v:number, lo:number, hi:number) => Math.max(lo, Math.min(hi, v))
 const num = (v:unknown, fallback:number) => typeof v === 'number' && Number.isFinite(v) ? v : fallback
 export const FULL_FRAME:Frame = {x:0, y:0, width:1, height:1}
-export const defaultStyle = ():TextStyle => ({font_size:48, font_weight:600, font_family:'', color:'#FFFFFF', background:null, align:'left', max_lines:0})
+export const defaultStyle = ():TextStyle => ({font_size:48, font_weight:600, font_family:'', color:'#FFFFFF', background:null, align:'left', max_lines:0, shadow:false})
 
 export function normalizeFrame(raw?:Partial<Frame>|null):Frame{
   const f = {...FULL_FRAME, ...(raw ?? {})}
@@ -162,7 +163,7 @@ const priceFormat = new Intl.NumberFormat('vi-VN', {maximumFractionDigits:0})
 export function fieldText(e:ProductFieldElement, product?:SceneProduct){
   const value = product?.[e.field]
   if (value == null || value === '') return ''
-  return e.prefix + (typeof value === 'number' ? priceFormat.format(value) : String(value)) + e.suffix
+  return (e.prefix ?? '') + (typeof value === 'number' ? priceFormat.format(value) : String(value)) + (e.suffix ?? '')
 }
 export const productOf = (o:Overlay, e:{product_id:number|null}) => e.product_id ?? o.product_id
 

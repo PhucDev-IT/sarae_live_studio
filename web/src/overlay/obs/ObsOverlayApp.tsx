@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import OverlayRenderer from '../OverlayRenderer'
 import { safeImageUrl, type OverlayScene } from '../overlayModel'
+import { OVERLAY_FONT, OVERLAY_WEIGHTS } from '../overlay-fonts'
 
 /**
  * The OBS Browser Source page ("Sarae Overlay"), served by the Windows Agent on 127.0.0.1 with everything it needs
@@ -54,6 +55,8 @@ async function preload(urls:string[]){
     }), IMAGE_TIMEOUT_MS, false)
     if (!loaded) missing.push(url.replace(/\?.*$/, ''))
   }))
+  // The bundled font in every weight (Vietnamese and Latin glyphs) is ready before the first frame is shown.
+  await within(Promise.all(OVERLAY_WEIGHTS.map(w=>document.fonts.load(`${w} 40px "${OVERLAY_FONT}"`, 'Ăâêôơư Áo đẹp 123đ'))).then(()=>true), FONTS_TIMEOUT_MS, false)
   await within(document.fonts.ready.then(()=>true), FONTS_TIMEOUT_MS, false)
   return missing
 }

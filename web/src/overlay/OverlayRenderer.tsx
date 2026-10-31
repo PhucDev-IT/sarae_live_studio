@@ -3,6 +3,7 @@ import {
   CANVAS, animationState, fieldText, productOf, safeImageUrl, shownAt,
   type ImageElement, type Overlay, type OverlayElement, type OverlayScene, type TextStyle,
 } from './overlayModel'
+import './overlay-fonts'
 import './overlay-renderer.css'
 
 /**
@@ -93,5 +94,6 @@ function ImageBlock({element:e, url, style, placeholder}:{element:ImageElement; 
 function textStyle(s:TextStyle):CSSProperties{
   return {fontSize:s.font_size, fontWeight:s.font_weight, color:s.color, background:s.background ?? undefined, textAlign:s.align,
     justifyContent:s.align === 'center' ? 'center' : s.align === 'right' ? 'flex-end' : 'flex-start',
+    ...(s.shadow ? {textShadow:'0 3px 10px rgba(0,0,0,.55), 0 1px 2px rgba(0,0,0,.6)'} : {}),
     ...(s.font_family ? {fontFamily:`"${s.font_family}", var(--ovr-font)`} : {})}
 }

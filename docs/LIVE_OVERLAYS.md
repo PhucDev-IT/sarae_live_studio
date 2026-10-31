@@ -316,3 +316,33 @@ a session has no Agent yet: the check uses the Agent chosen in the top bar.
 
 Still to test on the operator's machine: a real TikTok LIVE (never opened by these tests), the installed Agent build
 end to end, other OBS versions / GPUs, several scene collections in daily use, and the TikTok viewer layout on phones.
+
+## 12. Xem thử trên OBS, font and presets
+
+**"Xem thử trên OBS"** (Timeline Editor, next to "Thêm overlay"): shows the version open in the editor — a draft
+included, saved content — in OBS at the editor's position, without activating it or going LIVE.
+
+```
+Editor ── POST …/timelines/{tid}/overlay-preview {agent_id, media_id, position_ms, playing} ──> Agent overlay_preview
+  play / pause / seek / another video ──> the same call (the overlay on OBS follows); renewed every minute
+  "Tắt xem thử OBS", another version, leaving the page ──> {stop: true}
+Agent: GET /agent-media/overlay-snapshot?timeline_id=… (that version) ──> READY ──> shown on OBS
+```
+
+| Rule | Behaviour |
+|---|---|
+| Refused | While the Agent plays a LIVE session (`PREVIEW_BUSY`) or OBS streams (`PREVIEW_ON_AIR`): a preview would reach the viewers |
+| Clock | The editor's position; runs on by itself while the editor plays, holds while it is paused |
+| Ends | After `seconds` (180 from the editor) without a call, on stop, or when a LIVE playback starts (LIVE wins) |
+| Never | The active version does not replace the previewed draft while previewing; playback and pins are untouched |
+
+**Font:** the renderer bundles **Be Vietnam Pro** (`@fontsource/be-vietnam-pro`, OFL; weights 400–800, Vietnamese +
+Latin) in both the web editor and the OBS renderer page, so text is the same in both and needs no Internet in OBS. The
+OBS renderer loads every weight before READY. Text blocks have `style.shadow` (soft dark shadow, readable on the video).
+
+**Presets** were redrawn in that font (soft cards, inner margins, one accent per overlay, 1–2 lines): Thông tin sản
+phẩm, Product Spotlight, Giá live (new), Bảng size, Bảng màu, Ảnh chi tiết, Compare Looks, Ảnh sản phẩm, Thẻ chữ, Chữ
+trên video (new, text with shadow). They are still only starting points.
+
+The OBS test scripts use their own Browser Source "Sarae Overlay (test)" and port 17895, so they never touch the
+"Sarae Overlay" source of an Agent running on the same PC.

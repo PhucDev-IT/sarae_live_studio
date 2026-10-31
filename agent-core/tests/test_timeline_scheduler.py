@@ -419,6 +419,16 @@ class RouterTimelineTests(EngineTestBase):
         with self.assertRaises(AgentError):
             CommandRouter(playback=self.engine, monitor=None, voice=None).execute("overlay_check", {"session_id": 7})
 
+    def test_overlay_preview_is_routed_to_the_overlay_service(self):
+        calls = []
+        router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=self.scheduler,
+                               overlay=SimpleNamespace(preview_on_obs=lambda *a: calls.append(a) or {"preview": True}))
+        router.execute("overlay_preview", {"session_id": 7, "timeline_id": 3, "media_id": "a" * 32, "position_ms": 1500, "playing": True})
+        router.execute("overlay_preview", {"session_id": 7, "stop": True})
+        self.assertEqual(calls, [(7, 3, "a" * 32, 1500, True, 120, False), (7, None, None, 0, False, 120, True)])
+        with self.assertRaises(AgentError):
+            router.execute("overlay_preview", {"session_id": 7, "media_id": "../x"})
+
     def test_payloads_are_validated(self):
         bad = {"session_id": 7, "media_id": self.main,
                "timeline": {"version": 1, "markers": [{"id": 1, "at_ms": 0, "action": "SWITCH_VIDEO"}]}}

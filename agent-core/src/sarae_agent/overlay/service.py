@@ -16,6 +16,10 @@ a reconnecting renderer simply reads the current state, nothing past is replayed
 by the elapsed time only while the media state is PLAYING, at most 1.5 s. A paused video holds its position: the
 engine does not report while paused, so the pause flag of the engine keeps that position valid.
 
+Preview ("Xem thử trên OBS" of the editor): a version — a draft included — is shown at the editor's position without
+activating it or going LIVE; the position runs on by itself while the editor plays. Refused while the engine plays a
+session or OBS streams (it would reach the viewers); it ends by itself after `seconds`, and a LIVE start ends it.
+
 Sync: every state carries the scene revision and a clock `seq`; the renderer echoes the revision and seq it drew
 (ACK). A new active timeline version (TIMELINE_LOADED of the pin scheduler) asks for the snapshot at once.
 
@@ -86,6 +90,7 @@ class OverlayService:
                  fetch_image: Callable[[str], bytes], cache: OverlayCache, *, clock: Callable[[], float] = time.monotonic,
                  server: OverlayServer | None = None, playback_state: Callable[[], dict] | None = None):
         self._config = config
+        self._obs_call = obs_call
         self._obs_connected = obs_connected
         self._video_sources = video_sources
         self._fetch_snapshot = fetch_snapshot
@@ -121,6 +126,8 @@ class OverlayService:
         self.last_sync = 0.0
         self.last_refresh = 0.0
         self._refused: str | None = None
+        # {session_id, timeline_id, media_id, position_ms, playing, at, until} while the editor previews on OBS.
+        self.preview: dict | None = None
         self._state = "idle"
 
     # ----- setup -----
@@ -169,6 +176,9 @@ class OverlayService:
     def observe(self, session_id: int, media_id: str | None, position_ms: int, media_state: str | None, iteration: int) -> None:
         """Position report of the PlaybackEngine (its watchdog thread): cheap, never raises."""
         with self._lock:
+            if self.preview is not None:
+                log.info("Phiên LIVE đang phát: dừng xem thử overlay")
+                self.preview, self.last_sync = None, 0.0
             if session_id != self.session_id:
                 self.session_id, self.last_sync = session_id, 0.0
             seq = (self.clock or {}).get("seq", 0) + 1
@@ -191,13 +201,28 @@ class OverlayService:
             return False
         return bool(state.get("active") and state.get("paused") and state.get("session_id") == self.session_id)
 
+    def _preview_clock(self, now: float) -> None:
+        """While previewing, the clock is the editor's position (running on while the editor plays)."""
+        p = self.preview
+        if p is None:
+            return
+        position = int(p["position_ms"] + ((now - p["at"]) * 1000 if p["playing"] else 0))
+        if self.clock is None or self.clock.get("position_ms") != position or self.clock.get("media_id") != p["media_id"]:
+            seq = (self.clock or {}).get("seq", 0) + 1
+            self.clock = {"session_id": p["session_id"], "media_id": p["media_id"], "position_ms": position, "iteration": 0, "seq": seq,
+                          "media_state": "OBS_MEDIA_STATE_PLAYING" if p["playing"] else "OBS_MEDIA_STATE_PAUSED"}
+        self.observed_at = now
+
     def _clock_fresh(self, now: float) -> bool:
         """The reported position still describes the picture: recent, or held by a pause of the same session."""
+        if self.preview is not None:
+            return now <= self.preview["until"]
         if self.clock is None or self.observed_at is None:
             return False
         return now - self.observed_at <= self.CLOCK_STALE or self._paused()
 
     def _clock_view(self, now: float) -> dict | None:
+        self._preview_clock(now)
         if self.clock is None or self.observed_at is None:
             return None
         paused = self._paused()
@@ -287,8 +312,8 @@ class OverlayService:
 
     def _sync(self, now: float) -> None:
         session_id = self.session_id
-        if session_id is None or now - self.last_sync < self.SYNC_SECONDS:
-            return
+        if self.preview is not None or session_id is None or now - self.last_sync < self.SYNC_SECONDS:
+            return  # a preview shows its own version, never replaced by the active one
         self.last_sync = now
         try:
             snapshot = self._fetch_snapshot(session_id)
@@ -347,6 +372,11 @@ class OverlayService:
 
     def tick(self) -> None:
         now = self._now()
+        with self._lock:
+            if self.preview is not None and now > self.preview["until"]:
+                log.info("Hết thời gian xem thử overlay trên OBS")
+                self._end_preview()
+            self._preview_clock(now)
         if not self._config.get().overlay.enabled:
             if self.applied_visible:
                 self._obs(now, lambda _now: False)
@@ -415,6 +445,62 @@ class OverlayService:
                 self.tick()
             except Exception:  # noqa: BLE001 - the overlay never takes anything else down
                 log.exception("Overlay tick lỗi")
+
+    def _end_preview(self) -> None:
+        self.preview, self.clock, self.observed_at, self.last_sync = None, None, None, 0.0
+
+    def _stage(self, snapshot: dict, session_id: int, now: float) -> None:
+        """Images on this PC, then the snapshot as the PENDING revision (the renderer loads it, reports READY)."""
+        problem = snapshot_problem(snapshot)
+        if problem:
+            raise AgentError("SNAPSHOT_REFUSED", f"Snapshot overlay không hợp lệ ({problem})")
+        with self._lock:
+            current = self.pending or self.active
+            if current and current["revision"] == snapshot.get("revision") and current["session_id"] == session_id:
+                return
+        scene, missing = self._cache.localize(snapshot, self._fetch_image, self.token)
+        self.missing = missing
+        if any("asset_id" in m for m in missing):
+            raise AgentError("ASSET_MISSING", "Không tải được ảnh overlay", {"missing": missing[:10]})
+        with self._lock:
+            self.pending = {"revision": snapshot["revision"], "scene": scene, "session_id": session_id,
+                            "version": snapshot.get("version"), "timeline_id": snapshot.get("timeline_id"),
+                            "overlay_count": len(snapshot.get("overlays") or []), "since": now}
+
+    def preview_on_obs(self, session_id: int, timeline_id: int | None = None, media_id: str | None = None, position_ms: int = 0,
+                       playing: bool = False, seconds: int = 120, stop: bool = False) -> dict:
+        """The editor's "Xem thử trên OBS": show this version (a draft included) at the editor's position, without
+        activating it or going LIVE; or stop. Repeated calls move the position (seek / play / pause) and renew it."""
+        if stop:
+            with self._lock:
+                if self.preview is not None:
+                    log.info("Tắt xem thử overlay trên OBS")
+                    self._end_preview()
+            self._wake.set()
+            return {"preview": False, **self.status()}
+        state = self._playback_state() or {}
+        if state.get("active"):
+            raise AgentError("PREVIEW_BUSY", "Agent đang phát một phiên LIVE: không xem thử được (tránh lẫn vào LIVE)")
+        if not self._obs_connected():
+            raise AgentError("OBS_DISCONNECTED", "Chưa kết nối OBS")
+        if self._obs_call("GetStreamStatus", None).get("outputActive"):
+            raise AgentError("PREVIEW_ON_AIR", "OBS đang stream: overlay xem thử sẽ hiện cho người xem, nên không thực hiện")
+        now = self._now()
+        same = (self.preview or {}).get("timeline_id") == timeline_id and (self.preview or {}).get("session_id") == session_id
+        if not same or self.pending is None and (self.active or {}).get("session_id") != session_id:
+            snapshot = self._fetch_snapshot(session_id, timeline_id)
+            if snapshot is None:
+                raise AgentError("PREVIEW_EMPTY", "Phiên bản này chưa có overlay")
+            self._stage(snapshot, session_id, now)
+        with self._lock:
+            if self.preview is None:
+                log.info("Xem thử overlay trên OBS: phiên %s, phiên bản #%s", session_id, timeline_id)
+            self.session_id = session_id
+            self.preview = {"session_id": session_id, "timeline_id": timeline_id, "media_id": media_id,
+                            "position_ms": int(position_ms), "playing": bool(playing), "at": now, "until": now + seconds}
+            self._preview_clock(now)
+        self._wake.set()
+        return {"preview": True, **self.status()}
 
     CHECK_READY_SECONDS = 12.0
 
@@ -496,4 +582,6 @@ class OverlayService:
                     "renderer_ack": {k: v for k, v in (self.renderer_ack or {}).items() if k != "at"} or None,
                     "clock": self._clock_view(now), "active_overlays": self.active_ids(),
                     "visible": bool(self.applied_visible), "source": self.source_info if self.source_ok else None,
-                    "missing": self.missing[:10], "error": self.error}
+                    "missing": self.missing[:10], "error": self.error,
+                    "preview": {"timeline_id": self.preview["timeline_id"], "media_id": self.preview["media_id"],
+                                "seconds_left": max(0, int(self.preview["until"] - now))} if self.preview else None}

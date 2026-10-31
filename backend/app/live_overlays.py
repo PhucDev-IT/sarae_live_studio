@@ -142,6 +142,8 @@ class TextStyle(BaseModel):
     background: str | None = Field(default=None, pattern=COLOR)
     align: Literal["left", "center", "right"] = "left"
     max_lines: int = Field(default=0, ge=0, le=20)  # 0 = no limit
+    # Soft dark shadow under the letters: readable on the video without a background block.
+    shadow: bool = False
 
 
 class ElementBase(BaseModel):
@@ -565,76 +567,121 @@ def overlay_check(session_id: int, owner: Owner, body: OverlayCheckInput | None 
     return {"agent_id": agent_id, "command_id": command["command_id"], "status": command.get("status")}
 
 
-# Built-in starting points (data, not types): the editor copies one and adjusts it freely. Fashion / ecommerce look:
-# ivory cards, ink text, a gold price, Georgia titles (present on Windows and macOS; the renderer falls back to its
-# fixed stack elsewhere).
-IVORY, INK, GOLD, ROSE = "#F7F1E8F2", "#1C1A17", "#B8893B", "#C8857A"
-TITLE = {"font_family": "Georgia", "font_size": 40, "font_weight": 700, "color": INK, "align": "center"}
-FADE_UP = {"animation_in": {"name": "slide_up", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300}}
+class OverlayPreviewInput(BaseModel):
+    """"Xem thử trên OBS" from the editor: show this version's overlays at the editor's position, hidden again after
+    `seconds` unless renewed. Refused by the Agent while OBS streams or a LIVE session plays."""
+    agent_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
+    media_id: str | None = Field(default=None, pattern=MEDIA_ID_PATTERN)
+    position_ms: int = Field(default=0, ge=0, le=86_400_000)
+    playing: bool = False
+    seconds: int = Field(default=120, ge=10, le=600)
+    stop: bool = False
+
+
+@router.post("/sessions/{session_id}/timelines/{timeline_id}/overlay-preview", status_code=202)
+def overlay_preview(session_id: int, timeline_id: int, body: OverlayPreviewInput, owner: Owner):
+    """Ask an Agent (the session's, or the one chosen in the editor) to show this version's overlays in OBS at a
+    position of one video, without activating it or going LIVE. Saved content only (the Agent reads the version)."""
+    from app.cloud_agents import create_command
+    from app.owner_agents import owned_agent
+    with SessionLocal() as db:
+        item = session_of(db, session_id, owner)
+        timeline_of(db, item, timeline_id)
+        agent_id = item.agent_id or body.agent_id
+        if not agent_id:
+            raise HTTPException(409, "Chọn Agent Windows để xem thử trên OBS")
+        videos = session_videos(item)
+        media_id = body.media_id or (videos[0] if videos else None)
+        if not body.stop and media_id not in videos:
+            raise HTTPException(422, "Video không thuộc phiên")
+    owned_agent(owner, agent_id, online=True)
+    payload = {"session_id": session_id, "stop": True} if body.stop else {
+        "session_id": session_id, "timeline_id": timeline_id, "media_id": media_id, "position_ms": body.position_ms,
+        "playing": body.playing, "seconds": body.seconds, "stop": False}
+    command = create_command(agent_id, owner["id"], "overlay_preview", payload, session_id=session_id)
+    return {"agent_id": agent_id, "command_id": command["command_id"], "status": command.get("status")}
+
+
+# Built-in starting points (data, not types): the editor copies one and adjusts it freely. Fashion / live-commerce look in
+# the renderer's own font (Be Vietnam Pro, bundled with the web editor and the OBS renderer): soft cards, generous inner
+# margins, one strong accent per overlay (price, badge), text kept to 1–2 lines.
+INK, PAPER, DARK, GOLD, CORAL = "#16161A", "#FFFFFFF2", "#111114D9", "#FFC94A", "#FF4D6D"
+FADE_UP = {"animation_in": {"name": "slide_up", "duration_ms": 450}, "animation_out": {"name": "fade", "duration_ms": 300}}
+ZOOM_IN = {"animation_in": {"name": "zoom", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300}}
 
 
 def _frame(x, y, width, height):
     return {"x": x, "y": y, "width": width, "height": height}
 
 
+def _text(text, frame, size, weight=600, color=INK, align="left", lines=1, shadow=False):
+    return {"kind": "text", "text": text, "frame": frame,
+            "style": {"font_size": size, "font_weight": weight, "color": color, "align": align, "max_lines": lines, "shadow": shadow}}
+
+
+def _field(field, frame, size, weight=600, color=INK, align="left", lines=1, suffix=""):
+    return {"kind": "product_field", "field": field, "suffix": suffix, "frame": frame,
+            "style": {"font_size": size, "font_weight": weight, "color": color, "align": align, "max_lines": lines}}
+
+
 TEMPLATES = [
-    {"template": "SIZE_CHART", "label": "Bảng size", "duration_ms": 8000, **FADE_UP,
-     "layout": {"x": 0.06, "y": 0.5, "width": 0.88, "height": 0.34},
-     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.06},
-                  {"kind": "text", "text": "BẢNG SIZE", "frame": _frame(0.05, 0.03, 0.9, 0.12), "style": TITLE},
-                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "contain", "frame": _frame(0.04, 0.17, 0.92, 0.79)}]},
     {"template": "PRODUCT_INFO", "label": "Thông tin sản phẩm", "duration_ms": 6000, **FADE_UP,
-     "layout": {"x": 0.05, "y": 0.72, "width": 0.9, "height": 0.13},
-     "elements": [{"kind": "shape", "fill": "#1C1A17D9", "radius": 0.18},
-                  {"kind": "product_field", "field": "name", "frame": _frame(0.05, 0.1, 0.62, 0.8),
-                   "style": {"font_size": 36, "font_weight": 600, "color": "#FFFFFF", "max_lines": 2}},
-                  {"kind": "product_field", "field": "price", "suffix": "đ", "frame": _frame(0.68, 0.1, 0.28, 0.8),
-                   "style": {"font_size": 50, "font_weight": 800, "color": "#E9C46A", "align": "right"}}]},
-    {"template": "COLOR_OPTIONS", "label": "Bảng màu", "duration_ms": 6000, **FADE_UP,
-     "layout": {"x": 0.08, "y": 0.66, "width": 0.84, "height": 0.16},
-     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.12},
-                  {"kind": "text", "text": "MÀU SẮC", "frame": _frame(0.05, 0.05, 0.9, 0.25), "style": {**TITLE, "font_size": 32}},
-                  *[e for i, (color, name) in enumerate((("#FBFAF6", "Trắng"), ("#1C1A17", "Đen"), ("#D9C3A5", "Be"), ("#8A9A7B", "Rêu")))
-                    for e in ({"kind": "shape", "shape": "ellipse", "fill": color, "stroke": "#1C1A1733", "stroke_width": 3,
-                               "frame": _frame(0.09 + i * 0.22, 0.36, 0.1, 0.34)},
-                              {"kind": "text", "text": name, "frame": _frame(0.04 + i * 0.22, 0.72, 0.2, 0.24),
-                               "style": {"font_size": 26, "color": INK, "align": "center"}})]]},
-    {"template": "DETAIL_IMAGE", "label": "Ảnh chi tiết", "duration_ms": 6000,
-     "animation_in": {"name": "zoom", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300},
-     "layout": {"x": 0.56, "y": 0.14, "width": 0.38, "height": 0.3},
-     "elements": [{"kind": "shape", "fill": "#FFFFFF", "radius": 0.06},
-                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.05, "frame": _frame(0.03, 0.025, 0.94, 0.78)},
-                  {"kind": "text", "text": "Chất liệu cao cấp", "frame": _frame(0.05, 0.82, 0.9, 0.16),
-                   "style": {"font_size": 28, "font_weight": 600, "color": INK, "align": "center"}}]},
-    {"template": "COMPARE_LOOKS", "label": "Compare Looks", "duration_ms": 8000, **FADE_UP,
-     "layout": {"x": 0.05, "y": 0.46, "width": 0.9, "height": 0.36},
-     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.05},
-                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.04, "frame": _frame(0.03, 0.04, 0.455, 0.8)},
-                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.04, "frame": _frame(0.515, 0.04, 0.455, 0.8)},
-                  {"kind": "text", "text": "LOOK 1", "frame": _frame(0.03, 0.86, 0.455, 0.12), "style": {**TITLE, "font_size": 30}},
-                  {"kind": "text", "text": "LOOK 2", "frame": _frame(0.515, 0.86, 0.455, 0.12), "style": {**TITLE, "font_size": 30}}]},
+     "layout": {"x": 0.04, "y": 0.745, "width": 0.92, "height": 0.105},
+     "elements": [{"kind": "shape", "fill": DARK, "radius": 0.28},
+                  {"kind": "shape", "fill": GOLD, "radius": 0.5, "frame": _frame(0.035, 0.3, 0.008, 0.4)},
+                  _field("name", _frame(0.06, 0.14, 0.6, 0.72), 30, 600, "#FFFFFF", lines=2),
+                  _field("price", _frame(0.66, 0.14, 0.31, 0.72), 50, 800, GOLD, "right", suffix="đ")]},
     {"template": "PRODUCT_SPOTLIGHT", "label": "Product Spotlight", "duration_ms": 7000,
      "animation_in": {"name": "slide_left", "duration_ms": 450}, "animation_out": {"name": "fade", "duration_ms": 300},
-     "layout": {"x": 0.05, "y": 0.62, "width": 0.9, "height": 0.2},
-     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.1},
-                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.08, "frame": _frame(0.03, 0.08, 0.26, 0.84)},
-                  {"kind": "shape", "fill": ROSE, "radius": 0.5, "frame": _frame(0.33, 0.1, 0.16, 0.2)},
-                  {"kind": "text", "text": "HOT", "frame": _frame(0.33, 0.1, 0.16, 0.2),
-                   "style": {"font_size": 26, "font_weight": 800, "color": "#FFFFFF", "align": "center"}},
-                  {"kind": "product_field", "field": "name", "frame": _frame(0.33, 0.34, 0.63, 0.34),
-                   "style": {"font_size": 32, "font_weight": 600, "color": INK, "max_lines": 2}},
-                  {"kind": "product_field", "field": "price", "suffix": "đ", "frame": _frame(0.33, 0.68, 0.63, 0.26),
-                   "style": {"font_size": 46, "font_weight": 800, "color": GOLD}}]},
-    {"template": "PRODUCT_IMAGE", "label": "Ảnh sản phẩm", "duration_ms": 6000,
-     "animation_in": {"name": "zoom", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300},
-     "layout": {"x": 0.6, "y": 0.15, "width": 0.35, "height": 0.25},
-     "elements": [{"kind": "shape", "fill": "#FFFFFF", "radius": 0.08},
-                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.07, "frame": _frame(0.03, 0.03, 0.94, 0.94)}]},
+     "layout": {"x": 0.04, "y": 0.6, "width": 0.92, "height": 0.17},
+     "elements": [{"kind": "shape", "fill": PAPER, "radius": 0.14},
+                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.12, "frame": _frame(0.025, 0.08, 0.25, 0.84)},
+                  {"kind": "shape", "fill": CORAL, "radius": 0.5, "frame": _frame(0.31, 0.12, 0.15, 0.2)},
+                  _text("HOT", _frame(0.31, 0.12, 0.15, 0.2), 24, 800, "#FFFFFF", "center"),
+                  _field("name", _frame(0.31, 0.36, 0.66, 0.3), 28, 600, INK, lines=2),
+                  _field("price", _frame(0.31, 0.68, 0.66, 0.24), 42, 800, CORAL, suffix="đ")]},
+    {"template": "PRICE_TAG", "label": "Giá live", "duration_ms": 5000, **ZOOM_IN,
+     "layout": {"x": 0.6, "y": 0.5, "width": 0.36, "height": 0.1},
+     "elements": [{"kind": "shape", "fill": CORAL, "radius": 0.5},
+                  _text("GIÁ LIVE", _frame(0.1, 0.1, 0.8, 0.3), 22, 700, "#FFFFFFD9", "center"),
+                  _field("price", _frame(0.06, 0.38, 0.88, 0.52), 46, 800, "#FFFFFF", "center", suffix="đ")]},
+    {"template": "SIZE_CHART", "label": "Bảng size", "duration_ms": 8000, **FADE_UP,
+     "layout": {"x": 0.05, "y": 0.5, "width": 0.9, "height": 0.34},
+     "elements": [{"kind": "shape", "fill": PAPER, "radius": 0.07},
+                  _text("BẢNG SIZE", _frame(0.06, 0.04, 0.88, 0.1), 32, 800, INK, "center"),
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "contain", "radius": 0.03, "frame": _frame(0.05, 0.16, 0.9, 0.8)}]},
+    {"template": "COLOR_OPTIONS", "label": "Bảng màu", "duration_ms": 6000, **FADE_UP,
+     "layout": {"x": 0.08, "y": 0.45, "width": 0.84, "height": 0.13},
+     "elements": [{"kind": "shape", "fill": PAPER, "radius": 0.22},
+                  _text("MÀU SẮC", _frame(0.06, 0.08, 0.88, 0.24), 24, 800, INK, "center"),
+                  *[e for i, (color, name) in enumerate((("#F7F5F0", "Trắng"), ("#1B1B1F", "Đen"), ("#D8C2A2", "Be"), ("#7F9171", "Rêu")))
+                    for e in ({"kind": "shape", "shape": "ellipse", "fill": color, "stroke": "#16161A33", "stroke_width": 3,
+                               "frame": _frame(0.1 + i * 0.215, 0.36, 0.085, 0.32)},
+                              _text(name, _frame(0.05 + i * 0.215, 0.7, 0.19, 0.22), 22, 600, "#16161AB3", "center"))]]},
+    {"template": "DETAIL_IMAGE", "label": "Ảnh chi tiết", "duration_ms": 6000, **ZOOM_IN,
+     "layout": {"x": 0.56, "y": 0.14, "width": 0.4, "height": 0.3},
+     "elements": [{"kind": "shape", "fill": PAPER, "radius": 0.08},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.07, "frame": _frame(0.04, 0.03, 0.92, 0.77)},
+                  _text("Chất liệu cao cấp", _frame(0.06, 0.82, 0.88, 0.15), 24, 700, INK, "center")]},
+    {"template": "COMPARE_LOOKS", "label": "Compare Looks", "duration_ms": 8000, **FADE_UP,
+     "layout": {"x": 0.05, "y": 0.46, "width": 0.9, "height": 0.36},
+     "elements": [{"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.06, "frame": _frame(0, 0, 0.485, 1)},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.06, "frame": _frame(0.515, 0, 0.485, 1)},
+                  {"kind": "shape", "fill": DARK, "radius": 0.5, "frame": _frame(0.03, 0.88, 0.2, 0.08)},
+                  _text("LOOK 1", _frame(0.03, 0.88, 0.2, 0.08), 22, 800, "#FFFFFF", "center"),
+                  {"kind": "shape", "fill": DARK, "radius": 0.5, "frame": _frame(0.545, 0.88, 0.2, 0.08)},
+                  _text("LOOK 2", _frame(0.545, 0.88, 0.2, 0.08), 22, 800, "#FFFFFF", "center")]},
+    {"template": "PRODUCT_IMAGE", "label": "Ảnh sản phẩm", "duration_ms": 6000, **ZOOM_IN,
+     "layout": {"x": 0.6, "y": 0.15, "width": 0.36, "height": 0.25},
+     "elements": [{"kind": "shape", "fill": PAPER, "radius": 0.1},
+                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.09, "frame": _frame(0.04, 0.03, 0.92, 0.94)}]},
     {"template": "TEXT_CARD", "label": "Thẻ chữ", "duration_ms": 5000, **FADE_UP,
-     "layout": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.08},
-     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.5},
-                  {"kind": "text", "text": "Freeship toàn quốc", "frame": _frame(0.05, 0.1, 0.9, 0.8),
-                   "style": {"font_size": 40, "font_weight": 700, "color": INK, "align": "center"}}]},
+     "layout": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.07},
+     "elements": [{"kind": "shape", "fill": CORAL, "radius": 0.5},
+                  _text("Freeship toàn quốc", _frame(0.05, 0.12, 0.9, 0.76), 36, 800, "#FFFFFF", "center")]},
+    {"template": "CAPTION", "label": "Chữ trên video", "duration_ms": 5000, **FADE_UP,
+     "layout": {"x": 0.06, "y": 0.3, "width": 0.88, "height": 0.07},
+     "elements": [_text("Mặc là xinh, đi đâu cũng hợp", _frame(0, 0, 1, 1), 44, 800, "#FFFFFF", "center", shadow=True)]},
 ]
 
 
