@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "npm run ui:prepare && npm run build:app",
     "build:app": "tsc -b && vite build",
+    "build:overlay": "vite build --config vite.overlay.config.ts",
     "typecheck": "tsc -b",
     "lint": "oxlint src",
     "preview": "vite preview"

@@ -193,3 +193,36 @@ TimelineEditor (one version, every video of the session)
 | Issues | Local checks before saving (no image chosen, no product, after the end, animations longer than the overlay, empty text, deleted image, too many at once) plus the API `issues` of the saved list, next to each overlay; errors that would be 422 block saving, `TOO_MANY_AT_ONCE` only blocks approval |
 | Safe zones | "Vùng an toàn" draws the TikTok zones and a safe area; an overlay covered ≥ 20 % by a zone gets a warning. TikTok Viewer Preview draws a simulated viewer UI and says it is approximate |
 | Images | "Chọn ảnh" opens the owner's overlay image library: upload (`POST /api/live/overlay-assets`, PNG/JPEG/WebP ≤ 5 MB checked in the browser and again by the Backend), pick, delete |
+
+## 9. Phase 3 — the overlay in OBS
+
+Code: `agent-core/src/sarae_agent/overlay/` (`service.py`, `obs_source.py`, `server.py`, `cache.py`), renderer page
+`web/overlay.html` + `web/src/overlay/obs/ObsOverlayApp.tsx` built by `npm run build:overlay` into
+`agent-core/src/sarae_agent/overlay/renderer/` (committed; shipped by the PyInstaller spec). Backend:
+`GET /api/agent-media/overlay-snapshot?agent_id&session_id` (Agent key) returns the active version's snapshot.
+
+```
+Cloud ── snapshot (15 s poll) ──> Agent OverlayService ── images cached on this PC (sha256, ≤ 5 MB each, ≤ 60 MB)
+                                   │  local server 127.0.0.1:17891 (token + Host check)
+PlaybackEngine ── position ──────> │  /overlay/state  {revision, show, clock}
+ (media id, ms, state, loop)       │  /overlay/scene  /overlay/ready  /api/overlay-files/…
+                                   ▼
+OBS ── Browser Source "Sarae Overlay" (1080×1920, transparent) ── same OverlayRenderer as the web preview
+```
+
+| Rule | How |
+|---|---|
+| One Browser Source | `browser_source` named `overlay.source_name`; ours = UUID remembered per scene collection (`overlay.input_uuids`), or our URL marker `sarae_overlay=1` on 127.0.0.1. A source of that name made by the operator is never touched (`OVERLAY_NAME_TAKEN`) |
+| Scene items | In every scene that holds the video Media Source(s), one item of our source, tracked by scene item ID per scene; a removed item is added back, a deleted source created again |
+| Transform lock | Position (0,0), rotation 0, crop 0, bounds none, top-left alignment, scale = OBS canvas / 1080×1920; read back after setting (`OVERLAY_TRANSFORM_REJECTED`) |
+| Order | Above the video sources (moved back on top when dragged under) |
+| OBS settings | Read only: FPS, base and output resolution are never changed. A canvas that is not 9:16 keeps the overlay hidden (`OVERLAY_CANVAS_NOT_9_16`) |
+| Apply | New revision → images cached → renderer loads the scene, preloads images (`onload`, 8 s each) and fonts → `POST ready` → Agent shows the scene item. The previous revision stays on screen meanwhile |
+| Failure | Renderer not ready or no answer in 20 s → the new revision is dropped (rollback). Renderer silent 6 s → overlay hidden, page reloaded (`refreshnocache`, every 30 s at most). OBS disconnected → nothing to do until it is back; visibility is applied again on reconnect. Cloud unreachable → the loaded revision keeps running |
+| Never | Restart OBS or the video, change scenes, delete a source, or block the pin schedule / voice: the service runs on its own thread and only ever hides the overlay |
+| Time | The renderer draws at the PlaybackEngine's last reported position (pause holds; between two reports it advances only while PLAYING, at most 1.5 s) |
+
+Rehearsal on a real OBS (no TikTok LIVE): `agent-core/scripts/overlay_obs_rehearsal.py <out>` (refuses to run while
+streaming). It checks: READY before showing, one item above the video, transform read back, pixel positions, OBS vs
+headless Chrome of the same page, re-lock after a drag, back on top, re-create after a delete, OBS reconnect, page
+reload, version switch without hiding, video kept playing.

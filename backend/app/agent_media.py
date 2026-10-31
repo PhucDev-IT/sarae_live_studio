@@ -77,6 +77,21 @@ def manifest(agent_id: str, session_id: int, db: DB, x_sarae_agent_key: str | No
     return {"session_id": session_id, "agent_id": agent_id, **body}
 
 
+@router.get("/overlay-snapshot")
+def overlay_snapshot(agent_id: str, session_id: int, db: DB, x_sarae_agent_key: str | None = Header(None)):
+    """Overlays of the session's ACTIVE timeline version, for the Agent's local OBS renderer (`snapshot` null when no
+    version is active or the session is not a Single Video one). Images are signed URLs the Agent downloads once."""
+    from app.live_overlays import snapshot
+    from app.live_timeline import LiveTimeline, is_single
+    owner_id = agent_owner(agent_id, x_sarae_agent_key)
+    session = db.get(LiveSession, session_id)
+    if session is None or session.owner_id != owner_id or (session.agent_id and session.agent_id != agent_id):
+        raise agent_error(404, "Không tìm thấy phiên LIVE của Agent này", "SESSION_NOT_FOUND")
+    timeline = db.get(LiveTimeline, session.active_timeline_id) if session.active_timeline_id else None
+    active = is_single(session) and timeline is not None and timeline.status == "ACTIVE"
+    return {"session_id": session_id, "agent_id": agent_id, "snapshot": snapshot(db, session, timeline) if active else None}
+
+
 def agent_cache_report(agent_id: str) -> tuple[dict, str | None]:
     """The Agent's last reported media cache job (heartbeat) and when it was seen."""
     import json

@@ -33,6 +33,8 @@ from sarae_agent.media.cloud_cache import CloudMediaCache, cache_dir, cached_pat
 import httpx
 from sarae_agent.monitoring.captcha import CaptchaMonitor
 from sarae_agent.obs.controller import ObsController, ObsSettingsStore
+from sarae_agent.overlay.cache import OverlayCache
+from sarae_agent.overlay.service import OverlayService
 from sarae_agent.playback.engine import PlaybackEngine
 from sarae_agent.playback.service import PlaybackService
 from sarae_agent.tiktok_chat_sender import SELECTORS_FILE, ChatSender
@@ -91,8 +93,10 @@ class AgentRuntime:
         self._auto_pin_guard = threading.Lock()
         self._auto_pin_last: tuple | None = None
         self.timeline = self._timeline_scheduler()
-        self.engine.on_position = lambda p: self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"],
-                                                                  media_id=p.get("media_id"))
+        self.overlay = OverlayService(self.config, self.obs.request, lambda: self.obs.status().get("connected", False),
+                                      self._video_sources, self._overlay_snapshot, self._overlay_image,
+                                      OverlayCache(paths.overlay_cache))
+        self.engine.on_position = self._on_position
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
                                     chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline)
@@ -110,6 +114,57 @@ class AgentRuntime:
             gate = self._console_gate()
         log.info("Timeline ghim: %s", "dry-run" if options.dry_run else "LIVE Console")
         return TimelineScheduler(executor, gate, emit=self._on_timeline_event)
+
+    def _on_position(self, p: dict) -> None:
+        """Engine watchdog position report: pins first (unchanged), then overlays; an overlay error never reaches pins."""
+        self.timeline.observe(p["session_id"], p["position_ms"], p["iteration"], media_id=p.get("media_id"))
+        try:
+            self.overlay.observe(p["session_id"], p.get("media_id"), p["position_ms"], p.get("media_state"), p["iteration"])
+        except Exception:  # noqa: BLE001
+            log.exception("Overlay không nhận được vị trí phát")
+
+    def _video_sources(self) -> list[str]:
+        """Names of the OBS Media Sources the engine plays the video in (the overlay goes above them)."""
+        config = self.engine.config
+        names = [config.input_name]
+        if config.dual_mode:
+            names += [config.source_a.strip() or config.input_name + " A", config.source_b.strip() or config.input_name + " B"]
+        return names
+
+    def _cloud(self):
+        identity = self.activation.identity
+        api_url = (identity.cloud_url if identity else "") or self.config.get().cloud.api_url
+        if identity is None or not api_url:
+            raise AgentError("CLOUD_URL_MISSING", "Chưa kết nối Cloud")
+        return identity, api_url
+
+    def _overlay_snapshot(self, session_id: int) -> dict | None:
+        """Overlays of the session's active timeline version (GET /agent-media/overlay-snapshot)."""
+        identity, api_url = self._cloud()
+        with httpx.Client(base_url=api_url.rstrip("/") + "/", timeout=15, follow_redirects=False) as client:
+            response = client.get("agent-media/overlay-snapshot", params={"agent_id": identity.agent_id, "session_id": session_id},
+                                  headers={"X-Sarae-Agent-Key": identity.credential})
+            response.raise_for_status()
+            body = response.json()
+        if body.get("session_id") != session_id or body.get("agent_id") != identity.agent_id:
+            raise AgentError("OVERLAY_SNAPSHOT_INVALID", "Cloud trả về snapshot overlay không đúng phiên")
+        return body.get("snapshot")
+
+    def _overlay_image(self, url: str) -> bytes:
+        """One overlay image: a signed Cloud URL (no Agent key sent: the signature is the permission) or an https
+        catalog photo; at most 5 MB."""
+        from sarae_agent.overlay.cache import MAX_FILE_BYTES
+        _identity, api_url = self._cloud()
+        full = api_url.rstrip("/").removesuffix("/api") + url if url.startswith("/api/") else url
+        with httpx.Client(timeout=20, follow_redirects=not url.startswith("/api/"), max_redirects=3) as client:
+            with client.stream("GET", full) as response:
+                response.raise_for_status()
+                data = bytearray()
+                for piece in response.iter_bytes():
+                    data += piece
+                    if len(data) > MAX_FILE_BYTES:
+                        raise AgentError("OVERLAY_IMAGE_TOO_LARGE", "Ảnh overlay lớn hơn 5 MB")
+                return bytes(data)
 
     def _console_gate(self) -> ConsoleLiveGate:
         def changed(state: str, evidence: list) -> None:
@@ -169,6 +224,7 @@ class AgentRuntime:
         self.outbox.push(event)
         if event.get("type") == "PLAYBACK_ENDED":
             self.timeline.clear("playback_ended")
+            self.overlay.clear("playback_ended")
         if event.get("type") in ("PRODUCT_SWITCHED", "PLAYBACK_ENDED"):
             self._maybe_pin_current_video()
         worker = self.worker
@@ -228,6 +284,7 @@ class AgentRuntime:
         """Called once after the IPC channel is ready. Never blocks the IPC reader."""
         self._watchdog.start()
         self.engine.start_monitor()
+        self.overlay.start()
         cfg = self.config.get()
         if cfg.obs.auto_connect:
             threading.Thread(target=self.obs.ensure_connected, name="obs-initial", daemon=True).start()
@@ -351,7 +408,7 @@ class AgentRuntime:
         LIVE sessions with it). ``obs`` and ``local_playback`` are the older subsets the web Agent page reads.
         """
         identity = self.activation.require()
-        play = {**self.playback.engine_status(), "timeline": self.timeline.status()}
+        play = {**self.playback.engine_status(), "timeline": self.timeline.status(), "overlay": self.overlay.status()}
         return {
             "agent_id": identity.agent_id,
             "hostname": hostname()[:160],
@@ -469,5 +526,9 @@ class AgentRuntime:
             self.auto_pin.close()
         except Exception:
             log.exception('Không đóng được Chrome Auto Pin')
+        try:
+            self.overlay.close()  # hides our overlay; the video keeps playing in OBS
+        except Exception:  # noqa: BLE001
+            log.exception("Không đóng được overlay")
         self.obs.close()
         log.info("Agent Core đã giải phóng tài nguyên")

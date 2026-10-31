@@ -13,7 +13,8 @@ a = Analysis(
     [os.path.join(SRC, "sarae_agent", "__main__.py")],
     pathex=[SRC],
     binaries=[],
-    datas=[],
+    # The OBS overlay renderer page (built from web/ by `npm run build:overlay`), served by sarae_agent.overlay.server.
+    datas=[(os.path.join(SRC, "sarae_agent", "overlay", "renderer"), os.path.join("sarae_agent", "overlay", "renderer"))],
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],
