@@ -84,8 +84,12 @@ export default function ObsOverlayApp(){
       } catch {/* the Agent restarts: keep polling */}
     }
     void poll()
-    const timer = window.setInterval(()=>void poll(), POLL_MS)
-    return ()=>{alive = false;window.clearInterval(timer)}
+    // The beat comes from a worker: OBS marks a hidden Browser Source as a hidden page, where Chromium slows the page's
+    // own timers down to once a minute after a few minutes; a worker's timer keeps the 250 ms poll (and the READY
+    // handshake of a new version) on time while the overlay is hidden before LIVE.
+    const beat = new Worker(URL.createObjectURL(new Blob([`setInterval(()=>postMessage(0), ${POLL_MS})`], {type:'text/javascript'})))
+    beat.onmessage = () => void poll()
+    return ()=>{alive = false;beat.terminate()}
   },[])
 
   // A revision the Agent wants and we do not draw yet: load, preload, report.

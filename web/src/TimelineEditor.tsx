@@ -15,6 +15,7 @@ import { EXTRA_PRESETS, endOf, fromPreset, MIN_DURATION_MS, type Overlay, type O
 import { blocksSave, copyOverlay, hasClipboard, localIssues, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
 import { OverlayPreview, OverlayTracks, type PreviewMode } from './overlay/OverlayStage'
 import OverlayPanel from './overlay/OverlayPanel'
+import OverlayReadinessPanel from './overlay/OverlayReadinessPanel'
 import './timeline-editor.css'
 import './overlay/overlay-editor.css'
 
@@ -77,10 +78,11 @@ export default function TimelineEditor(){
   const [previewMode,setPreviewMode] = useState<PreviewMode>('obs')
   const [showZones,setShowZones] = useState(false)
   const [canPaste,setCanPaste] = useState(hasClipboard)
+  const loadTemplates = useCallback(()=>{void overlaysApi.templates().then(setTemplates).catch(()=>{})},[])
   useEffect(()=>{
-    void overlaysApi.templates().then(setTemplates).catch(()=>{})
+    loadTemplates()
     void overlaysApi.assets().then(setAssets).catch(()=>setAssets([]))
-  },[])
+  },[loadTemplates])
 
   const load = useCallback(async (keepVersion?:number|null)=>{
     if (sessionId == null) return
@@ -191,7 +193,9 @@ export default function TimelineEditor(){
   // ----- overlays
   const presets = useMemo<OverlayPreset[]>(()=>{
     const list = templates?.templates ?? []
-    return [...list, ...EXTRA_PRESETS.filter(p=>!list.some(t=>t.template === p.template))]
+    // Built-in presets, then the owner's own templates (marked `owner`): all only starting points.
+    return [...list, ...EXTRA_PRESETS.filter(p=>!list.some(t=>t.template === p.template)),
+      ...(templates?.owner_templates ?? []).map(t=>({...t, owner:true}))]
   },[templates])
   /** Snapshot-shaped input of the renderer: the draft's overlays with the catalog products and images they can read. */
   const scene = useMemo<OverlayScene>(()=>({
@@ -435,12 +439,13 @@ export default function TimelineEditor(){
       {overlayIssues.some(i=>i.level === 'error') && <Badge tone="danger">Overlay có lỗi</Badge>}
     </div>
 
+    {tab === 'overlays' && session && <OverlayReadinessPanel sessionId={session.id} sessionAgentId={session.agent_id ?? null}/>}
     {tab === 'overlays' ? <OverlayPanel overlays={overlays} selected={ovSelected} mediaId={videoId} now={now} editable={!!editable} dirty={draft.dirty} busy={busy}
       presets={presets} products={products} assets={assets ?? []} issues={overlayIssues} apiBase={api} canUndo={draft.canUndo} canRedo={draft.canRedo} canPaste={canPaste}
       blocking={overlayBlocking || local.some(i=>i.level === 'error')} onSelect={selectOverlay} onAdd={addOverlay} onChange={changeOverlay} onSeal={draft.seal}
       onRemove={removeOverlay} onDuplicate={duplicateOverlay} onCopy={copySelected} onPaste={paste} onUndo={draft.undo} onRedo={draft.redo}
       onPreview={previewAnimation} onSeek={seek} onSave={()=>void save()} onRevert={()=>{resetOverlays(timelineOverlays.current);setOvSelected(null)}}
-      onAssetsChanged={setAssets} readOnlyAction={readOnlyAction}/>
+      onAssetsChanged={setAssets} readOnlyAction={readOnlyAction} onTemplatesChanged={loadTemplates}/>
     : <div className="te-grid">
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc của video này ({shown.length}{markers.length !== shown.length ? ` / ${markers.length} cả phiên` : ''})</span>}
         description={editable ? 'Mỗi mốc ghim hoặc bỏ ghim một sản phẩm từ thời điểm đó của video. Sang video mới, sản phẩm đang ghim được giữ tới mốc đầu của video đó. Hai mốc trùng giờ: mốc sau được áp dụng.' : 'Phiên bản đã duyệt chỉ xem; muốn sửa hãy tạo bản nháp mới.'}>

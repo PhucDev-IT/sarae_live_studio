@@ -323,6 +323,21 @@ class CacheTests(unittest.TestCase):
         _, missing = self.cache.localize(self.snapshot(product_url="http://plain.example/x.png"), self.fetch, "tok")
         self.assertEqual([m.get("product_id") for m in missing], ["7"], "only signed /api/ or https URLs")
 
+    def test_old_unused_images_are_cleaned_up_and_the_scene_in_use_is_kept(self):
+        import os
+        import time
+        scene, _ = self.cache.localize(self.snapshot(), self.fetch, "tok")
+        used = {u.split("/")[-1].split("?")[0] for u in (scene["assets"]["a1"]["url"], scene["products"]["7"]["image_url"])}
+        stale = self.root / ("c" * 64 + ".png")
+        stale.write_bytes(PNG)
+        old = time.time() - 30 * 86400
+        os.utime(stale, (old, old))
+        for name in used:
+            os.utime(self.root / name, (old, old))
+        removed = self.cache.prune(used)
+        self.assertEqual(removed, [stale.name])
+        self.assertTrue(all((self.root / n).is_file() for n in used), "images of the scene in use are never removed")
+
     def test_served_names_cannot_escape_the_cache(self):
         for name in ("../config.json", "index.json", "x.png", "a" * 64 + ".exe"):
             self.assertIsNone(self.cache.path(name))
@@ -494,6 +509,31 @@ class ServiceTests(unittest.TestCase):
         self.now += 40
         self.step()
         self.assertEqual([r for r, _ in self.obs.requests].count("PressInputPropertiesButton"), refreshes, "an up-to-date page is left alone")
+
+    def test_pre_live_check_prepares_everything_and_never_shows(self):
+        self.snapshots[5] = self.snap()
+        ready = lambda seconds: self.service.renderer_ready({"revision": "r1", "ok": True})  # the page answers while we wait
+        self.service.server.build = "overlay-x.js"
+        report = self.service.check(5, sleep=ready)
+        codes = {c["code"]: c["ok"] for c in report["checks"]}
+        self.assertTrue(report["ok"], report)
+        for code in ("RENDERER_BUILT", "ACTIVE_VERSION", "ASSETS_CACHED", "OBS_CONNECTED", "OBS_CANVAS", "OBS_SOURCE",
+                     "OBS_TRANSFORM", "RENDERER_READY"):
+            self.assertTrue(codes.get(code), code)
+        self.assertFalse(self.item()["sceneItemEnabled"], "a check never shows the overlay")
+        self.assertEqual(self.service.status()["revision"], "r1", "prepared: shows at once when the session plays")
+
+    def test_pre_live_check_reports_what_is_wrong(self):
+        self.service.server.build = "overlay-x.js"
+        self.snapshots[5] = None
+        self.obs.video["baseWidth"] = 1920
+        report = self.service.check(5, sleep=lambda s: None)
+        codes = {c["code"]: (c["ok"], c["level"]) for c in report["checks"]}
+        self.assertFalse(report["ok"])
+        self.assertEqual(codes["ACTIVE_VERSION"], (False, "warning"))
+        self.assertEqual(codes["OVERLAY_CANVAS_NOT_9_16"], (False, "error"))
+        self.obs.connected = False
+        self.assertEqual({c["code"]: c["ok"] for c in self.service.check(5, sleep=lambda s: None)["checks"]}["OBS_CONNECTED"], False)
 
     def test_each_agent_run_has_its_own_clock_epoch(self):
         self.service.observe(5, "m" * 32, 1000, "OBS_MEDIA_STATE_PLAYING", 0)

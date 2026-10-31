@@ -101,7 +101,8 @@ class AgentRuntime:
         self.engine.on_position = self._on_position
         self.router = CommandRouter(playback=self.engine, monitor=self.monitor, voice=self.voice,
                                     tiktok_sync=self.sync_tiktok_products, media_prepare=self.prepare_cloud_cache,
-                                    chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline)
+                                    chat=self.auto_pin, auto_pin=self.auto_pin, timeline=self.timeline,
+                                    overlay=self.overlay)
         self._watchdog = threading.Thread(target=self._watch, name="runtime-watchdog", daemon=True)
 
     def _timeline_scheduler(self) -> TimelineScheduler:

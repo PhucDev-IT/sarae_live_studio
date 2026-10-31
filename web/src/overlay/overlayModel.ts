@@ -46,7 +46,12 @@ export type OverlayScene = {
   products:Record<string, SceneProduct>; assets:Record<string, SceneAsset>
 }
 /** A preset of GET /api/live/overlay-templates: a starting point, never a type. */
-export type OverlayPreset = {template:string; label:string; layout:Partial<OverlayLayout>; elements:Partial<OverlayElement>[]}
+export type OverlayPreset = {template:string; label:string; layout:Partial<OverlayLayout>; elements:Partial<OverlayElement>[]
+  /** Optional look of the preset (fashion presets and owner templates carry them). */
+  animation_in?:Animation; animation_out?:Animation; duration_ms?:number
+  /** An owner template (GET /api/live/overlay-templates `owner_templates`): reusable in every session of the owner. */
+  id?:number; owner?:boolean; description?:string; missing_assets?:string[]
+}
 export type OverlayIssue = {level:'error'|'warning'; code:string; message:string; overlay?:number; media_id?:string; at_ms?:number}
 
 // ----- defaults (same as the Backend's schemas, so a preset or snapshot block always has every field) -----
@@ -93,8 +98,9 @@ export function fromPreset(preset:OverlayPreset|null, media_id:string, start_ms:
   const blank:OverlayPreset = {template:'', label:'', layout:{x:0.1, y:0.25, width:0.8, height:0.1},
     elements:[{kind:'shape', fill:'#000000A0', radius:0.2}, {kind:'text', text:'Nội dung', frame:{x:0.05, y:0.1, width:0.9, height:0.8}, style:{...defaultStyle(), align:'center'}}]}
   const p = preset ?? blank
-  return normalizeOverlay({media_id, template:p.template, label:p.label, start_ms, duration_ms:5000, product_id, layout:{z_index:1, opacity:1, ...p.layout} as OverlayLayout,
-    elements:structuredClone(p.elements) as OverlayElement[], enabled:true})
+  return normalizeOverlay({media_id, template:p.template, label:p.owner ? '' : p.label, start_ms, duration_ms:p.duration_ms ?? 5000, product_id,
+    layout:{z_index:1, opacity:1, ...p.layout} as OverlayLayout, elements:structuredClone(p.elements) as OverlayElement[], enabled:true,
+    ...(p.animation_in ? {animation_in:{...p.animation_in}} : {}), ...(p.animation_out ? {animation_out:{...p.animation_out}} : {})})
 }
 
 /**

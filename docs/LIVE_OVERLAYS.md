@@ -257,3 +257,62 @@ overlay service as `AgentRuntime` wires them: playback, pause / resume, seek bot
 shuffle, version change, renderer not ready / timeout / reload, OBS reconnect, overlay failure with pins intact, and the
 pin list never duplicated. The real-OBS rehearsal also measures timing against the OBS cursor (an overlay at
 cursor + 4 s for 3 s appears and disappears within ± 0.7 s).
+
+## 11. Phase 5 — templates, readiness before LIVE, release checks
+
+### Templates (no fixed types, still)
+
+| Kind | Where | Notes |
+|---|---|---|
+| Built-in presets | `GET /api/live/overlay-templates` → `templates` | Fashion / ecommerce look: ivory cards, ink text, gold price, Georgia titles, slide/zoom/fade animations and a duration. SIZE_CHART, PRODUCT_INFO, COLOR_OPTIONS (swatches), DETAIL_IMAGE, COMPARE_LOOKS, PRODUCT_SPOTLIGHT, PRODUCT_IMAGE, TEXT_CARD — labels, not types |
+| Owner templates | `owner_templates` of the same call; `POST /api/live/overlay-templates`, `PUT/DELETE /api/live/overlay-templates/{id}`, `POST …/{id}/duplicate` | Saved from any overlay ("Lưu làm mẫu"), reusable in every session of the owner, max 200. Not bound to a product (product blocks read the overlay's product); images must be the owner's; a template whose image was deleted lists it in `missing_assets`. Table `live_overlay_templates` (migration `20261101_0020`) |
+
+Editor: "Thêm overlay" shows **Mẫu có sẵn** and **Mẫu của tôi** (duplicate / delete); the inspector keeps timing,
+product and blocks open and folds position, layer, opacity and animations into one "advanced" section (the box is also
+dragged and resized on the preview), so the default view has few controls.
+
+### "Kiểm tra OBS Overlay" before LIVE
+
+```
+Web (Timeline Editor, Overlay tab · LIVE console) ── POST /api/live/sessions/{id}/overlay-check {agent_id}
+   └─ Agent command overlay_check ── downloads the active snapshot + images (offline afterwards)
+                                  ── creates / checks the hidden Browser Source, reads canvas and transform back
+                                  ── waits ≤ 12 s for the renderer READY          (never shows it, never touches playback)
+   └─ GET /api/live/sessions/{id}/overlay-readiness?agent_id= ── Backend side: ACTIVE version, overlay errors, image
+                                  size, Agent online, Agent synced to the ACTIVE revision (heartbeat playback.overlay)
+```
+
+The panel lists both sides (✅ / ⚠️ / ❌ with stable codes) and downloads the report as `.md` or `.json`. Before LIVE
+a session has no Agent yet: the check uses the Agent chosen in the top bar.
+
+| Agent check | Fails when |
+|---|---|
+| `RENDERER_BUILT`, `RENDERER_SERVER` | The renderer page is missing from the Agent build / the local port could not open |
+| `ACTIVE_VERSION`, `ASSETS_CACHED`, `PRODUCT_PHOTOS` (warning) | No ACTIVE version with overlays / images could not be downloaded |
+| `OBS_CONNECTED`, `OBS_CANVAS` (`OVERLAY_CANVAS_NOT_9_16`), `OBS_SOURCE`, `OBS_TRANSFORM` | OBS not reachable, canvas not 9:16, source name taken by the operator, transform rejected |
+| `RENDERER_READY`, `RENDERER_VERSION` (warning) | The page did not load the overlays / is a page of an older Agent (reloaded) |
+
+### Robustness found on the real OBS (fixed)
+
+- A page that outlived an Agent restart ignored the new clock (seqs restart at 1): every clock carries the run's
+  `epoch`; only an older seq of the same epoch is ignored.
+- OBS marks a hidden Browser Source as a hidden page, where Chromium slows timers (to once a minute after a few
+  minutes): the renderer's poll beats from a Web Worker; a silent page is reloaded whenever a version waits for READY.
+- A page of an older renderer build (after an Agent update) is detected by its build and reloaded.
+- Images of the scene in use are never removed; older unused ones go after 14 days, and the cache stays ≤ 300 MB.
+
+### Release checks
+
+| Check | How | Result (local OBS 33, 1080×1920 @ 30 fps, no TikTok LIVE) |
+|---|---|---|
+| Web preview vs OBS output, same timestamp | `scripts/overlay_obs_rehearsal.py`: OBS source screenshot vs headless Chrome of the same page | 0.0000 % pixels differ; boxes identical to the pixel |
+| Timing against the OBS cursor | same script | appears +53…+267 ms after its start, gone ≤ 3 s later (±0.7 s budget) |
+| FPS while toggling the overlay | `scripts/overlay_obs_soak.py`, 20 toggles | 30/30 fps, 0 skipped render frames |
+| Long run, overlay changing every 5 s | same, 5 min | 57/57 versions READY, 0 / 9010 frames skipped, browser processes +13.8 MB, Agent +1 MB |
+| Backend lost after preload | same | the loaded overlay keeps showing |
+| Cache | same / unit tests | ≤ budget; scene in use kept |
+| Upgrade from an older renderer page | real OBS | detected, reloaded, shown after 1.6 s |
+| Overlay hidden 7 min, then a new version | real OBS | page never silent > 155 ms; new version READY in 0.2 s while hidden, shown 0.4 s after playback resumed |
+
+Still to test on the operator's machine: a real TikTok LIVE (never opened by these tests), the installed Agent build
+end to end, other OBS versions / GPUs, several scene collections in daily use, and the TikTok viewer layout on phones.

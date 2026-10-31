@@ -6,7 +6,19 @@ import { normalizeOverlay, type AnimationName, type Overlay, type OverlayIssue, 
 export type OverlaysView = { timeline_id:number; version:number; status:TimelineStatus; canvas:{width:number;height:number}; overlays:Overlay[]; issues:OverlayIssue[] }
 export type OverlayTemplates = {
   canvas:{width:number;height:number}; blocks:string[]; product_fields:ProductField[]; animations:AnimationName[]; max_concurrent:number; templates:OverlayPreset[]
+  /** The owner's own templates (reusable in every session). */
+  owner_templates:OverlayPreset[]
 }
+/** One line of a readiness report (Backend or Agent side). */
+export type ReadinessCheck = { code:string; ok:boolean; level:'ok'|'warning'|'error'; message:string }
+export type OverlayReadiness = {
+  session_id:number; session_name:string; generated_at:string; ok:boolean; active_version:number|null; snapshot_revision:string|null
+  checks:ReadinessCheck[]; agent_overlay:Record<string, unknown>|null
+}
+/** What the Agent answers to "Kiểm tra OBS Overlay" (the overlay_check command). */
+export type AgentOverlayCheck = { session_id:number; ok:boolean; checks:ReadinessCheck[]; status:Record<string, unknown> }
+/** An owner template as the API accepts it. */
+export type TemplateBody = Pick<Overlay, 'template'|'layout'|'elements'|'animation_in'|'animation_out'|'duration_ms'> & { name:string; description?:string }
 export type OverlayAsset = { id:string; filename:string; mime_type:string; size_bytes:number; sha256:string; width:number; height:number; created_at:string; url:string }
 export type OverlaySnapshot = OverlayScene & { revision:string; session_id:number; timeline_id:number; version:number }
 
@@ -25,6 +37,13 @@ export const overlaysApi = {
     {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({overlays:overlays.map(body)})}).then(view),
   snapshot:(sessionId:number, timelineId:number) => apiRequest<OverlaySnapshot>(path(sessionId, timelineId, '/snapshot')),
   templates:() => apiRequest<OverlayTemplates>('/live/overlay-templates'),
+  createTemplate:(t:TemplateBody) => apiRequest<OverlayPreset>('/live/overlay-templates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(t)}),
+  duplicateTemplate:(id:number) => apiRequest<OverlayPreset>(`/live/overlay-templates/${id}/duplicate`, {method:'POST'}),
+  removeTemplate:(id:number) => apiRequest<void>(`/live/overlay-templates/${id}`, {method:'DELETE'}),
+  readiness:(sessionId:number, agentId?:string|null) => apiRequest<OverlayReadiness>(`/live/sessions/${sessionId}/overlay-readiness${agentId ? '?agent_id=' + encodeURIComponent(agentId) : ''}`),
+  /** Asks the Agent to check (and prepare, hidden) the OBS overlay; wait for the result with waitCommand. */
+  check:(sessionId:number, agentId?:string|null) => apiRequest<{agent_id:string; command_id:string}>(`/live/sessions/${sessionId}/overlay-check`,
+    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({agent_id:agentId ?? null})}),
   assets:() => apiRequest<OverlayAsset[]>('/live/overlay-assets'),
   upload:(file:File) => {
     const form = new FormData()

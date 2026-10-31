@@ -112,9 +112,10 @@ class OverlayAsset(Base):
 
 
 def ensure_schema(bind) -> None:
-    """Create the overlay tables if missing (startup; Alembic 20261031_0019 does the same)."""
+    """Create the overlay tables if missing (startup; Alembic 20261031_0019 and 20261101_0020 do the same)."""
     OverlayAsset.__table__.create(bind=bind, checkfirst=True)
     OverlayEvent.__table__.create(bind=bind, checkfirst=True)
+    OverlayTemplate.__table__.create(bind=bind, checkfirst=True)
 
 
 # ----- building blocks -------------------------------------------------------------------------------------------
@@ -488,39 +489,277 @@ def active_snapshot(session_id: int, owner: Owner):
         return {"session_id": session_id, "snapshot": snapshot(db, item, timeline) if active else None}
 
 
-# Built-in starting points (data, not types): the editor copies one and adjusts it freely.
+# ----- readiness before LIVE ----------------------------------------------------------------------------------------
+
+def readiness(db, owner_id: str, item, agent_id: str | None = None) -> dict:
+    """What the Backend knows about the OBS overlay of a session: the active version, its overlays and images, and
+    what the session's Agent last reported (heartbeat `playback.overlay`). The Agent-side checks (OBS canvas, Browser
+    Source, transform, images on the PC, renderer READY) come from POST …/overlay-check."""
+    from datetime import timezone
+    from app.live import playback_of
+    from app.live_sessions import agent_by_id
+    checks: list[dict] = []
+
+    def add(code: str, ok: bool, message: str, level: str = "error") -> None:
+        checks.append({"code": code, "ok": bool(ok), "level": "ok" if ok else level, "message": message})
+
+    timeline = db.get(LiveTimeline, item.active_timeline_id) if item.active_timeline_id else None
+    active = timeline is not None and timeline.status == "ACTIVE"
+    snap = snapshot(db, item, timeline) if active else None
+    if not active:
+        add("ACTIVE_VERSION", False, "Chưa kích hoạt timeline: không có overlay để phát")
+    else:
+        events = events_of(db, timeline.id)
+        errors = [i for i in overlay_issues(db, owner_id, item, events) if i["level"] == "error"]
+        add("ACTIVE_VERSION", True, f"Phiên bản {timeline.version} đang ACTIVE: {len(snap['overlays'])} overlay bật")
+        add("OVERLAYS_VALID", not errors, "Overlay hợp lệ" if not errors else "; ".join(i["message"] for i in errors[:3]))
+        size = sum(a["size_bytes"] for a in snap["assets"].values())
+        add("ASSETS_SIZE", size <= MAX_VERSION_ASSET_BYTES, f"{len(snap['assets'])} ảnh, {round(size / 1024 / 1024, 1)} MB")
+    agent_id = item.agent_id or agent_id
+    agent = agent_by_id(owner_id, agent_id) if agent_id else None
+    if agent is None:
+        add("AGENT_ASSIGNED", False, "Chưa chọn Agent Windows sẽ phát phiên này")
+    else:
+        add("AGENT_ONLINE", bool(agent.get("online")), "Agent đang online" if agent.get("online") else "Agent offline")
+    reported = (playback_of(agent) or {}).get("overlay") if agent else None
+    if agent is not None and not reported:
+        add("AGENT_OVERLAY", False, "Agent chưa báo trạng thái overlay (bản Agent cũ hoặc chưa chạy kiểm tra)", level="warning")
+    elif reported:
+        if reported.get("error"):
+            add("AGENT_OVERLAY", False, f"Agent: {reported['error'].get('message')}")
+        if snap is not None and reported.get("session_id") == item.id:
+            synced = reported.get("revision") == snap["revision"]
+            add("AGENT_SYNCED", synced, "Agent đã nạp đúng phiên bản overlay đang ACTIVE" if synced else
+                "Agent chưa nạp phiên bản overlay đang ACTIVE (chạy Kiểm tra OBS Overlay)", level="warning")
+    ok = all(c["ok"] or c["level"] == "warning" for c in checks)
+    return {"session_id": item.id, "session_name": item.name, "generated_at": datetime.now(timezone.utc).isoformat(),
+            "ok": ok, "active_version": timeline.version if active else None,
+            "snapshot_revision": snap["revision"] if snap else None, "checks": checks, "agent_overlay": reported}
+
+
+class OverlayCheckInput(BaseModel):
+    # The Agent that will play the session (before LIVE a session has none yet); omitted = the session's Agent.
+    agent_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
+
+
+@router.get("/sessions/{session_id}/overlay-readiness")
+def overlay_readiness(session_id: int, owner: Owner, agent_id: str | None = None):
+    with SessionLocal() as db:
+        return readiness(db, owner["id"], session_of(db, session_id, owner), agent_id)
+
+
+@router.post("/sessions/{session_id}/overlay-check", status_code=202)
+def overlay_check(session_id: int, owner: Owner, body: OverlayCheckInput | None = None):
+    """Ask an Agent (the session's, or the one that will play it) to check the OBS overlay before LIVE: it prepares
+    the overlay hidden and never shows it. The result is the command's result:
+    GET /api/agents/{agent_id}/commands/{command_id}."""
+    from app.cloud_agents import create_command
+    from app.owner_agents import owned_agent
+    with SessionLocal() as db:
+        item = session_of(db, session_id, owner)
+        agent_id = item.agent_id or (body.agent_id if body else None)
+        if not agent_id:
+            raise HTTPException(409, "Chọn Agent Windows sẽ phát phiên này để kiểm tra")
+        owned_agent(owner, agent_id, online=True)
+    command = create_command(agent_id, owner["id"], "overlay_check", {"session_id": session_id}, session_id=session_id)
+    return {"agent_id": agent_id, "command_id": command["command_id"], "status": command.get("status")}
+
+
+# Built-in starting points (data, not types): the editor copies one and adjusts it freely. Fashion / ecommerce look:
+# ivory cards, ink text, a gold price, Georgia titles (present on Windows and macOS; the renderer falls back to its
+# fixed stack elsewhere).
+IVORY, INK, GOLD, ROSE = "#F7F1E8F2", "#1C1A17", "#B8893B", "#C8857A"
+TITLE = {"font_family": "Georgia", "font_size": 40, "font_weight": 700, "color": INK, "align": "center"}
+FADE_UP = {"animation_in": {"name": "slide_up", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300}}
+
+
+def _frame(x, y, width, height):
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
 TEMPLATES = [
-    {"template": "SIZE_CHART", "label": "Bảng size", "layout": {"x": 0.05, "y": 0.55, "width": 0.9, "height": 0.3},
-     "elements": [{"kind": "shape", "fill": "#000000B0", "radius": 0.06},
-                  {"kind": "image", "source": "asset", "asset_id": None, "frame": {"x": 0.04, "y": 0.06, "width": 0.92, "height": 0.88}}]},
-    {"template": "PRODUCT_IMAGE", "label": "Ảnh sản phẩm", "layout": {"x": 0.6, "y": 0.15, "width": 0.35, "height": 0.25},
-     "elements": [{"kind": "image", "source": "product", "fit": "cover", "radius": 0.08}]},
-    {"template": "COLOR_OPTIONS", "label": "Màu sắc", "layout": {"x": 0.05, "y": 0.7, "width": 0.9, "height": 0.12},
-     "elements": [{"kind": "shape", "fill": "#000000A0", "radius": 0.2},
-                  {"kind": "text", "text": "Có màu: Trắng · Đen · Be", "frame": {"x": 0.05, "y": 0.1, "width": 0.9, "height": 0.8},
-                   "style": {"font_size": 44, "align": "center"}}]},
-    {"template": "PRODUCT_INFO", "label": "Tên + giá", "layout": {"x": 0.05, "y": 0.72, "width": 0.9, "height": 0.14},
-     "elements": [{"kind": "shape", "fill": "#000000A0", "radius": 0.15},
-                  {"kind": "product_field", "field": "name", "frame": {"x": 0.05, "y": 0.08, "width": 0.9, "height": 0.5},
-                   "style": {"font_size": 40, "max_lines": 2}},
-                  {"kind": "product_field", "field": "price", "suffix": "đ", "frame": {"x": 0.05, "y": 0.6, "width": 0.9, "height": 0.35},
-                   "style": {"font_size": 52, "font_weight": 800, "color": "#FFD400"}}]},
-    {"template": "COMPARE_LOOKS", "label": "So sánh 2 kiểu", "layout": {"x": 0.05, "y": 0.5, "width": 0.9, "height": 0.3},
-     "elements": [{"kind": "image", "source": "asset", "asset_id": None, "frame": {"x": 0, "y": 0, "width": 0.49, "height": 1}},
-                  {"kind": "image", "source": "asset", "asset_id": None, "frame": {"x": 0.51, "y": 0, "width": 0.49, "height": 1}}]},
-    {"template": "TEXT_CARD", "label": "Thẻ chữ", "layout": {"x": 0.08, "y": 0.2, "width": 0.84, "height": 0.1},
-     "elements": [{"kind": "shape", "fill": "#FFFFFFE0", "radius": 0.3},
-                  {"kind": "text", "text": "Freeship đơn từ 99k", "frame": {"x": 0.05, "y": 0.1, "width": 0.9, "height": 0.8},
-                   "style": {"font_size": 46, "color": "#111111", "align": "center"}}]},
+    {"template": "SIZE_CHART", "label": "Bảng size", "duration_ms": 8000, **FADE_UP,
+     "layout": {"x": 0.06, "y": 0.5, "width": 0.88, "height": 0.34},
+     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.06},
+                  {"kind": "text", "text": "BẢNG SIZE", "frame": _frame(0.05, 0.03, 0.9, 0.12), "style": TITLE},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "contain", "frame": _frame(0.04, 0.17, 0.92, 0.79)}]},
+    {"template": "PRODUCT_INFO", "label": "Thông tin sản phẩm", "duration_ms": 6000, **FADE_UP,
+     "layout": {"x": 0.05, "y": 0.72, "width": 0.9, "height": 0.13},
+     "elements": [{"kind": "shape", "fill": "#1C1A17D9", "radius": 0.18},
+                  {"kind": "product_field", "field": "name", "frame": _frame(0.05, 0.1, 0.62, 0.8),
+                   "style": {"font_size": 36, "font_weight": 600, "color": "#FFFFFF", "max_lines": 2}},
+                  {"kind": "product_field", "field": "price", "suffix": "đ", "frame": _frame(0.68, 0.1, 0.28, 0.8),
+                   "style": {"font_size": 50, "font_weight": 800, "color": "#E9C46A", "align": "right"}}]},
+    {"template": "COLOR_OPTIONS", "label": "Bảng màu", "duration_ms": 6000, **FADE_UP,
+     "layout": {"x": 0.08, "y": 0.66, "width": 0.84, "height": 0.16},
+     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.12},
+                  {"kind": "text", "text": "MÀU SẮC", "frame": _frame(0.05, 0.05, 0.9, 0.25), "style": {**TITLE, "font_size": 32}},
+                  *[e for i, (color, name) in enumerate((("#FBFAF6", "Trắng"), ("#1C1A17", "Đen"), ("#D9C3A5", "Be"), ("#8A9A7B", "Rêu")))
+                    for e in ({"kind": "shape", "shape": "ellipse", "fill": color, "stroke": "#1C1A1733", "stroke_width": 3,
+                               "frame": _frame(0.09 + i * 0.22, 0.36, 0.1, 0.34)},
+                              {"kind": "text", "text": name, "frame": _frame(0.04 + i * 0.22, 0.72, 0.2, 0.24),
+                               "style": {"font_size": 26, "color": INK, "align": "center"}})]]},
+    {"template": "DETAIL_IMAGE", "label": "Ảnh chi tiết", "duration_ms": 6000,
+     "animation_in": {"name": "zoom", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300},
+     "layout": {"x": 0.56, "y": 0.14, "width": 0.38, "height": 0.3},
+     "elements": [{"kind": "shape", "fill": "#FFFFFF", "radius": 0.06},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.05, "frame": _frame(0.03, 0.025, 0.94, 0.78)},
+                  {"kind": "text", "text": "Chất liệu cao cấp", "frame": _frame(0.05, 0.82, 0.9, 0.16),
+                   "style": {"font_size": 28, "font_weight": 600, "color": INK, "align": "center"}}]},
+    {"template": "COMPARE_LOOKS", "label": "Compare Looks", "duration_ms": 8000, **FADE_UP,
+     "layout": {"x": 0.05, "y": 0.46, "width": 0.9, "height": 0.36},
+     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.05},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.04, "frame": _frame(0.03, 0.04, 0.455, 0.8)},
+                  {"kind": "image", "source": "asset", "asset_id": None, "fit": "cover", "radius": 0.04, "frame": _frame(0.515, 0.04, 0.455, 0.8)},
+                  {"kind": "text", "text": "LOOK 1", "frame": _frame(0.03, 0.86, 0.455, 0.12), "style": {**TITLE, "font_size": 30}},
+                  {"kind": "text", "text": "LOOK 2", "frame": _frame(0.515, 0.86, 0.455, 0.12), "style": {**TITLE, "font_size": 30}}]},
+    {"template": "PRODUCT_SPOTLIGHT", "label": "Product Spotlight", "duration_ms": 7000,
+     "animation_in": {"name": "slide_left", "duration_ms": 450}, "animation_out": {"name": "fade", "duration_ms": 300},
+     "layout": {"x": 0.05, "y": 0.62, "width": 0.9, "height": 0.2},
+     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.1},
+                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.08, "frame": _frame(0.03, 0.08, 0.26, 0.84)},
+                  {"kind": "shape", "fill": ROSE, "radius": 0.5, "frame": _frame(0.33, 0.1, 0.16, 0.2)},
+                  {"kind": "text", "text": "HOT", "frame": _frame(0.33, 0.1, 0.16, 0.2),
+                   "style": {"font_size": 26, "font_weight": 800, "color": "#FFFFFF", "align": "center"}},
+                  {"kind": "product_field", "field": "name", "frame": _frame(0.33, 0.34, 0.63, 0.34),
+                   "style": {"font_size": 32, "font_weight": 600, "color": INK, "max_lines": 2}},
+                  {"kind": "product_field", "field": "price", "suffix": "đ", "frame": _frame(0.33, 0.68, 0.63, 0.26),
+                   "style": {"font_size": 46, "font_weight": 800, "color": GOLD}}]},
+    {"template": "PRODUCT_IMAGE", "label": "Ảnh sản phẩm", "duration_ms": 6000,
+     "animation_in": {"name": "zoom", "duration_ms": 400}, "animation_out": {"name": "fade", "duration_ms": 300},
+     "layout": {"x": 0.6, "y": 0.15, "width": 0.35, "height": 0.25},
+     "elements": [{"kind": "shape", "fill": "#FFFFFF", "radius": 0.08},
+                  {"kind": "image", "source": "product", "fit": "cover", "radius": 0.07, "frame": _frame(0.03, 0.03, 0.94, 0.94)}]},
+    {"template": "TEXT_CARD", "label": "Thẻ chữ", "duration_ms": 5000, **FADE_UP,
+     "layout": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.08},
+     "elements": [{"kind": "shape", "fill": IVORY, "radius": 0.5},
+                  {"kind": "text", "text": "Freeship toàn quốc", "frame": _frame(0.05, 0.1, 0.9, 0.8),
+                   "style": {"font_size": 40, "font_weight": 700, "color": INK, "align": "center"}}]},
 ]
 
 
+# ----- owner templates ---------------------------------------------------------------------------------------------
+
+MAX_OWNER_TEMPLATES = 200
+
+
+class OverlayTemplate(Base):
+    """An overlay arrangement an owner saved to reuse in any session (no product bound: blocks read the overlay's)."""
+    __tablename__ = "live_overlay_templates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    template: Mapped[str] = mapped_column(String(40), default="")
+    description: Mapped[str] = mapped_column(String(300), default="")
+    # JSON: layout, elements, animation_in, animation_out, duration_ms.
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class TemplateInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str = Field(min_length=1, max_length=80)
+    template: str = Field(default="", pattern=TEMPLATE)
+    description: str = Field(default="", max_length=300)
+    layout: Layout
+    elements: list[Element] = Field(min_length=1, max_length=MAX_ELEMENTS)
+    animation_in: Animation = Field(default_factory=Animation)
+    animation_out: Animation = Field(default_factory=Animation)
+    duration_ms: int = Field(default=5000, ge=MIN_DURATION_MS, le=MAX_DURATION_MS)
+
+    @model_validator(mode="after")
+    def reusable(self):
+        if self.animation_in.duration_ms + self.animation_out.duration_ms > self.duration_ms:
+            raise ValueError("thời gian hiệu ứng vào + ra dài hơn thời lượng mẫu")
+        for element in self.elements:  # a template is not tied to a product: product blocks read the overlay's
+            if element.kind in ("product_field", "image"):
+                element.product_id = None
+        return self
+
+
+def template_view(t: OverlayTemplate, assets: dict | None = None) -> dict:
+    content = json.loads(t.content)
+    used = asset_refs(content.get("elements") or [])
+    return {"id": t.id, "name": t.name, "label": t.name, "template": t.template, "description": t.description, **content,
+            "owner": True, "missing_assets": sorted(used - set(assets or {})) if assets is not None else [],
+            "created_at": t.created_at, "updated_at": t.updated_at}
+
+
+def owned_template(db, owner_id: str, template_id: int) -> OverlayTemplate:
+    found = db.get(OverlayTemplate, template_id)
+    if found is None or found.owner_id != owner_id:
+        raise HTTPException(404, "Không tìm thấy mẫu overlay")
+    return found
+
+
+def template_content(db, owner_id: str, body: TemplateInput) -> str:
+    elements = [e.model_dump() for e in body.elements]
+    used = asset_refs(elements)
+    if used - set(owned_assets(db, owner_id, used)):
+        raise HTTPException(422, "Có ảnh không thuộc kho overlay của tài khoản này")
+    return json.dumps({"layout": body.layout.model_dump(), "elements": elements, "animation_in": body.animation_in.model_dump(),
+                       "animation_out": body.animation_out.model_dump(), "duration_ms": body.duration_ms}, ensure_ascii=False)
+
+
+def owner_templates(db, owner_id: str) -> list[dict]:
+    rows = db.scalars(select(OverlayTemplate).where(OverlayTemplate.owner_id == owner_id).order_by(OverlayTemplate.updated_at.desc())).all()
+    assets = owned_assets(db, owner_id, set().union(*[asset_refs(json.loads(t.content).get("elements") or []) for t in rows]))
+    return [template_view(t, assets) for t in rows]
+
+
 @router.get("/overlay-templates")
-def overlay_templates():
-    """Presets to start an overlay from; `template` is only a label, any arrangement of blocks is valid."""
+def overlay_templates(owner: Owner):
+    """Built-in presets and the owner's own templates: starting points to copy (`template` is only a label, any
+    arrangement of blocks is valid)."""
+    with SessionLocal() as db:
+        mine = owner_templates(db, owner["id"])
     return {"canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "blocks": ["text", "product_field", "image", "shape"],
             "product_fields": list(PRODUCT_FIELDS), "animations": list(ANIMATIONS), "max_concurrent": MAX_CONCURRENT,
-            "templates": TEMPLATES}
+            "templates": TEMPLATES, "owner_templates": mine}
+
+
+@router.post("/overlay-templates", status_code=201)
+def create_template(body: TemplateInput, owner: Owner):
+    """Save an arrangement (usually an overlay of the editor) as a template of this owner, usable in every session."""
+    with SessionLocal() as db:
+        from sqlalchemy import func
+        if (db.scalar(select(func.count()).select_from(OverlayTemplate).where(OverlayTemplate.owner_id == owner["id"])) or 0) >= MAX_OWNER_TEMPLATES:
+            raise HTTPException(409, f"Tối đa {MAX_OWNER_TEMPLATES} mẫu overlay")
+        row = OverlayTemplate(owner_id=owner["id"], name=body.name.strip(), template=body.template, description=body.description,
+                              content=template_content(db, owner["id"], body))
+        db.add(row)
+        db.commit()
+        return template_view(row, owned_assets(db, owner["id"], asset_refs(json.loads(row.content)["elements"])))
+
+
+@router.put("/overlay-templates/{template_id}")
+def update_template(template_id: int, body: TemplateInput, owner: Owner):
+    with SessionLocal() as db:
+        row = owned_template(db, owner["id"], template_id)
+        row.name, row.template, row.description = body.name.strip(), body.template, body.description
+        row.content, row.updated_at = template_content(db, owner["id"], body), now()
+        db.commit()
+        return template_view(row, owned_assets(db, owner["id"], asset_refs(json.loads(row.content)["elements"])))
+
+
+@router.post("/overlay-templates/{template_id}/duplicate", status_code=201)
+def duplicate_template(template_id: int, owner: Owner):
+    with SessionLocal() as db:
+        source = owned_template(db, owner["id"], template_id)
+        row = OverlayTemplate(owner_id=owner["id"], name=(source.name + " (bản sao)")[:80], template=source.template,
+                              description=source.description, content=source.content)
+        db.add(row)
+        db.commit()
+        return template_view(row, owned_assets(db, owner["id"], asset_refs(json.loads(row.content)["elements"])))
+
+
+@router.delete("/overlay-templates/{template_id}", status_code=204)
+def delete_template(template_id: int, owner: Owner):
+    """Overlays made from it keep their own copy."""
+    with SessionLocal() as db:
+        db.delete(owned_template(db, owner["id"], template_id))
+        db.commit()
 
 
 # ----- overlay assets (owner images) ------------------------------------------------------------------------------

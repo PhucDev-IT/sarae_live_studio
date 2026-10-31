@@ -297,7 +297,86 @@ class OverlayApiTests(SaasTestCase):
         found = self.client.get("/api/live/overlay-templates").json()
         self.assertEqual(found["canvas"], {"width": 1080, "height": 1920})
         self.assertEqual(found["blocks"], ["text", "product_field", "image", "shape"])
-        self.assertIn("SIZE_CHART", [t["template"] for t in found["templates"]])
+        self.assertEqual({t["template"] for t in found["templates"]} >= {"SIZE_CHART", "PRODUCT_INFO", "COLOR_OPTIONS",
+                                                                        "DETAIL_IMAGE", "COMPARE_LOOKS", "PRODUCT_SPOTLIGHT"}, True)
+        self.assertEqual(found["owner_templates"], [])
+
+    def test_readiness_combines_the_version_and_what_the_agent_reported(self):
+        url = f"/api/live/sessions/{self.sid}/overlay-readiness"
+        report = self.client.get(url).json()
+        codes = {c["code"]: c["ok"] for c in report["checks"]}
+        self.assertEqual((report["ok"], codes["ACTIVE_VERSION"], codes["AGENT_ASSIGNED"]), (False, False, False))
+        self.assertEqual(self.client.post(f"/api/live/sessions/{self.sid}/overlay-check").status_code, 409, "no Agent yet")
+        self.assertEqual(self.client.get(url, headers=self.B).status_code, 404)
+        tid = self.new()
+        self.put(tid, [self.overlay()])
+        self.client.post(f"{self.base}/{tid}/approve")
+        self.client.post(f"{self.base}/{tid}/activate")
+        url += f"?agent_id={self.agent['agent_id']}"  # before LIVE: the Agent that will play it
+        revision = self.client.get(f"/api/live/sessions/{self.sid}/overlay-snapshot").json()["snapshot"]["revision"]
+        self.heartbeat(self.agent, playback={"overlay": {"session_id": self.sid, "revision": revision, "state": "hidden", "error": None}})
+        report = self.client.get(url).json()
+        codes = {c["code"]: c["ok"] for c in report["checks"]}
+        self.assertTrue(report["ok"], report)
+        self.assertEqual((codes["ACTIVE_VERSION"], codes["OVERLAYS_VALID"], codes["AGENT_ONLINE"], codes["AGENT_SYNCED"]), (True,) * 4)
+        self.assertEqual((report["active_version"], report["snapshot_revision"]), (1, revision))
+        self.heartbeat(self.agent, playback={"overlay": {"session_id": self.sid, "revision": "old", "state": "error",
+                                                         "error": {"code": "OVERLAY_CANVAS_NOT_9_16", "message": "Canvas OBS 1920×1080"}}})
+        report = self.client.get(url).json()
+        self.assertFalse(report["ok"])
+        self.assertIn("Canvas OBS", " ".join(c["message"] for c in report["checks"]))
+
+    def test_overlay_check_is_sent_to_the_session_agent(self):
+        other = self.activate_agent(self.owner_b, "PC-B")
+        self.assertEqual(self.client.post(f"/api/live/sessions/{self.sid}/overlay-check", json={"agent_id": other["agent_id"]}).status_code, 404,
+                         "another owner's Agent")
+        sent = self.client.post(f"/api/live/sessions/{self.sid}/overlay-check", json={"agent_id": self.agent["agent_id"]})
+        self.assertEqual(sent.status_code, 202, sent.text)
+        command = self.client.get(f"/api/agents/{sent.json()['agent_id']}/commands/{sent.json()['command_id']}").json()
+        self.assertEqual((command["kind"], command["status"]), ("overlay_check", "PENDING"))
+
+    def template_body(self, **extra):
+        overlay = self.overlay()
+        body = {"name": "Giá vàng", "template": "MY_PRICE", "layout": overlay["layout"], "elements": overlay["elements"],
+                "animation_in": {"name": "slide_up", "duration_ms": 400}, "duration_ms": 6000}
+        body.update(extra)
+        return body
+
+    def test_owner_templates_are_saved_reused_and_isolated(self):
+        created = self.client.post("/api/live/overlay-templates", json=self.template_body())
+        self.assertEqual(created.status_code, 201, created.text)
+        mine = created.json()
+        self.assertEqual((mine["name"], mine["template"], mine["duration_ms"], mine["animation_in"]["name"]), ("Giá vàng", "MY_PRICE", 6000, "slide_up"))
+        listed = self.client.get("/api/live/overlay-templates").json()["owner_templates"]
+        self.assertEqual([t["id"] for t in listed], [mine["id"]])
+        self.assertEqual(self.client.get("/api/live/overlay-templates", headers=self.B).json()["owner_templates"], [],
+                         "another owner never sees it")
+        for method, path in (("put", f"/api/live/overlay-templates/{mine['id']}"), ("delete", f"/api/live/overlay-templates/{mine['id']}"),
+                             ("post", f"/api/live/overlay-templates/{mine['id']}/duplicate")):
+            kwargs = {"json": self.template_body()} if method == "put" else {}
+            self.assertEqual(getattr(self.client, method)(path, headers=self.B, **kwargs).status_code, 404)
+        renamed = self.client.put(f"/api/live/overlay-templates/{mine['id']}", json=self.template_body(name="Giá nổi bật"))
+        self.assertEqual(renamed.json()["name"], "Giá nổi bật")
+        copy = self.client.post(f"/api/live/overlay-templates/{mine['id']}/duplicate")
+        self.assertEqual((copy.status_code, copy.json()["name"]), (201, "Giá nổi bật (bản sao)"))
+        self.assertEqual(self.client.delete(f"/api/live/overlay-templates/{mine['id']}").status_code, 204)
+        self.assertEqual([t["id"] for t in self.client.get("/api/live/overlay-templates").json()["owner_templates"]], [copy.json()["id"]])
+
+    def test_templates_are_not_bound_to_a_product_and_only_use_the_owners_images(self):
+        bound = self.template_body(elements=[{"kind": "image", "source": "product", "product_id": self.ao}])
+        saved = self.client.post("/api/live/overlay-templates", json=bound).json()
+        self.assertIsNone(saved["elements"][0]["product_id"], "product blocks read the overlay's product")
+        theirs = self.asset(headers=self.B)
+        foreign = self.template_body(elements=[{"kind": "image", "source": "asset", "asset_id": theirs["id"]}])
+        self.assertEqual(self.client.post("/api/live/overlay-templates", json=foreign).status_code, 422)
+        mine = self.asset()
+        with_image = self.client.post("/api/live/overlay-templates", json=self.template_body(
+            elements=[{"kind": "image", "source": "asset", "asset_id": mine["id"]}])).json()
+        self.client.delete(f"/api/live/overlay-assets/{mine['id']}")
+        listed = {t["id"]: t for t in self.client.get("/api/live/overlay-templates").json()["owner_templates"]}
+        self.assertEqual(listed[with_image["id"]]["missing_assets"], [mine["id"]])
+        self.assertEqual(self.client.post("/api/live/overlay-templates", json=self.template_body(
+            duration_ms=500, animation_in={"name": "fade", "duration_ms": 400}, animation_out={"name": "fade", "duration_ms": 400})).status_code, 422)
 
 
 if __name__ == "__main__":
