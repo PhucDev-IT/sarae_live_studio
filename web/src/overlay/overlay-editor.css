@@ -111,7 +111,11 @@
 .ove-more[open] > summary{margin-bottom:4px}
 
 .ove-inspector{min-width:0}
-.ove-form{display:grid;gap:12px;margin:0;padding:0 20px 20px;border:0;min-width:0}
+.ove-form{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin:0;padding:0 20px 20px;border:0;min-width:0}
+/* A long product name in a select must never widen the inspector (it is cut with … instead). */
+.ove-form > *,.ove-row > *,.ove-block-body > *{min-width:0}
+.ove-form .ui-select,.ove-form .ui-select *{min-width:0;max-width:100%}
+.ove-form .ui-select :is(button,span,div){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ove-form h4{margin:8px 0 0;font-size:13px}
 .ove-form h5{margin:4px 0 0;font-size:12px}
 .ove-form h4 small,.ove-form h5 small{font-weight:400}
