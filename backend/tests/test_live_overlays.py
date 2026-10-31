@@ -228,6 +228,17 @@ class OverlayApiTests(SaasTestCase):
         self.assertEqual([i["code"] for i in issues], ["ASSET_MISSING"])
         self.assertEqual(self.client.post(f"{self.base}/{draft}/approve").status_code, 409)
 
+    def test_the_images_of_a_version_have_a_total_size_limit(self):
+        from unittest.mock import patch
+        tid = self.new()
+        first, second = self.asset(), self.asset()
+        self.put(tid, [self.image_overlay(first["id"]), self.image_overlay(second["id"], start=5000)])
+        with patch("app.live_overlays.MAX_VERSION_ASSET_BYTES", len(png()) + 1):
+            issues = self.client.get(f"{self.base}/{tid}/overlays").json()["issues"]
+            self.assertIn("ASSETS_TOO_LARGE", [i["code"] for i in issues])
+            self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 409)
+        self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 200)
+
     # ----- snapshot -----
     def test_the_active_snapshot_holds_what_a_renderer_needs(self):
         self.assertIsNone(self.client.get(f"/api/live/sessions/{self.sid}/overlay-snapshot").json()["snapshot"])

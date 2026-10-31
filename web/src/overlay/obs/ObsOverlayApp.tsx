@@ -17,13 +17,15 @@ const POLL_MS = 250
 const MAX_AHEAD_MS = 1500
 
 type Clock = {session_id:number; media_id:string|null; position_ms:number; media_state:string|null; iteration:number; seq:number; age_ms:number; playing:boolean}
-type AgentState = {revision:string|null; show:boolean; clock:Clock|null}
+type AgentState = {revision:string|null; show:boolean; clock:Clock|null; receivedAt:number}
 
 const token = new URLSearchParams(location.search).get('t') ?? ''
+/** This page's build (its script file name): the Agent reloads a page left over from an older Agent version. */
+const BUILD = (document.querySelector('script[type="module"]') as HTMLScriptElement|null)?.src.split('/').pop() ?? ''
 const api = (path:string, extra = '') => `${path}?t=${encodeURIComponent(token)}${extra}`
 
 /** Every image the scene can show, as the renderer will request it. */
-export function sceneImages(scene:OverlayScene, apiBase:string){
+function sceneImages(scene:OverlayScene, apiBase:string){
   const urls = [...Object.values(scene.assets).map(a=>a.url), ...Object.values(scene.products).map(p=>p.image_url)]
   return [...new Set(urls.map(u=>safeImageUrl(u, apiBase)).filter((u):u is string=>!!u))]
 }
@@ -31,6 +33,10 @@ export function sceneImages(scene:OverlayScene, apiBase:string){
 const IMAGE_TIMEOUT_MS = 8000
 const FONTS_TIMEOUT_MS = 3000
 const LOAD_STUCK_MS = 15000
+
+const FETCH_TIMEOUT_MS = 5000
+/** fetch that gives up: a request to an Agent that restarted must never leave the page waiting forever. */
+const timedFetch = (url:string, init:RequestInit = {}) => fetch(url, {...init, cache:'no-store', signal:AbortSignal.timeout(FETCH_TIMEOUT_MS)})
 
 const within = <T,>(promise:Promise<T>, ms:number, fallback:T) => Promise.race([promise, new Promise<T>(resolve=>window.setTimeout(()=>resolve(fallback), ms))])
 
@@ -55,20 +61,25 @@ async function preload(urls:string[]){
 export default function ObsOverlayApp(){
   const [scene,setScene] = useState<{revision:string; scene:OverlayScene}|null>(null)
   const [state,setState] = useState<AgentState|null>(null)
-  const received = useRef(0)
   const loading = useRef<{revision:string; since:number}|null>(null)
-  const [, setFrame] = useState(0)
+  // What is on screen (revision, clock seq): sent back with every poll (ACK), and used to drop late answers.
+  const drawn = useRef<{revision:string; seq:number; session:number|null}>({revision:'', seq:0, session:null})
+  // Time of the last animation frame (requestAnimationFrame), so render itself stays pure.
+  const [frameAt,setFrameAt] = useState(0)
 
   useEffect(()=>{
     let alive = true
     const poll = async () => {
       try {
-        const response = await fetch(api('state'), {cache:'no-store'})
+        const ack = `&rev=${encodeURIComponent(drawn.current.revision)}&seq=${drawn.current.seq}&build=${encodeURIComponent(BUILD)}`
+        const response = await timedFetch(api('state', ack))
         if (!response.ok) return
         const next = await response.json() as AgentState
         if (!alive) return
-        received.current = performance.now()
-        setState(next)
+        // A late answer (an older clock of the same session) never moves the picture back.
+        const c = next.clock
+        if (c && c.session_id === drawn.current.session && c.seq < drawn.current.seq) return
+        setState({...next, receivedAt:performance.now()})
       } catch {/* the Agent restarts: keep polling */}
     }
     void poll()
@@ -88,7 +99,7 @@ export default function ObsOverlayApp(){
       let ok = false, missing:string[] = []
       let loaded:OverlayScene|null = null
       try {
-        const response = await fetch(api('scene', `&revision=${encodeURIComponent(wanted)}`), {cache:'no-store'})
+        const response = await timedFetch(api('scene', `&revision=${encodeURIComponent(wanted)}`))
         if (response.ok) {
           loaded = await response.json() as OverlayScene
           missing = await preload(sceneImages(loaded, location.origin))
@@ -96,7 +107,7 @@ export default function ObsOverlayApp(){
         } else missing = [`scene HTTP ${response.status}`]
       } catch (e) {missing = [String(e)]}
       try {
-        const answer = await fetch(api('ready'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({revision:wanted, ok, missing})})
+        const answer = await timedFetch(api('ready'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({revision:wanted, ok, missing})})
         const accepted = answer.ok && (await answer.json()).accepted === true
         if (accepted && loaded && loading.current === attempt) setScene({revision:wanted, scene:loaded})
       } catch {/* the Agent is restarting: it offers the revision again */}
@@ -108,13 +119,16 @@ export default function ObsOverlayApp(){
   const playing = !!state?.clock?.playing && !!state.show
   useEffect(()=>{
     if (!playing) return
-    let id = requestAnimationFrame(function loop(){setFrame(f=>f + 1);id = requestAnimationFrame(loop)})
+    let id = requestAnimationFrame(function loop(t){setFrameAt(t);id = requestAnimationFrame(loop)})
     return ()=>cancelAnimationFrame(id)
   },[playing])
 
   const clock = state?.clock
+  useEffect(()=>{
+    if (clock) drawn.current = {revision:scene?.revision ?? '', seq:clock.seq, session:clock.session_id}
+  },[clock, scene?.revision])
   if (!state?.show || !scene || !clock?.media_id) return null
-  const ahead = clock.playing ? Math.min(clock.age_ms + performance.now() - received.current, MAX_AHEAD_MS) : 0
+  const ahead = clock.playing ? Math.min(clock.age_ms + Math.max(0, frameAt - state.receivedAt), MAX_AHEAD_MS) : 0
   return <div style={{position:'fixed', inset:0, background:'transparent'}} data-revision={scene.revision} data-media={clock.media_id}>
     <OverlayRenderer scene={scene.scene} mediaId={clock.media_id} positionMs={clock.position_ms + Math.max(0, ahead)} apiBase={location.origin} animate/>
   </div>

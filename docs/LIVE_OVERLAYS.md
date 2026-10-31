@@ -226,3 +226,34 @@ Rehearsal on a real OBS (no TikTok LIVE): `agent-core/scripts/overlay_obs_rehear
 streaming). It checks: READY before showing, one item above the video, transform read back, pixel positions, OBS vs
 headless Chrome of the same page, re-lock after a drag, back on top, re-create after a delete, OBS reconnect, page
 reload, version switch without hiding, video kept playing.
+
+## 10. Phase 4 — in step with the real playback
+
+No overlay clock: the state is reconciled from the PlaybackEngine's reports, never from a queue of show/hide commands.
+
+```
+PlaybackEngine ── report {session, media_id, position_ms, media_state, iteration} ──> pins (unchanged) ─┐
+   every watchdog tick (1 s) and at once on: video start · seek · pause · resume                       │
+                                                                                                       ▼
+                                             OverlayService (overlay error caught: never reaches pins)
+renderer ── GET /overlay/state?rev=&seq=&build= (250 ms) ──> {revision, version, show, clock{…, seq, age_ms, playing}}
+         <── draws shownAt(position) = start_ms ≤ position < start_ms + duration_ms on that media
+```
+
+| Case | Behaviour |
+|---|---|
+| Playback | Overlays of the reported media at the reported position (same rule as the web preview); between two reports the renderer advances only while PLAYING, ≤ 1.5 s |
+| Pause | The engine reports the pause position; the engine's pause flag keeps it valid however long the pause (no stale-clock hide), `playing` false: nothing runs on |
+| Seek | Reported at once; the state at the new position only (skipped overlays and pins are not replayed) |
+| Video change | The new video is reported when it starts (position 0, new media id): the previous video's overlays go at once; the main video is never touched |
+| Loop / random / shuffle | Every start increments the iteration and reports the media actually loaded |
+| New ACTIVE version | `TIMELINE_LOADED` (pin scheduler) asks for the snapshot at once; applied only after READY, else rolled back; playback and pins untouched |
+| ACK / dedupe | Each poll sends the revision and clock seq drawn and the renderer build; an older seq of the same session is ignored by the renderer; a repeated READY is idempotent; a page that outlived an Agent restart and already draws the revision counts as READY; a page of an older renderer build is reloaded |
+| Reconnect | A reconnecting renderer reads the current state; nothing past is replayed. Every renderer request has a 5 s timeout |
+| Limits | Backend (approval): ≤ 4 enabled overlays at once per video, ≤ 60 MB images per version, image ≤ 5 MB, animation ≤ 5 s. Agent: refuses a snapshot breaking them (`SNAPSHOT_REFUSED`, previous one kept) |
+
+Tests: `agent-core/tests/test_overlay_sync.py` drives the real PlaybackEngine (fake OBS) into the pin scheduler and the
+overlay service as `AgentRuntime` wires them: playback, pause / resume, seek both ways, A → B → A, loop, random /
+shuffle, version change, renderer not ready / timeout / reload, OBS reconnect, overlay failure with pins intact, and the
+pin list never duplicated. The real-OBS rehearsal also measures timing against the OBS cursor (an overlay at
+cursor + 4 s for 3 s appears and disappears within ± 0.7 s).

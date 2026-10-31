@@ -148,6 +148,14 @@ class FakeConfig:
 
 
 URL = "http://127.0.0.1:17891/overlay/?t=tok&sarae_overlay=1"
+MEDIA_A, MEDIA_B = "a" * 32, "b" * 32
+
+
+def overlay(id, media_id="m" * 32, start_ms=0, duration_ms=3_600_000, z=0, enabled=True):
+    return {"id": id, "media_id": media_id, "start_ms": start_ms, "duration_ms": duration_ms, "enabled": enabled,
+            "layout": {"x": 0, "y": 0, "width": 0.5, "height": 0.1, "z_index": z, "opacity": 1},
+            "animation_in": {"name": "fade", "duration_ms": 300}, "animation_out": {"name": "fade", "duration_ms": 300},
+            "elements": [{"kind": "text", "text": f"#{id}"}]}
 
 
 def source_for(obs, config=None):
@@ -338,7 +346,7 @@ class ServiceTests(unittest.TestCase):
 
     def snap(self, revision="r1", version=1, overlays=1):
         return {"revision": revision, "version": version, "timeline_id": version, "session_id": 5,
-                "overlays": [{"id": i, "media_id": "m" * 32} for i in range(overlays)],
+                "overlays": [overlay(i) for i in range(overlays)],
                 "assets": {"a1": {"url": "/api/live/overlay-assets/a1/file?exp=1", "sha256": hashlib.sha256(PNG).hexdigest()}},
                 "products": {}}
 
@@ -463,6 +471,30 @@ class ServiceTests(unittest.TestCase):
         self.step()
         self.assertFalse(self.item()["sceneItemEnabled"])
 
+    def test_a_page_that_outlived_an_agent_restart_and_draws_the_revision_counts_as_ready(self):
+        self.snapshots[5] = self.snap()
+        self.step()
+        self.service.renderer_state({"revision": "r1", "seq": 40, "build": ""})  # never loads it again: its ACK is READY
+        self.assertEqual(self.service.status()["ready_revision"], "r1")
+        self.step()
+        self.assertTrue(self.item()["sceneItemEnabled"])
+
+    def test_a_page_of_an_older_renderer_build_is_reloaded(self):
+        self.service.server.build = "overlay-new.js"
+        self.snapshots[5] = self.snap()
+        self.step()
+        self.service.renderer_state({"revision": "", "seq": 0, "build": "overlay-old.js"})
+        self.now += 31
+        self.service.observe(5, "m" * 32, 1000, "OBS_MEDIA_STATE_PLAYING", 0)
+        self.service.renderer_state({"revision": "", "seq": 0, "build": "overlay-old.js"})
+        self.service.tick()
+        self.assertIn("PressInputPropertiesButton", [r for r, _ in self.obs.requests])
+        refreshes = [r for r, _ in self.obs.requests].count("PressInputPropertiesButton")
+        self.service.renderer_state({"revision": "", "seq": 0, "build": "overlay-new.js"})
+        self.now += 40
+        self.step()
+        self.assertEqual([r for r, _ in self.obs.requests].count("PressInputPropertiesButton"), refreshes, "an up-to-date page is left alone")
+
     def test_an_overlay_failure_never_raises_into_the_loop(self):
         self.snapshots[5] = self.snap()
         self.obs.video["baseWidth"] = 1920  # canvas not 9:16
@@ -476,8 +508,8 @@ class ServerTests(unittest.TestCase):
         (self.renderer / "assets").mkdir()
         (self.renderer / "overlay.html").write_text("<html>renderer</html>", encoding="utf-8")
         (self.renderer / "assets" / "app.js").write_text("1", encoding="utf-8")
-        self.ready = []
-        handlers = SimpleNamespace(token="tok", renderer_state=lambda: {"revision": "r1", "show": True, "clock": None},
+        self.ready, self.acks = [], []
+        handlers = SimpleNamespace(token="tok", renderer_state=lambda ack=None: self.acks.append(ack) or {"revision": "r1", "show": True, "clock": None},
                                    scene_for=lambda r: {"overlays": []} if r == "r1" else None,
                                    renderer_ready=lambda body: self.ready.append(body) or {"accepted": True},
                                    file_path=lambda name: (self.renderer / "overlay.html") if name == "a" * 64 + ".png" else None)
