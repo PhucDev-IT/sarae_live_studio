@@ -72,7 +72,7 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"timeline_set", "GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"timeline_set", "overlay_check", "GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
@@ -83,7 +83,7 @@ DEFAULT_TTL_SECONDS = 30          # a LIVE control not picked up within 30 s is 
 SLOW_TTL_SECONDS = 180
 DEFAULT_LEASE_SECONDS = 30        # time the Agent has to ack after claiming
 SLOW_LEASE_SECONDS = 150
-SLOW_KINDS = {"tiktok_products_sync", "tts_speak", "obs_configure", "obs_inputs"}
+SLOW_KINDS = {"tiktok_products_sync", "tts_speak", "obs_configure", "obs_inputs", "overlay_check"}
 
 
 # TikTok LIVE chat messages (Playwright on the Console) run in their own lane: never behind a TTS, never in front.
@@ -325,7 +325,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","PIN_PRODUCT","UNPIN_PRODUCT","GET_PIN_STATE","SET_AUTO_PIN","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
-    "product_play","video_play","timeline_set","playback_select","playback_seek","obs_configure","obs_inputs",
+    "product_play","video_play","timeline_set","overlay_check","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
 # Payload fields that must not stay in the command log once the command is final.
@@ -503,7 +503,7 @@ def validate_payload(kind:str,payload:dict|None)->dict:
     if kind=="monitor_config":
         from app.verification_monitor import ConfigBody
         return ConfigBody.model_validate(payload).model_dump()
-    if kind=="media_prepare":
+    if kind in ("media_prepare","overlay_check"):
         return {"session_id":_int(payload.get("session_id"),"session_id",1,2**31-1)}
     if kind=="product_play":
         mode=payload.get("mode","immediate")

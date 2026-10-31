@@ -99,6 +99,15 @@
 .ove-preset{display:grid;gap:4px;padding:14px;border:1.5px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}
 .ove-preset:hover{border-color:var(--ui-primary)}
 .ove-preset small{color:var(--ui-text-muted);font-size:11.5px}
+.ove-preset-group{margin:16px 0 0;font-size:13.5px}
+.ove-preset-group small{font-weight:400;font-size:12px}
+.ove-preset-wrap{position:relative;display:grid}
+.ove-preset-wrap .ove-preset{padding-right:64px}
+.ove-preset-actions{position:absolute;top:8px;right:8px;display:flex;gap:2px}
+.ove-preset .ove-preset-warn{display:flex;align-items:center;gap:4px;color:var(--ui-warning,#b45309)}
+.ove-more{border-top:1px solid var(--ui-border);margin-top:6px;padding-top:6px}
+.ove-more > summary{cursor:pointer;font-weight:600;font-size:13px;padding:4px 0}
+.ove-more[open] > summary{margin-bottom:4px}
 
 .ove-inspector{min-width:0}
 .ove-form{display:grid;gap:12px;margin:0;padding:0 20px 20px;border:0;min-width:0}

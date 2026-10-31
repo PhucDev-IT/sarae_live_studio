@@ -369,7 +369,9 @@ class OverlayService:
             except AgentError as exc:
                 self._fail(exc.code, exc.message)
         self._obs(now, self._wanted)
-        if wanted and self.source_ok and not renderer_alive and now - self.last_refresh > self.REFRESH_EVERY:
+        # A silent page is reloaded whenever there is something for it to draw (also a version waiting for READY
+        # while the overlay is hidden: OBS throttles a hidden Browser Source, which may have stopped polling).
+        if (wanted or self.pending or self.active) and self.source_ok and not renderer_alive and now - self.last_refresh > self.REFRESH_EVERY:
             self.last_refresh = now
             log.warning("Renderer overlay không phản hồi; tải lại Browser Source (video không bị ảnh hưởng)",
                         extra={"code": "RENDERER_LOST"})
@@ -413,6 +415,73 @@ class OverlayService:
                 self.tick()
             except Exception:  # noqa: BLE001 - the overlay never takes anything else down
                 log.exception("Overlay tick lỗi")
+
+    CHECK_READY_SECONDS = 12.0
+
+    def check(self, session_id: int, *, sleep: Callable[[float], None] = time.sleep) -> dict:
+        """Pre-LIVE readiness of the OBS overlay for `session_id` (the operator's "Kiểm tra OBS Overlay"): downloads
+        the active version's snapshot and images, creates or checks the hidden Browser Source (canvas, transform read
+        back, above the video), and waits for the renderer to report READY. Never shows the overlay, never touches
+        playback. The prepared revision is kept, so the overlay shows at once when the session plays."""
+        checks: list[dict] = []
+
+        def add(code: str, ok: bool, message: str, level: str = "error", **detail) -> None:
+            checks.append({"code": code, "ok": bool(ok), "level": "ok" if ok else level, "message": message, **detail})
+
+        with self._lock:
+            if self.session_id != session_id:
+                self.session_id = session_id
+            self.last_sync = 0.0
+        add("RENDERER_BUILT", bool(getattr(self.server, "build", "")), "Agent có sẵn trang renderer overlay (chạy offline)")
+        add("RENDERER_SERVER", self.server.port is not None, f"Renderer chạy ở 127.0.0.1:{self.server.port}")
+        self._sync(self._now())
+        staged = self.pending or self.active
+        if staged is None or staged["session_id"] != session_id:
+            add("ACTIVE_VERSION", False, "Phiên chưa có timeline ACTIVE có overlay (hoặc chưa tải được từ Cloud)", level="warning")
+        else:
+            add("ACTIVE_VERSION", True, f"Phiên bản {staged['version']}: {staged['overlay_count']} overlay (revision {staged['revision']})")
+            assets = [m for m in self.missing if "asset_id" in m]
+            add("ASSETS_CACHED", not assets, "Ảnh overlay đã tải về máy" if not assets else f"{len(assets)} ảnh overlay chưa tải được",
+                missing=self.missing[:10])
+            photos = [m for m in self.missing if "product_id" in m]
+            if photos:
+                add("PRODUCT_PHOTOS", False, f"{len(photos)} ảnh sản phẩm chưa tải được (khối ảnh đó sẽ trống)", level="warning")
+        connected = self._obs_connected()
+        add("OBS_CONNECTED", connected, "Đã kết nối OBS" if connected else "Chưa kết nối OBS WebSocket")
+        if connected:
+            try:
+                info = self.source.ensure(self.url, self._video_sources())
+                self.source_ok, self.source_info = True, info
+                width, height = info["canvas"]
+                add("OBS_CANVAS", True, f"Canvas OBS {width}×{height} (9:16)")
+                add("OBS_SOURCE", True, "Browser Source overlay có trong " + ", ".join(f"'{n}'" for n in info["scenes"]), scenes=info["scenes"])
+                add("OBS_TRANSFORM", True, "Vị trí (0,0), tỉ lệ khớp canvas, không crop, nằm trên video (đã đọc lại từ OBS)")
+                if self.applied_visible is None:
+                    self.source.set_visible(False)
+                    self.applied_visible = False
+            except AgentError as exc:
+                self.source_ok = False
+                add(exc.code, False, exc.message)
+        staged = self.pending or self.active
+        if staged is not None and self.source_ok:
+            waited = 0.0
+            while self.ready_revision != staged["revision"] and waited < self.CHECK_READY_SECONDS:
+                sleep(0.5)
+                waited += 0.5
+                staged = self.pending or self.active
+                if staged is None:
+                    break
+            ready = staged is not None and self.ready_revision == staged["revision"]
+            add("RENDERER_READY", ready, "Renderer đã tải xong overlay và ảnh (READY)" if ready else
+                "Renderer chưa báo READY (Browser Source chưa tải trang?)")
+        now = self._now()
+        build = getattr(self.server, "build", "")
+        if self.renderer_build is not None and build:
+            add("RENDERER_VERSION", self.renderer_build == build, "Trang renderer trong OBS đúng phiên bản Agent" if self.renderer_build == build
+                else "Trang renderer trong OBS là bản cũ; Agent đang tải lại", level="warning")
+        ok = all(c["ok"] or c["level"] == "warning" for c in checks)
+        return {"session_id": session_id, "ok": ok, "checks": checks, "status": self.status(),
+                "checked_ms": int(now * 1000)}
 
     def status(self) -> dict:
         with self._lock:

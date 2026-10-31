@@ -25,6 +25,10 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_SCENE_BYTES = 60 * 1024 * 1024
 FILE_NAME = re.compile(r"^[0-9a-f]{64}\.(png|jpg|webp|gif)$")
 INDEX_FILE = "index.json"
+# Cached images older than this and not used by the scene just prepared are removed; the cache never grows past
+# MAX_CACHE_BYTES (least recently used first).
+KEEP_DAYS = 14
+MAX_CACHE_BYTES = 300 * 1024 * 1024
 
 
 def image_type(data: bytes) -> str | None:
@@ -127,5 +131,45 @@ class OverlayCache:
             for product_id, product in (scene.get("products") or {}).items():
                 if product.get("image_url"):
                     product["image_url"] = local(product["image_url"], None, {"product_id": product_id})
+            used = {u.split("/")[-1].split("?")[0] for u in [a.get("url") for a in (scene.get("assets") or {}).values()]
+                    + [p.get("image_url") for p in (scene.get("products") or {}).values()] if u}
+            for name in used:
+                try:
+                    (self.root / name).touch()  # last use, for the cleanup
+                except OSError:
+                    pass
+            self.prune(used, index)
             self._save_index(index)
         return scene, missing
+
+    def prune(self, keep: set[str], index: dict | None = None, *, now: float | None = None) -> list[str]:
+        """Remove cached images not in `keep` that are older than KEEP_DAYS, then the least recently used ones while
+        the cache is larger than MAX_CACHE_BYTES. Returns the removed names."""
+        import time as _time
+        now = _time.time() if now is None else now
+        files = []
+        for path in self.root.iterdir():
+            if FILE_NAME.fullmatch(path.name):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                files.append((stat.st_mtime, stat.st_size, path))
+        removed = []
+        total = sum(size for _, size, _ in files)
+        for mtime, size, path in sorted(files):
+            if path.name in keep:
+                continue
+            if now - mtime > KEEP_DAYS * 86400 or total > MAX_CACHE_BYTES:
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
+                total -= size
+                removed.append(path.name)
+        if removed and index is not None:
+            for key in [k for k, v in index.items() if v in removed]:
+                del index[key]
+        if removed:
+            log.info("Dọn cache ảnh overlay: xóa %s file", len(removed))
+        return removed

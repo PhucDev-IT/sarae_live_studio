@@ -1,7 +1,7 @@
 import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Badge, Button, Card, EmptyState, Input, Modal, Select, Switch, useToast } from '../ui/core'
 import {
-  ArrowDown, ArrowUp, CircleAlert, ClipboardPaste, Copy, CopyPlus, Crosshair, Image as ImageIcon, Layers, Play, Plus, Redo2, Shapes, Tag, Trash2, Type, Undo2, Upload,
+  ArrowDown, ArrowUp, BookmarkPlus, CircleAlert, ClipboardPaste, Copy, CopyPlus, Crosshair, Image as ImageIcon, Layers, Play, Plus, Redo2, Shapes, Tag, Trash2, Type, Undo2, Upload,
 } from 'lucide-react'
 import {
   ANIMATIONS, CANVAS, MAX_ELEMENTS, PRODUCT_FIELDS, clampFrame, endOf, normalizeElement, round4, safeImageUrl,
@@ -34,6 +34,8 @@ type Props = {
   onRemove:(index:number)=>void; onDuplicate:(index:number)=>void; onCopy:(index:number)=>void; onPaste:()=>void; onUndo:()=>void; onRedo:()=>void
   onPreview:(index:number, part:'in'|'out')=>void; onSeek:(ms:number)=>void; onSave:()=>void; onRevert:()=>void
   onAssetsChanged:(assets:OverlayAsset[])=>void; readOnlyAction?:ReactNode
+  /** Reload the templates after one was saved, duplicated or removed (presets include the owner's templates). */
+  onTemplatesChanged:()=>void
 }
 
 /**
@@ -78,15 +80,72 @@ export default function OverlayPanel(p:Props){
       : <Card className="ove-inspector"><EmptyState icon={<Layers size={26}/>} title="Chọn một overlay" description="Bấm vào overlay trên khung xem trước, trên track hoặc trong danh sách để sửa."/></Card>}
 
     <Modal open={presetOpen} onClose={()=>setPresetOpen(false)} title={`Thêm overlay tại ${hms(p.now)}`} size="lg">
-      <p className="te-muted">Mẫu chỉ là điểm bắt đầu: sau khi thêm, sửa tự do các khối, vị trí, nhãn. Không có danh sách loại cố định.</p>
-      <div className="ove-presets">
-        {[null, ...p.presets].map(preset=><button key={preset?.template ?? 'blank'} type="button" className="ove-preset" onClick={()=>{setPresetOpen(false);p.onAdd(preset)}}>
-          <strong>{preset ? preset.label : 'Khung trống'}</strong>
-          <small>{preset ? `${preset.template} · ${preset.elements.length} khối` : 'Nền + một dòng chữ'}</small>
-        </button>)}
-      </div>
+      <TemplateLibrary presets={p.presets} onPick={preset=>{setPresetOpen(false);p.onAdd(preset)}} onChanged={p.onTemplatesChanged}/>
     </Modal>
   </div>
+}
+
+// ----- templates -----
+
+/** Built-in presets and the owner's own templates (reusable in every session): a starting point, never a type. */
+function TemplateLibrary({presets, onPick, onChanged}:{presets:OverlayPreset[]; onPick:(preset:OverlayPreset|null)=>void; onChanged:()=>void}){
+  const toast = useToast()
+  const [busy,setBusy] = useState<number|null>(null)
+  const builtIn = presets.filter(x=>!x.owner), mine = presets.filter(x=>x.owner)
+  const act = async (id:number, run:()=>Promise<unknown>, done:string) => {
+    setBusy(id)
+    try {await run();toast.push({tone:'success', title:done});onChanged()}
+    catch(e){toast.push({tone:'danger', title:'Không thực hiện được', description:errorText(e, '')})}
+    finally{setBusy(null)}
+  }
+  const card = (preset:OverlayPreset|null) => <button key={preset?.id ?? preset?.template ?? 'blank'} type="button" className="ove-preset" onClick={()=>onPick(preset)}>
+    <strong>{preset ? preset.label : 'Khung trống'}</strong>
+    <small>{preset ? `${preset.template || 'không nhãn'} · ${preset.elements.length} khối${preset.duration_ms ? ` · ${preset.duration_ms / 1000}s` : ''}` : 'Nền + một dòng chữ'}</small>
+    {!!preset?.missing_assets?.length && <small className="ove-preset-warn"><CircleAlert size={12}/>Có ảnh đã bị xóa khỏi kho</small>}
+  </button>
+  return <>
+    <p className="te-muted">Mẫu chỉ là điểm bắt đầu: sau khi thêm, sửa tự do các khối, vị trí, nhãn. Không có danh sách loại cố định.</p>
+    <h4 className="ove-preset-group">Mẫu có sẵn</h4>
+    <div className="ove-presets">{[null, ...builtIn].map(card)}</div>
+    <h4 className="ove-preset-group">Mẫu của tôi <small className="te-muted">dùng lại ở mọi phiên; lưu từ nút <BookmarkPlus size={12}/> của một overlay</small></h4>
+    {!mine.length ? <p className="te-muted">Chưa có mẫu riêng.</p> : <div className="ove-presets">{mine.map(t=><div key={t.id} className="ove-preset-wrap">
+      {card(t)}
+      <div className="ove-preset-actions">
+        <button type="button" className="te-icon-btn" title="Nhân bản mẫu" aria-label="Nhân bản mẫu" disabled={busy === t.id}
+          onClick={()=>void act(t.id!, ()=>overlaysApi.duplicateTemplate(t.id!), 'Đã nhân bản mẫu')}><CopyPlus size={14}/></button>
+        <button type="button" className="te-icon-btn is-danger" title="Xóa mẫu (overlay đã tạo từ mẫu không đổi)" aria-label="Xóa mẫu" disabled={busy === t.id}
+          onClick={()=>void act(t.id!, ()=>overlaysApi.removeTemplate(t.id!), 'Đã xóa mẫu')}><Trash2 size={14}/></button>
+      </div>
+    </div>)}</div>}
+  </>
+}
+
+/** Save the selected overlay's arrangement as an owner template (no product bound, no times). */
+function SaveTemplateModal({overlay, presets, onClose, onSaved}:{overlay:Overlay; presets:OverlayPreset[]; onClose:()=>void; onSaved:()=>void}){
+  const toast = useToast()
+  const [name,setName] = useState(overlayName(overlay, presets).slice(0, 80))
+  const [description,setDescription] = useState('')
+  const [busy,setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try {
+      await overlaysApi.createTemplate({name:name.trim(), description, template:overlay.template, layout:overlay.layout, elements:overlay.elements,
+        animation_in:overlay.animation_in, animation_out:overlay.animation_out, duration_ms:overlay.duration_ms})
+      toast.push({tone:'success', title:`Đã lưu mẫu “${name.trim()}”`, description:'Dùng lại ở mọi phiên trong “Thêm overlay” → Mẫu của tôi.'})
+      onSaved();onClose()
+    } catch(e){toast.push({tone:'danger', title:'Không lưu được mẫu', description:errorText(e, '')})}
+    finally{setBusy(false)}
+  }
+  return <Modal open title="Lưu overlay làm mẫu" size="sm" onClose={onClose} footer={<>
+    <Button variant="ghost" onClick={onClose}>Hủy</Button>
+    <Button loading={busy} disabled={!name.trim()} onClick={()=>void save()}>Lưu mẫu</Button>
+  </>}>
+    <div className="ove-form">
+      <Input label="Tên mẫu" maxLength={80} value={name} onChange={e=>setName(e.target.value)}/>
+      <Input label="Ghi chú" placeholder="(không bắt buộc)" maxLength={300} value={description} onChange={e=>setDescription(e.target.value)}/>
+      <small className="te-muted">Mẫu giữ các khối, vị trí, hiệu ứng và thời lượng; không giữ sản phẩm (khối sản phẩm đọc sản phẩm của overlay dùng mẫu).</small>
+    </div>
+  </Modal>
 }
 
 // ----- inspector -----
@@ -96,6 +155,7 @@ const numberOr = (text:string, fallback:number) => {const v = Number(text.replac
 
 function Inspector(p:Props & {index:number; overlay:Overlay}){
   const {overlay:o, index, editable} = p
+  const [saving,setSaving] = useState(false)
   const change = (patch:Partial<Overlay>, field:string) => p.onChange(index, {...o, ...patch}, field)
   const layout = (patch:Partial<Frame & {z_index:number; opacity:number}>, field:string) => {
     const merged = {...o.layout, ...patch}
@@ -116,6 +176,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
     actions={<div className="ove-toolbar">
       <button type="button" className="te-icon-btn" title="Xem hiệu ứng vào" aria-label="Xem hiệu ứng vào" onClick={()=>p.onPreview(index, 'in')}><Play size={15}/></button>
       <button type="button" className="te-icon-btn" title="Sao chép (Ctrl+C)" aria-label="Sao chép" onClick={()=>p.onCopy(index)}><Copy size={15}/></button>
+      <button type="button" className="te-icon-btn" title="Lưu làm mẫu (dùng lại ở mọi phiên)" aria-label="Lưu làm mẫu" onClick={()=>setSaving(true)}><BookmarkPlus size={15}/></button>
       {editable && <>
         <button type="button" className="te-icon-btn" title="Nhân bản (Ctrl+D)" aria-label="Nhân bản" onClick={()=>p.onDuplicate(index)}><CopyPlus size={15}/></button>
         <button type="button" className="te-icon-btn is-danger" title="Xóa overlay (Delete)" aria-label="Xóa overlay" onClick={()=>p.onRemove(index)}><Trash2 size={15}/></button>
@@ -143,6 +204,8 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
           {editable && <button type="button" className="ove-link" onClick={()=>change({start_ms:Math.round(p.now / 100) * 100}, newStep('start-now'))}><Crosshair size={13}/>Bắt đầu tại {hms(p.now)}</button>}</div>
       </div>
 
+      <details className="ove-more">
+      <summary>Vị trí, lớp, độ trong suốt & hiệu ứng <small className="te-muted">(kéo trên khung xem trước cũng được)</small></summary>
       <h4>Vị trí & kích thước <small className="te-muted">(px trên khung 1080×1920)</small></h4>
       <div className="ove-row ove-4">
         <Input label="X" type="number" min={0} max={CANVAS.width} value={String(px(o.layout.x, CANVAS.width))} onChange={e=>layout({x:numberOr(e.target.value, 0) / CANVAS.width}, 'x')}/>
@@ -160,6 +223,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         <AnimationField label="Vào" value={o.animation_in} onChange={v=>change({animation_in:v}, 'anim-in')} onPreview={()=>p.onPreview(index, 'in')}/>
         <AnimationField label="Ra" value={o.animation_out} onChange={v=>change({animation_out:v}, 'anim-out')} onPreview={()=>p.onPreview(index, 'out')}/>
       </div>
+      </details>
 
       <h4>Sản phẩm của overlay</h4>
       <Select aria-label="Sản phẩm của overlay" value={o.product_id != null ? String(o.product_id) : ''} onChange={v=>change({product_id:v ? Number(v) : null}, newStep('product'))} options={productOptions}/>
@@ -176,6 +240,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         })}
       </div>}
     </fieldset>
+    {saving && <SaveTemplateModal overlay={o} presets={p.presets} onClose={()=>setSaving(false)} onSaved={p.onTemplatesChanged}/>}
   </Card>
 }
 
