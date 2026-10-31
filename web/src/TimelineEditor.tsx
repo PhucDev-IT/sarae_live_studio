@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, SegmentedControl, Select, Switch, useToast } from './ui/core'
+import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, Modal, SegmentedControl, Select, Switch, useToast } from './ui/core'
 import {
-  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, Info, Pause, Pin, PinOff, Play, Plus, Rocket, Save, StickyNote, Trash2, ZoomIn,
+  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, Info, Layers, Pause, Pin, PinOff, Play, Plus, Rocket, Save, StickyNote, Trash2, ZoomIn,
 } from 'lucide-react'
 import { api, apiRequest, assetUrl, errorText } from './mediaApi'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
@@ -14,7 +14,7 @@ import { overlaysApi, type OverlayAsset, type OverlayTemplates } from './overlay
 import { EXTRA_PRESETS, endOf, fromPreset, MIN_DURATION_MS, type Overlay, type OverlayIssue, type OverlayPreset, type OverlayScene } from './overlay/overlayModel'
 import { blocksSave, copyOverlay, hasClipboard, localIssues, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
 import { OverlayPreview, OverlayTracks, type PreviewMode } from './overlay/OverlayStage'
-import OverlayPanel from './overlay/OverlayPanel'
+import OverlayPanel, { TemplateLibrary } from './overlay/OverlayPanel'
 import OverlayReadinessPanel from './overlay/OverlayReadinessPanel'
 import { ZOOMS, ticksOf, useLinkedScroll } from './timelineView'
 import './timeline-editor.css'
@@ -77,6 +77,8 @@ export default function TimelineEditor(){
   const [tab,setTab] = useState<'pins'|'overlays'>('pins')
   // One zoom and one horizontal scroll for the pin timeline and the overlay tracks: the same time is at the same x.
   const [zoom,setZoom] = useState(1)
+  // "Thêm overlay" next to "Thêm mốc" (same template library as the Overlay tab).
+  const [addingOverlay,setAddingOverlay] = useState(false)
   const linkScroll = useLinkedScroll()
   const [previewMode,setPreviewMode] = useState<PreviewMode>('obs')
   const [showZones,setShowZones] = useState(false)
@@ -424,6 +426,7 @@ export default function TimelineEditor(){
           <div className="te-transport">
             <Button variant="outline" leftIcon={playing ? <Pause size={16}/> : <Play size={16}/>} disabled={!streamUrl} onClick={toggle}>{playing ? 'Tạm dừng' : 'Phát'}</Button>
             {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
+            {editable && <Button variant="outline" leftIcon={<Layers size={16}/>} disabled={!videoId} onClick={()=>setAddingOverlay(true)}>Thêm overlay tại {hms(now)}</Button>}
           </div>
           <TimelineBar duration={duration} now={now} markers={shown.map(x=>x.m)} selected={shown.findIndex(x=>x.i === selected)} editable={!!editable} productName={id=>productById.get(id)?.name}
             zoom={zoom} onZoom={setZoom} scrollRef={linkScroll('pins')}
@@ -443,6 +446,9 @@ export default function TimelineEditor(){
       {overlayIssues.some(i=>i.level === 'error') && <Badge tone="danger">Overlay có lỗi</Badge>}
     </div>
 
+    <Modal open={addingOverlay} onClose={()=>setAddingOverlay(false)} title={`Thêm overlay tại ${hms(now)}`} size="lg">
+      <TemplateLibrary presets={presets} onChanged={loadTemplates} onPick={preset=>{setAddingOverlay(false);addOverlay(preset);setTab('overlays')}}/>
+    </Modal>
     {tab === 'overlays' && session && <OverlayReadinessPanel sessionId={session.id} sessionAgentId={session.agent_id ?? null}/>}
     {tab === 'overlays' ? <OverlayPanel overlays={overlays} selected={ovSelected} mediaId={videoId} now={now} editable={!!editable} dirty={draft.dirty} busy={busy}
       presets={presets} products={products} assets={assets ?? []} issues={overlayIssues} apiBase={api} canUndo={draft.canUndo} canRedo={draft.canRedo} canPaste={canPaste}

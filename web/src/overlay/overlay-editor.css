@@ -101,6 +101,7 @@
 .ove-preset small{color:var(--ui-text-muted);font-size:11.5px}
 .ove-preset-group{margin:16px 0 0;font-size:13.5px}
 .ove-preset-group small{font-weight:400;font-size:12px}
+.ove-preset-group svg{display:inline;vertical-align:-2px}
 .ove-preset-wrap{position:relative;display:grid}
 .ove-preset-wrap .ove-preset{padding-right:64px}
 .ove-preset-actions{position:absolute;top:8px;right:8px;display:flex;gap:2px}
