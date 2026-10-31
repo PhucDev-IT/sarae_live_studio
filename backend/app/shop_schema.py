@@ -14,6 +14,8 @@ def upgrade(bind=None):
     sales_brain_schema(target)
     from app.live_timeline import ensure_schema as live_timeline_schema
     live_timeline_schema(target)
+    from app.live_overlays import ensure_schema as live_overlays_schema
+    live_overlays_schema(target)
     from app.timeline_ai.api import ensure_schema as timeline_ai_schema
     timeline_ai_schema(target)
     with target.begin() as conn:
