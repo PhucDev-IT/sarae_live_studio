@@ -925,7 +925,9 @@ def delete_session(session_id: int, owner: Owner):
         if claim:
             raise HTTPException(409,"Chưa xác nhận Agent đã ngừng phát; không thể xóa phiên còn giữ khóa LIVE")
         # SQLite does not enforce ON DELETE CASCADE unless foreign keys are enabled; delete children explicitly.
+        from app.live_overlays import delete_events
         from app.live_timeline import LiveTimeline, TimelineMarker
+        delete_events(db, select(LiveTimeline.id).where(LiveTimeline.session_id == session_id))
         db.execute(delete(TimelineMarker).where(TimelineMarker.timeline_id.in_(
             select(LiveTimeline.id).where(LiveTimeline.session_id == session_id))))
         db.execute(delete(LiveTimeline).where(LiveTimeline.session_id == session_id))

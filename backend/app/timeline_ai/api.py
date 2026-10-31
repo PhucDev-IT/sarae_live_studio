@@ -346,7 +346,9 @@ def draft_from_analysis(session_id: int, job_id: int, owner: Owner):
                                                     .order_by(LiveTimeline.version.desc()).limit(1))
         timeline = new_version(db, item, owner["id"], note=f"Đề xuất AI (lần phân tích #{job.id})")
         if base is not None:
+            from app.live_overlays import copy_events
             copy_markers(db, base, timeline.id, except_media=job.media_id)
+            copy_events(db, base, timeline.id)  # the analysis suggests pins only: overlays stay as they were
         seq: dict[int, int] = {}
         for s in result["suggestions"]:
             product = s["product_id"] if s["product_id"] in known else None
