@@ -94,29 +94,36 @@ PIN_CARD_JS = r"""
 }
 """
 
-# Is the broadcast on air? Read only (never clicks): visible controls of the LIVE Console. An "end LIVE" control is
-# shown only while live, a "go LIVE" one only before. Seen on the real Seller Console: before LIVE a "Phát LIVE"
-# button; while live an icon-only end control (a clickable div holding svg.arco-icon-im_close_chat, a power glyph).
-# Other labels in LIVE_LABELS are not verified. Both, neither, or several end icons mean UNKNOWN, and the timeline
-# pins nothing until it is LIVE (fail closed).
+# Is the broadcast on air? Read only (never clicks). Only the Console's broadcast control bar counts: the row with the
+# "Video" / "Kịch bản" switches, which holds a "Phát LIVE" button before LIVE and, while live, an icon-only end
+# control (a clickable div holding svg.arco-icon-im_close_chat, a power glyph) instead. Elsewhere on the page the
+# "Phát LIVE ngay" button (arco-icon-live) is always shown, so it never counts, and labels match exactly (never by
+# prefix). Other labels in LIVE_LABELS are not verified. Both, neither, or several end icons mean UNKNOWN, and the
+# timeline pins nothing until it is LIVE (fail closed).
 LIVE_LABELS = {"live": ["end live", "kết thúc live", "kết thúc phát trực tiếp", "end stream", "stop live"],
-               "offline": ["phát live", "go live", "bắt đầu live", "bắt đầu phát trực tiếp", "start live",
-                           "phát trực tiếp ngay"]}
+               "offline": ["phát live", "go live", "bắt đầu live", "bắt đầu phát trực tiếp", "start live"]}
 LIVE_STATE_JS = r"""
 (labels) => {
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  // The control bar: the nearest ancestor (up to 6 levels) that also holds the Video / Kịch bản switches.
+  const inControlBar = (el) => {
+    for (let node = el.parentElement, i = 0; node && i < 6; node = node.parentElement, i++) {
+      if (node.querySelector('[role="switch"]')) return true;
+    }
+    return false;
+  };
   const found = {live: [], offline: []};
   const endIcons = [...document.querySelectorAll('div.cursor-pointer > svg.arco-icon-im_close_chat')]
-    .filter((svg) => visible(svg.parentElement));
+    .filter((svg) => visible(svg.parentElement) && inControlBar(svg.parentElement));
   if (endIcons.length > 1) return {state: 'UNKNOWN', evidence: [`${endIcons.length} end LIVE icons`]};
   if (endIcons.length) found.live.push('icon: arco-icon-im_close_chat');
   for (const el of document.querySelectorAll('button, [role="button"], a')) {
-    if (!visible(el)) continue;
+    if (!visible(el) || el.querySelector('svg.arco-icon-live') || !inControlBar(el)) continue;
     const text = norm(el.innerText || el.getAttribute('aria-label'));
     if (!text || text.length > 60) continue;
     for (const key of ['live', 'offline']) {
-      if (labels[key].some((label) => text === label || text.startsWith(label))) found[key].push(text);
+      if (labels[key].includes(text)) found[key].push(text);
     }
   }
   const state = found.live.length && !found.offline.length ? 'LIVE'
