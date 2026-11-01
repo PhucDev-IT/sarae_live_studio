@@ -88,7 +88,7 @@ export default function OverlayPanel(p:Props){
 // ----- templates -----
 
 /** Built-in presets and the owner's own templates (reusable in every session): a starting point, never a type. */
-function TemplateLibrary({presets, onPick, onChanged}:{presets:OverlayPreset[]; onPick:(preset:OverlayPreset|null)=>void; onChanged:()=>void}){
+export function TemplateLibrary({presets, onPick, onChanged}:{presets:OverlayPreset[]; onPick:(preset:OverlayPreset|null)=>void; onChanged:()=>void}){
   const toast = useToast()
   const [busy,setBusy] = useState<number|null>(null)
   const builtIn = presets.filter(x=>!x.owner), mine = presets.filter(x=>x.owner)
