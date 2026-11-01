@@ -141,11 +141,13 @@ class AgentRuntime:
             raise AgentError("CLOUD_URL_MISSING", "Chưa kết nối Cloud")
         return identity, api_url
 
-    def _overlay_snapshot(self, session_id: int) -> dict | None:
-        """Overlays of the session's active timeline version (GET /agent-media/overlay-snapshot)."""
+    def _overlay_snapshot(self, session_id: int, timeline_id: int | None = None) -> dict | None:
+        """Overlays of the session's active timeline version, or of `timeline_id` (editor preview)
+        (GET /agent-media/overlay-snapshot)."""
         identity, api_url = self._cloud()
+        params = {"agent_id": identity.agent_id, "session_id": session_id, **({"timeline_id": timeline_id} if timeline_id else {})}
         with httpx.Client(base_url=api_url.rstrip("/") + "/", timeout=15, follow_redirects=False) as client:
-            response = client.get("agent-media/overlay-snapshot", params={"agent_id": identity.agent_id, "session_id": session_id},
+            response = client.get("agent-media/overlay-snapshot", params=params,
                                   headers={"X-Sarae-Agent-Key": identity.credential})
             response.raise_for_status()
             body = response.json()

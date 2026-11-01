@@ -178,6 +178,16 @@ class OverlayCheckPayload(Payload):
     session_id: int = Field(ge=1)
 
 
+class OverlayPreviewPayload(Payload):
+    session_id: int = Field(ge=1)
+    stop: bool = False
+    timeline_id: int | None = Field(default=None, ge=1)
+    media_id: str | None = MediaIdOrNone
+    position_ms: int = Field(default=0, ge=0, le=86_400_000)
+    playing: bool = False
+    seconds: int = Field(default=120, ge=10, le=600)
+
+
 class SetAutoPinPayload(Payload):
     enabled: bool
     session_id: int | None = Field(default=None, ge=1)
@@ -292,6 +302,7 @@ class CommandRouter:
             "video_play": (VideoPlayPayload, self._video_play),
             "timeline_set": (TimelineSetPayload, self._timeline_set),
             "overlay_check": (OverlayCheckPayload, self._overlay_check),
+            "overlay_preview": (OverlayPreviewPayload, self._overlay_preview),
             "playback_cancel_pending": (NoPayload, lambda _: p.cancel_pending()),
             "playback_policy": (PlaybackPolicyPayload,
                                 lambda b: p.set_policy(b.session_id, b.policy.model_dump(),
@@ -355,6 +366,12 @@ class CommandRouter:
         if self.overlay is None:
             raise AgentError("OVERLAY_UNAVAILABLE", "Agent chưa hỗ trợ overlay OBS")
         return self.overlay.check(b.session_id)
+
+    def _overlay_preview(self, b: OverlayPreviewPayload) -> dict:
+        """The editor's "Xem thử trên OBS" (never while a LIVE session plays or OBS streams)."""
+        if self.overlay is None:
+            raise AgentError("OVERLAY_UNAVAILABLE", "Agent chưa hỗ trợ overlay OBS")
+        return self.overlay.preview_on_obs(b.session_id, b.timeline_id, b.media_id, b.position_ms, b.playing, b.seconds, b.stop)
 
     def _stop(self):
         result = self.playback.stop()

@@ -335,6 +335,30 @@ class OverlayApiTests(SaasTestCase):
         command = self.client.get(f"/api/agents/{sent.json()['agent_id']}/commands/{sent.json()['command_id']}").json()
         self.assertEqual((command["kind"], command["status"]), ("overlay_check", "PENDING"))
 
+    def test_a_draft_can_be_previewed_on_obs_without_activating(self):
+        tid = self.new()
+        self.put(tid, [self.overlay()])
+        url = f"{self.base}/{tid}/overlay-preview"
+        self.assertEqual(self.client.post(url, json={"position_ms": 1500}).status_code, 409, "no Agent chosen")
+        self.assertEqual(self.client.post(url, json={"agent_id": self.agent["agent_id"], "media_id": self.outside}).status_code, 422)
+        sent = self.client.post(url, json={"agent_id": self.agent["agent_id"], "media_id": self.other, "position_ms": 1500, "playing": True})
+        self.assertEqual(sent.status_code, 202, sent.text)
+        command = self.client.get(f"/api/agents/{sent.json()['agent_id']}/commands/{sent.json()['command_id']}").json()
+        self.assertEqual(command["kind"], "overlay_preview")
+        stop = self.client.post(url, json={"agent_id": self.agent["agent_id"], "stop": True})
+        self.assertEqual(stop.status_code, 202, stop.text)
+        self.assertEqual(self.client.post(url, json={"agent_id": self.agent["agent_id"]}, headers=self.B).status_code, 404)
+        # The Agent reads exactly that version, a draft included; never one of another session.
+        key = {"X-Sarae-Agent-Key": self.agent["agent_credential"]}
+        params = {"agent_id": self.agent["agent_id"], "session_id": self.sid}
+        snap = self.client.get("/api/agent-media/overlay-snapshot", params={**params, "timeline_id": tid}, headers=key).json()["snapshot"]
+        self.assertEqual((snap["timeline_id"], len(snap["overlays"])), (tid, 1))
+        self.assertIsNone(self.client.get("/api/agent-media/overlay-snapshot", params=params, headers=key).json()["snapshot"], "nothing ACTIVE")
+        other = self.client.post("/api/live/sessions", json={"name": "Other", "tiktok_account_id": self.account, "playback_mode": "SINGLE_VIDEO_TIMELINE",
+                                                             "media_ids": [self.main]}).json()["id"]
+        foreign = self.client.get("/api/agent-media/overlay-snapshot", params={"agent_id": self.agent["agent_id"], "session_id": other, "timeline_id": tid}, headers=key)
+        self.assertEqual(foreign.status_code, 404)
+
     def template_body(self, **extra):
         overlay = self.overlay()
         body = {"name": "Giá vàng", "template": "MY_PRICE", "layout": overlay["layout"], "elements": overlay["elements"],

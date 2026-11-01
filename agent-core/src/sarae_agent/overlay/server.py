@@ -29,7 +29,7 @@ RENDERER_DIR = Path(__file__).with_name("renderer")
 STATIC_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 MAX_BODY = 64 * 1024
 TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8",
-         ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".woff2": "font/woff2"}
+         ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".woff2": "font/woff2", ".woff": "font/woff"}
 
 
 class OverlayHandlers:

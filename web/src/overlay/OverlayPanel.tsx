@@ -361,6 +361,7 @@ function BlockEditor({element:e, index, count, products, assets, apiBase, editab
         <ColorField label="Màu chữ" value={e.style.color} onChange={v=>style({color:v ?? '#FFFFFF'}, 'color')}/>
         <ColorField label="Nền chữ" optional value={e.style.background} onChange={v=>style({background:v}, 'bg')}/>
         <Input label="Tối đa dòng (0 = không giới hạn)" type="number" min={0} max={20} value={String(e.style.max_lines)} onChange={x=>style({max_lines:Math.max(0, Math.min(20, Math.round(numberOr(x.target.value, 0))))}, 'lines')}/>
+        <Switch label="Đổ bóng chữ" checked={!!e.style.shadow} onChange={x=>style({shadow:x.target.checked}, 'shadow')}/>
       </div>}
       {e.kind === 'image' && <div className="ove-row ove-2">
         <Select label="Nguồn ảnh" value={e.source} onChange={v=>onChange({...e, source:v as 'asset'|'product', ...(v === 'product' ? {asset_id:null} : {product_id:null})}, 'source')}

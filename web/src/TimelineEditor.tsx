@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, Modal, SegmentedControl, Select, Switch, useToast } from './ui/core'
 import {
-  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, FilePlus2, Info, Layers, MonitorCheck, Pause, Pin, PinOff, Play, Plus, Rocket, Save, SkipBack,
+  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, FilePlus2, Info, Layers, MonitorCheck, MonitorPlay, MonitorX, Pause, Pin, PinOff, Play, Plus, Rocket, Save, SkipBack,
   SkipForward, StickyNote, Trash2,
 } from 'lucide-react'
-import { api, apiRequest, assetUrl, errorText } from './mediaApi'
+import { api, apiRequest, assetUrl, errorText, waitCommand } from './mediaApi'
+import { useAgent } from './agentContext'
 import { listCloudMedia, type CloudMedia } from './cloudMediaApi'
 import {
   ACTION_LABEL, TIMELINE_STATUS, hms, isSingle, parseHms, sessionHref, timelinesApi,
@@ -83,6 +84,10 @@ export default function TimelineEditor(){
   // "Thêm overlay" of the timeline (same template library as the Overlay tab).
   const [addingOverlay,setAddingOverlay] = useState(false)
   const [muted,setMuted] = useState(false)
+  // "Xem thử trên OBS": the Agent shows this version at the editor's position (no LIVE, no activation).
+  const [obsPreview,setObsPreview] = useState(false)
+  const [previewBusy,setPreviewBusy] = useState(false)
+  const {agentId:tabAgent} = useAgent()
   const frameBox = useRef<HTMLDivElement>(null)
   const [previewMode,setPreviewMode] = useState<PreviewMode>('obs')
   const [showZones,setShowZones] = useState(false)
@@ -103,6 +108,7 @@ export default function TimelineEditor(){
     setVideoId(current=>current && s.media_ids.includes(current) ? current : s.media_ids[0] ?? null)
     const pick = list.find(t=>t.id === keepVersion) ?? list.find(t=>t.status === 'DRAFT') ?? list.find(t=>t.status === 'ACTIVE') ?? list[0]
     setVersionId(pick?.id ?? null)
+    setObsPreview(false)
     setRevision(r=>r + 1)
     setLoaded(true)
   },[sessionId])
@@ -276,6 +282,47 @@ export default function TimelineEditor(){
     void el.play()
   }
 
+  // ----- "Xem thử trên OBS"
+  const previewAgent = session?.agent_id ?? tabAgent
+  const sendPreview = useCallback((body:{position_ms?:number; playing?:boolean; stop?:boolean}) => {
+    if (sessionId == null || versionId == null) return Promise.resolve(null)
+    return overlaysApi.preview(sessionId, versionId, {agent_id:previewAgent, media_id:videoId, seconds:180, ...body})
+  },[sessionId, versionId, previewAgent, videoId])
+  const startPreview = async () => {
+    if (unsaved) {toast.push({tone:'warning', title:'Lưu nháp trước khi xem thử', description:'Agent đọc phiên bản đã lưu.'});return}
+    if (!previewAgent) {toast.push({tone:'warning', title:'Chưa chọn Agent Windows', description:'Chọn máy Agent ở thanh trên cùng (OBS đang mở trên máy đó).'});return}
+    setPreviewBusy(true)
+    try {
+      const sent = await sendPreview({position_ms:Math.round(now), playing})
+      if (sent) await waitCommand(sent.agent_id, sent.command_id, 45000)
+      setObsPreview(true)
+      toast.push({tone:'success', title:'Đang xem thử trên OBS', description:'Overlay trên OBS theo giờ đang chọn ở đây. Tự tắt sau 3 phút không thao tác.'})
+    } catch(e){toast.push({tone:'danger', title:'Không xem thử được trên OBS', description:errorText(e, '')})}
+    finally{setPreviewBusy(false)}
+  }
+  const stopPreview = useCallback(()=>{setObsPreview(false);void sendPreview({stop:true})?.catch(()=>{})},[sendPreview])
+  // Follow the editor: play / pause, a seek or another video moves the overlay on OBS; renewed every minute.
+  const lastSent = useRef<{at:number; ms:number; playing:boolean; video:string|null}>({at:0, ms:0, playing:false, video:null})
+  useEffect(()=>{
+    if (!obsPreview) return
+    const last = lastSent.current, wall = Date.now()
+    const expected = last.playing ? last.ms + (wall - last.at) : last.ms
+    if (playing === last.playing && videoId === last.video && Math.abs(now - expected) < 1500 && wall - last.at < 60_000) return
+    const timer = window.setTimeout(()=>{
+      lastSent.current = {at:Date.now(), ms:now, playing, video:videoId}
+      void sendPreview({position_ms:Math.round(now), playing})?.catch(()=>{})
+    }, playing === last.playing && videoId === last.video ? 350 : 0)
+    return ()=>window.clearTimeout(timer)
+  },[obsPreview, now, playing, videoId, sendPreview])
+  // Leaving the page or another version ends the preview (not a new video or a seek: those only move it).
+  const sendRef = useRef(sendPreview)
+  useEffect(()=>{sendRef.current = sendPreview},[sendPreview])
+  useEffect(()=>{
+    if (!obsPreview) return
+    const send = sendRef
+    return ()=>{void send.current({stop:true})?.catch(()=>{})}
+  },[obsPreview, versionId])
+
   const run = async (action:()=>Promise<unknown>, success:string) => {
     setBusy(true)
     try {await action();toast.push({tone:'success', title:success});return true}
@@ -312,12 +359,12 @@ export default function TimelineEditor(){
   const removeDraft = () => timeline && run(async ()=>{
     await timelinesApi.remove(timeline.session_id, timeline.id);await load()
   }, 'Đã xóa bản nháp')
-  const chooseVersion = (id:number) => {if (id === versionId) return;if (unsaved) setConfirm({kind:'discard', next:id});else setVersionId(id)}
+  const chooseVersion = (id:number) => {if (id === versionId) return;if (unsaved) setConfirm({kind:'discard', next:id});else {setObsPreview(false);setVersionId(id)}}
   const onConfirm = () => {
     const c = confirm
     setConfirm(null)
     if (!c) return
-    if (c.kind === 'discard') {setDirty(false);setVersionId(c.next)}
+    if (c.kind === 'discard') {setDirty(false);setObsPreview(false);setVersionId(c.next)}
     if (c.kind === 'activate') void activate()
     if (c.kind === 'delete') void removeDraft()
   }
@@ -455,6 +502,10 @@ export default function TimelineEditor(){
           <span className="ts-spacer"/>
           {editable && <Button leftIcon={<Plus size={16}/>} disabled={!duration} onClick={()=>addAt(now)}>Thêm mốc tại {hms(now)}</Button>}
           {editable && <Button variant="outline" leftIcon={<Layers size={16}/>} disabled={!videoId} onClick={()=>setAddingOverlay(true)}>Thêm overlay tại {hms(now)}</Button>}
+          {timeline && (obsPreview
+            ? <Button variant="danger" leftIcon={<MonitorX size={16}/>} onClick={stopPreview} title="Ẩn overlay xem thử trên OBS">Tắt xem thử OBS</Button>
+            : <Button variant="outline" leftIcon={<MonitorPlay size={16}/>} loading={previewBusy} disabled={session.status === 'RUNNING'} onClick={()=>void startPreview()}
+                title={session.status === 'RUNNING' ? 'Phiên đang LIVE: overlay đã chạy thật trên OBS' : 'Hiện overlay của phiên bản này trên OBS tại giờ đang chọn, không cần kích hoạt hay LIVE'}>Xem thử trên OBS</Button>)}
         </div>
         <StudioTimeline duration={duration} now={now} zoom={zoom} onZoom={setZoom} editable={!!editable}
           markers={shown.map(x=>({marker:x.m, index:x.i}))} selectedMarker={selected} product={id=>productById.get(id)}

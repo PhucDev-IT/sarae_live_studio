@@ -63,9 +63,13 @@ def snapshot(revision, text="Sarae Overlay 123"):
                                   "mime_type": "image/png", "width": 64, "height": 64, "size_bytes": len(BLUE)}}}
 
 
+# Its own Browser Source and port: never the "Sarae Overlay" source of an Agent running on this PC.
+TEST_SOURCE = "Sarae Overlay (test)"
+
+
 class Cfg:
     def __init__(self):
-        self.overlay = SimpleNamespace(enabled=True, port=17891, source_name="Sarae Overlay", input_uuids={}, token="rehearsal-token")
+        self.overlay = SimpleNamespace(enabled=True, port=17895, source_name=TEST_SOURCE, input_uuids={}, token="rehearsal-token")
 
     def get(self):
         return self
@@ -148,7 +152,7 @@ got = (t["positionX"], t["positionY"], t["rotation"], t["cropLeft"] + t["cropRig
        t["boundsType"], t["alignment"], round(t["width"]), round(t["height"]))
 check("transform locked (read back)", got == (0, 0, 0, 0, "OBS_BOUNDS_NONE", 5, 1080, 1920), str(got))
 time.sleep(1.5)
-img = shot("Sarae Overlay", "obs_source.png")
+img = shot(TEST_SOURCE, "obs_source.png")
 red = (img[:, :, 2] > 200) & (img[:, :, 1] < 60) & (img[:, :, 0] < 60) & (img[:, :, 3] > 200)
 blue = (img[:, :, 0] > 200) & (img[:, :, 1] < 60) & (img[:, :, 2] < 60) & (img[:, :, 3] > 200)
 rb, bb = bbox(red), bbox(blue)
@@ -240,7 +244,7 @@ def watch_new():
 check("new version applied after READY", wait(watch_new, 30), json.dumps(svc.status(), default=str)[:200])
 check("overlay never hidden while switching version", not seen_hidden, str(len(seen_hidden)))
 time.sleep(1)
-shot("Sarae Overlay", "obs_source_v2.png")
+shot(TEST_SOURCE, "obs_source_v2.png")
 
 # Timing against the real OBS cursor: an overlay from cursor+4 s for 3 s must appear and disappear on time.
 state, cursor, duration = (lambda st: (st.get("mediaState"), st.get("mediaCursor") or 0, st.get("mediaDuration") or 0))(
@@ -258,7 +262,7 @@ if state == "OBS_MEDIA_STATE_PLAYING" and duration - cursor > 15_000:
     end = time.time() + 12
     while time.time() < end:
         cur = obs.request("GetMediaInputStatus", {"inputName": "Sarae Video A"}).get("mediaCursor") or 0
-        frame = shot("Sarae Overlay", "timing.png")
+        frame = shot(TEST_SOURCE, "timing.png")
         red_now = ((frame[:, :, 2] > 200) & (frame[:, :, 1] < 60) & (frame[:, :, 3] > 200))[1400:1600, 100:1000].mean() > 0.5
         seen.append((int(cur) - start, bool(red_now)))
         time.sleep(0.15)
@@ -276,8 +280,11 @@ print("video after", v1)
 check("video kept its state (not restarted by the overlay)",
       v0[0] == v1[0] and (v0[0] != "OBS_MEDIA_STATE_PLAYING" or (v1[1] or 0) > (v0[1] or 0)), f"{v0} -> {v1}")
 gaps = [s for s in samples if s[2] != "OBS_MEDIA_STATE_PLAYING"]
-check("visible video source PLAYING in every sample during the operations", not gaps and len(samples) > 10,
-      f"{len(samples)} samples, not playing: {gaps[:5]}")
+if v0[0] == "OBS_MEDIA_STATE_PLAYING":
+    check("visible video source PLAYING in every sample during the operations", not gaps and len(samples) > 10,
+          f"{len(samples)} samples, not playing: {gaps[:5]}")
+else:
+    print("SKIP video continuity: the video was not playing when the rehearsal started", v0)
 stop.set()
 svc.close()
 check("hidden when the Agent closes", not ours()[0]["sceneItemEnabled"])

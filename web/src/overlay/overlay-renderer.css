@@ -1,7 +1,7 @@
 /* The shared LIVE overlay renderer (web preview + OBS browser source). Prefix ovr-.
    Everything inside .ovr-canvas is in pixels of the fixed 1080×1920 canvas; nothing inherits the page's styles. */
 .ovr-root{position:absolute;inset:0;overflow:hidden;pointer-events:none;
-  --ovr-font:"Segoe UI","Helvetica Neue",Arial,"Noto Sans",sans-serif}
+  --ovr-font:"Be Vietnam Pro","Segoe UI","Helvetica Neue",Arial,"Noto Sans",sans-serif}
 .ovr-canvas{all:initial;position:absolute;left:0;top:0;transform-origin:0 0;display:block;overflow:hidden;
   font-family:var(--ovr-font);font-kerning:normal;font-synthesis:none;letter-spacing:0;word-spacing:0;line-height:1.2;
   text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased;white-space:normal;color:#fff}

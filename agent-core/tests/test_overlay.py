@@ -31,6 +31,7 @@ class FakeObs:
         self.current = "Main"
         self.requests: list[tuple[str, dict]] = []
         self.connected = True
+        self.streaming = False
         self.next_item = 100
 
     def _collection(self):
@@ -122,6 +123,8 @@ class FakeObs:
             return {}
         if request == "GetSceneItemEnabled":
             return {"sceneItemEnabled": self.item(data["sceneName"], data["sceneItemId"])["sceneItemEnabled"]}
+        if request == "GetStreamStatus":
+            return {"outputActive": self.streaming}
         if request == "PressInputPropertiesButton":
             return {}
         raise AssertionError(f"unexpected request {request}")
@@ -349,11 +352,15 @@ class ServiceTests(unittest.TestCase):
         self.obs = FakeObs()
         self.config = FakeConfig()
         self.snapshots = {}
+        self.playback = {}
         self.service = OverlayService(self.config, self.obs, lambda: self.obs.connected, lambda: [VIDEO],
                                       self.fetch_snapshot, lambda url: PNG, OverlayCache(Path(tempfile.mkdtemp())),
-                                      clock=lambda: self.now, server=SimpleNamespace(port=17891, start=lambda p: 17891, stop=lambda: None))
+                                      clock=lambda: self.now, server=SimpleNamespace(port=17891, start=lambda p: 17891, stop=lambda: None),
+                                      playback_state=lambda: self.playback)
 
-    def fetch_snapshot(self, session_id):
+    def fetch_snapshot(self, session_id, timeline_id=None):
+        if timeline_id is not None:
+            return self.snapshots.get((session_id, timeline_id))
         found = self.snapshots.get(session_id)
         if isinstance(found, Exception):
             raise found
@@ -545,6 +552,60 @@ class ServiceTests(unittest.TestCase):
         again = restarted.renderer_state()["clock"]
         self.assertEqual((first["seq"], again["seq"]), (1, 1))
         self.assertNotEqual(first["epoch"], again["epoch"], "a page that outlived the restart must not drop seq 1 again")
+
+    def preview_ready(self, **kwargs):
+        self.snapshots[(5, 11)] = self.snap("draft-r", 1)
+        result = self.service.preview_on_obs(5, 11, "m" * 32, kwargs.pop("position", 1000), **kwargs)
+        self.service.renderer_state()
+        self.service.renderer_ready({"revision": "draft-r", "ok": True})
+        self.service.tick()
+        return result
+
+    def test_a_draft_is_previewed_on_obs_without_live(self):
+        self.assertTrue(self.preview_ready()["preview"])
+        self.assertTrue(self.item()["sceneItemEnabled"], "shown with no playback at all")
+        clock = self.service.renderer_state()["clock"]
+        self.assertEqual((clock["media_id"], clock["position_ms"], clock["playing"]), ("m" * 32, 1000, False))
+        self.now += 30
+        self.assertEqual(self.service.renderer_state()["clock"]["position_ms"], 1000, "paused in the editor: it holds")
+        self.service.preview_on_obs(5, 11, "m" * 32, 5000, playing=True)
+        self.now += 3
+        self.assertEqual(self.service.renderer_state()["clock"]["position_ms"], 8000, "playing in the editor: it runs on")
+        self.assertEqual(self.service.status()["preview"]["timeline_id"], 11)
+
+    def test_preview_is_refused_on_air_or_during_live(self):
+        self.snapshots[(5, 11)] = self.snap("draft-r", 1)
+        self.obs.streaming = True
+        with self.assertRaises(AgentError) as caught:
+            self.service.preview_on_obs(5, 11, "m" * 32, 0)
+        self.assertEqual(caught.exception.code, "PREVIEW_ON_AIR")
+        self.obs.streaming, self.playback = False, {"active": True, "session_id": 4}
+        with self.assertRaises(AgentError) as caught:
+            self.service.preview_on_obs(5, 11, "m" * 32, 0)
+        self.assertEqual(caught.exception.code, "PREVIEW_BUSY")
+        self.assertIsNone(self.service.preview)
+
+    def test_preview_ends_by_itself_by_stop_or_when_live_starts(self):
+        self.preview_ready(seconds=60)
+        self.now += 61
+        self.service.tick()
+        self.assertIsNone(self.service.preview)
+        self.assertFalse(self.item()["sceneItemEnabled"])
+        self.preview_ready()
+        self.assertTrue(self.item()["sceneItemEnabled"])
+        self.service.preview_on_obs(5, stop=True)
+        self.service.tick()
+        self.assertFalse(self.item()["sceneItemEnabled"])
+        self.preview_ready()
+        self.service.observe(5, "m" * 32, 0, "OBS_MEDIA_STATE_PLAYING", 0)
+        self.assertIsNone(self.service.preview, "a LIVE playback takes over")
+
+    def test_the_active_version_never_replaces_the_previewed_draft(self):
+        self.snapshots[5] = self.snap("active-r", 2)
+        self.preview_ready()
+        self.now += 60
+        self.service.tick()
+        self.assertEqual(self.service.renderer_state()["revision"], "draft-r")
 
     def test_an_overlay_failure_never_raises_into_the_loop(self):
         self.snapshots[5] = self.snap()

@@ -72,9 +72,13 @@ def snapshot(n):
             "assets": {aid: {"url": f"/api/x/{aid}", "sha256": hashlib.sha256(image).hexdigest()}}}
 
 
+# Its own Browser Source and port: never the "Sarae Overlay" source of an Agent running on this PC.
+TEST_SOURCE = "Sarae Overlay (test)"
+
+
 class Cfg:
     def __init__(self):
-        self.overlay = SimpleNamespace(enabled=True, port=17891, source_name="Sarae Overlay", input_uuids={}, token="rehearsal-token")
+        self.overlay = SimpleNamespace(enabled=True, port=17895, source_name=TEST_SOURCE, input_uuids={}, token="rehearsal-token")
 
     def get(self):
         return self

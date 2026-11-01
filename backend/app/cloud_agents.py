@@ -72,7 +72,7 @@ FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
 # ----- command policy --------------------------------------------------------------------------------
 
 # Safe to deliver again when an ack is lost: running them twice leaves the same end state.
-RETRYABLE_KINDS = {"timeline_set", "overlay_check", "GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
+RETRYABLE_KINDS = {"timeline_set", "overlay_check", "overlay_preview", "GET_PIN_STATE", "SET_AUTO_PIN", "obs_status", "obs_inputs", "obs_configure", "tiktok_products_sync", "media_prepare", "monitor_config", "monitor_start",
                    "monitor_stop", "playback_pause", "playback_resume", "playback_stop", "playback_cancel_pending",
                    "obs_pause", "obs_resume", "obs_stop", "local_media_stop", "android_pause", "android_resume",
                    "android_stop", "android_next", "android_previous", "android_queue_set", "android_rotation_set",
@@ -325,7 +325,7 @@ NO_PARAM_KINDS={"monitor_start","monitor_stop","obs_status","obs_pause","obs_res
     "playback_resume","playback_next","playback_previous","playback_stop","tiktok_products_sync","media_prepare",
     "tts_clear"}
 COMMAND_KINDS=NO_PARAM_KINDS|{"chat_send","chat_probe","PIN_PRODUCT","UNPIN_PRODUCT","GET_PIN_STATE","SET_AUTO_PIN","monitor_config","tts_speak","tts_prepare","playback_policy","local_media_play","local_playlist_start",
-    "product_play","video_play","timeline_set","overlay_check","playback_select","playback_seek","obs_configure","obs_inputs",
+    "product_play","video_play","timeline_set","overlay_check","overlay_preview","playback_select","playback_seek","obs_configure","obs_inputs",
     "android_play","android_switch","android_pause","android_resume","android_next","android_previous",
     "android_stop","android_queue_set","android_rotation_set","android_mock_live_start","android_mock_live_stop"}
 # Payload fields that must not stay in the command log once the command is final.
@@ -505,6 +505,14 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         return ConfigBody.model_validate(payload).model_dump()
     if kind in ("media_prepare","overlay_check"):
         return {"session_id":_int(payload.get("session_id"),"session_id",1,2**31-1)}
+    if kind=="overlay_preview":
+        out={"session_id":_int(payload.get("session_id"),"session_id",1,2**31-1),"stop":_bool(payload.get("stop",False),"stop")}
+        if out["stop"]:
+            return out
+        if not _media_id(payload.get("media_id")):raise HTTPException(422,"media_id không hợp lệ")
+        return {**out,"timeline_id":_int(payload.get("timeline_id"),"timeline_id",1,2**31-1),"media_id":payload["media_id"],
+                "position_ms":_int(payload.get("position_ms",0),"position_ms",0,24*3600*1000),
+                "playing":_bool(payload.get("playing",False),"playing"),"seconds":_int(payload.get("seconds",120),"seconds",10,600)}
     if kind=="product_play":
         mode=payload.get("mode","immediate")
         if mode not in ("immediate","after_current"):

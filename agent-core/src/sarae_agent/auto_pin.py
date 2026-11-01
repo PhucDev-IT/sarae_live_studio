@@ -94,16 +94,23 @@ PIN_CARD_JS = r"""
 }
 """
 
-# Is the broadcast on air? Read only: visible controls of the LIVE Console. An "end LIVE" control is shown only while
-# live, a "go LIVE" one only before. Labels come from LIVE_LABELS (NOT verified against the real Console yet); both or
-# neither found means UNKNOWN, and the timeline pins nothing until it is LIVE (fail closed).
+# Is the broadcast on air? Read only (never clicks): visible controls of the LIVE Console. An "end LIVE" control is
+# shown only while live, a "go LIVE" one only before. Seen on the real Seller Console: before LIVE a "Phát LIVE"
+# button; while live an icon-only end control (a clickable div holding svg.arco-icon-im_close_chat, a power glyph).
+# Other labels in LIVE_LABELS are not verified. Both, neither, or several end icons mean UNKNOWN, and the timeline
+# pins nothing until it is LIVE (fail closed).
 LIVE_LABELS = {"live": ["end live", "kết thúc live", "kết thúc phát trực tiếp", "end stream", "stop live"],
-               "offline": ["go live", "bắt đầu live", "bắt đầu phát trực tiếp", "start live", "phát trực tiếp ngay"]}
+               "offline": ["phát live", "go live", "bắt đầu live", "bắt đầu phát trực tiếp", "start live",
+                           "phát trực tiếp ngay"]}
 LIVE_STATE_JS = r"""
 (labels) => {
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const found = {live: [], offline: []};
+  const endIcons = [...document.querySelectorAll('div.cursor-pointer > svg.arco-icon-im_close_chat')]
+    .filter((svg) => visible(svg.parentElement));
+  if (endIcons.length > 1) return {state: 'UNKNOWN', evidence: [`${endIcons.length} end LIVE icons`]};
+  if (endIcons.length) found.live.push('icon: arco-icon-im_close_chat');
   for (const el of document.querySelectorAll('button, [role="button"], a')) {
     if (!visible(el)) continue;
     const text = norm(el.innerText || el.getAttribute('aria-label'));

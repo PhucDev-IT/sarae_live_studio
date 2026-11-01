@@ -44,6 +44,10 @@ export const overlaysApi = {
   /** Asks the Agent to check (and prepare, hidden) the OBS overlay; wait for the result with waitCommand. */
   check:(sessionId:number, agentId?:string|null) => apiRequest<{agent_id:string; command_id:string}>(`/live/sessions/${sessionId}/overlay-check`,
     {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({agent_id:agentId ?? null})}),
+  /** "Xem thử trên OBS": show this version (saved content, a draft included) at a position, without LIVE; `stop` hides it. */
+  preview:(sessionId:number, timelineId:number, body:{agent_id:string|null; media_id?:string|null; position_ms?:number; playing?:boolean; seconds?:number; stop?:boolean}) =>
+    apiRequest<{agent_id:string; command_id:string}>(`/live/sessions/${sessionId}/timelines/${timelineId}/overlay-preview`,
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}),
   assets:() => apiRequest<OverlayAsset[]>('/live/overlay-assets'),
   upload:(file:File) => {
     const form = new FormData()
