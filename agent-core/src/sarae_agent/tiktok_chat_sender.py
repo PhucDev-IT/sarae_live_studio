@@ -37,6 +37,7 @@ ACCOUNT_MISMATCH = "TikTok LIVE Console đang đăng nhập tài khoản khác v
 CONSOLE_CLOSED = "LIVE Console chưa mở"
 VERIFICATION_PAGE = "TikTok đang hiện trang đăng nhập / xác minh: hãy xử lý bằng tay rồi thử lại"
 USERNAME = re.compile(r"^[A-Za-z0-9._]{1,64}$")
+REPLY_ICON = "button:has(> svg.arco-icon-recover)"  # the ↩ of the LIVE Console's hover popup (never 📌 / …)
 MENTION_TOKEN = re.compile(r"@([A-Za-z0-9._]+)")
 
 _LABEL_CHAT = r"bình luận|trò chuyện|nói gì|nhập tin nhắn|comment|chat|say something|add a comment|type a message"
@@ -84,7 +85,7 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
     "reply_control": [
         "role=button[name=/^\\s*(trả lời|reply)\\s*$/i]",
         # LIVE Console: hover popup [reply ↩ | pin 📌 | more …]; only the ↩ icon (arco "recover") is Reply
-        "button:has(> svg.arco-icon-recover)",
+        "button:has(> svg.arco-icon-recover)",  # == REPLY_ICON
         "text=/^\\s*(Trả lời|Reply)\\s*$/i", "[data-e2e*='reply' i]", "[class*='reply' i]",
     ],
     "mention_list": [
@@ -461,15 +462,37 @@ class ChatSender:
             run.step("DIRECT_REPLY_SKIPPED", detail=choice)
             return False
         row = found[choice]
+        # The LIVE Console shows its [↩ | 📌 | …] popup on hover but renders it OUTSIDE the row: an ↩ icon may be
+        # used page-wide only if none was visible before the hover and exactly one is visible after it.
+        icons = page.locator(REPLY_ICON).filter(visible=True)
+        try:
+            self._composer(page)[0].hover(timeout=1500)  # the pointer may still rest on the last replied row
+        except Exception:  # noqa: BLE001
+            pass
+        self._wait(page, 500, lambda: not icons.count())
+        icons_before = icons.count()
         try:
             row.hover(timeout=1500)  # Reply controls often appear on hover
         except Exception:  # noqa: BLE001
             pass
-        reply, sel = self._find(row, "reply_control")
+        hit: list = [None, None]
+
+        def shown() -> bool:
+            hit[0], hit[1] = self._find(row, "reply_control")
+            if hit[0] is None and icons_before == 0 and icons.count():
+                hit[0], hit[1] = icons, f"{REPLY_ICON} (popup)"
+            return hit[0] is not None
+        self._wait(page, self.wait_ms["mention"], shown)
+        reply, sel = hit
         if reply is None or reply.count() != 1:
-            run.step("DIRECT_REPLY_SKIPPED", detail="dòng không có đúng một nút Trả lời")
+            run.step("DIRECT_REPLY_SKIPPED", detail=f"dòng không có đúng một nút Trả lời "
+                     f"({0 if reply is None else reply.count()} nút; {icons_before} nút ↩ hiện sẵn trước khi rê chuột)")
             return False
-        reply.click(timeout=2000)
+        try:
+            reply.click(timeout=2000)
+        except Exception as exc:  # noqa: BLE001 - e.g. the popup closed before the click: fall back to a mention
+            run.step("DIRECT_REPLY_SKIPPED", detail=f"không bấm được nút Trả lời {sel}: {type(exc).__name__}")
+            return False
         # The Console pre-fills "@username " after Reply: any pre-filled text must name exactly this viewer.
         composer, _ = self._composer(page)
         self._wait(page, self.wait_ms["mention"], lambda: bool(normalize(self._value(composer))))

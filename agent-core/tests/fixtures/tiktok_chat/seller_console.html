@@ -14,6 +14,8 @@
   // ?rows=1 starts with real-shaped comment rows plus a "just joined" row (which is not a comment).
   // Hovering a comment shows the real popup [reply ↩ | pin 📌 | more …]; reply pre-fills "@username "
   // (?prefill=other pre-fills someone else). Any pin / more click is recorded in window.FORBIDDEN.
+  // Like the real Console the popup is ONE element outside the rows, placed over the hovered row; ?popup=inside puts
+  // a popup inside each row instead.
   window.SENT = [];
   window.FORBIDDEN = [];
   const box = document.querySelector(".m4b-input-textarea-mini");
@@ -33,26 +35,41 @@
       + '<div class="text-neutral-text1 pl-32 text-body-s-regular"></div>';
     row.querySelector(".nick").textContent = nick;
     row.querySelector(".pl-32").textContent = text;
-    if (user) {
-      const popup = document.createElement("div");
+    if (user && location.search.includes("popup=inside")) {
+      const popup = makePopup(() => user);
       popup.className = "absolute top-0 right-0";
-      popup.style.display = "none";
-      popup.innerHTML = '<div class="flex items-center gap-8">' + icon("recover") + icon("pin")
-        + '<div class="m4b-dropdown" data-tid="m4b_dropdown">' + icon("more") + '</div></div>';
       row.appendChild(popup);
       row.addEventListener("mouseenter", () => { popup.style.display = ""; });
       row.addEventListener("mouseleave", () => { popup.style.display = "none"; });
-      popup.addEventListener("click", (e) => {
-        const act = e.target.closest("button")?.dataset.act;
-        if (act !== "recover") { window.FORBIDDEN.push(act); return; }
-        const other = location.search.includes("prefill=other");
-        box.value = "@" + (other ? "someone.else" : user) + " ";
-        sync();
-        box.focus();
+    } else if (user) {
+      row.addEventListener("mouseenter", () => {
+        shared.user = user;
+        const r = row.getBoundingClientRect();
+        Object.assign(shared.style, {display: "", top: (r.top + window.scrollY) + "px", left: (r.right - 90) + "px"});
       });
+      row.addEventListener("mouseleave", (e) => { if (!shared.contains(e.relatedTarget)) shared.style.display = "none"; });
     }
     list.appendChild(row);
   }
+  function makePopup(user) {
+    const popup = document.createElement("div");
+    popup.style.display = "none";
+    popup.innerHTML = '<div class="flex items-center gap-8">' + icon("recover") + icon("pin")
+      + '<div class="m4b-dropdown" data-tid="m4b_dropdown">' + icon("more") + '</div></div>';
+    popup.addEventListener("click", (e) => {
+      const act = e.target.closest("button")?.dataset.act;
+      if (act !== "recover") { window.FORBIDDEN.push(act); return; }
+      const other = location.search.includes("prefill=other");
+      box.value = "@" + (other ? "someone.else" : user()) + " ";
+      sync();
+      box.focus();
+    });
+    return popup;
+  }
+  const shared = makePopup(() => shared.user);
+  shared.style.position = "absolute";
+  shared.addEventListener("mouseleave", () => { shared.style.display = "none"; });
+  document.body.appendChild(shared);
   function addJoin(nick) {
     document.getElementById("empty")?.remove();
     const row = document.createElement("div");

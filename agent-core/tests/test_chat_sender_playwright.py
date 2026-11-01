@@ -208,8 +208,42 @@ def test_seller_console_reads_real_comment_rows(open_console):
     result = s.send(page, request(), ACCOUNT)
     assert result["status"] == "CONFIRMED" and result["mode"] == "DIRECT_REPLY", result
     assert sent(page) == ["@lan.nguyen " + TEXT] and s._rows(chat_list).count() == 3
-    assert "reply: button:has(> svg.arco-icon-recover)" in actions(result)
+    # the popup is outside the row, as on the real Console
+    assert "reply: button:has(> svg.arco-icon-recover) (popup)" in actions(result)
     assert page.evaluate("window.FORBIDDEN") == []  # pin / more never clicked
+
+
+def test_seller_console_reply_icon_inside_the_row(open_console):
+    page = open_console("seller_console")
+    page.goto((FIXTURES / "seller_console.html").as_uri() + "?rows=1&popup=inside")
+    result = sender().send(page, request(), ACCOUNT)
+    assert result["status"] == "CONFIRMED" and result["mode"] == "DIRECT_REPLY", result
+    assert "reply: button:has(> svg.arco-icon-recover)" in actions(result)
+    assert sent(page) == ["@lan.nguyen " + TEXT] and page.evaluate("window.FORBIDDEN") == []
+
+
+def test_seller_console_second_reply_after_pointer_rests_on_a_row(open_console):
+    page = open_console("seller_console")
+    page.goto((FIXTURES / "seller_console.html").as_uri() + "?rows=1")
+    page.locator(".pl-32", has_text="ship bao lâu").hover()  # the pointer rests on another viewer's row
+    result = sender().send(page, request(), ACCOUNT)
+    assert result["status"] == "CONFIRMED" and result["mode"] == "DIRECT_REPLY", result
+    assert sent(page) == ["@lan.nguyen " + TEXT] and page.evaluate("window.FORBIDDEN") == []
+
+
+def test_seller_console_popup_that_never_closes_is_not_trusted(open_console):
+    page = open_console("seller_console")
+    page.goto((FIXTURES / "seller_console.html").as_uri() + "?rows=1")
+    page.evaluate("""() => {  // a ↩ that is always visible (not the hover popup) must not be clicked
+        const b = document.createElement('div');
+        b.innerHTML = '<button class="stuck"><svg class="arco-icon arco-icon-recover" width="16" height="16"></svg></button>';
+        b.querySelector('button').onclick = () => window.FORBIDDEN.push('stuck');
+        document.body.prepend(b);
+    }""")
+    result = sender().send(page, request(), ACCOUNT)
+    assert result["mode"] != "DIRECT_REPLY", result
+    assert any("hiện sẵn" in (s.get("detail") or "") for s in result["steps"] if s["step"] == "DIRECT_REPLY_SKIPPED")
+    assert page.evaluate("window.FORBIDDEN") == []
 
 
 def test_seller_console_reply_prefilled_for_someone_else_is_not_used(open_console):
