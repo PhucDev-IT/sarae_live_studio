@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from app.comment_processing import monitors
 from app.database import SessionLocal
 from app.ai_live_batches import enqueue
+from app.live_reply_director import reply_options
 
 router = APIRouter(prefix="/api/tiktok-chat", tags=["TikTok LIVE Chat POC"], dependencies=[Depends(current_owner)])
 session_router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Sessions"], dependencies=[Depends(current_owner)])
@@ -44,6 +45,19 @@ def parse_username(value: str) -> str:
     if not re.fullmatch(r"[a-zA-Z0-9._]{2,24}", value):
         raise HTTPException(422, "Nhập username TikTok hợp lệ, ví dụ @tenkenh hoặc link tiktok.com/@tenkenh")
     return value
+
+
+def skip_reason(owner_id: str, live_username: str, username: str) -> str | None:
+    """Why a comment must not be answered: "own_account" (the account that is LIVE), "ignored_user" (listed in the
+    owner's AI settings), else None."""
+    name = (username or "").strip().lstrip("@").casefold()
+    if not name:
+        return None
+    if name == (live_username or "").strip().lstrip("@").casefold():
+        return "own_account"
+    if name in reply_options(owner_id).ignored_usernames:
+        return "ignored_user"
+    return None
 
 
 class Reader:
@@ -130,8 +144,17 @@ class Reader:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 self.messages.append(message)
-                event_id = str(getattr(event, "msg_id", None) or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
+                # TikTokLive keeps the message id in event.common.msg_id; without it a comment delivered twice is
+                # answered twice (the dedup and the one-comment-per-question guard both key on it).
+                event_id = str(getattr(getattr(event, "common", None), "msg_id", None) or getattr(event, "msg_id", None)
+                               or getattr(event, "message_id", None) or getattr(event, "id", None) or "")
                 message["msg_id"] = event_id
+                ignored = skip_reason(self.owner_id, self.username, message["username"])
+                if ignored:
+                    # Shown in the chat, never answered: the LIVE account's own messages (AI replies, typed by hand)
+                    # would otherwise be answered again, and listed usernames are spam/staff.
+                    monitors(self.key).record("IGNORED", ignored, message["comment"], message["username"], event_id or None)
+                    return
                 decision = monitors(self.key).process(message, event_id=event_id or None)
                 if decision == 'selected':
                     enqueue(self.owner_id, self.agent_id, message)

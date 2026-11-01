@@ -43,6 +43,11 @@ class SpeechTextTests(unittest.TestCase):
         self.assertIn("Có đường link", safety_issues("Xem ở shopee.vn nha", allowed))
         self.assertIn("Có từ ngữ không phù hợp", safety_issues("đồ con chó", allowed))
         self.assertEqual(safety_issues("còn cho bạn nha", allowed), [], "ordinary words without marks are fine")
+        # a remark on the viewer's body waits for the operator (seen on a real LIVE: "63kg nặng quá mặc không vừa")
+        self.assertIn("Có từ nhận xét vóc dáng / cân nặng: nặng quá",
+                      safety_issues("63kg nặng quá mặc không vừa nha bạn", allowed))
+        self.assertTrue(safety_issues("Size L cho người hơi mập nha", allowed))
+        self.assertEqual(safety_issues("Mẫu này form vừa 45-65kg nha", allowed), [], "the size range is fine")
         self.assertEqual(money_amounts("200k, 1tr2, 199.000đ, 250000"), [200000, 1200000, 199000, 250000])
 
     def test_viewer_names_are_cleaned(self):

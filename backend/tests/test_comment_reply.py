@@ -189,10 +189,29 @@ class CommentBranchTests(SaasTestCase):
         # Same text to the same viewer again: never twice.
         self.st.comment_last_sent, self.st.comment_sent_times = None, []
         self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.", "cotton nha")]]
-        second["_asked"] -= 1000  # too old by now
+        second["_comment_asked"][0] -= 1000  # too old by now
         again = self.batch(("lan", "chất vải gì"))[0]
         self.assertEqual(second["comment"], "expired")
         self.assertEqual((again["comment"], again["comment_delivery"]["status"]), ("failed", "DUPLICATE"))
+
+    def test_same_question_from_several_viewers_is_commented_to_each(self):
+        self.options(auto_comment_reply=True, comment_min_interval_seconds=4)
+        self.ai_answers = [[answer(1, "ASK_MATERIAL", "Vải cotton nha.", "cotton nha"),
+                            answer(2, "ASK_MATERIAL", "Vải cotton nha.", "cotton nha")]]
+        replies = self.batch(("lan", "vải gì"), ("hoa", "chất vải gì shop"))
+        self.assertEqual(len(replies), 1, "one answer for the same question")
+        reply = replies[0]
+        self.assertEqual(self.sent[0]["payload"]["target"]["username"], "lan")
+        self.st.comment_last_sent = time.monotonic() - 10
+        self.outcome(0, result={"status": "CONFIRMED", "mode": "DIRECT_REPLY", "steps": []})
+        self.assertEqual(reply["comment"], "sending", "the next viewer is answered too")
+        self.assertEqual((self.sent[1]["payload"]["target"]["username"], self.sent[1]["payload"]["target"]["comment"]),
+                         ("hoa", "chất vải gì shop"))
+        self.outcome(1, result={"status": "FAILED", "mode": None, "steps": [], "error": "Không thấy khung chat"})
+        self.assertEqual(reply["comment"], "sent", "sent to at least one viewer")
+        self.assertEqual([(r["username"], r["status"]) for r in reply["comment_results"]],
+                         [("lan", "CONFIRMED"), ("hoa", "FAILED")])
+        self.assertEqual(self.kinds(), ["chat_send", "chat_send"], "each viewer once, never again")
 
     def test_operator_sends_edits_or_cancels(self):
         self.options(auto_comment_reply=True, confirm_seconds=10)

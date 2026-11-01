@@ -20,7 +20,7 @@ from threading import Timer
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.identity import owner_settings
 from app.comment_processing import monitors
@@ -49,6 +49,19 @@ class ReplyOptions(BaseModel):
     persona: str = Field(default="", max_length=300)
     # Prepare answers and their audio as soon as a new product is on air (one AI call per product version).
     auto_prepare: bool = True
+    # TikTok usernames whose comments are never answered (spam, staff...), stored without "@" and lowercased.
+    # The LIVE account itself is always skipped (app/tiktok_chat.py), it need not be listed.
+    ignored_usernames: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("ignored_usernames")
+    @classmethod
+    def clean_usernames(cls, value: list[str]) -> list[str]:
+        out = []
+        for item in value:
+            name = str(item).strip().lstrip("@").casefold()
+            if name and len(name) <= 64 and name not in out:
+                out.append(name)
+        return out
 
     @model_validator(mode="before")
     @classmethod

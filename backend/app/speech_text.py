@@ -218,11 +218,25 @@ def blocked_words(text: str) -> list[str]:
             [w for w in _BLOCKED_MARKED if f" {w} " in marked])
 
 
+# Remarks on a viewer's body ("63kg nặng quá"): customers take them badly, so such a reply waits for the operator.
+# Matched with marks only, as whole words.
+_BODY_REMARKS = ("béo", "mập", "ú", "bự", "ục ịch", "mũm mĩm", "thừa cân", "quá khổ", "to con", "nặng quá", "quá nặng",
+                 "hơi nặng", "nặng ký", "to quá", "quá to", "gầy quá", "quá gầy", "ốm quá", "quá ốm", "ốm nhom", "còi")
+
+
+def body_remarks(text: str) -> list[str]:
+    marked = _words((text or "").casefold())
+    return [w for w in _BODY_REMARKS if f" {w} " in marked]
+
+
 def safety_issues(text: str, allowed_amounts: set[int]) -> list[str]:
     """Why this reply must not go out automatically; empty when it may."""
     issues = []
     if blocked_words(text):
         issues.append("Có từ ngữ không phù hợp")
+    remarks = body_remarks(text)
+    if remarks:
+        issues.append(f"Có từ nhận xét vóc dáng / cân nặng: {', '.join(remarks)}")
     if _URL.search(text or ""):
         issues.append("Có đường link")
     if _PHONE.search(text or ""):
