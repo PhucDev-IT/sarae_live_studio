@@ -1,13 +1,11 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import { Layers } from 'lucide-react'
+import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import OverlayRenderer from './OverlayRenderer'
 import {
-  CANVAS, MIN_DURATION_MS, SAFE_AREA, TIKTOK_ZONES, clampFrame, coveredBy, endOf, isShown, round4,
-  type Frame, type Overlay, type OverlayIssue, type OverlayLayout, type OverlayPreset, type OverlayScene,
+  CANVAS, SAFE_AREA, TIKTOK_ZONES, clampFrame, coveredBy, endOf, isShown, round4,
+  type Frame, type OverlayLayout, type OverlayScene,
 } from './overlayModel'
-import { newStep, overlayName, trackName } from './overlayDraft'
+import { newStep } from './overlayDraft'
 import { hms } from '../liveSessionsApi'
-import { ticksOf } from '../timelineView'
 
 export type PreviewMode = 'obs' | 'tiktok'
 type Handle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
@@ -95,112 +93,3 @@ function TikTokChrome(){
   </div>
 }
 
-const SNAP_MS = 100
-/** Height of the strip above each track's bars that holds its name (never under a bar). */
-const LABEL_PX = 16
-type TrackRow = {name:string; template:string; lanes:{o:Overlay; index:number}[][]}
-
-/**
- * Overlay tracks of the video shown: one track per `template` label (any label, custom ones included; no fixed list),
- * overlapping overlays of a track on extra lanes, the track's name as a label inside its row. Same width, zoom, ticks
- * and scroll as the pin timeline above, so a time is at the same x in both. Press and drag anywhere outside a bar to
- * seek (the pointer is kept when it leaves the tracks); drag a bar to move it, its edges to change start / end (0.1 s).
- */
-export function OverlayTracks({overlays, mediaId, duration, now, selected, editable, presets, issues, zoom, scrollRef, onSelect, onSeek, onTime, onGestureEnd}:{
-  overlays:Overlay[]; mediaId:string; duration:number|null; now:number; selected:number|null; editable:boolean; presets:OverlayPreset[]; issues:OverlayIssue[]
-  /** Shared with the pin timeline. */
-  zoom:number; scrollRef:(el:HTMLDivElement|null)=>void
-  onSelect:(index:number)=>void; onSeek:(ms:number)=>void; onTime:(index:number, start:number, length:number, gesture:string)=>void; onGestureEnd:()=>void
-}){
-  const scroller = useRef<HTMLDivElement>(null)
-  const area = useRef<HTMLDivElement>(null)
-  const drag = useRef<{index:number; mode:'move'|'start'|'end'; x:number; start:number; length:number; key:string}|null>(null)
-  const scrubbing = useRef(false)
-  const [hover,setHover] = useState<number|null>(null)
-  const total = duration ?? Math.max(60_000, ...overlays.filter(o=>o.media_id === mediaId).map(endOf))
-  const at = (ms:number) => `${Math.max(0, Math.min(100, ms / total * 100))}%`
-  useEffect(()=>{
-    const box = scroller.current
-    if (!box || zoom === 1) return
-    const x = now / total * box.scrollWidth
-    if (x < box.scrollLeft + 40 || x > box.scrollLeft + box.clientWidth - 40) box.scrollLeft = x - box.clientWidth / 2
-  },[now, zoom, total])
-
-  const rows:TrackRow[] = []
-  overlays.forEach((o, index)=>{
-    if (o.media_id !== mediaId) return
-    let row = rows.find(r=>r.template === o.template)
-    if (!row) {row = {template:o.template, name:trackName(o.template, presets), lanes:[]};rows.push(row)}
-    const lane = row.lanes.find(l=>l.every(x=>endOf(x.o) <= o.start_ms || endOf(o) <= x.o.start_ms))
-    if (lane) lane.push({o, index});else row.lanes.push([{o, index}])
-  })
-  const crowded = issues.filter(i=>i.code === 'TOO_MANY_AT_ONCE' && i.media_id === mediaId)
-
-  const msOf = (clientX:number) => {
-    const box = area.current?.getBoundingClientRect()
-    return box ? Math.max(0, Math.min(total, (clientX - box.left) / box.width * total)) : 0
-  }
-  const capture = (pointerId:number) => {try {area.current?.setPointerCapture(pointerId)} catch {/* pointer gone */}}
-  const onAreaDown = (e:ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
-    capture(e.pointerId)
-    scrubbing.current = true
-    onSeek(msOf(e.clientX))
-  }
-  const onBarDown = (e:ReactPointerEvent<HTMLButtonElement>, index:number) => {
-    e.stopPropagation()
-    if (e.button !== 0) return
-    onSelect(index)
-    if (!editable) return
-    const rect = e.currentTarget.getBoundingClientRect(), edge = Math.min(10, rect.width / 3)
-    const mode = e.clientX - rect.left < edge ? 'start' : rect.right - e.clientX < edge ? 'end' : 'move'
-    capture(e.pointerId)
-    drag.current = {index, mode, x:e.clientX, start:overlays[index].start_ms, length:overlays[index].duration_ms, key:newStep('time')}
-  }
-  const onAreaMove = (e:ReactPointerEvent) => {
-    setHover(msOf(e.clientX))
-    const d = drag.current, box = area.current?.getBoundingClientRect()
-    if (d && box) {
-      const delta = Math.round((e.clientX - d.x) / box.width * total / SNAP_MS) * SNAP_MS
-      const limit = duration ?? Infinity
-      let start = d.start, length = d.length
-      if (d.mode === 'move') start = Math.max(0, Math.min(limit - length, d.start + delta))
-      if (d.mode === 'start') {start = Math.max(0, Math.min(d.start + d.length - MIN_DURATION_MS, d.start + delta));length = d.start + d.length - start}
-      if (d.mode === 'end') length = Math.max(MIN_DURATION_MS, Math.min(limit - d.start, d.length + delta))
-      onTime(d.index, Math.round(start), Math.round(length), d.key)
-      return
-    }
-    if (scrubbing.current) onSeek(msOf(e.clientX))
-  }
-  const onAreaUp = () => {
-    scrubbing.current = false
-    if (drag.current) {drag.current = null;onGestureEnd()}
-  }
-
-  return <div className="ove-tracks">
-    <div className="te-bar-tools"><Layers size={15}/><span className="te-muted">Overlay của video này</span>
-      <small className="te-muted">· bấm hoặc kéo trên vùng trống để tua</small></div>
-    <div ref={el=>{scroller.current = el;scrollRef(el)}} className="ove-tracks-scroll">
-      <div ref={area} className="ove-tracks-area" style={{width:`${zoom * 100}%`}} onPointerDown={onAreaDown} onPointerMove={onAreaMove}
-        onPointerUp={onAreaUp} onPointerCancel={onAreaUp} onPointerLeave={()=>setHover(null)}
-        role="slider" aria-label="Thời gian overlay" aria-valuemin={0} aria-valuemax={Math.round(total / 1000)} aria-valuenow={Math.round(now / 1000)} aria-valuetext={hms(now)}>
-        {ticksOf(total, zoom).map(t=><span key={t} className="te-tick ove-tick" style={{left:at(t)}}><small>{hms(t)}</small></span>)}
-        <div className="ove-ruler">
-          {crowded.map(i=><span key={i.at_ms} className="ove-crowded" style={{left:at(i.at_ms ?? 0)}} title={i.message}>!</span>)}
-        </div>
-        {rows.map(r=><div key={r.template} className="ove-track" style={{height:LABEL_PX + r.lanes.length * 30 + 6}}>
-          <span className="ove-track-label" title={r.template || 'Không nhãn'}>{r.name}</span>
-          {r.lanes.map((lane, n)=>lane.map(({o, index})=><button key={index} type="button"
-            className={'ove-bar' + (index === selected ? ' is-selected' : '') + (o.enabled === false ? ' is-off' : '') + (issues.some(i=>i.overlay === index && i.level === 'error') ? ' is-error' : '')}
-            style={{left:at(o.start_ms), width:`max(6px, calc(${at(endOf(o))} - ${at(o.start_ms)}))`, top:LABEL_PX + n * 30}}
-            title={`${overlayName(o, presets)} · ${hms(o.start_ms)} → ${hms(endOf(o))}`} onPointerDown={e=>onBarDown(e, index)}>
-            <span>{overlayName(o, presets)}</span>
-          </button>))}
-        </div>)}
-        {!rows.length && <p className="ove-tracks-empty">Chưa có overlay cho video này.</p>}
-        <span className="te-playhead" style={{left:at(now)}}/>
-        {hover != null && <span className="te-hover" style={{left:at(hover)}}>{hms(hover)}</span>}
-      </div>
-    </div>
-  </div>
-}
