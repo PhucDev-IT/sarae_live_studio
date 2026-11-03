@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "note": "Performance buckets. live_* are shaped like Sarae LIVE replies after speech_text.spoken() (MAX_CHARS 450 on the Agent); para/long are pre-LIVE material. Quality of these is not scored here, only speed, memory and stability.",
+  "buckets": {
+    "live_short": {"reps": 4, "texts": [
+      "Dạ có size Mờ nha chị.",
+      "Cả nhà thả tim giúp shop một cái ạ.",
+      "Hàng về đủ size rồi đó nha.",
+      "Dạ, sản phẩm này được đổi trả trong bảy ngày ạ.",
+      "Lan ơi, mẫu này còn màu đen nha.",
+      "Chị đặt xong nhắn shop để shop lên đơn liền nhé."
+    ]},
+    "live_typical": {"reps": 4, "texts": [
+      "Lan với Hoa ơi, áo thun này giá hai trăm năm mươi chín nghìn, còn đủ size Ét, Mờ, L nha.",
+      "Chị cao một mét sáu nặng năm mươi hai ký thì lấy size Mờ là vừa đẹp, mặc thoải mái nha chị.",
+      "Miễn phí ship cho đơn từ chín mươi chín nghìn, giao trong hai đến ba ngày, được kiểm tra hàng trước khi nhận nhé.",
+      "Chất vải cotton, mềm, mát, thấm hút mồ hôi tốt, mặc đi làm, đi chơi, hay ở nhà đều đẹp ạ.",
+      "Dạ mẫu váy này có ba màu là trắng, đen và xanh rêu, chị thích màu nào thì comment cho shop nha.",
+      "Anh Minh ơi, quần này size L dành cho anh từ sáu mươi đến bảy mươi ký, anh đặt size L là vừa nhé."
+    ]},
+    "live_max": {"reps": 3, "texts": [
+      "Lan, Hoa với Mai ơi, mẫu áo thun cổ tròn này giá hai trăm năm mươi chín nghìn, chất cotton mềm, mát, thấm hút mồ hôi rất tốt, có đủ bốn màu trắng, đen, be và xanh rêu. Size Ét cho các chị từ bốn mươi đến bốn mươi lăm ký, size Mờ từ bốn mươi lăm đến năm mươi hai ký, còn size L từ năm mươi hai đến sáu mươi ký. Đơn từ chín mươi chín nghìn được miễn phí ship, giao hai đến ba ngày nha.",
+      "Dạ váy suông dáng dài này giá ba trăm hai mươi nghìn, chất voan hai lớp không bị lộ, đi làm, đi chơi hay đi biển đều đẹp. Shop có size Mờ và size L, chị nào từ bốn mươi lăm đến năm mươi lăm ký mặc size Mờ, trên năm mươi lăm ký thì lấy size L. Hàng được đổi trả trong bảy ngày nếu không vừa, chị cứ yên tâm đặt nhé, shop lên đơn liền cho mình ạ.",
+      "Cả nhà ơi, hôm nay shop có chương trình mua hai sản phẩm bất kỳ được giảm thêm hai mươi nghìn, mua ba sản phẩm giảm năm mươi nghìn, áp dụng cho tất cả các mẫu đang lên trong phiên live. Chị nào đặt rồi thì nhắn shop tên và số điện thoại để shop kiểm tra đơn, chị nào chưa đặt thì bấm vào giỏ hàng màu vàng bên dưới màn hình nha, số lượng có hạn ạ."
+    ]},
+    "para_1min": {"reps": 3, "texts": [
+      "Chào mừng cả nhà đã quay trở lại phiên live hôm nay của shop. Hôm nay shop mang đến cho mọi người bộ sưu tập áo thun và váy mùa hè mới nhất, chất vải cotton mềm, mát, thấm hút mồ hôi rất tốt, mặc cả ngày cũng không bị bí. Mẫu đầu tiên là áo thun cổ tròn, giá hai trăm năm mươi chín nghìn, có đủ các màu trắng, đen, be và xanh rêu. Size Ét dành cho các chị từ bốn mươi đến bốn mươi lăm ký, size Mờ từ bốn mươi lăm đến năm mươi hai ký, còn size L thì từ năm mươi hai đến sáu mươi ký nha. Mẫu thứ hai là váy suông dáng dài, giá ba trăm hai mươi nghìn, rất hợp để đi làm, đi chơi hay đi biển. Trong phiên live hôm nay, đơn từ chín mươi chín nghìn sẽ được miễn phí ship, hàng giao trong vòng hai đến ba ngày, và được đổi trả trong bảy ngày nếu không vừa. Cả nhà muốn xem kỹ mẫu nào thì comment tên mẫu, shop sẽ cho xem cận cảnh ngay. Chị nào đặt rồi thì nhắn shop để shop lên đơn liền nhé. Cảm ơn cả nhà đã ủng hộ shop, chúc mọi người một buổi tối thật vui ạ."
+    ]},
+    "long_3min": {"reps": 2, "texts": [
+      "Chào mừng cả nhà đã quay trở lại phiên live hôm nay của shop. Hôm nay shop mang đến cho mọi người bộ sưu tập áo thun và váy mùa hè mới nhất, chất vải cotton mềm, mát, thấm hút mồ hôi rất tốt, mặc cả ngày cũng không bị bí. Mẫu đầu tiên là áo thun cổ tròn, giá hai trăm năm mươi chín nghìn, có đủ các màu trắng, đen, be và xanh rêu. Size Ét dành cho các chị từ bốn mươi đến bốn mươi lăm ký, size Mờ từ bốn mươi lăm đến năm mươi hai ký, còn size L thì từ năm mươi hai đến sáu mươi ký nha. Mẫu thứ hai là váy suông dáng dài, giá ba trăm hai mươi nghìn, rất hợp để đi làm, đi chơi hay đi biển. Trong phiên live hôm nay, đơn từ chín mươi chín nghìn sẽ được miễn phí ship, hàng giao trong vòng hai đến ba ngày, và được đổi trả trong bảy ngày nếu không vừa. Tiếp theo, shop giới thiệu với cả nhà mẫu quần ống rộng lưng cao, chất vải đũi mềm, không nhăn, giá hai trăm tám mươi chín nghìn. Quần có hai màu kem và đen, phối với áo thun hay áo sơ mi đều rất đẹp. Size Mờ cho các chị từ bốn mươi lăm đến năm mươi hai ký, size L từ năm mươi hai đến sáu mươi hai ký, lưng có chun phía sau nên mặc rất thoải mái. Mẫu tiếp theo là áo sơ mi linen tay lỡ, giá ba trăm năm mươi nghìn, chất linen thoáng mát, càng giặt càng mềm, rất hợp với thời tiết nóng. Áo có ba màu trắng, xanh nhạt và be, form rộng vừa phải, che khuyết điểm bắp tay rất tốt. Cả nhà lưu ý, sản phẩm linen nên giặt tay hoặc để chế độ giặt nhẹ, phơi trong bóng râm để giữ màu lâu hơn nha. Hôm nay shop còn có chương trình mua hai sản phẩm bất kỳ được giảm thêm hai mươi nghìn, mua ba sản phẩm giảm năm mươi nghìn, áp dụng cho tất cả các mẫu đang lên trong phiên live. Chị nào đặt rồi thì nhắn shop tên và số điện thoại để shop kiểm tra đơn, chị nào chưa đặt thì bấm vào giỏ hàng màu vàng bên dưới màn hình. Mỗi đơn hàng đều được đóng gói cẩn thận, có túi chống ẩm và thiệp cảm ơn, cả nhà nhận hàng được kiểm tra trước khi thanh toán. Nếu sản phẩm có lỗi từ nhà sản xuất, shop đổi mới hoàn toàn miễn phí, không cần lý do. Cả nhà muốn xem kỹ mẫu nào thì comment tên mẫu, shop sẽ cho xem cận cảnh chất vải và đường may ngay. Cảm ơn cả nhà đã luôn ủng hộ shop, chúc mọi người một buổi tối thật vui và mua sắm thật vui vẻ ạ."
+    ]}
+  },
+  "soak": {"requests": 200, "buckets": ["live_short", "live_typical"], "probe_text": "Lan với Hoa ơi, áo thun này giá hai trăm năm mươi chín nghìn, còn đủ size Ét, Mờ, L nha."}
+}

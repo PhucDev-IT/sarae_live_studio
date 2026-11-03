@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "note": "Golden sentences for the Phase 0 baseline. 'spoken' items are what Sarae sends after backend/app/speech_text.spoken(); 'raw' items keep digits to see how the model reads them unnormalized. The first and last two words of every item are plain words so head/tail loss can be checked with ASR.",
+  "items": [
+    {"id": "s01", "category": "short", "form": "spoken", "text": "Dạ, shop chào cả nhà, cảm ơn mọi người đã vào xem live nha."},
+    {"id": "s02", "category": "short", "form": "spoken", "text": "Mẫu này đang còn hàng, chị đặt ngay để được giao sớm nhé."},
+    {"id": "s03", "category": "short", "form": "spoken", "text": "Cả nhà thả tim giúp shop một cái ạ."},
+    {"id": "s04", "category": "short", "form": "spoken", "text": "Vâng, anh chờ shop một chút để em kiểm tra lại size nha."},
+    {"id": "p01", "category": "sales", "form": "spoken", "text": "Áo thun này giá hai trăm năm mươi chín nghìn, còn size Ét, M, L nha."},
+    {"id": "p02", "category": "sales", "form": "spoken", "text": "Váy này hai trăm nghìn, chị năm mươi ký mặc size Mờ là vừa ạ."},
+    {"id": "p03", "category": "sales", "form": "spoken", "text": "Miễn phí ship đơn từ chín mươi chín nghìn, giao hai đến ba ngày nhé."},
+    {"id": "p04", "category": "sales", "form": "spoken", "text": "Chị cao một mét sáu nặng năm mươi hai ký thì lấy size Mờ nha."},
+    {"id": "r01", "category": "sales_raw", "form": "raw", "text": "Áo thun này giá 259.000 đồng, còn size S, M, L nha."},
+    {"id": "r02", "category": "sales_raw", "form": "raw", "text": "Váy này 200k, chị 50kg mặc size M là vừa ạ."},
+    {"id": "c01", "category": "punctuation", "form": "spoken", "text": "Chất vải cotton, mềm, mát, thấm hút mồ hôi tốt, mặc đi làm, đi chơi, hay ở nhà đều đẹp."},
+    {"id": "c02", "category": "punctuation", "form": "spoken", "text": "Màu trắng, màu đen, màu be và màu xanh rêu, chị thích màu nào thì comment cho shop nha."},
+    {"id": "e01", "category": "ending", "form": "spoken", "text": "Chị đặt xong nhắn shop để shop lên đơn liền nhé."},
+    {"id": "e02", "category": "ending", "form": "spoken", "text": "Hàng về đủ size rồi đó nha."},
+    {"id": "e03", "category": "ending", "form": "spoken", "text": "Dạ, sản phẩm này được đổi trả trong bảy ngày ạ."},
+    {"id": "l01", "category": "long", "form": "spoken", "text": "Chào mừng cả nhà đã quay trở lại phiên live hôm nay của shop. Hôm nay shop mang đến cho mọi người bộ sưu tập áo thun và váy mùa hè mới nhất, chất vải cotton mềm, mát, thấm hút mồ hôi rất tốt, mặc cả ngày cũng không bị bí. Mẫu đầu tiên là áo thun cổ tròn, giá hai trăm năm mươi chín nghìn, có đủ các màu trắng, đen, be và xanh rêu. Size Ét dành cho các chị từ bốn mươi đến bốn mươi lăm ký, size Mờ từ bốn mươi lăm đến năm mươi hai ký, còn size L thì từ năm mươi hai đến sáu mươi ký nha. Mẫu thứ hai là váy suông dáng dài, giá ba trăm hai mươi nghìn, rất hợp để đi làm, đi chơi hay đi biển. Trong phiên live hôm nay, đơn từ chín mươi chín nghìn sẽ được miễn phí ship, hàng giao trong vòng hai đến ba ngày, và được đổi trả trong bảy ngày nếu không vừa. Cả nhà muốn xem kỹ mẫu nào thì comment tên mẫu, shop sẽ cho xem cận cảnh ngay. Chị nào đặt rồi thì nhắn shop để shop lên đơn liền nhé. Cảm ơn cả nhà đã ủng hộ shop, chúc mọi người một buổi tối thật vui ạ."}
+  ]
+}

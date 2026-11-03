@@ -1,0 +1,17 @@
+{
+  "arm": "S-ASRTXT",
+  "ref": "F:\\Coder\\sarae_live_studio\\voice-server\\bench\\runs\\p0_20261102_2251\\refs\\main.wav",
+  "ref_text_given": "Trời ơi bán hàng gọi là chơi đẹp lắm Bây giờ em cũng bảo các chị rồi em không có giàu nghèo gì 1-2 chùm ship cả Thật sự luôn.",
+  "ref_text_used": "Trời ơi bán hàng gọi là chơi đẹp lắm Bây giờ em cũng bảo các chị rồi em không có giàu nghèo gì 1-2 chùm ship cả Thật sự luôn.",
+  "asr_used": false,
+  "prompt_s": 0.576,
+  "ref_rms": 0.05642198398709297,
+  "tokens_shape": [
+    8,
+    172
+  ],
+  "tokens_seconds": 6.88,
+  "save_s": 0.0008,
+  "file": "prompts\\S-ASRTXT.pt",
+  "file_bytes": 12848
+}

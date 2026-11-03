@@ -1,0 +1,17 @@
+{
+  "arm": "R-CUT",
+  "ref": "F:\\Coder\\sarae_live_studio\\voice-server\\bench\\runs\\p0_20261102_2251\\refs\\cut.wav",
+  "ref_text_given": null,
+  "ref_text_used": "trời ơi bán hàng gọi là chơi đẹp lắm. Bây giờ em cũng bảo các chị rồi đã không có giàu nghèo gì 1, 2 chùm ship cả. Thật sự luôn. Có quan trọng khách.",
+  "asr_used": true,
+  "prompt_s": 6.872,
+  "ref_rms": 0.058256909251213074,
+  "tokens_shape": [
+    8,
+    197
+  ],
+  "tokens_seconds": 7.88,
+  "save_s": 0.0007,
+  "file": "prompts\\R-CUT.pt",
+  "file_bytes": 14427
+}

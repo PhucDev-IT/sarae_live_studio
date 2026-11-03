@@ -1,0 +1,51 @@
+{
+  "python": "3.12.16",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "packages": {
+    "omnivoice": "0.2.1",
+    "torch": "2.8.0+cu128",
+    "torchaudio": "2.8.0+cu128",
+    "transformers": "5.14.1",
+    "huggingface-hub": "1.33.0",
+    "gradio_client": "2.7.2",
+    "numpy": "2.5.4",
+    "soundfile": "0.14.0"
+  },
+  "checkpoint": "g-group-ai-lab/g-omnivoice",
+  "checkpoint_revision": "f2b73211e57db389d81ab817987f90c02e0898ba",
+  "asr_revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "cuda": "12.8",
+  "vram_free_gib_at_start": 10.99,
+  "vram_total_gib": 12.0,
+  "model_load_s": 2.16,
+  "vram_after_load_gib": 1.892,
+  "sampling_rate": 24000,
+  "generation_config": {
+    "num_step": 32,
+    "guidance_scale": 2.0,
+    "t_shift": 0.1,
+    "layer_penalty_factor": 5.0,
+    "position_temperature": 5.0,
+    "class_temperature": 0.0,
+    "denoise": true,
+    "preprocess_prompt": true,
+    "postprocess_output": true,
+    "audio_chunk_duration": 15.0,
+    "audio_chunk_threshold": 30.0,
+    "pad_duration": 0.1,
+    "fade_duration": 0.1
+  },
+  "asr_load_s": 1.61,
+  "vram_after_asr_gib": 3.399,
+  "generation_peak_alloc_gib": 3.623,
+  "checks": {
+    "prompt_load_s": 0.0085,
+    "prompt_file_tokens_equal": true,
+    "prompt_file_text_equal": true,
+    "same_seed_repeat_max_abs_diff": 0.0,
+    "prompt_file_audio_max_abs_diff": 0.0,
+    "asrtxt_tokens_equal": true,
+    "asrtxt_text_equal": true
+  }
+}
