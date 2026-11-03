@@ -1,3 +1,5 @@
+import VoiceUtterances from './VoiceUtterances'
+import './voice-settings.css'
 import {useEffect,useRef,useState,type ChangeEvent} from 'react'
 import {apiRequest,errorText,onAgent,type OwnerAgent} from './mediaApi'
 import {Copy,Mic,OctagonX,Send,Volume2,X} from 'lucide-react'
@@ -97,6 +99,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const unanswered=status?.unanswered??0
  const stat=(label:string,value:number,tone?:string)=><div className={'lai-stat'+(tone?' is-'+tone:'')}><b>{value}</b><span>{label}</span></div>
  return <section className="lai">
+  <VoiceUtterances agentId={agent.id}/>
   <div className="lai-top">
    <label className="lai-switch"><input type="checkbox" disabled={busy} checked={options.enabled} onChange={e=>void save({...options,enabled:e.target.checked})}/><span><b>{options.enabled?'AI đang trả lời':'AI đang tắt'}</b><small>{options.enabled?'Sarae soạn câu trả lời cho từng câu hỏi của người xem':'Bật để Sarae tự soạn câu trả lời'}</small></span></label>
    <button type="button" className="lai-stop" onClick={()=>void stop()}><OctagonX size={16}/> Dừng giọng nói</button>

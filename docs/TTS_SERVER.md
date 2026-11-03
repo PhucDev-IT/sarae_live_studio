@@ -1,6 +1,6 @@
 # Sarae TTS Backend (G-OmniVoice) — Thiết kế đã duyệt
 
-> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0–2 đã nghiệm thu; Phase 3 đã nghiệm thu (commit `b8ab35d`). Phase 4 đã triển khai và kiểm thử OBS offline, chờ nghiệm thu (mục 18). Phase 5 chưa bắt đầu.
+> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0–2 đã nghiệm thu; Phase 3 đã nghiệm thu (commit `b8ab35d`). Phase 4 đã nghiệm thu tích hợp kỹ thuật/OBS offline (mục 18). Phase 5 Web đã triển khai, chờ nghiệm thu (mục 19). Phase 6 chưa bắt đầu.
 > Ký hiệu: ✅ đã xác minh trong source/đo thực tế · 🔶 giả định, cần kiểm chứng.
 
 ## 1. Quyết định đã chốt
@@ -751,3 +751,66 @@ Cả ba quan sát PLAYING→ENDED, event gửi Backend thành công, gửi lại
 - Tombstone SQLite và outbox cần được giữ khi nâng cấp Agent. Outbox vẫn giới hạn 1000 event theo cơ chế cũ; offline dài có thể mất event cũ, không làm phát lại câu.
 - Read token vẫn là bearer credential; production direct cần TLS/mạng riêng như mục 16.4.
 - Phase 5 cần UI profiles/QC/revision, provider omnivoice, readiness/AGENT_NO_OMNIVOICE, cấu hình fallback mặc định none, phân biệt SENT với PLAYED/FAILED. Phase 5 chưa triển khai.
+
+
+## 19. Phase 5 — Sarae Web (2026-11-03)
+
+### 19.1 File và màn hình
+
+| File | Vai trò |
+|---|---|
+| `web/src/VoiceSettings.tsx` | Provider thứ ba, giọng mặc định, browser preview, trạng thái TTS, fallback |
+| `web/src/VoiceProfiles.tsx` (mới) | Danh sách profile, modal tạo/sửa, Auto/Manual Transcript, thay WAV, nghe WAV gốc, sync, xóa có xác nhận |
+| `web/src/voiceApi.ts` (mới) | Kiểu dữ liệu đúng schema, owner-auth JSON/multipart/binary, giải thích mã lỗi, kiểm tra phiên RUNNING |
+| `web/src/TtsReadiness.tsx`, `useTtsReadiness.ts` (mới) | Hiển thị service/model/profile/warmup/Agent/GPU; phân biệt passive và active |
+| `web/src/LiveSessions.tsx` | Trạng thái TTS trong hộp thoại chuẩn bị; bước Đồng bộ thủ công gọi readiness chủ động |
+| `web/src/VoiceUtterances.tsx` (mới), `LiveAIBatches.tsx` | Monitor 12 utterance gần nhất của Agent, GET mỗi 4 giây, phân biệt SENT/PLAYING/PLAYED |
+| `web/src/voice-settings.css` (mới) | Bố cục responsive, profile cards, modal forms, readiness, monitor |
+| `backend/app/main.py` | Chỉ bổ sung CORS expose_headers công khai `X-Sarae-Error`, `X-Voice-Revision` |
+| `web/tests/voice_ui.py`, `voice-harness.html`, `voice-harness.tsx` (mới) | Browser/component integration với API giả, Edge headless |
+| `web/tests/voice_real_preview.py`, `test_voice_cors.py` (mới) | Opt-in model thật, owner isolation, header CORS |
+| `docs/TTS_SERVER.md`, `docs/VOICE_ENGINE.md` | Báo cáo và hướng dẫn Web |
+
+Giữ UI Core (`Modal`, `ConfirmModal`, `Button`, `Alert`, `Badge`, `EmptyState`) và pattern form hiện có. Không sửa Agent/OBS/voice-server hoặc preset.
+
+### 19.2 Luồng người dùng và API
+
+AI Assistant → Voice Settings → **G-OmniVoice (Local AI)**. Danh sách chỉ lấy profile của owner qua GET `/api/ai/voice/profiles`.
+
+Tạo giọng: chọn WAV PCM 1–20 giây, ≤5 MB, đặt tên, mặc định Auto Transcript; POST multipart `wav`, `name`, không gửi transcript nếu Auto. Khi server offline vẫn hiển thị profile PENDING; UI không coi profile tồn tại là GPU ready. Có nút tải lại metadata riêng, không sync. QC local/server hiển thị tiếng Việt (thời lượng, cắt đầu/đuôi, clipping, âm nhỏ, khoảng nghỉ). FAILED vẫn cho sửa transcript Manual và đồng bộ lại.
+
+Modal sửa dùng PATCH `/profiles/{id}` cho tên/transcript, PUT multipart `/profiles/{id}/wav` cho WAV; transcript null quay về Auto. Thay WAV mặc định quay về Auto; màn hình giải thích revision/cache và xác nhận trước thay đổi. GET `/profiles/{id}/wav` nghe WAV gốc qua blob URL đã xác thực. POST `/profiles/{id}/sync` chỉ chạy khi bấm. DELETE có ConfirmModal; giọng đang chọn không được xóa từ UI, Backend vẫn là lớp kiểm tra cuối.
+
+Chọn giọng mặc định và lưu qua GET/PUT `/api/ai/voice/config`. OmniVoice luôn `demo_default`, rate 0, settings rỗng; UI không đưa inference knobs vào form. **Lưu & nghe thử** công khai việc lưu cấu hình trước preview vì contract Backend preview sử dụng config đã lưu. Nghe thử trên card có xác nhận chọn làm mặc định. Nếu cấu hình không đổi, không PUT lại. POST `/api/ai/voice/preview` chỉ qua Backend, WAV phát bằng audio controls (play/pause/replay); blob URL được thu hồi khi thay/unmount. Preview lỗi không gọi provider khác.
+
+Fallback có 3 ngữ cảnh (live_reply/prepare/manual), mặc định none. LIVE thêm comment_only/hold_for_operator; provider dự phòng chỉ Edge hoặc ElevenLabs, có giọng/model và tốc độ hợp lệ theo schema. ElevenLabs key vẫn quản lý ở form provider hiện có. Không tự bật fallback hay thay auto voice/comment switches.
+
+Trước thay đổi config/WAV/transcript/xóa, Web đọc GET `/api/live/sessions`; nếu có phiên RUNNING, yêu cầu kết thúc trước khi thay đổi. Preview cùng config đã lưu vẫn được phép; đổi config để preview bị chặn. Tạo profile mới và xem metadata không bị chặn. Đây là bảo vệ ở UI theo trạng thái đọc được, không phải transaction khóa phiên giữa nhiều tab.
+
+### 19.3 Readiness và trạng thái phát
+
+- Mở hộp thoại chuẩn bị phiên: chỉ GET `/api/live/sessions/{id}/readiness?agent_id=...`, không upload/sync/warmup/lease. Chọn Agent khác loại bỏ kết quả cũ.
+- Bấm **Đồng bộ** trong bước chuẩn bị: POST `/api/ai/voice/readiness` với Agent đã chọn rồi tiếp tục prepare LIVE Console theo luồng cũ. Không tự bắt đầu LIVE. Lỗi TTS hiển thị cảnh báo về auto voice, không âm thầm đổi provider. Session readiness và active readiness không được gộp thành một badge ready giả.
+- Voice Settings có nút **Kiểm tra & đồng bộ TTS** chủ động cho Windows Agent; cần cấu hình giọng đã lưu. Hiển thị service online/offline, model loading/error (mã CUDA khi có), profile sync, warmup chỉ khi có kết quả active, capability Agent, GPU busy/job dài/LONG_JOB_RUNNING và ghi chú ước tính.
+- Monitor trong điều khiển AI dùng GET `/api/ai/voice/utterances?agent_id=...&limit=12`. NEW = đã tạo; JOB_CREATED/SENT + queued/running = chờ âm thanh; SENT + done = chờ OBS; PLAYING = đang phát; PLAYED = đã phát xong; CANCELLED/STOPPED/EXPIRED/FAILED/ABORTED/ORPHANED phân biệt. Job GPU thất bại/hủy/mất được hiển thị riêng dù Agent chưa báo terminal event. Không coi SENT là played hoặc OBS PLAYING là người xem đã nghe.
+
+Action có khóa ref chống double-click; poll tránh request chồng và bỏ kết quả cũ sau chuyển Agent. Error 409/422/429/503 và X-Sarae-Error được hiển thị tiếng Việt, không log transcript/token. Browser không có endpoint direct voice-server, read token hoặc orchestrator token. Không thêm localStorage cho TTS.
+
+### 19.4 Kiểm thử
+
+- Baseline `npm run build`: pass (cần quyền đọc metadata submodule UI Core ngoài sandbox).
+- `npm run typecheck`: pass. Production `npm run build`: pass. Bundle warning >500 kB đã có ở baseline; không đổi cấu trúc app để xử lý trong Phase 5.
+- 10 browser/component tests (`voice_ui.py`) pass: tạo Auto không gửi transcript, Manual, rename/thay WAV/sync/xóa, WAV preview/replay controls, fallback/reload, RUNNING guard, Edge/ElevenLabs regression, passive GET không mutation, active readiness/double-click, offline, HTTP 409/422/429/503, utterance labels, màn AI Settings đầy đủ. Kiểm tra ảnh desktop và width 390 px; không tràn ngang.
+- Test CORS public headers pass. Backend TTS regression 29/29 pass. Lint không có lỗi; repo có warning React hooks từ code hiện có, bao gồm loader pattern của VoiceSettings; không sửa các module ngoài phạm vi.
+- Real Web E2E pass: Edge browser → Vite riêng (`5176`, VITE_API_URL `http://127.0.0.1:8794`) → Backend HTTP thật với DB/owner/storage test → voice-server G-OmniVoice GPU thật (`8783`). Upload WAV tham chiếu người dùng cung cấp, Whisper Auto có transcript, SYNCED, chọn/lưu default, tạo preview WAV, browser play/pause/replay, reload giữ config; owner B list rỗng và đọc profile owner A trả 404, utterance owner B rỗng. Không dùng OBS, không mở TikTok LIVE.
+- Một lần đo: upload + Whisper sync **9109 ms**; từ click preview đến browser audio metadata ready **2968 ms** (audio 2360 ms theo voice-server). Chỉ là smoke test, không phải p50/p95 hay E2E LIVE.
+
+Chạy test giả: mở Vite port 5175, sau đó `agent-core/.venv/Scripts/python.exe web/tests/voice_ui.py` từ repo root. Test model thật opt-in qua `SARAE_WEB_VOICE_E2E=1`, `SARAE_TTS_REAL_URL/TOKEN/REF`; chạy `backend/.venv/Scripts/python.exe web/tests/voice_real_preview.py`. Test dùng API/owner tạm, không cần tài khoản vận hành hoặc Swagger.
+
+### 19.5 Giới hạn và việc cho Phase 6
+
+- Preview theo profile khác vẫn phải lưu default vì API hiện tại không nhận profile override cho OmniVoice. UI thông báo/xác nhận, chặn thay config khi có phiên RUNNING; chưa hỗ trợ snapshot riêng cho từng phiên hay locking đa tab.
+- Warmup không có trạng thái persistent trong passive API; UI hiển thị chưa xác nhận thay vì suy đoán. GPU/service status ở Voice Settings được kiểm tra chủ động, không tự sync khi mở trang.
+- SENT chờ audio được suy ra từ tts_job_state; Backend không cung cấp riêng accepted/waiting_audio/ready trong danh sách utterance. Trạng thái PLAYING/PLAYED dựa trên event Phase 4.
+- ElevenLabs regression Web dùng API giả, không tiêu credits thật. Chưa nghiệm thu Firefox/Safari, deployment VPS/CORS production origin, VPN/TLS và tải GPU dài hạn.
+- Phase 6 cần nghiệm thu toàn tuyến Web → Backend → GPU → Agent → OBS offline, p50/p95 theo cache hit/miss/direct/relay, lỗi mạng/reconnect/restart/session-ended và nghe kiểm tra chất lượng. Cấu hình storage, TLS/VPN, Agent đúng capability và preset giữ nguyên trước triển khai. **Phase 6 chưa được triển khai trong lượt Phase 5.**

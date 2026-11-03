@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type FormEvent, type ReactNode } from 'react'
+import {TtsReadinessView} from './TtsReadiness'
+import {useTtsReadiness} from './useTtsReadiness'
+import './voice-settings.css'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Modal, SearchInput, SegmentedControl, Select, useToast } from './ui/core'
 import {
   CalendarClock, Check, CheckCircle2, CircleAlert, CircleDashed, Clock3, Copy, GripVertical, History, ListPlus,
@@ -222,10 +225,14 @@ export default function LiveSessions(){
   const shownChecks = single ? singleChecks : checks
   const canStart = chosen?.status === 'DRAFT' && chosen.tiktok_account_id != null && shownChecks.every(c=>c.ok || !c.blocking)
 
+  const tts=useTtsReadiness(startOpen&&chosen?chosen.id:null,startAgent)
+  const syncLock=useRef(false)
   const syncConsole = async () => {
-    if (!chosen || !startAgent) return
+    if (!chosen || !startAgent || syncLock.current) return
+    syncLock.current=true
     setBusy(true)
     try {
+      await tts.check()
       await sessionsApi.prepare(chosen,startAgent)
       const snapshot=await apiRequest<{account_user_id:string|null;scanned_at:string|null;products:ConsoleRow[]}>(`/tiktok-products/${encodeURIComponent(startAgent)}`)
       const expected=accounts.find(a=>a.id===chosen.tiktok_account_id)?.user_id
@@ -245,7 +252,7 @@ export default function LiveSessions(){
     } catch(e) {
       setConsoleRows(null);setConsoleConfirmed(false)
       toast.push({tone:'danger',title:'Không thể đồng bộ LIVE Console',description:errorText(e,'')})
-    } finally {setBusy(false)}
+    } finally {syncLock.current=false;setBusy(false)}
   }
   const confirmConsole = async () => {
     if (!chosen || !consoleRows || !consoleSelection.length) return
@@ -532,6 +539,8 @@ export default function LiveSessions(){
                   hint={agents.length > freeAgents.length ? `${agents.length - freeAgents.length} máy khác chưa sẵn sàng (offline, chưa có OBS hoặc đang phát).` : undefined}/>
               : <Alert tone="danger">Không có máy nào rảnh: cần online, đã kết nối OBS và không phát nội dung khác.</Alert>}
         </StartStep>
+
+        <section className="voice-session-readiness"><h4>Giọng nói trước LIVE</h4><TtsReadinessView report={tts.report} active={tts.active}/>{tts.error&&<Alert tone="warning">{tts.error}</Alert>}<p className="ls-muted">Bấm Đồng bộ bên dưới để chủ động sync/warmup TTS cùng bước xác minh tài khoản. Chỉ mở hộp thoại sẽ đọc trạng thái thụ động.</p></section>
 
         <StartStep n={2} title="Giỏ sản phẩm TikTok" done={!!consoleRows}
           hint={consoleRows ? undefined : `Mở LIVE Console trên máy, đăng nhập @${account?.user_name || account?.nick_name || 'tài khoản của phiên'} rồi bấm Đồng bộ.`}

@@ -45,3 +45,10 @@ The activated Agent downloads existing Backend-orchestrated jobs through `voice/
 Keep `voice/utterances.sqlite` and `event_outbox.json` across upgrades: acceptance survives a crash and uncertain utterances are not replayed. This may drop an accepted sentence after a crash before playback. Playback events are disk queued and carry no transcript or credentials. Owner-configured fallback is explicit; expired/cancelled/OBS errors never switch provider.
 
 Full contract, tests, real OBS offline measurements and remaining limits are documented in [TTS_SERVER.md section 18](TTS_SERVER.md#18-phase-4--windows-agent-2026-11-03). The optional real test is `backend/tests/test_tts_agent_obs_offline.py`; it requires explicit environment opt-in and refuses streaming/recording OBS.
+
+
+## Sarae Web (Phase 5)
+
+Open AI Assistant → Voice Settings and choose G-OmniVoice (Local AI). Create a named WAV profile with Auto Transcript (Whisper) by default, inspect sync/QC, then select and save it. Manual Transcript, replacing WAV, retry sync and deleting a profile are available in the profile manager. “Lưu & nghe thử” stores the selected configuration before calling the Backend preview endpoint; browser audio controls support pause and replay. Changing the selected default/WAV/transcript is guarded while a Sarae session is RUNNING.
+
+Fallback remains none unless explicitly selected. The session preparation dialog reads passive TTS status when opened; clicking Đồng bộ performs active sync/warmup. The AI monitor displays actual utterance lifecycle: SENT is not PLAYED. Web never receives voice-server credentials. Full APIs, validation, real browser/GPU preview results and Phase 6 requirements: [TTS_SERVER.md section 19](TTS_SERVER.md#19-phase-5--sarae-web-2026-11-03).
