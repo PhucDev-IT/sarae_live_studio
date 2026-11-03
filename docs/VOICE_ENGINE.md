@@ -36,3 +36,12 @@ Agent logs include TTS request start, first audio, audio ready, OBS start/finish
 - Production acceptance still needs one Test Voice with a real key and an OBS playback check on Windows. No TikTok LIVE is needed.
 
 API references: [stream speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream), [list models](https://elevenlabs.io/docs/api-reference/models/list), [list voices](https://elevenlabs.io/docs/api-reference/voices/search), [error handling](https://elevenlabs.io/docs/eleven-api/resources/errors).
+
+
+## OmniVoice Agent integration (Phase 4)
+
+The activated Agent downloads existing Backend-orchestrated jobs through `voice/omnivoice.py`; it does not run a model or create jobs. `voice/jobs.py` integrates WAV caching, absolute deadlines, persistent utterance acceptance and observed OBS playback with the existing single voice worker. WAV is kept at mono PCM16 24 kHz. Direct read tokens are obtained through the authenticated Backend endpoint; USE_RELAY or a direct transport failure uses the Backend relay.
+
+Keep `voice/utterances.sqlite` and `event_outbox.json` across upgrades: acceptance survives a crash and uncertain utterances are not replayed. This may drop an accepted sentence after a crash before playback. Playback events are disk queued and carry no transcript or credentials. Owner-configured fallback is explicit; expired/cancelled/OBS errors never switch provider.
+
+Full contract, tests, real OBS offline measurements and remaining limits are documented in [TTS_SERVER.md section 18](TTS_SERVER.md#18-phase-4--windows-agent-2026-11-03). The optional real test is `backend/tests/test_tts_agent_obs_offline.py`; it requires explicit environment opt-in and refuses streaming/recording OBS.

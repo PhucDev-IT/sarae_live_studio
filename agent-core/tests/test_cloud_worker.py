@@ -333,7 +333,8 @@ def test_router_reaches_engine(router):
         with pytest.raises(AgentError):
             r.execute("tts_prepare", bad)
     r.execute("tts_clear", {})
-    voice.clear.assert_called_once_with()
+    assert voice.clear.call_count == 2  # playback stop and explicit tts_clear
+    voice.clear.assert_called_with()
     r.execute("monitor_config", {"interval_seconds": 3, "threshold": 0.9})
     assert monitor.configure.call_args.args[0]["threshold"] == 0.9
 

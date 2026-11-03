@@ -1,6 +1,6 @@
 # Sarae TTS Backend (G-OmniVoice) — Thiết kế đã duyệt
 
-> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0–2 đã nghiệm thu; Phase 3 (tích hợp Sarae Backend) hoàn thành, chờ duyệt (mục 17). Phase 4 chưa bắt đầu.
+> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0–2 đã nghiệm thu; Phase 3 đã nghiệm thu (commit `b8ab35d`). Phase 4 đã triển khai và kiểm thử OBS offline, chờ nghiệm thu (mục 18). Phase 5 chưa bắt đầu.
 > Ký hiệu: ✅ đã xác minh trong source/đo thực tế · 🔶 giả định, cần kiểm chứng.
 
 ## 1. Quyết định đã chốt
@@ -679,3 +679,75 @@ Không bao giờ fallback khi phiên LIVE đã kết thúc, câu đã hết hạ
 5. **Sự kiện phát** qua `POST /api/agents/events`: `tts_playback {utterance_id, status: playing|played|expired|stopped|failed, code, a1..a4}` (mục 9), để Backend cập nhật utterance và đo độ trễ end-to-end.
 6. **Fallback lúc tải hoặc phát lỗi** theo `fallback` (Backend sẽ gửi spec trong payload ở Phase 4).
 7. Không đụng ducking, OBS, Edge hay ElevenLabs.
+
+
+## 18. Phase 4 — Windows Agent (2026-11-03)
+
+Các file Phase 4:
+
+| Nhóm | File |
+|---|---|
+| Agent mới | `voice/omnivoice.py`, `voice/jobs.py` |
+| Agent mở rộng | `voice/tts.py`, `cloud/commands.py`, `cloud/journal.py`, `cloud/worker.py`, `runtime.py` |
+| Contract Backend tối thiểu | `backend/app/cloud_agents.py`, `backend/app/tts_orchestrator.py` |
+| Tests | `agent-core/tests/test_omnivoice.py`, `agent-core/tests/test_cloud_worker.py`, `backend/tests/test_tts_omnivoice.py`, `backend/tests/test_tts_agent_obs_offline.py` |
+| Docs | `docs/TTS_SERVER.md`, `docs/VOICE_ENGINE.md` |
+
+### 18.1 Contract và các thay đổi Backend tối thiểu
+
+Agent dùng đúng contract mục 17.10: `tts_speak.tts` chứa utterance/job/revision/deadline/audio_path và intro reference; `tts_prepare.tts_jobs` khớp thứ tự texts; `tts_clear` giữ payload rỗng. Claim/ACK và command journal giữ giao thức cũ. Command ID/session ID được truyền từ command envelope vào VoiceEngine.
+
+Heartbeat `voice.version` dùng version Agent Core; `voice.capabilities` giữ định dạng Phase 3 (`providers`, `tts_job: 1`, `audio_path`). Chỉ runtime đã nối HTTP provider mới báo omnivoice. Backend cũ bỏ qua field bổ sung; Backend mới tiếp tục chặn Agent thiếu capability.
+
+Source Phase 3 thực tế **chưa nhận `tts_playback` và chưa gửi fallback xuống Agent**. Phase 4 bổ sung có giới hạn trong `cloud_agents.py` và `tts_orchestrator.py`:
+
+- Nhận event `tts_playback` qua endpoint events hiện có; chỉ cập nhật utterance đúng Agent và đúng job, không hồi sinh trạng thái kết thúc. PLAYING được tính vào tập job cần hủy khi kết thúc session.
+- Đưa `fallback: {mode: none|provider, provider?: spec}` vào speak/prepare; spec chỉ được Edge/ElevenLabs. Lưu version trong heartbeat voice view.
+- Không thêm endpoint, migration, engine model, Web hoặc thay đổi nghiệp vụ LIVE khác.
+
+### 18.2 Tải và cache WAV
+
+`voice/omnivoice.py` là HTTP provider tải job đã tồn tại. Agent không có đường gọi API tạo job, không import AI runtime. Runtime đăng ký provider vào registry hiện có.
+
+Auto lấy token bằng POST `/api/agents/tts/audio/{utterance}/token`; token chỉ gửi đến voice-server ở Authorization, khóa Agent chỉ gửi Backend. 404 `USE_RELAY` (ví dụ Backend mất token RAM) dùng relay; direct lỗi transport cũng dùng relay. HTTP auth/inference/expired/cancelled không thử relay. Không follow redirect. 202 chờ tiếp có giới hạn 100 lượt, deadline kiểm tra mỗi lượt/chunk và sau tải; HTTP 410 kết thúc expired, không fallback.
+
+Chỉ nhận WAV mono PCM16 24 kHz đầy đủ, tối đa 20 MiB; ghi temp rồi atomic replace. Cache hit kiểm tra lại WAV, có duration. Khóa cache gồm provider, profile, preset và cặp utterance/job bất biến: job đã snapshot revision/config ở server, không tái sử dụng theo text sang owner/job khác. Prepare cùng job có thể dùng lại file; body của quyết định mới dùng result cache phía voice-server. Cách này ưu tiên không dùng nhầm audio; Agent chưa chia sẻ cache nội dung giữa các utterance khác nhau. MP3 Edge/ElevenLabs giữ cache cũ; WAV và MP3 chung giới hạn dọn 300 file.
+
+### 18.3 Deadline, dedup và clear
+
+Deadline hiệu lực là min(TTL nhận lệnh, deadline UTC từ Backend), chuyển sang đồng hồ monotonic. CloudWorker lấy chênh lệch giờ từ server_time heartbeat. Kiểm tra lúc nhận, trước/trong/sau tải và trước từng clip OBS; không tính lại TTL khi reconnect. Prepare contract chỉ có id, không có deadline: Agent giới hạn 15 phút và vẫn tuân thủ 410 từ upstream.
+
+`voice/utterances.sqlite` lưu acceptance **trước khi queue/phát**, synchronous FULL, giữ tombstone qua restart. Body và intro có dấu nhận riêng. Accepted/waiting/playing sau crash đều không tự chạy lại; có thể mất một câu nếu crash trước khi phát. Đây là at-most-once acceptance, **không phải exactly-once âm thanh**: OBS và SQLite không có transaction chung. Tombstone hiện chưa tự xóa.
+
+Clear tăng generation, dọn queue speak/prepare và ngắt lượt chờ hiện tại; generation ngăn prepare đang tải cũ công bố cache sau clear. Lệnh playback stop cũng clear voice. Không fallback cho expired/cancelled/clear/OBS; chỉ các lỗi network/not-ready/busy/inference được phép dùng spec owner gửi. Intro lỗi thường có thể bỏ qua để đọc body; expired/cancelled dừng cả câu. Intro và body vẫn hai clip theo thứ tự.
+
+### 18.4 Events và OBS
+
+EventOutbox runtime được lưu atomically vào `event_outbox.json`, giữ seq qua restart; resend dùng cùng seq để Backend bỏ trùng. Event detail có utterance/job/command/session, provider, status/state, error_code khi lỗi; cache/path, wait/download/audio duration và playback_start_ms khi có số đo. Accepted/waiting_audio/ready/playing/played/expired/cancelled/failed và duplicate được phân biệt. Không gửi full transcript hoặc token trong event.
+
+VoiceEngine tiếp tục dùng một worker và ObsController.play_file, nguồn Sarae Voice, duck/restore cũ. Chỉ phát xong khi OBS xác nhận ENDED sau PLAYING; STOPPED là cancelled, không coi play_file thành công là played. Timeout OBS dừng nguồn trước khi báo lỗi. Mốc playing là **OBS xác nhận trạng thái**, không chứng minh âm thanh đã tới người xem.
+
+### 18.5 Kiểm thử và E2E thật
+
+- Baseline HEAD cô lập: 429 pass, 1 skipped. Toàn bộ Agent sau tích hợp: 451 pass; sau đó thêm test crash-process và chạy nhóm OmniVoice mới: 22 pass. Nhóm voice/cloud regression sau các sửa cuối: **80 pass**, gồm test crash-process.
+- Backend TTS: 29 pass (27 cũ + event lifecycle/authorization và fallback payload). Toàn bộ Backend: **387 tests, OK, 3 skipped** (384 test chạy pass); E2E OBS opt-in được chạy riêng và pass.
+- Test mới kiểm tra direct/relay, direct lỗi mạng, 202→200, HTTP 401/403/409/410/429/503 không relay sai, deadline sau tải, WAV, cache prepare, intro/body, dedup qua engine restart và crash process bằng os._exit, clear lúc tải, outbox qua restart, fallback theo lớp lỗi. Test cũ bao phủ ducking và LIVE kết thúc/hủy job.
+- `backend/tests/test_tts_agent_obs_offline.py` opt-in chạy **Backend HTTP thật trên port 8794 với DB test**, voice-server model thật port 8783, Agent Core VoiceEngine/CommandRouter/CloudClient thật và OBS đang chạy. Không dùng OBS giả trong bài này. Không mở LIVE/streaming/recording. Voice source settings và mute được phục hồi; âm lượng Video A/B được so sánh sau phát.
+
+Run cuối (mỗi nhánh một mẫu; cùng câu, server result cache nóng ở hai nhánh sau):
+
+| Nhánh | Backend nhận yêu cầu có text → OBS PLAYING | Chờ audio | Download | Audio |
+|---|---:|---:|---:|---:|
+| direct, sinh mới | 3063 ms | 2702 ms | <1 ms | 1810 ms |
+| relay, result cache server | 312 ms | 31 ms | <1 ms | 1810 ms |
+| Backend restart → USE_RELAY | 2782 ms (gồm restart HTTP) | 109 ms | <1 ms | 1810 ms |
+
+Cả ba quan sát PLAYING→ENDED, event gửi Backend thành công, gửi lại cùng utterance trả duplicate, âm lượng video phục hồi. WAV tham chiếu: file người dùng cung cấp `C:/Users/Phuc/Downloads/voice_ref_pause_7s_test.wav`. Không suy ra p50/p95 hay so sánh tốc độ direct/relay từ ba mẫu này. Nhánh cuối dừng HTTP Backend sau claim, snapshot DB test ra file và khởi chạy **tiến trình Backend mới** trên cùng port, không có token RAM; voice-server giữ nguyên job. Agent lấy USE_RELAY, tải và phát đúng job cũ, ACK/events qua Backend mới thành công. Playback_start_ms từ lúc VoiceEngine nhận câu ở nhánh này là 327 ms; 2782 ms phía Backend có cả thời gian restart. Test crash Agent xác minh persistent acceptance bằng hai tiến trình Python; E2E không khởi chạy GUI desktop Agent.
+
+### 18.6 Hạn chế và Phase 5
+
+- Chưa có p50/p95 toàn tuyến; chưa đánh giá nghe mù click/mất từ. Không đổi byte WAV hay chất lượng preset.
+- Test real hiện dùng DB test và storage MEMORY; chưa nghiệm thu deployment VPS/VPN/TLS hoặc desktop GUI release.
+- Tombstone SQLite và outbox cần được giữ khi nâng cấp Agent. Outbox vẫn giới hạn 1000 event theo cơ chế cũ; offline dài có thể mất event cũ, không làm phát lại câu.
+- Read token vẫn là bearer credential; production direct cần TLS/mạng riêng như mục 16.4.
+- Phase 5 cần UI profiles/QC/revision, provider omnivoice, readiness/AGENT_NO_OMNIVOICE, cấu hình fallback mặc định none, phân biệt SENT với PLAYED/FAILED. Phase 5 chưa triển khai.

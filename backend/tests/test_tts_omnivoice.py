@@ -103,6 +103,33 @@ class OmniVoiceTests(SaasTestCase):
         return self.client.post("/api/ai/voice/speak", json={"agent_id": agent["agent_id"], "text": text})
 
     # --- voice profiles ---------------------------------------------------------------------------------
+    def test_phase4_playback_events_authorization_and_terminal_state(self):
+        self.select(self.profile()["id"])
+        agent = self.agent()
+        self.assertEqual(self.speak(agent).status_code, 200)
+        u = self.utterances()[0]
+        def send(seq, status, job=None):
+            return self.client.post("/api/agents/events", headers={"X-Sarae-Agent-Key": agent["agent_credential"]},
+                json={"agent_id": agent["agent_id"], "events": [{"seq": seq, "type": "tts_playback",
+                    "detail": {"utterance_id": u.id, "job_id": job or u.tts_job_id, "status": status}}]})
+        self.assertEqual(send(1, "played", "wrong_job").status_code, 200)
+        self.assertEqual(self.utterances()[0].state, "SENT")
+        self.assertEqual(send(2, "playing").status_code, 200)
+        self.assertEqual(self.utterances()[0].state, "PLAYING")
+        send(3, "played")
+        send(3, "played")
+        send(4, "playing")
+        self.assertEqual(self.utterances()[0].state, "PLAYED")
+
+    def test_phase4_owner_fallback_is_carried_in_command(self):
+        self.select(self.profile()["id"], fallback={"manual": "provider", "provider": {
+            "provider": "edge", "voice": "vi-VN-HoaiMyNeural", "model": "edge-neural", "rate": 5}})
+        agent = self.agent()
+        self.assertEqual(self.speak(agent).status_code, 200)
+        policy = self.commands(agent["agent_id"])[0]["payload"]["fallback"]
+        self.assertEqual(policy["mode"], "provider")
+        self.assertEqual(policy["provider"]["rate"], 5)
+
     def test_profile_crud_storage_and_owner_isolation(self):
         wav = make_wav()
         p = self.profile(wav=wav)

@@ -194,10 +194,32 @@ class SetAutoPinPayload(Payload):
     products: list[AutoPinProduct] = Field(default_factory=list, max_length=300)
 
 
+class TtsRef(Payload):
+    utterance_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    job_id: str = Field(pattern=r"^[A-Za-z0-9_-]{3,64}$")
+
+
+class TtsJob(TtsRef):
+    voice_rev: int = Field(ge=1)
+    deadline_at: str
+    audio_path: Literal["auto", "relay"]
+    intro: TtsRef | None = None
+
+    @field_validator("deadline_at")
+    @classmethod
+    def valid_deadline(cls, value):
+        from datetime import datetime
+        if datetime.fromisoformat(value).tzinfo is None:
+            raise ValueError("deadline_at cần timezone")
+        return value
+
+
 class TtsPayload(Payload):
+    tts: TtsJob | None = None
+    fallback: dict | None = None
     text: str = Field(min_length=1, max_length=450)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
-    provider: Literal["edge", "elevenlabs"] = "edge"
+    provider: Literal["edge", "elevenlabs", "omnivoice"] = "edge"
     model: str | None = Field(default=None, min_length=1, max_length=100)
     settings: dict = Field(default_factory=dict)
     # AI voice (backend/app/live_reply_director.py): speed in percent, not spoken after ttl_seconds, video ducking.
@@ -209,10 +231,12 @@ class TtsPayload(Payload):
 
 
 class TtsPreparePayload(Payload):
+    fallback: dict | None = None
+    tts_jobs: list[TtsRef] | None = None
     """Answers generated into the voice cache before they are needed (nothing is played)."""
     texts: list[str] = Field(min_length=1, max_length=40)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
-    provider: Literal["edge", "elevenlabs"] = "edge"
+    provider: Literal["edge", "elevenlabs", "omnivoice"] = "edge"
     model: str | None = Field(default=None, min_length=1, max_length=100)
     settings: dict = Field(default_factory=dict)
     rate: int = Field(default=0, ge=-30, le=50)
@@ -285,7 +309,9 @@ class CommandRouter:
             return p.status()
 
         def tts_options(b: TtsPayload | TtsPreparePayload) -> dict:
-            return {name: getattr(b, name) for name in ("provider", "model", "settings")
+            return {name: (getattr(b, name).model_dump(exclude_none=True) if name == "tts" and b.tts else
+                           [r.model_dump() for r in b.tts_jobs] if name == "tts_jobs" and b.tts_jobs else getattr(b, name))
+                    for name in ("provider", "model", "settings", "tts", "tts_jobs", "fallback")
                     if name in b.model_fields_set}
 
         self._table: dict[str, tuple[type[BaseModel], Callable[[BaseModel], object]]] = {
@@ -374,6 +400,8 @@ class CommandRouter:
         return self.overlay.preview_on_obs(b.session_id, b.timeline_id, b.media_id, b.position_ms, b.playing, b.seconds, b.stop)
 
     def _stop(self):
+        if self.voice is not None:
+            self.voice.clear()
         result = self.playback.stop()
         if self.timeline is not None:
             self.timeline.clear("stopped")
@@ -407,7 +435,7 @@ class CommandRouter:
     def kinds(self) -> list[str]:
         return sorted(self._table)
 
-    def execute(self, kind: str, payload: dict | None) -> object:
+    def execute(self, kind: str, payload: dict | None, *, command_id=None, session_id=None) -> object:
         entry = self._table.get(kind)
         if entry is None:
             raise AgentError("UNSUPPORTED_COMMAND", f"Agent không hỗ trợ lệnh {kind}")
@@ -418,4 +446,15 @@ class CommandRouter:
             first = exc.errors()[0]
             raise AgentError("INVALID_COMMAND_PAYLOAD",
                              f"{'.'.join(str(x) for x in first.get('loc', ())) or 'payload'}: {first.get('msg')}") from exc
+        if kind in ("tts_speak", "tts_prepare") and body.provider == "omnivoice":
+            if body.rate != 0 or body.model != "demo_default" or body.settings:
+                raise AgentError("INVALID_COMMAND_PAYLOAD", "G-OmniVoice chỉ nhận demo_default, rate 0, settings rỗng")
+            if kind == "tts_speak" and (not body.tts or (body.intro and not body.tts.intro)):
+                raise AgentError("INVALID_COMMAND_PAYLOAD", "Thiếu tts job")
+            if kind == "tts_prepare" and (not body.tts_jobs or len(body.tts_jobs) != len(body.texts)):
+                raise AgentError("INVALID_COMMAND_PAYLOAD", "tts_jobs không khớp texts")
+        if kind == "tts_speak" and body.provider == "omnivoice":
+            return self.voice.speak(body.text, body.voice, rate=body.rate, ttl_seconds=body.ttl_seconds,
+                duck=body.duck, intro=body.intro, command_id=command_id, session_id=session_id, provider=body.provider, model=body.model, settings=body.settings,
+                tts=body.tts.model_dump(exclude_none=True), fallback=body.fallback)
         return action(body)

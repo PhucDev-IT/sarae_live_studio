@@ -80,18 +80,32 @@ class CommandLock:
 
 
 class EventOutbox:
-    def __init__(self, limit: int = 1000):
+    def __init__(self, limit: int = 1000, path: Path | None = None):
         self.lock = threading.Lock()
         self.items: list[dict] = []
         self.limit = limit
         self.seq = int(time.time() * 1000)
+        self.path = path
+        if path and path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.items = saved if isinstance(saved, list) else saved["items"]
+            self.seq = max([self.seq, saved.get("seq", 0) if isinstance(saved, dict) else 0] + [e["seq"] for e in self.items])
         self.ready = threading.Event()
+        if self.items:
+            self.ready.set()
+
+    def _save(self):
+        if self.path:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"seq": self.seq, "items": self.items}), encoding="utf-8")
+            tmp.replace(self.path)
 
     def push(self, event: dict) -> None:
         with self.lock:
             self.seq += 1
             self.items.append({**event, "seq": self.seq})
             del self.items[:-self.limit]
+            self._save()
         self.ready.set()
 
     def flush(self, send) -> int:
@@ -105,6 +119,7 @@ class EventOutbox:
         sent = {e["seq"] for e in batch}
         with self.lock:
             self.items = [e for e in self.items if e["seq"] not in sent]
+            self._save()
             if not self.items:
                 self.ready.clear()
         return len(batch)

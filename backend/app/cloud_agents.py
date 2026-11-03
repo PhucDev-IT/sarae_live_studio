@@ -212,7 +212,7 @@ def _voice(report:dict|None)->dict|None:
     number=lambda v:int(v) if isinstance(v,(int,float)) and not isinstance(v,bool) and v>=0 else 0
     last=report.get("last") if isinstance(report.get("last"),dict) else None
     caps=report.get("capabilities") if isinstance(report.get("capabilities"),dict) else None
-    out={"queue":number(report.get("queue")),"prepare_pending":number(report.get("prepare_pending")),
+    out={"version":str(report.get("version", ""))[:40],"queue":number(report.get("queue")),"prepare_pending":number(report.get("prepare_pending")),
             "speaking":str(report["speaking"])[:120] if report.get("speaking") else None,
             "ducked":bool(report.get("ducked")),
             "stats":{str(k)[:30]:number(v) for k,v in list((report.get("stats") or {}).items())[:12]} if isinstance(report.get("stats"),dict) else {},
@@ -412,11 +412,27 @@ def _omnivoice(payload:dict,kind:str)->dict:
         out["audio_path"]=tts["audio_path"]
         if payload.get("intro") is not None:
             out["intro"]=_tts_ref(tts.get("intro"),"tts.intro")
-        return {"tts":out}
+        result = {"tts":out}
+        result.update(_tts_fallback(payload))
+        return result
     refs=payload.get("tts_jobs")
     if not isinstance(refs,list) or len(refs)!=len(payload.get("texts") or []):
         raise HTTPException(422,"tts_jobs phải khớp từng câu chuẩn bị")
-    return {"tts_jobs":[_tts_ref(r,"tts_jobs") for r in refs]}
+    return {"tts_jobs":[_tts_ref(r,"tts_jobs") for r in refs], **_tts_fallback(payload)}
+
+def _tts_fallback(payload):
+    result = {}
+    policy = payload.get("fallback")
+    if policy:
+        if not isinstance(policy, dict) or policy.get("mode") not in ("none", "provider"):
+            raise HTTPException(422, "fallback không hợp lệ")
+        result["fallback"] = {"mode": policy["mode"]}
+        if policy["mode"] == "provider":
+            spec = _tts_spec(policy.get("provider") or {})
+            if spec["provider"] == "omnivoice":
+                raise HTTPException(422, "Không fallback sang omnivoice")
+            result["fallback"]["provider"] = {**spec, "rate": _int((policy.get("provider") or {}).get("rate", 0), "rate", -30, 50)}
+    return result
 
 def _tts_spec(payload:dict)->dict:
     provider=payload.get("provider","edge")
@@ -957,7 +973,7 @@ def list_commands(agent_id:str,authorization:str|None=Header(None)):
 
 class AgentEvent(BaseModel):
     seq:int=Field(ge=0)
-    type:Literal["PRODUCT_SWITCHED","PLAYBACK_ENDED","ERROR",
+    type:Literal["tts_playback","PRODUCT_SWITCHED","PLAYBACK_ENDED","ERROR",
                  # Single Video Timeline pin scheduler (agent-core sarae_agent/timeline/scheduler.py)
                  "TIMELINE_LOADED","TIMELINE_STOPPED","TIMELINE_RESUMED","PIN_APPLIED","PIN_FAILED",
                  "PIN_DRIFT","MANUAL_OVERRIDE","LIVE_GATE_CHANGED"]
@@ -980,6 +996,10 @@ def post_events(body:EventBatch,x_sarae_agent_key:str|None=Header(None)):
             data=event.model_dump()
             accepted+=db.execute("INSERT OR IGNORE INTO agent_events(agent_id,seq,payload,created_at) VALUES(?,?,?,?)",
                                  (body.agent_id,event.seq,json.dumps(data,ensure_ascii=False),now)).rowcount
+    for event in body.events:
+        if event.type == "tts_playback":
+            from app.tts_orchestrator import playback_event
+            playback_event(body.agent_id, event.detail)
     return {"accepted":accepted,"last_seq":max((e.seq for e in body.events),default=None)}
 
 def pop_events(agent_id:str,limit:int=500)->list[dict]:

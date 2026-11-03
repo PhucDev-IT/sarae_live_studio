@@ -42,7 +42,7 @@ agent_router = APIRouter(prefix="/api/agents/tts", tags=["Windows Agents"])
 owner_router = APIRouter(prefix="/api/ai/voice", tags=["AI LIVE Voice"])
 
 PRESET = "demo_default"
-OPEN_STATES = ("NEW", "JOB_CREATED", "SENT")
+OPEN_STATES = ("NEW", "JOB_CREATED", "SENT", "PLAYING")
 DEAD_STATES = ("ABORTED", "CANCELLED", "FAILED", "EXPIRED", "ORPHANED")
 ORPHAN_AFTER_S = 120
 RELAY_GRACE_S = 30
@@ -285,6 +285,8 @@ def speak(owner_id: str, agent_id: str, *, text: str, intro: str | None, ttl_sec
             tts["intro"] = {"utterance_id": rows[1].id, "job_id": rows[1].tts_job_id}
         payload = {"text": text, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
                    "settings": {}, "ttl_seconds": round(max(5.0, min(300.0, ttl_seconds)), 1), "duck": duck, "tts": tts}
+        mode, spec = fallback(owner_id, source if source in ("manual", "prepare") else "live_reply")
+        payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
         if intro:
             payload["intro"] = intro
         try:
@@ -332,6 +334,8 @@ def prepare(owner_id: str, agent_id: str, texts: list[str], session_id: int | No
         sent = [r for r in rows if r.state == "JOB_CREATED"]
         payload = {"texts": kept, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
                    "settings": {}, "tts_jobs": refs}
+        mode, spec = fallback(owner_id, "prepare")
+        payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
         try:
             command = create_command(agent_id, owner_id, "tts_prepare", payload, session_id=session_id,
                                      idempotency_key=f"ttsprep:{sent[0].id}",
@@ -630,3 +634,21 @@ def audio_token(utterance_id: str, agent_id: str = Query(pattern=r"^[A-Za-z0-9_-
     return JSONResponse({"job_id": u.tts_job_id, "base_url": base, "read_token": held[0],
                          "expires_at": datetime.fromtimestamp(held[1], timezone.utc).isoformat()},
                         headers={"Cache-Control": "no-store"})
+
+
+def playback_event(agent_id: str, detail: dict):
+    """Apply bounded Agent state only to its own utterance; duplicates/late transitions cannot resurrect it."""
+    states = {"accepted": "SENT", "waiting_audio": "SENT", "ready": "SENT", "playing": "PLAYING",
+              "played": "PLAYED", "expired": "EXPIRED", "cancelled": "CANCELLED", "stopped": "STOPPED", "failed": "FAILED"}
+    state = states.get(detail.get("status"))
+    if state is None:
+        return
+    with SessionLocal() as db:
+        u = db.get(TtsUtterance, str(detail.get("utterance_id", "")))
+        if not u or u.agent_id != agent_id or u.tts_job_id != detail.get("job_id"):
+            return
+        if u.state in (*DEAD_STATES, "PLAYED", "STOPPED") or (u.state == "PLAYING" and state == "SENT"):
+            return
+        u.state, u.updated_at = state, now()
+        u.error_code = str(detail["error_code"])[:40] if detail.get("error_code") else None
+        db.commit()
