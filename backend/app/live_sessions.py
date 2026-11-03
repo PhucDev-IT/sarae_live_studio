@@ -4,6 +4,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
+from app.voice_policy import owner_voice_lock
+
 from app.identity import current_owner
 from app.ownership import Owner, owned_ids
 from pydantic import BaseModel, Field
@@ -539,8 +541,12 @@ def session_readiness(session_id:int,owner:Owner,agent_id:str|None=None):
             target=owned_agent(owner,target)["id"]
         expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
                             {"a":item.tiktok_account_id}).scalar_one_or_none() if item.tiktok_account_id else None
-        return {"session_id":session_id,"agent_id":target,
+        report={"session_id":session_id,"agent_id":target,
                 **reconcile(db,owner["id"],target,ids_for(db,session_id),item.shop_id,expected_user_id=expected)}
+    # Passive TTS status (no sync, no warmup, no lease); POST /api/ai/voice/readiness performs the active check.
+    from app import tts_orchestrator
+    report["tts"]=tts_orchestrator.readiness(owner["id"],target)
+    return report
 
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
@@ -692,59 +698,60 @@ def start_session(session_id: int, body: StartInput, owner: Owner,
                   idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
     """Start on the session's Agent. 200 when the Agent confirmed in time, 202 while the command is on its way
     (the session turns RUNNING when it succeeds). Retrying with the same Idempotency-Key never starts twice."""
-    with SessionLocal() as db:
-        item = get_session(db, session_id, owner)
-        if item.status != "DRAFT":
-            # Only a retry of the very request that started it gets its answer again; any other start is refused.
-            prior = command_for_key(session_id, idempotency_key)
-            if prior is None:
-                raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
-            return answer(prior, owner, session_id)
-        if is_single(item):
-            view = start_single(db, owner, item, body, idempotency_key)
-            return answer(view, owner, session_id)
-        ids = ids_for(db, session_id)
-        if item.tiktok_account_id is None:
-            raise HTTPException(409,"Phiên chưa gắn TikTok Account")
-        if not ids:
-            raise HTTPException(409, "Phiên chưa có sản phẩm nào")
-        pid = body.product_id or ids[0]
-        if pid not in ids:
-            raise HTTPException(422, "Sản phẩm không nằm trong phiên")
-        from sqlalchemy import text
-        agent, snap = start_agent_and_console(db, owner, item, body)
-        import json
-        source=json.loads(snap["products_json"])
-        source_keys={(str(x.get("seller_id") or ""),str(x.get("product_id") or "")) for x in source}
-        legacy={int(row[0]):str(row[1]) for row in db.execute(text(
-            "SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:owner"),
-            {"owner":owner["id"]}).all()}
-        for product_id in ids:
-            product=db.get(Product,product_id)
-            seller=product.tiktok_seller_id or legacy.get(product.shop_id)
-            if not seller or (str(seller),str(product.tiktok_product_id)) not in source_keys:
-                raise HTTPException(409,f"Sản phẩm #{product_id} không còn trong giỏ LIVE Console vừa đồng bộ")
+    with owner_voice_lock(owner["id"]):
+        with SessionLocal() as db:
+            item = get_session(db, session_id, owner)
+            if item.status != "DRAFT":
+                # Only a retry of the very request that started it gets its answer again; any other start is refused.
+                prior = command_for_key(session_id, idempotency_key)
+                if prior is None:
+                    raise HTTPException(409, "Chỉ bắt đầu được phiên DRAFT")
+                return answer(prior, owner, session_id)
+            if is_single(item):
+                view = start_single(db, owner, item, body, idempotency_key)
+                return answer(view, owner, session_id)
+            ids = ids_for(db, session_id)
+            if item.tiktok_account_id is None:
+                raise HTTPException(409,"Phiên chưa gắn TikTok Account")
+            if not ids:
+                raise HTTPException(409, "Phiên chưa có sản phẩm nào")
+            pid = body.product_id or ids[0]
+            if pid not in ids:
+                raise HTTPException(422, "Sản phẩm không nằm trong phiên")
+            from sqlalchemy import text
+            agent, snap = start_agent_and_console(db, owner, item, body)
+            import json
+            source=json.loads(snap["products_json"])
+            source_keys={(str(x.get("seller_id") or ""),str(x.get("product_id") or "")) for x in source}
+            legacy={int(row[0]):str(row[1]) for row in db.execute(text(
+                "SELECT id,seller_id FROM tiktok_shops WHERE owner_id=:owner"),
+                {"owner":owner["id"]}).all()}
+            for product_id in ids:
+                product=db.get(Product,product_id)
+                seller=product.tiktok_seller_id or legacy.get(product.shop_id)
+                if not seller or (str(seller),str(product.tiktok_product_id)) not in source_keys:
+                    raise HTTPException(409,f"Sản phẩm #{product_id} không còn trong giỏ LIVE Console vừa đồng bộ")
 
-        conflict=db.execute(text("""SELECT id FROM live_sessions WHERE tiktok_account_id=:a
-            AND status='RUNNING' AND id<>:id LIMIT 1"""),
-            {"a":item.tiktok_account_id,"id":item.id}).scalar()
-        if conflict:
-            raise HTTPException(409,"TikTok Account đang có LIVE Session khác")
-        from app.session_product_readiness import assess
-        check=assess(db,owner["id"],agent["id"],ids)
-        if not check["ready"]:
-            problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
-            raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
-        # Playback reads local files only: every video of the session must be cached and verified first.
-        require_media_ready(db, owner, agent, item.id)
-        # Persist ownership of the selected Agent before dispatch: fast Agent ack
-        # can arrive while the HTTP request is still waiting.
-        acquire_live_claim(db,item,agent["id"])
-        item.agent_id=agent["id"]
-        db.commit()
-        # Do not release the claim on ambiguous transport timeouts.
-        view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
-    return answer(view, owner, session_id)
+            conflict=db.execute(text("""SELECT id FROM live_sessions WHERE tiktok_account_id=:a
+                AND status='RUNNING' AND id<>:id LIMIT 1"""),
+                {"a":item.tiktok_account_id,"id":item.id}).scalar()
+            if conflict:
+                raise HTTPException(409,"TikTok Account đang có LIVE Session khác")
+            from app.session_product_readiness import assess
+            check=assess(db,owner["id"],agent["id"],ids)
+            if not check["ready"]:
+                problems=[str(p["product_id"])+": "+",".join(p["reasons"]) for p in check["products"] if not p["ready"]]
+                raise HTTPException(409,"Sản phẩm chưa sẵn sàng LIVE: "+"; ".join(problems[:12]))
+            # Playback reads local files only: every video of the session must be cached and verified first.
+            require_media_ready(db, owner, agent, item.id)
+            # Persist ownership of the selected Agent before dispatch: fast Agent ack
+            # can arrive while the HTTP request is still waiting.
+            acquire_live_claim(db,item,agent["id"])
+            item.agent_id=agent["id"]
+            db.commit()
+            # Do not release the claim on ambiguous transport timeouts.
+            view = play_product(db, owner, agent, item, pid, "immediate", "start", idempotency_key)
+        return answer(view, owner, session_id)
 
 def require_media_ready(db, owner: dict, agent: dict, session_id: int):
     """409 MEDIA_NOT_READY unless the Agent cached every video of the session (checked before any playback)."""
@@ -966,42 +973,46 @@ def finish_session(session_id: int, owner: Owner):
     If the Agent is offline or no longer plays it, nothing is sent: when it reconnects still playing an ENDED
     session, reconcile_playback stops it.
     """
-    from app.cloud_agents import cancel_commands, create_command
-    from app.live import playback_of
-    sync_agent_events(owner["id"])
-    with SessionLocal() as db:
-        item = get_session(db, session_id, owner)
-        if item.status == "ENDED":
-            return serialize(db, item)
-        if item.status == "DRAFT":
-            return abandon_start(db, owner, item)
-        if item.status != "RUNNING":
-            raise HTTPException(409, "Phiên chưa bắt đầu")
-        playing = is_running_owner(item)
-        agent = agent_by_id(owner["id"], item.agent_id)
-        counters = playback_of(agent) if playing else {}
-        item.status = "ENDED"
-        item.ended_at = now()
-        detail = ("stale=true" if not playing else
-                  f"transitions={counters.get('transition_count', 0)};errors={counters.get('error_count', 0)};"
-                  f"recoveries={counters.get('recovery_count', 0)}")
-        event(db, session_id, "ENDED", item.current_product_id, detail)
-        db.commit()
-        from app.tiktok_chat import release_session
-        release_session(owner["id"], item.agent_id)
-        if item.agent_id:
-            cancel_commands(item.agent_id, session_id=session_id)
-        stop = None
-        if playing:
-            stop = create_command(item.agent_id, owner["id"], "playback_stop", session_id=session_id,
-                                  idempotency_key=f"finish:{session_id}",
-                                  context={"module":"live_sessions","action":"finish","session_id":session_id})
-        elif agent and agent["online"]:
-            # User finished and the Agent reports idle; keep an offline claim reserved
-            # until a confirmed stop/reconciliation rather than guessing.
-            release_live_claim(db,session_id)
+    with owner_voice_lock(owner["id"]):
+        from app.cloud_agents import cancel_commands, create_command
+        from app.live import playback_of
+        sync_agent_events(owner["id"])
+        with SessionLocal() as db:
+            item = get_session(db, session_id, owner)
+            if item.status == "ENDED":
+                return serialize(db, item)
+            if item.status == "DRAFT":
+                return abandon_start(db, owner, item)
+            if item.status != "RUNNING":
+                raise HTTPException(409, "Phiên chưa bắt đầu")
+            playing = is_running_owner(item)
+            agent = agent_by_id(owner["id"], item.agent_id)
+            counters = playback_of(agent) if playing else {}
+            item.status = "ENDED"
+            item.ended_at = now()
+            detail = ("stale=true" if not playing else
+                      f"transitions={counters.get('transition_count', 0)};errors={counters.get('error_count', 0)};"
+                      f"recoveries={counters.get('recovery_count', 0)}")
+            event(db, session_id, "ENDED", item.current_product_id, detail)
             db.commit()
-        return {**serialize(db, item), "command": stop}
+            from app.tiktok_chat import release_session
+            release_session(owner["id"], item.agent_id)
+            if item.agent_id:
+                cancel_commands(item.agent_id, session_id=session_id)
+            # G-OmniVoice: unfinished clips of this LIVE are cancelled and its GPU lease released (no-op otherwise).
+            from app import tts_orchestrator
+            tts_orchestrator.session_ended(owner["id"], session_id)
+            stop = None
+            if playing:
+                stop = create_command(item.agent_id, owner["id"], "playback_stop", session_id=session_id,
+                                      idempotency_key=f"finish:{session_id}",
+                                      context={"module":"live_sessions","action":"finish","session_id":session_id})
+            elif agent and agent["online"]:
+                # User finished and the Agent reports idle; keep an offline claim reserved
+                # until a confirmed stop/reconciliation rather than guessing.
+                release_live_claim(db,session_id)
+                db.commit()
+            return {**serialize(db, item), "command": stop}
 
 def abandon_start(db, owner: dict, item):
     """Cancel a start whose outcome is unknown (DRAFT still holding the claim), when it is provably not on air."""

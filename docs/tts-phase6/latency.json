@@ -1,0 +1,600 @@
+{
+  "samples": 208,
+  "available_wavs": 208,
+  "byte_identical_agent_cache": 208,
+  "pcm16_mono_24k": 208,
+  "percentile_method": "nearest-rank p95 only n>=20; p50 median",
+  "groups": [
+    {
+      "scenario": "hit_direct",
+      "source": "generated",
+      "path": "direct",
+      "n": 4,
+      "metrics": {
+        "e2e_ms": {
+          "n": 4,
+          "p50": 2295.5,
+          "p95": null,
+          "min": 2278,
+          "max": 2402
+        },
+        "orchestration_ms": {
+          "n": 4,
+          "p50": 63.0,
+          "p95": null,
+          "min": 51,
+          "max": 78
+        },
+        "delivery_ms": {
+          "n": 4,
+          "p50": 25.0,
+          "p95": null,
+          "min": 22,
+          "max": 40
+        },
+        "gpu_queue_ms": {
+          "n": 4,
+          "p50": 0.0,
+          "p95": null,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "inference_ms": {
+          "n": 4,
+          "p50": 2062.5,
+          "p95": null,
+          "min": 2062.0,
+          "max": 2171.0
+        },
+        "wait_audio_ms": {
+          "n": 4,
+          "p50": 1984.0,
+          "p95": null,
+          "min": 1952,
+          "max": 2109
+        },
+        "download_ms": {
+          "n": 4,
+          "p50": 15.0,
+          "p95": null,
+          "min": 15,
+          "max": 15
+        },
+        "obs_startup_ms": {
+          "n": 1,
+          "p50": 156,
+          "p95": null,
+          "min": 156,
+          "max": 156
+        }
+      }
+    },
+    {
+      "scenario": "hit_direct",
+      "source": "result_cache",
+      "path": "direct",
+      "n": 27,
+      "metrics": {
+        "e2e_ms": {
+          "n": 27,
+          "p50": 355,
+          "p95": 407,
+          "min": 143,
+          "max": 438
+        },
+        "orchestration_ms": {
+          "n": 27,
+          "p50": 46,
+          "p95": 83,
+          "min": 23,
+          "max": 84
+        },
+        "delivery_ms": {
+          "n": 27,
+          "p50": 34,
+          "p95": 69,
+          "min": 17,
+          "max": 72
+        },
+        "gpu_queue_ms": {
+          "n": 27,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 27,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 27,
+          "p50": 47,
+          "p95": 77,
+          "min": 15,
+          "max": 78
+        },
+        "download_ms": {
+          "n": 27,
+          "p50": 0,
+          "p95": 15,
+          "min": 0,
+          "max": 15
+        }
+      }
+    },
+    {
+      "scenario": "hit_relay",
+      "source": "generated",
+      "path": "relay",
+      "n": 3,
+      "metrics": {
+        "e2e_ms": {
+          "n": 3,
+          "p50": 2203,
+          "p95": null,
+          "min": 2067,
+          "max": 2276
+        },
+        "orchestration_ms": {
+          "n": 3,
+          "p50": 84,
+          "p95": null,
+          "min": 80,
+          "max": 85
+        },
+        "delivery_ms": {
+          "n": 3,
+          "p50": 38,
+          "p95": null,
+          "min": 23,
+          "max": 48
+        },
+        "gpu_queue_ms": {
+          "n": 3,
+          "p50": 0.0,
+          "p95": null,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "inference_ms": {
+          "n": 3,
+          "p50": 1953.0,
+          "p95": null,
+          "min": 1828.0,
+          "max": 2031.0
+        },
+        "wait_audio_ms": {
+          "n": 3,
+          "p50": 1875,
+          "p95": null,
+          "min": 1765,
+          "max": 1922
+        },
+        "download_ms": {
+          "n": 3,
+          "p50": 15,
+          "p95": null,
+          "min": 15,
+          "max": 31
+        }
+      }
+    },
+    {
+      "scenario": "hit_relay",
+      "source": "result_cache",
+      "path": "relay",
+      "n": 29,
+      "metrics": {
+        "e2e_ms": {
+          "n": 29,
+          "p50": 348,
+          "p95": 418,
+          "min": 310,
+          "max": 420
+        },
+        "orchestration_ms": {
+          "n": 29,
+          "p50": 47,
+          "p95": 92,
+          "min": 24,
+          "max": 101
+        },
+        "delivery_ms": {
+          "n": 29,
+          "p50": 44,
+          "p95": 64,
+          "min": 16,
+          "max": 76
+        },
+        "gpu_queue_ms": {
+          "n": 29,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 29,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 29,
+          "p50": 47,
+          "p95": 63,
+          "min": 31,
+          "max": 77
+        },
+        "download_ms": {
+          "n": 29,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        }
+      }
+    },
+    {
+      "scenario": "intro_body",
+      "source": "result_cache",
+      "path": "direct",
+      "n": 5,
+      "metrics": {
+        "e2e_ms": {
+          "n": 5,
+          "p50": 1997,
+          "p95": null,
+          "min": 1939,
+          "max": 3874
+        },
+        "orchestration_ms": {
+          "n": 5,
+          "p50": 110,
+          "p95": null,
+          "min": 62,
+          "max": 137
+        },
+        "delivery_ms": {
+          "n": 5,
+          "p50": 44,
+          "p95": null,
+          "min": 24,
+          "max": 58
+        },
+        "gpu_queue_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 5,
+          "p50": 15,
+          "p95": null,
+          "min": 14,
+          "max": 46
+        },
+        "download_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        }
+      }
+    },
+    {
+      "scenario": "miss_direct",
+      "source": "generated",
+      "path": "direct",
+      "n": 30,
+      "metrics": {
+        "e2e_ms": {
+          "n": 30,
+          "p50": 2826.0,
+          "p95": 3913,
+          "min": 2075,
+          "max": 4465
+        },
+        "orchestration_ms": {
+          "n": 30,
+          "p50": 74.0,
+          "p95": 126,
+          "min": 40,
+          "max": 133
+        },
+        "delivery_ms": {
+          "n": 30,
+          "p50": 39.0,
+          "p95": 65,
+          "min": 16,
+          "max": 68
+        },
+        "gpu_queue_ms": {
+          "n": 30,
+          "p50": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "inference_ms": {
+          "n": 30,
+          "p50": 2610.0,
+          "p95": 3718.0,
+          "min": 1859.0,
+          "max": 4234.0
+        },
+        "wait_audio_ms": {
+          "n": 30,
+          "p50": 2530.5,
+          "p95": 3609,
+          "min": 1750,
+          "max": 4093
+        },
+        "download_ms": {
+          "n": 30,
+          "p50": 14.0,
+          "p95": 16,
+          "min": 0,
+          "max": 31
+        }
+      }
+    },
+    {
+      "scenario": "prepared",
+      "source": "result_cache",
+      "path": "direct",
+      "n": 5,
+      "metrics": {
+        "e2e_ms": {
+          "n": 5,
+          "p50": 276,
+          "p95": null,
+          "min": 250,
+          "max": 308
+        },
+        "orchestration_ms": {
+          "n": 5,
+          "p50": 35,
+          "p95": null,
+          "min": 23,
+          "max": 43
+        },
+        "delivery_ms": {
+          "n": 5,
+          "p50": 21,
+          "p95": null,
+          "min": 17,
+          "max": 57
+        },
+        "gpu_queue_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 5,
+          "p50": 31,
+          "p95": null,
+          "min": 15,
+          "max": 47
+        },
+        "download_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        }
+      }
+    },
+    {
+      "scenario": "reconnect",
+      "source": "result_cache",
+      "path": "direct",
+      "n": 5,
+      "metrics": {
+        "e2e_ms": {
+          "n": 5,
+          "p50": 295,
+          "p95": null,
+          "min": 281,
+          "max": 311
+        },
+        "orchestration_ms": {
+          "n": 5,
+          "p50": 46,
+          "p95": null,
+          "min": 40,
+          "max": 71
+        },
+        "delivery_ms": {
+          "n": 5,
+          "p50": 42,
+          "p95": null,
+          "min": 28,
+          "max": 44
+        },
+        "gpu_queue_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 5,
+          "p50": 31,
+          "p95": null,
+          "min": 15,
+          "max": 46
+        },
+        "download_ms": {
+          "n": 5,
+          "p50": 0,
+          "p95": null,
+          "min": 0,
+          "max": 0
+        }
+      }
+    },
+    {
+      "scenario": "soak_file_db_short",
+      "source": "generated",
+      "path": "direct",
+      "n": 1,
+      "metrics": {
+        "e2e_ms": {
+          "n": 1,
+          "p50": 2142,
+          "p95": null,
+          "min": 2142,
+          "max": 2142
+        },
+        "orchestration_ms": {
+          "n": 1,
+          "p50": 107,
+          "p95": null,
+          "min": 107,
+          "max": 107
+        },
+        "delivery_ms": {
+          "n": 1,
+          "p50": 20,
+          "p95": null,
+          "min": 20,
+          "max": 20
+        },
+        "gpu_queue_ms": {
+          "n": 1,
+          "p50": 0.0,
+          "p95": null,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "inference_ms": {
+          "n": 1,
+          "p50": 1891.0,
+          "p95": null,
+          "min": 1891.0,
+          "max": 1891.0
+        },
+        "wait_audio_ms": {
+          "n": 1,
+          "p50": 1813,
+          "p95": null,
+          "min": 1813,
+          "max": 1813
+        },
+        "download_ms": {
+          "n": 1,
+          "p50": 14,
+          "p95": null,
+          "min": 14,
+          "max": 14
+        },
+        "obs_startup_ms": {
+          "n": 1,
+          "p50": 172,
+          "p95": null,
+          "min": 172,
+          "max": 172
+        }
+      }
+    },
+    {
+      "scenario": "soak_file_db_short",
+      "source": "result_cache",
+      "path": "direct",
+      "n": 99,
+      "metrics": {
+        "e2e_ms": {
+          "n": 99,
+          "p50": 338,
+          "p95": 388,
+          "min": 191,
+          "max": 406
+        },
+        "orchestration_ms": {
+          "n": 99,
+          "p50": 70,
+          "p95": 100,
+          "min": 45,
+          "max": 113
+        },
+        "delivery_ms": {
+          "n": 99,
+          "p50": 37,
+          "p95": 69,
+          "min": 12,
+          "max": 89
+        },
+        "gpu_queue_ms": {
+          "n": 99,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "inference_ms": {
+          "n": 99,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0
+        },
+        "wait_audio_ms": {
+          "n": 99,
+          "p50": 31,
+          "p95": 63,
+          "min": 14,
+          "max": 78
+        },
+        "download_ms": {
+          "n": 99,
+          "p50": 0,
+          "p95": 15,
+          "min": 0,
+          "max": 15
+        },
+        "obs_startup_ms": {
+          "n": 99,
+          "p50": 156,
+          "p95": 172,
+          "min": 0,
+          "max": 172
+        }
+      }
+    }
+  ]
+}

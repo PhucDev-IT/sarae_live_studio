@@ -1,0 +1,17 @@
+{
+  "arm": "S-ASR",
+  "ref": "F:\\Coder\\sarae_live_studio\\voice-server\\bench\\runs\\p0_20261102_2251\\refs\\main.wav",
+  "ref_text_given": null,
+  "ref_text_used": "Trời ơi bán hàng gọi là chơi đẹp lắm Bây giờ em cũng bảo các chị rồi em không có giàu nghèo gì 1-2 chùm ship cả Thật sự luôn.",
+  "asr_used": true,
+  "prompt_s": 2.365,
+  "ref_rms": 0.05642198398709297,
+  "tokens_shape": [
+    8,
+    172
+  ],
+  "tokens_seconds": 6.88,
+  "save_s": 0.0023,
+  "file": "prompts\\S-ASR.pt",
+  "file_bytes": 12763
+}

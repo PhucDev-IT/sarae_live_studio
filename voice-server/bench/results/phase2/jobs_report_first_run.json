@@ -1,0 +1,253 @@
+{
+  "startup_s": 25.8,
+  "A_burst_30": {
+    "wall_s": 169.3,
+    "states": 30,
+    "create_ms": {
+      "n": 30,
+      "p50": 2.8,
+      "p95": 4.7,
+      "max": 7.2
+    },
+    "download_ms": {
+      "n": 30,
+      "p50": 55.1,
+      "p95": 121.6,
+      "max": 221.5
+    },
+    "download_bytes_p50": 224684.0,
+    "inference_ms": {
+      "n": 30,
+      "p50": 2484.5,
+      "p95": 25472.6,
+      "max": 37234.0
+    },
+    "queue_ms_live": {
+      "n": 10,
+      "p50": 60195.5,
+      "p95": 71794.9,
+      "max": 72906.0
+    },
+    "queue_ms_preview": {
+      "n": 10,
+      "p50": 137219.5,
+      "p95": 148487.4,
+      "max": 150485.0
+    },
+    "queue_ms_prepare": {
+      "n": 10,
+      "p50": 156547.0,
+      "p95": 165711.8,
+      "max": 166844.0
+    }
+  },
+  "B_live_under_prepare_load": {
+    "live_queue_ms": {
+      "n": 10,
+      "p50": 1406.5,
+      "p95": 2446.2,
+      "max": 2453.0
+    },
+    "live_inference_ms": {
+      "n": 10,
+      "p50": 2484.5,
+      "p95": 2666.4,
+      "max": 2688.0
+    },
+    "prepare_queue_ms": {
+      "n": 40,
+      "p50": 127180.0,
+      "p95": 189887.9,
+      "max": 194844.0
+    },
+    "fair_turns": 4,
+    "states": {
+      "done": 50,
+      "expired": 0,
+      "failed": 0
+    }
+  },
+  "C_long_before_live": {
+    "lease_ready_for_live": false,
+    "lease_reason": "LONG_JOB_RUNNING",
+    "estimated_remaining_s": 29.6,
+    "live_waited_s": 31.5,
+    "live_queue_ms": 29766.0,
+    "long_audio_s": 114.0,
+    "long_inference_s": 32.8,
+    "new_long_during_live": 423
+  },
+  "status_end": {
+    "memory": {
+      "allocated_gib": 1.9,
+      "reserved_gib": 2.58,
+      "peak_allocated_gib": 5.466,
+      "peak_reserved_gib": 5.785,
+      "device_free_gib": 8.372,
+      "device_total_gib": 12.0
+    },
+    "gate": {
+      "pending": 0,
+      "busy": false,
+      "running": null,
+      "queued": {
+        "live": 0,
+        "preview": 0,
+        "prepare": 0,
+        "long": 0,
+        "benchmark": 0
+      },
+      "queue_limits": {
+        "system": 1000,
+        "live": 20,
+        "preview": 20,
+        "prepare": 60,
+        "long": 5,
+        "benchmark": 2
+      },
+      "rejected": 0,
+      "timed_out": 0,
+      "max_active_seen": 1,
+      "fair_turns": 4,
+      "by_class": {
+        "system": {
+          "started": 1,
+          "done": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "live": {
+          "started": 21,
+          "done": 21,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "preview": {
+          "started": 11,
+          "done": 11,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "prepare": {
+          "started": 50,
+          "done": 50,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "long": {
+          "started": 1,
+          "done": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "benchmark": {
+          "started": 0,
+          "done": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        }
+      }
+    },
+    "jobs": {
+      "live": {
+        "done": 21
+      },
+      "preview": {
+        "done": 10
+      },
+      "prepare": {
+        "done": 50
+      },
+      "long": {
+        "done": 1
+      }
+    },
+    "prompt_cache": {
+      "ram_hit": 82,
+      "disk_hit": 0,
+      "encoded": 1,
+      "disk_rejected": 0,
+      "ram_entries": 1
+    },
+    "result_cache": {
+      "hit": 0,
+      "miss": 82,
+      "stored": 82,
+      "evicted": 0,
+      "rejected": 0,
+      "files": 82,
+      "bytes": 24378488,
+      "pinned": 82
+    },
+    "latency": {
+      "job_inference": {
+        "n": 82,
+        "p50_ms": 2547.0,
+        "p95_ms": 20400.7,
+        "max_ms": 55766.0
+      },
+      "job_queue_wait": {
+        "live": {
+          "n": 21,
+          "p50_ms": 2453.0,
+          "p95_ms": 70437.0,
+          "max_ms": 72906.0
+        },
+        "preview": {
+          "n": 10,
+          "p50_ms": 137219.5,
+          "p95_ms": 148487.4,
+          "max_ms": 150485.0
+        },
+        "prepare": {
+          "n": 50,
+          "p50_ms": 136703.0,
+          "p95_ms": 188676.1,
+          "max_ms": 194844.0
+        },
+        "long": {
+          "n": 1,
+          "p50_ms": 0.0,
+          "p95_ms": 0.0,
+          "max_ms": 0.0
+        },
+        "benchmark": {
+          "n": 0
+        }
+      },
+      "http_synthesize": {
+        "n": 0
+      },
+      "http_job_audio": {
+        "n": 30,
+        "p50_ms": 1.0,
+        "p95_ms": 2.4,
+        "max_ms": 8.6
+      }
+    },
+    "generated_not_consumed": 0,
+    "discarded_after_inference": 0
+  },
+  "metrics_sample": [
+    "tts_jobs_created_total{how=\"new\",priority=\"live\"} 21",
+    "tts_jobs_created_total{how=\"new\",priority=\"long\"} 1",
+    "tts_jobs_created_total{how=\"new\",priority=\"prepare\"} 50",
+    "tts_jobs_created_total{how=\"new\",priority=\"preview\"} 10",
+    "tts_jobs_finished_total{priority=\"live\",state=\"done\"} 21",
+    "tts_jobs_finished_total{priority=\"long\",state=\"done\"} 1",
+    "tts_jobs_finished_total{priority=\"prepare\",state=\"done\"} 50",
+    "tts_jobs_finished_total{priority=\"preview\",state=\"done\"} 10"
+  ]
+}

@@ -152,6 +152,45 @@ class SessionChatTests(SaasTestCase):
         self.assertEqual(self.client.post(f"/api/live/sessions/{self.draft}/chat/connect").status_code, 409)
         self.assertEqual(self.client.get(f"/api/live/sessions/{self.sid}/chat", headers=self.B).status_code, 404)
 
+    def test_own_account_and_ignored_usernames_are_shown_but_never_answered(self):
+        from types import SimpleNamespace
+        from TikTokLive.events import CommentEvent
+
+        config = self.client.get("/api/ai/live/reply-config").json()
+        saved = self.client.put("/api/ai/live/reply-config", json={**config, "ignored_usernames": ["@Spam.Bot", "spam.bot", " "]})
+        self.assertEqual(saved.json()["ignored_usernames"], ["spam.bot"])
+        comments = [("shop.ao_dep", "63kg mặc không vừa nha"),  # the LIVE account itself (an AI reply or typed by hand)
+                    ("SHOP.ao_dep", "chốt đơn nha"), ("spam.bot", "xem live bên em"), ("lan.nguyen", "55kg mặc size gì")]
+        ids = ["m0", "m1", "m2", "m3", "m3"]  # TikTok delivers the last comment twice (same msg_id)
+        comments.append(comments[-1])
+
+        class FakeClient:  # stands in for TikTokLiveClient: delivers the comments, then the LIVE ends
+            room_id = 1
+
+            def __init__(self, unique_id):
+                self.handlers = {}
+
+            def on(self, event_type):
+                return lambda handler: self.handlers.setdefault(event_type, handler)
+
+            async def connect(self):
+                for (user, comment), msg_id in zip(comments, ids):  # like TikTokLive: the id is in event.common
+                    await self.handlers[CommentEvent](SimpleNamespace(
+                        user=SimpleNamespace(unique_id=user, nickname=user, id="7" + msg_id[1:]), comment=comment,
+                        common=SimpleNamespace(msg_id=msg_id)))
+
+        reader = tiktok_chat.readers(self.key)
+        reader.username, reader.generation, reader.status = "shop.ao_dep", 1, "connecting"
+        with patch.object(tiktok_chat, "enqueue") as enqueue:
+            reader._worker(1, "shop.ao_dep", FakeClient)
+        answered = [call.args[2] for call in enqueue.call_args_list]
+        self.assertEqual([(m["username"], m["msg_id"]) for m in answered], [("lan.nguyen", "m3")],
+                         "own account and ignored users are skipped; a comment delivered twice is answered once")
+        self.assertEqual(len(reader.snapshot()["messages"]), 5, "ignored comments still show in the chat")
+        logs = tiktok_chat.monitors(self.key).snapshot()["logs"]
+        self.assertEqual([(x["username"], x["decision"]) for x in logs if x["stage"] == "IGNORED"],
+                         [("shop.ao_dep", "own_account"), ("SHOP.ao_dep", "own_account"), ("spam.bot", "ignored_user")])
+
     def test_account_without_username_is_explained(self):
         with self.Session() as db:
             db.get(LiveSession, self.sid).tiktok_account_id = 8

@@ -197,6 +197,10 @@ class CloudWorker:
                             self._on_state("running", None)
                         self._set_connection(True, "connected")
                         self.connection["server_time"] = reply.get("server_time")
+                        try:
+                            self._router.voice.server_offset = datetime.fromisoformat(reply["server_time"]).timestamp() - time.time()
+                        except (KeyError, TypeError, ValueError):
+                            pass
                         backoff.reset()
                 except CloudError as exc:
                     if exc.fatal:
@@ -287,7 +291,7 @@ class CloudWorker:
                 entry["status"] = "running"
                 log.info("Thực thi lệnh Cloud %s (lần %s)", kind, command.get("attempt", 1))
                 try:
-                    success, result, error = True, self._result_text(self._router.execute(kind, command.get("payload"))), None
+                    success, result, error = True, self._result_text(self._router.execute(kind, command.get("payload"), **({"command_id": command_id, "session_id": command.get("session_id")} if (command.get("payload") or {}).get("provider") == "omnivoice" else {}))), None
                 except Exception as exc:  # noqa: BLE001
                     failure = as_agent_error(exc)
                     # The Cloud shows this text to the OWNER (rpc -> HTTP 502 detail): plain message, no JSON.

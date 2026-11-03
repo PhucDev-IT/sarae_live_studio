@@ -16,7 +16,6 @@ from app.identity import db_open
 
 KEY_FILE = DATA_DIR / "credential.key"
 PROVIDERS = ("gemini", "openai")
-VOICE_PROVIDERS = ("elevenlabs",)
 _fernet: Fernet | None = None
 
 
@@ -56,7 +55,7 @@ def _table(db):
 
 
 def _provider(provider: str) -> str:
-    if provider not in PROVIDERS + VOICE_PROVIDERS:
+    if provider not in PROVIDERS:
         raise HTTPException(422, "Nhà cung cấp không được hỗ trợ")
     return provider
 

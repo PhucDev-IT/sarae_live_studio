@@ -12,6 +12,8 @@ from app.tiktok_chat import router as tiktok_chat_router
 from app.ai_service import router as ai_router
 from app.ai_live_batches import router as ai_live_router
 from app.ai_voice import router as ai_voice_router
+from app.voice_profiles import router as voice_profiles_router
+from app.tts_orchestrator import agent_router as tts_agent_router, owner_router as tts_owner_router
 from app.verification_monitor import router as verification_monitor_router
 from app.cloud_agents import router as cloud_agents_router
 from app.identity import router as identity_router
@@ -39,8 +41,13 @@ def start_runtime_janitor():
     upgrade()
     from app.storage_models import ensure_schema
     ensure_schema()
+    from app import tts_orchestrator, voice_profiles
+    voice_profiles.ensure_schema()
+    tts_orchestrator.ensure_schema()
     from app.runtime import start_janitor
     start_janitor()
+    # G-OmniVoice: LIVE leases, voice profile sync and utterance reconciliation (no-op without a TTS server URL).
+    tts_orchestrator.start_loop()
 
 
 @app.middleware("http")
@@ -70,6 +77,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["X-Sarae-Error", "X-Voice-Revision"],
 )
 
 
@@ -87,10 +95,13 @@ app.include_router(tiktok_chat_session_router)
 app.include_router(ai_router)
 app.include_router(ai_live_router)
 app.include_router(ai_voice_router)
+app.include_router(voice_profiles_router)
+app.include_router(tts_owner_router)
 app.include_router(ai_answers_router)
 app.include_router(sales_brain_router)
 app.include_router(playback_policy_router)
 app.include_router(verification_monitor_router)
+app.include_router(tts_agent_router)
 app.include_router(cloud_agents_router)
 app.include_router(identity_router)
 app.include_router(agent_library_router)

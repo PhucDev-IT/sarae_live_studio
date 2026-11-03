@@ -163,35 +163,21 @@ def test_invalid_input_is_rejected(setup):
         voice.speak("hi", intro="x" * 121)
 
 
-def test_switch_provider_keeps_queued_job_snapshot(setup):
-    voice, ws, synth, _ = setup
-    class Eleven:
-        requires_key = True
-        def __init__(self):
-            self.calls = []
-        def normalize(self, model, voice_id, rate, settings):
-            return model, dict(settings or {})
-        def synthesize(self, text, voice_id, model, settings, output, api_key, first_audio):
-            self.calls.append((text, voice_id, model, settings, api_key))
-            first_audio()
-            output.write_bytes(b"ID3eleven")
-    eleven = Eleven()
-    voice._registry.register("elevenlabs", eleven)
-    voice.key_resolver = lambda provider: "mock-key"
-    synth.gate.clear()
-    voice.speak("Câu Edge đang chờ.")
-    voice.speak("Câu Eleven đang chờ.", provider="elevenlabs", model="eleven_flash_v2_5",
-                voice="voice123", settings={"stability": 0.6})
-    synth.gate.set()
-    status = wait_idle(voice, lambda s: s["stats"]["spoken"] == 2)
-    assert [c[0] for c in synth.calls] == ["Câu Edge đang chờ."]
-    assert eleven.calls[0][:3] == ("Câu Eleven đang chờ.", "voice123", "eleven_flash_v2_5")
-    assert eleven.calls[0][-1] == "mock-key"
-    assert status["last"]["provider"] == "elevenlabs"
-    assert len(ws.played) == 2
-
-
 ANSWER = "Mẫu này hai trăm nghìn nha."
+
+
+def test_queued_edge_voice_keeps_its_snapshot(setup):
+    voice, ws, synth, _ = setup
+    synth.gate.clear()
+    voice.speak('Câu đầu đang chờ.', voice='vi-VN-HoaiMyNeural', rate=0)
+    voice.speak('Câu tiếp theo.', voice='vi-VN-NamMinhNeural', rate=10)
+    synth.gate.set()
+    status = wait_idle(voice, lambda s: s['stats']['spoken'] == 2)
+    assert synth.calls == [('Câu đầu đang chờ.', 'vi-VN-HoaiMyNeural', '+0%'),
+                           ('Câu tiếp theo.', 'vi-VN-NamMinhNeural', '+10%')]
+    assert status['last']['provider'] == 'edge'
+    assert 'elevenlabs' not in status['capabilities']['providers']
+    assert len(ws.played) == 2
 
 
 def test_intro_then_body_and_body_cached_across_viewers(setup):

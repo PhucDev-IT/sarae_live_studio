@@ -39,7 +39,10 @@ MAX_INTRO_CHARS = 120
 MAX_PREPARE_TEXTS = 40
 
 
-class VoiceEngine:
+from sarae_agent.voice.jobs import JobVoiceMixin
+
+
+class VoiceEngine(JobVoiceMixin):
     MAX_QUEUE = 4
     DEFAULT_TTL = 120.0
     DUCK_DB = 12.0
@@ -52,13 +55,11 @@ class VoiceEngine:
     def __init__(self, config: ConfigStore, obs: ObsController,
                  synthesize: Callable[[str, str, str, str], None] | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 registry: ProviderRegistry | None = None,
-                 key_resolver: Callable[[str], str | None] | None = None):
+                 registry: ProviderRegistry | None = None):
         self._config = config
         self._obs = obs
         self._legacy_synthesize = synthesize
         self._registry = registry or default_registry()
-        self.key_resolver = key_resolver
         self._clock = clock
         self._cond = threading.Condition()
         self._queue: deque[dict] = deque()
@@ -129,9 +130,8 @@ class VoiceEngine:
                 self._legacy_synthesize(text, voice, str(temp), f"{rate:+d}%")
             else:
                 provider_impl = self._registry.get(provider)
-                key_value = self.key_resolver(provider) if provider_impl.requires_key and self.key_resolver else None
                 provider_impl.synthesize(text, voice, spec["model"], spec["settings"], temp,
-                    key_value, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
+                    None, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
                                                 provider, int((self._clock() - started) * 1000)))
             if not temp.is_file() or temp.stat().st_size == 0:
                 raise AgentError("TTS_FAILED", "Dịch vụ TTS không trả về âm thanh", retryable=True)
@@ -146,7 +146,7 @@ class VoiceEngine:
     def _prune_cache(self) -> None:
         with self._prune_lock:
             files = []
-            for path in self._cache_dir.glob("*.mp3"):
+            for path in list(self._cache_dir.glob("*.mp3")) + list(self._cache_dir.glob("*.wav")):
                 if path.name.startswith("tmp_"):
                     continue  # being written by the other thread
                 try:
@@ -168,10 +168,13 @@ class VoiceEngine:
     # --- public API ----------------------------------------------------------------------
     def speak(self, text: str, voice: str = VOICES[0], obs_source: str | None = None, *, rate: int = 0,
               ttl_seconds: float | None = None, duck: bool = True, intro: str | None = None,
-              provider: str = "edge", model: str | None = None, settings: dict | None = None) -> dict:
+              provider: str = "edge", model: str | None = None, settings: dict | None = None,
+              tts: dict | None = None, command_id=None, session_id=None, fallback=None) -> dict:
         """Queue one sentence; returns at once with its place in the queue.
 
         ``intro`` (viewer names) is spoken right before ``text``; the two are cached apart so the body is reused."""
+        if provider == "omnivoice":
+            return self._job_speak(text, voice, rate, ttl_seconds, duck, intro, tts, command_id, session_id, fallback)
         spec = self._spec(provider, model, voice, rate, settings)
         text = self._check(text)
         if intro is not None:
@@ -197,10 +200,23 @@ class VoiceEngine:
                 "provider": provider, "model": spec["model"], "chars": _chars(item)}
 
     def prepare(self, texts: list[str], voice: str = VOICES[0], rate: int = 0, *,
-                provider: str = "edge", model: str | None = None, settings: dict | None = None) -> dict:
+                provider: str = "edge", model: str | None = None, settings: dict | None = None, tts_jobs=None, fallback=None) -> dict:
         """Generate texts into the cache ahead of time (returns at once; a second thread does the work)."""
         if not isinstance(texts, list) or not 1 <= len(texts) <= MAX_PREPARE_TEXTS:
             raise AgentError("INVALID_PARAMS", f"Danh sách chuẩn bị TTS từ 1 đến {MAX_PREPARE_TEXTS} câu")
+        if provider == "omnivoice":
+            if not tts_jobs or len(tts_jobs) != len(texts):
+                raise AgentError("INVALID_PARAMS", "tts_jobs không khớp texts")
+            with self._cond:
+                if self._closed:
+                    raise AgentError("TTS_UNAVAILABLE", "Voice engine đã dừng")
+                if len(self._prepare) + len(texts) > self.MAX_PREPARE_PENDING:
+                    raise AgentError("TTS_QUEUE_FULL", "Hàng đợi chuẩn bị đầy")
+                for text, ref in zip(texts, tts_jobs):
+                    self._prepare.append({"key": ref["utterance_id"], "omni": self._job_item(ref, text=text, voice=voice, fallback=fallback)})
+                self._ensure_preparer()
+                self._cond.notify_all()
+            return {"accepted": len(tts_jobs), "already_cached": 0}
         spec = self._spec(provider, model, voice, rate, settings)
         cleaned = [self._check(t) for t in texts]
         accepted = cached = 0
@@ -235,8 +251,14 @@ class VoiceEngine:
     def clear(self) -> dict:
         """Empty the queue and stop the sentence being spoken (emergency stop)."""
         with self._cond:
+            self._job_generation = getattr(self, "_job_generation", 0) + 1
             cleared = len(self._queue)
+            for item in self._queue:
+                if item.get("tts"):
+                    self._job_event(item, "cancelled", error_code="TTS_CANCELLED")
             self._queue.clear()
+            self._prepare.clear()
+            self._prepare_keys.clear()
             self.stats["cleared"] += cleared
             playing = self.current
             self._interrupt.set()
@@ -254,7 +276,8 @@ class VoiceEngine:
         with self._cond:
             speaking = " ".join(filter(None, (self.current["intro"], self.current["text"])))[:80] \
                 if self.current else None
-            return {"queue": len(self._queue), "speaking": speaking, "ducked": bool(self._ducked),
+            from sarae_agent import __version__
+            return {"version": __version__, "capabilities": {"providers": ["edge"] + (["omnivoice"] if self.job_provider else []), "tts_job": 1 if self.job_provider else 0, "audio_path": ["direct", "relay"]}, "queue": len(self._queue), "speaking": speaking, "ducked": bool(self._ducked),
                     "prepare_pending": len(self._prepare), "stats": dict(self.stats), "last": self.last}
 
     def close(self) -> None:
@@ -290,6 +313,9 @@ class VoiceEngine:
                     break
                 job = self._prepare.popleft()
             try:
+                if "omni" in job:
+                    self._job_audio(job["omni"], job["omni"]["tts"], interrupt=False)
+                    continue
                 if self._cached(job["key"]) is None:  # spoken (and cached) by the worker meanwhile: nothing to do
                     self._audio(job["text"], job["voice"], job["rate"], job["provider"],
                                 job["model"], job["settings"])
@@ -326,6 +352,9 @@ class VoiceEngine:
         self._restore()
 
     def _play(self, item: dict) -> None:
+        if item["provider"] == "omnivoice":
+            self._job_play(item)
+            return
         base = {"id": item["id"], "chars": _chars(item), "voice": item["voice"], "source": item["source"],
                 "provider": item["provider"], "model": item["model"]}
         if self._clock() > item["deadline"]:

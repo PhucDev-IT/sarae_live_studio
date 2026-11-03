@@ -36,11 +36,23 @@ def _norm(text: str) -> str:
     return normalize(text)
 
 
+def _target(reply: dict) -> int:
+    """Index in reply["comments"] of the viewer the next / current message answers (a merged reply answers every
+    viewer who asked the same question, one message each, in the order they asked)."""
+    return min(int(reply.get("comment_target") or 0), max(len(reply.get("comments") or []) - 1, 0))
+
+
+def _asked(reply: dict) -> float:
+    """When the current target viewer asked (monotonic)."""
+    each = reply.get("_comment_asked") or []
+    return each[_target(reply)] if _target(reply) < len(each) else reply["_asked"]
+
+
 def _viewer(reply: dict) -> dict:
-    """The comment the message answers: the first asker (a merged reply answers the same question for all).
+    """The comment the message answers: the current target viewer (see _target).
     A username TikTok would not accept for a mention is left out (the Agent then replies or chats normally)."""
     import re
-    c = reply["comments"][0] if reply.get("comments") else {}
+    c = reply["comments"][_target(reply)] if reply.get("comments") else {}
     username = str(c.get("username") or "")
     user_id = str(c.get("user_id") or "")
     return {"msg_id": str(c.get("msg_id") or "")[:80], "user_id": user_id if user_id.isdigit() else "",
@@ -98,10 +110,25 @@ def _expected_user_id(st) -> str | None:
 
 
 def _finish(st, reply: dict, status: str, error: str | None = None, **extra):
-    state = {"CONFIRMED": "sent", "SUBMITTED": "sent", "EXPIRED": "expired"}.get(status, "failed")
+    """Result for the current target viewer (called with st.lock held). The next viewer who asked the same question
+    is queued right away (pacing still applies); after the last one the reply's state is "sent" if any viewer got
+    the message."""
     delivery = {**(reply.get("comment_delivery") or _delivery(status)), "status": status, "error": error, **extra}
-    _touch(reply, comment=state, comment_delivery=delivery)
+    viewer = _viewer(reply)
+    results = [*(reply.get("comment_results") or []),
+               {"msg_id": viewer["msg_id"], "username": viewer["username"], "nickname": viewer["nickname"],
+                "status": status, "mode": delivery.get("mode"), "error": error}]
     _log(st, reply, status, {"mode": delivery.get("mode"), "error": error, "steps": delivery.get("steps")})
+    if _target(reply) + 1 < len(reply.get("comments") or []):
+        _touch(reply, comment="queued", comment_target=_target(reply) + 1, comment_results=results,
+               comment_delivery=_delivery("QUEUED"))
+        st.comment_queue.insert(0, reply["id"])
+        return
+    if any(r["status"] in SENT_STATUSES for r in results):
+        state = "sent"
+    else:
+        state = {"CONFIRMED": "sent", "SUBMITTED": "sent", "EXPIRED": "expired"}.get(status, "failed")
+    _touch(reply, comment=state, comment_delivery=delivery, comment_results=results)
 
 
 def _duplicate(st, reply: dict, now: float) -> str | None:
@@ -131,7 +158,7 @@ def pump(st):
             if reply is None or reply.get("comment") != "queued":
                 st.comment_queue.pop(0)
                 continue
-            age = now - reply["_asked"]
+            age = now - _asked(reply)
             if age > options.comment_max_age_seconds:
                 st.comment_queue.pop(0)
                 _finish(st, reply, "EXPIRED", f"Câu hỏi đã {int(age)} giây, quá hạn để comment")

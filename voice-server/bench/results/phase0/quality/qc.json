@@ -1,0 +1,42 @@
+{
+  "main": {
+    "label": "main",
+    "source": "C:\\Users\\Phuc\\Downloads\\voice_ref_pause_7s_test.wav",
+    "copy": "refs\\main.wav",
+    "sha256": "25b48ad4888ccd7dbd4e072095318b124e6ae8c5f9d63e63fe90e7071ecc2552",
+    "duration_s": 7.54,
+    "peak_dbfs": -6.08,
+    "rms_dbfs": -24.97,
+    "clipped_samples": 0,
+    "leading_silence_ms": 0.0,
+    "trailing_silence_ms": 760.0,
+    "first_100ms_db": -42.8,
+    "last_100ms_db": -180.0,
+    "first_sample": 0.01752,
+    "last_sample": 0.0,
+    "longest_pause_ms": 760.0,
+    "sample_rate": 48000,
+    "warnings": []
+  },
+  "cut": {
+    "label": "cut",
+    "source": "C:\\Users\\Phuc\\Downloads\\voice_ref.wav",
+    "copy": "refs\\cut.wav",
+    "sha256": "416d4f8d64e507cb674972ebd32b0a93f6acdd55eca9a1628d76f5c72313482b",
+    "duration_s": 7.999,
+    "peak_dbfs": -6.08,
+    "rms_dbfs": -24.69,
+    "clipped_samples": 0,
+    "leading_silence_ms": 0.0,
+    "trailing_silence_ms": 0.0,
+    "first_100ms_db": -42.8,
+    "last_100ms_db": -29.6,
+    "first_sample": 0.01752,
+    "last_sample": 0.12161,
+    "longest_pause_ms": 550.0,
+    "sample_rate": 48000,
+    "warnings": [
+      "end_may_be_cut"
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "url": "http://127.0.0.1:7862",
+  "upload_check": {
+    "ref_sha256": "25b48ad4888ccd7dbd4e072095318b124e6ae8c5f9d63e63fe90e7071ecc2552",
+    "uploads_seen": 93,
+    "any_identical": true,
+    "distinct_hashes": [
+      "10688c850009721394d74cebbee982642769e3ead31c7a1ccf0ea7618f25ec1b",
+      "170907b79ee90927fcd35d981075d3debdd4e3fc23ee756a7a5571053e28d247",
+      "1d49df80414c6509febd1d73d356cde866eb065ac9cf96f909e9fa3d3290aef0",
+      "21b6efb96a5534f4068f839a2d39de6fb83a77b88c42ae97fb063d07dec92c35",
+      "25b48ad4888ccd7dbd4e072095318b124e6ae8c5f9d63e63fe90e7071ecc2552",
+      "2a720a6ac6d7069d7b6177cae6fadbfb1bc5781ce9d56b6ddaef25bd56a997a5",
+      "2d48c58de4d319b445f02649e2d1d9a0dad135bb62cfad0748eb6785615b6fb3",
+      "37cae63da7400189c6fa0c3cf26d4b731c15019f9e9a8b8928ea51bd799cdbbb",
+      "432729e3d3c801a70776aba15c8f3dbd90a2d53ce7f18c0aa24285f2339c0ea4",
+      "4359ad9778fb78a707cea00da835b3ae2da4b309adc0f9d60b7896d327507c45"
+    ]
+  }
+}

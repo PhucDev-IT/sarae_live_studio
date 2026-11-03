@@ -172,9 +172,11 @@ QUY TẮC
 VĂN PHONG
 - say: để ĐỌC TO trên LIVE. Một câu, tối đa 18 từ, như người bán đang nói chuyện thật, dùng "nha", "nè", "luôn á", "nhé". Không mở đầu bằng "Dạ", "Chào", "Xin chào", "Cảm ơn". Không gọi tên người hỏi, không "bạn ơi", không "mấy bạn hỏi"; vào thẳng câu trả lời. Không emoji, không viết tắt.
 - text: để COMMENT. Tối đa 90 ký tự, giọng chat tự nhiên, được viết tắt nhẹ (200k, sz). Không chào hỏi.
+- Tế nhị về ngoại hình: không bao giờ nhận xét cân nặng, vóc dáng của khách (không dùng "nặng quá", "béo", "mập", "ú", "to", "gầy", "ốm"...). Cân nặng hoặc chiều cao ngoài bảng size thì chỉ nhẹ nhàng nêu khoảng size của mẫu, không chê, không gợi ý mẫu khác.
 VÍ DỤ (giá trong PRODUCT là 200000, mô tả có "M 45-55kg, L 55-65kg", không nói màu)
 "áo này bn" -> say "Mẫu này 200k thôi nha." | text "200k nha, mẫu này đẹp lắm luôn á"
 "55kg mặc sz j" -> say "55 ký mặc M là vừa xinh luôn." | text "55kg lấy M vừa đẹp nha"
+"72kg mặc được ko" -> say "Mẫu này form vừa từ 45 tới 65 ký nha." | text "Mẫu này form vừa 45-65kg nha"
 "có màu đen k" -> say "Màu đen để mình kiểm tra lại rồi báo nha." | text "màu đen để shop check lại báo bạn nha"
 SAI: "Dạ chào anh chị, sản phẩm có giá 200.000 VND ạ."
 OUTPUT: chỉ một JSON object {"answers":[{"qid":1,"intent":"...","slots":{},"say":"...","text":"...","confidence":0.0,"needs_review":false,"other_product":false,"template":{"say":"...","text":"..."}}]}
@@ -296,6 +298,8 @@ def make_reply(reply_id: int, batch_id: int, ctx: dict, question: dict, answer: 
             "template_id": answer.get("template_id"),
             "review_reasons": list(dict.fromkeys(reasons)),
             "asked_at": items[0]["asked_iso"], "_asked": min(i["asked_at"] for i in items), "_product": product,
+            # When each viewer in `comments` asked (same order): each one gets their own comment, aged on its own.
+            "_comment_asked": [i["asked_at"] for i in items],
             "route": None, "voice": None, "comment": None, "note": "", "spoken_text": "", "command_id": None,
             "updated_at": _now_iso()}
 
@@ -318,6 +322,7 @@ def merge_replies(replies: list[dict]) -> list[dict]:
             out.append(reply)
             continue
         first["comments"] += reply["comments"]
+        first["_comment_asked"] += reply["_comment_asked"]
         first["_asked"] = min(first["_asked"], reply["_asked"])
         first["question"] = f"{first['question']} / {reply['question']}"
         if reply["confidence"] > first["confidence"]:
@@ -479,6 +484,7 @@ Mỗi mục:
 - slots: chỉ khi câu hỏi có (weight_kg, height_cm, size, color, place, quantity).
 - say: 3 cách nói KHÁC NHAU để đọc to, mỗi cách một câu tối đa 18 từ, giọng người bán tự nhiên ("nha", "nè", "luôn á"), không mở đầu bằng "Dạ", "Chào", "Cảm ơn", không gọi tên, không emoji.
 - text: 2 cách viết comment, tối đa 90 ký tự, giọng chat tự nhiên.
+Tế nhị về ngoại hình: không bao giờ nhận xét cân nặng, vóc dáng của khách (không dùng "nặng quá", "béo", "mập", "ú", "to", "gầy", "ốm"...); cân nặng ngoài bảng size thì chỉ nhẹ nhàng nêu khoảng size của mẫu.
 Viết số bằng chữ số (200k, 55kg). Giá phải đúng giá trong PRODUCT.
 OUTPUT: chỉ một JSON object {"items":[{"question":"...","intent":"...","slots":{},"say":["...","...","..."],"text":["...","..."]}]}
 """
@@ -573,6 +579,21 @@ def prerender(st: BatchState, product: dict, version: str, options) -> None:
         return
     try:
         voice = voice_config(st.owner_id)
+        if voice.provider == "omnivoice":
+            from app import tts_orchestrator
+            from app.ai_voice import VoiceConfig
+            try:
+                ctx = context(st.owner_id, st.agent_id)
+                done = tts_orchestrator.prepare(st.owner_id, st.agent_id, texts, ctx["session_id"] if ctx else None)
+                monitors(st.key).record("PREPARE", "audio_queued", f"G-OmniVoice: {done['accepted']} câu chuẩn bị")
+                return
+            except tts_orchestrator.SpeakRefused as exc:
+                mode, spec = tts_orchestrator.fallback(st.owner_id, "prepare")
+                if mode != "provider" or not exc.fallback_ok:
+                    monitors(st.key).record("PREPARE", "audio_skipped", f"G-OmniVoice: {exc.code}")
+                    return
+                voice = VoiceConfig.model_validate({**spec, "fallback": None})
+                monitors(st.key).record("TTS_FALLBACK", exc.code, f"Chuẩn bị bằng {voice.provider}")
         create_command(st.agent_id, st.owner_id, "tts_prepare", {"texts": texts, "provider": voice.provider,
             "model": voice.model, "voice": voice.voice, "rate": voice.rate, "settings": voice.settings})
     except HTTPException as exc:
@@ -681,6 +702,11 @@ def stop_voice(owner: Owner, agent_id: AgentId):
     from app.cloud_agents import create_command
     st = desk(owner, agent_id)
     cancelled = director.stop_all(st)
+    from app import tts_orchestrator
+    # G-OmniVoice clips already queued for this Agent are cancelled on the voice server too (no-op otherwise).
+    cancelled_jobs = tts_orchestrator.cancel_agent(st.owner_id, st.agent_id)
+    if cancelled_jobs:
+        monitors(st.key).record("TTS_STOP", "omnivoice", f"Huỷ {cancelled_jobs} câu G-OmniVoice chưa phát")
     try:
         command = create_command(st.agent_id, st.owner_id, "tts_clear", {})
     except HTTPException as exc:

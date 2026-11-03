@@ -1,75 +1,45 @@
-"""Provider contract and queue configuration tests; all HTTP calls are mocked."""
-import httpx
+"""Supported provider contracts and rejection of retired commands."""
 import pytest
-
+from pydantic import ValidationError
+from sarae_agent.cloud.commands import TtsPayload, TtsPreparePayload
+from sarae_agent.ipc.methods import SpeakParams
 from sarae_agent.errors import AgentError
-from sarae_agent.voice.providers import ElevenLabsProvider, ProviderRegistry
+from sarae_agent.voice.providers import EdgeTTSProvider, ProviderRegistry, default_registry
 from sarae_agent.voice.tts import VoiceService
 
 
-def test_elevenlabs_streams_to_file_with_selected_model_and_settings(tmp_path):
-    requests = []
-    def handler(request):
-        requests.append(request)
-        return httpx.Response(200, content=b"ID3audio")
-    provider = ElevenLabsProvider(httpx.MockTransport(handler))
-    first = []
-    target = tmp_path / "voice.mp3"
-    provider.synthesize("Xin chào", "voice123", "eleven_flash_v2_5",
-                        {"speed": 1.1, "stability": 0.6}, target, "test-secret", lambda: first.append(True))
-    assert target.read_bytes() == b"ID3audio"
-    assert len(first) == 1
-    assert requests[0].headers["xi-api-key"] == "test-secret"
-    assert requests[0].read().decode().find('"model_id":"eleven_flash_v2_5"') >= 0
-    assert requests[0].url.path.endswith("/voice123/stream")
-
-
-@pytest.mark.parametrize("status,code", [(401, "TTS_AUTH"), (402, "TTS_QUOTA"), (404, "TTS_API_ERROR")])
-def test_elevenlabs_non_retryable_errors(tmp_path, status, code):
-    provider = ElevenLabsProvider(httpx.MockTransport(lambda _: httpx.Response(status, json={"secret": "not echoed"})))
+def test_removed_provider_is_not_registered_or_accepted_by_command_schemas():
     with pytest.raises(AgentError) as error:
-        provider.synthesize("Xin chào", "voice123", "eleven_flash_v2_5", {},
-                            tmp_path / "voice.mp3", "test-secret", lambda: None)
-    assert error.value.code == code
-    assert "not echoed" not in error.value.message
+        default_registry().get('elevenlabs')
+    assert error.value.code == 'TTS_PROVIDER'
+    for schema, data in ((TtsPayload, {'text':'Xin chào'}),
+                         (TtsPreparePayload, {'texts':['Xin chào']}),
+                         (SpeakParams, {'text':'Xin chào'})):
+        with pytest.raises(ValidationError):
+            schema.model_validate({**data, 'provider':'elevenlabs'})
 
 
-def test_elevenlabs_retries_rate_limit(tmp_path, monkeypatch):
-    calls = []
-    def handler(_):
-        calls.append(1)
-        return httpx.Response(429) if len(calls) == 1 else httpx.Response(200, content=b"ID3audio")
-    monkeypatch.setattr("sarae_agent.voice.providers.time.sleep", lambda _: None)
-    provider = ElevenLabsProvider(httpx.MockTransport(handler))
-    provider.synthesize("Xin chào", "voice123", "eleven_flash_v2_5", {},
-                        tmp_path / "voice.mp3", "test-secret", lambda: None)
-    assert len(calls) == 2
-
-
-def test_elevenlabs_timeout_is_bounded_and_retryable(tmp_path, monkeypatch):
-    calls = []
-    def handler(request):
-        calls.append(request)
-        raise httpx.ReadTimeout("test timeout")
-    monkeypatch.setattr("sarae_agent.voice.providers.time.sleep", lambda _: None)
-    provider = ElevenLabsProvider(httpx.MockTransport(handler))
-    with pytest.raises(AgentError) as error:
-        provider.synthesize("Xin chào", "voice123", "eleven_flash_v2_5", {},
-                            tmp_path / "voice.mp3", "test-secret", lambda: None)
-    assert error.value.code == "TTS_TIMEOUT"
-    assert error.value.retryable
-    assert len(calls) == provider.RETRIES
+def test_edge_normalization_and_invalid_settings():
+    provider = default_registry().get('edge')
+    assert isinstance(provider, EdgeTTSProvider)
+    assert provider.normalize(None, 'vi-VN-NamMinhNeural', 10, {}) == ('edge-neural', {'rate':10})
+    for model, voice, rate, settings in [('old-model','vi-VN-HoaiMyNeural',0,{}),
+                                       (None,'old-voice',0,{}), (None,'vi-VN-HoaiMyNeural',51,{}),
+                                       (None,'vi-VN-HoaiMyNeural',0,{'speed':1.1})]:
+        with pytest.raises(AgentError):
+            provider.normalize(model, voice, rate, settings)
 
 
 def test_cache_key_isolates_provider_model_voice_and_settings():
-    base = VoiceService._key("Xin chào", "voice123", 0, "elevenlabs", "eleven_flash_v2_5", {"speed": 1})
-    assert base != VoiceService._key("Xin chào", "voice123", 0, "elevenlabs", "eleven_multilingual_v2", {"speed": 1})
-    assert base != VoiceService._key("Xin chào", "other", 0, "elevenlabs", "eleven_flash_v2_5", {"speed": 1})
-    assert base != VoiceService._key("Xin chào", "voice123", 0, "elevenlabs", "eleven_flash_v2_5", {"speed": 1.1})
-    assert VoiceService._key("Xin chào", "vi-VN-HoaiMyNeural", 0) != base
+    base = VoiceService._key('Xin chào','vi-VN-HoaiMyNeural',0,'edge','edge-neural',{})
+    assert base != VoiceService._key('Xin chào','vi-VN-NamMinhNeural',0,'edge','edge-neural',{})
+    assert base != VoiceService._key('Xin chào','vi-VN-HoaiMyNeural',10,'edge','edge-neural',{})
+    assert base != VoiceService._key('Xin chào','vi-VN-HoaiMyNeural',0,'other','edge-neural',{})
+    assert base != VoiceService._key('Xin chào','vi-VN-HoaiMyNeural',0,'edge','other',{})
+    assert base != VoiceService._key('Xin chào','vi-VN-HoaiMyNeural',0,'edge','edge-neural',{'rate':10})
 
 
 def test_registry_does_not_fallback():
     with pytest.raises(AgentError) as error:
-        ProviderRegistry().get("missing")
-    assert error.value.code == "TTS_PROVIDER"
+        ProviderRegistry().get('missing')
+    assert error.value.code == 'TTS_PROVIDER'

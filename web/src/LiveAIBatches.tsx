@@ -1,22 +1,24 @@
+import VoiceUtterances from './VoiceUtterances'
+import './voice-settings.css'
 import {useEffect,useRef,useState,type ChangeEvent} from 'react'
 import {apiRequest,errorText,onAgent,type OwnerAgent} from './mediaApi'
 import {Copy,Mic,OctagonX,Send,Volume2,X} from 'lucide-react'
 import './live-ai.css'
 type Options={enabled:boolean;window_seconds:number;max_comments:number}
 /** Owner reply settings (docs/AI_AUTO_REPLY.md). Voice and TikTok comment are two independent automatic branches. */
-type ReplyOptions={auto_voice_reply:boolean;auto_comment_reply:boolean;confirm_seconds:number;comment_min_interval_seconds:number;comment_max_per_minute:number;comment_max_age_seconds:number;voice:string;rate:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;duck_video:boolean;persona:string;auto_prepare:boolean}
+type ReplyOptions={auto_voice_reply:boolean;auto_comment_reply:boolean;confirm_seconds:number;comment_min_interval_seconds:number;comment_max_per_minute:number;comment_max_age_seconds:number;voice:string;rate:number;max_age_seconds:number;topic_cooldown_seconds:number;min_confidence:number;duck_video:boolean;persona:string;auto_prepare:boolean;ignored_usernames:string[]}
 type CommentState='scheduled'|'queued'|'sending'|'sent'|'failed'|'expired'|'ready'|'done'|'dismissed'
 type DeliveryStatus='QUEUED'|'TYPING'|'SUBMITTED'|'CONFIRMED'|'FAILED'|'EXPIRED'|'DUPLICATE'|'RATE_LIMITED'
 type DeliveryMode='DIRECT_REPLY'|'MENTION'|'NORMAL'
 type CommentDelivery={status:DeliveryStatus;mode:DeliveryMode|null;error:string|null;steps:{step:string;ms:number;action?:string}[];sent_at?:string|null}
-type Reply={id:number;batch_id:number;product_name:string;question:string;comments:{id:number;username:string;nickname:string;comment:string}[];intent:string;slots:Record<string,string|number>;say:string;text:string;confidence:number;source:'rule'|'bank'|'cache'|'ai';review_reasons:string[];route:string|null;voice:string|null;comment:CommentState|null;comment_delivery?:CommentDelivery|null;comment_send_at?:number;note:string;spoken_text:string;comment_text?:string;speak_at?:number;dismissed?:boolean;asked_at:string}
+type Reply={id:number;batch_id:number;product_name:string;question:string;comments:{id:number;username:string;nickname:string;comment:string}[];intent:string;slots:Record<string,string|number>;say:string;text:string;confidence:number;source:'rule'|'bank'|'cache'|'ai';review_reasons:string[];route:string|null;voice:string|null;comment:CommentState|null;comment_delivery?:CommentDelivery|null;comment_results?:{msg_id:string;username:string;nickname:string;status:DeliveryStatus;mode:DeliveryMode|null;error:string|null}[];comment_send_at?:number;note:string;spoken_text:string;comment_text?:string;speak_at?:number;dismissed?:boolean;asked_at:string}
 type Batch={batch_id:number;product_name:string;comments:number;questions:number;skipped:{username:string;comment:string;reason:string}[];sources:{rule:number;bank?:number;cache?:number;ai:number};usage:{input_tokens:number;output_tokens:number;latency_ms:number}[];error:string|null}
 type AgentVoice={online:boolean;queue:number;speaking:string|null;ducked:boolean;stats:Record<string,number>;last:{status:string;code?:string;message?:string;provider?:string;model?:string;voice?:string;duration_ms?:string}|null;prepare_pending:number}
 type Prepared={product_id:number;product_name:string;state:'none'|'running'|'ready'|'error';count:number;error?:string}
 type Status={stats:Record<string,number>;pending:number;voice_queue:number;unanswered:number;batches:Batch[];replies:Reply[];agent_voice?:AgentVoice|null;prepared?:Prepared|null}
 type Answer={id:number;question:string;intent:string;say:string[];text:string[];source:'ai'|'pregen'|'operator';approved:boolean;uses:number;last_used_at:string|null}
 type Answers={product_id:number|null;product_name:string;answers:Answer[]}
-const DEFAULT_REPLY:ReplyOptions={auto_voice_reply:false,auto_comment_reply:false,confirm_seconds:4,comment_min_interval_seconds:8,comment_max_per_minute:5,comment_max_age_seconds:60,voice:'vi-VN-HoaiMyNeural',rate:5,max_age_seconds:25,topic_cooldown_seconds:40,min_confidence:0.75,duck_video:true,persona:'',auto_prepare:true}
+const DEFAULT_REPLY:ReplyOptions={auto_voice_reply:false,auto_comment_reply:false,confirm_seconds:4,comment_min_interval_seconds:8,comment_max_per_minute:5,comment_max_age_seconds:60,voice:'vi-VN-HoaiMyNeural',rate:5,max_age_seconds:25,topic_cooldown_seconds:40,min_confidence:0.75,duck_video:true,persona:'',auto_prepare:true,ignored_usernames:[]}
 const ANSWER_SOURCE:Record<Answer['source'],string>={ai:'AI',pregen:'Chuẩn bị sẵn',operator:'Bạn sửa'}
 const VOICE_LABEL:Record<string,string>={review:'Cần duyệt',ready:'Chờ bấm phát',scheduled:'Sắp nói',queued:'Chờ lượt nói',sent:'Đã gửi giọng',skipped:'Không nói'}
 const COMMENT_LABEL:Record<CommentState,string>={scheduled:'Chờ gửi comment',queued:'Chờ gửi comment',sending:'Đang gửi',sent:'Đã gửi',failed:'Gửi lỗi',expired:'Quá hạn',ready:'Comment chờ gửi',done:'Đã comment',dismissed:'Bỏ qua'}
@@ -97,6 +99,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
  const unanswered=status?.unanswered??0
  const stat=(label:string,value:number,tone?:string)=><div className={'lai-stat'+(tone?' is-'+tone:'')}><b>{value}</b><span>{label}</span></div>
  return <section className="lai">
+  <VoiceUtterances agentId={agent.id}/>
   <div className="lai-top">
    <label className="lai-switch"><input type="checkbox" disabled={busy} checked={options.enabled} onChange={e=>void save({...options,enabled:e.target.checked})}/><span><b>{options.enabled?'AI đang trả lời':'AI đang tắt'}</b><small>{options.enabled?'Sarae soạn câu trả lời cho từng câu hỏi của người xem':'Bật để Sarae tự soạn câu trả lời'}</small></span></label>
    <button type="button" className="lai-stop" onClick={()=>void stop()}><OctagonX size={16}/> Dừng giọng nói</button>
@@ -150,6 +153,7 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
       <label><input type="checkbox" checked={reply.auto_prepare} onChange={e=>void saveReply({...reply,auto_prepare:e.target.checked})}/> Tự chuẩn bị câu trả lời khi đổi sản phẩm</label>
      </div>
      <label className="lai-persona">Phong cách của shop (AI sẽ nói theo)<textarea rows={2} maxLength={300} placeholder="vd: xưng em, gọi khách là chị, vui vẻ, hay dùng 'nha'" value={reply.persona} onChange={e=>setReply(x=>({...x,persona:e.target.value}))} onBlur={()=>void saveReply(reply)}/></label>
+     <label className="lai-persona">Không trả lời các username (mỗi dòng một tên, vd @spam.bot; tài khoản đang LIVE luôn được bỏ qua)<textarea key={reply.ignored_usernames.join(',')} rows={3} placeholder={'@spam.bot\n@nhanvien.shop'} defaultValue={reply.ignored_usernames.map(u=>'@'+u).join('\n')} onBlur={e=>void saveReply({...reply,ignored_usernames:e.target.value.split(/[\s,;]+/).filter(Boolean)})}/></label>
     </details>
    </div>
   </details>
@@ -187,7 +191,11 @@ export default function LiveAIBatches({agent}:{agent:OwnerAgent}){
       {d?.mode&&<span className="lai-chip">{DELIVERY_MODE[d.mode]??d.mode}</span>}
       <small className="lai-push lai-muted">#{r.id} · {r.product_name}</small>
      </div>
-     <div className="lai-asks">{r.comments.map(c=><div key={c.id}><b>{c.nickname||c.username}</b>: {c.comment}</div>)}</div>
+     <div className="lai-asks">{r.comments.map((c,i)=>{
+      // Several viewers asked the same question: each gets their own comment; show how each one went.
+      const res=r.comments.length>1?r.comment_results?.[i]:undefined
+      const tag=res?DELIVERY_LABEL[res.status]??{label:res.status,tone:''}:null
+      return <div key={c.id}><b>{c.nickname||c.username}</b>: {c.comment}{tag&&<span className={'lai-muted'+(tag.tone?' '+tag.tone:'')}> · 💬 {tag.label}</span>}</div>})}</div>
      {r.review_reasons.length>0&&<div className="lai-warn">⚠ {r.review_reasons.join(' · ')}</div>}
      {r.note&&<div className="lai-muted">{r.note}</div>}
      {editing[r.id]!==undefined?<textarea rows={2} maxLength={300} value={editing[r.id]} onChange={e=>setEditing(x=>({...x,[r.id]:e.target.value}))}/>:r.say&&<div className="lai-say"><b>🔊 </b>{r.spoken_text||r.say}</div>}

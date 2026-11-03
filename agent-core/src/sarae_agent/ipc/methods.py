@@ -70,7 +70,7 @@ class MonitorConfigParams(Strict):
 class SpeakParams(Strict):
     text: str = Field(min_length=1, max_length=450)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
-    provider: Literal["edge", "elevenlabs"] = "edge"
+    provider: Literal["edge"] = "edge"
     model: str | None = Field(default=None, min_length=1, max_length=100)
     settings: dict = Field(default_factory=dict)
     rate: int = Field(default=0, ge=-30, le=50)

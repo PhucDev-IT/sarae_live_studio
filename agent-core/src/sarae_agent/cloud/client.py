@@ -142,13 +142,6 @@ class CloudClient:
     def heartbeat(self, key: str, report: dict) -> dict:
         return self._request("POST", "/agents/heartbeat", "heartbeat", key=key, json=report)
 
-    def voice_key(self, key: str, agent_id: str, provider: str) -> str:
-        body = self._request("GET", f"/agents/voice-key/{quote(agent_id, safe='')}", "voice_key", key=key,
-                             params={"provider": provider})
-        value = body.get("api_key")
-        if not isinstance(value, str) or not value:
-            raise CloudError("TTS_KEY_MISSING", "Cloud không trả về ElevenLabs API key")
-        return value
 
     def next_command(self, key: str, agent_id: str, wait: float = 0) -> dict | None:
         """Claim the next command; with ``wait`` the Cloud holds the request until one is queued."""

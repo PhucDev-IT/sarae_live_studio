@@ -25,7 +25,7 @@ PASSWORD = "OwnerSecretPassword123!"
 SESSION_MODULES = ["app.live", "app.live_sessions", "app.live_timeline", "app.live_overlays", "app.timeline_ai.api", "app.ai_live_batches", "app.tiktok_catalog",
                    "app.tiktok_products", "app.answer_bank", "app.ai_answers", "app.tiktok_chat",
                    "app.sales_brain", "app.playback_policy",
-                   "app.comment_reply"]
+                   "app.comment_reply", "app.voice_profiles", "app.tts_orchestrator"]
 
 
 class SaasTestCase(unittest.TestCase):

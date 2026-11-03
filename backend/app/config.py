@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     sarae_whisper_model: str = "small"
     sarae_whisper_device: str = "auto"
     sarae_whisper_compute_type: str = "int8"
+    # G-OmniVoice TTS Backend (voice-server/, docs/TTS_SERVER.md). Empty URL = the omnivoice provider is unavailable.
+    # The orchestrator token stays on this server: never sent to the Web or to an Agent.
+    sarae_tts_server_url: str = ""
+    sarae_tts_server_token: str = ""
+    # Base URL a Windows Agent may use to download audio directly (LAN/VPN). Empty = Agents use the Backend relay only.
+    sarae_tts_agent_url: str = ""
+    sarae_tts_timeout_seconds: float = 10.0
+    sarae_tts_lease_ttl_seconds: int = 60
+    sarae_tts_relay_max_bytes: int = 32 * 1024 * 1024
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""
