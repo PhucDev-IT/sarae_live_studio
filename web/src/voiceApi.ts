@@ -1,11 +1,11 @@
 import {api, apiRequest} from './mediaApi'
 import {authHeaders, clearAuth} from './authToken'
 
-export type VoiceProvider = 'edge'|'elevenlabs'|'omnivoice'
+export type VoiceProvider = 'edge'|'omnivoice'
 export type ProviderSpec = {provider:VoiceProvider; model:string; voice:string; rate:number; settings:Record<string,number|boolean>}
 export type FallbackMode = 'none'|'provider'|'comment_only'|'hold_for_operator'
 export type VoiceFallback = {live_reply:FallbackMode; prepare:'none'|'provider'; manual:'none'|'provider'; provider:ProviderSpec|null}
-export type VoiceConfig = ProviderSpec & {fallback?:VoiceFallback; has_api_key?:boolean; omnivoice_configured?:boolean}
+export type VoiceConfig = ProviderSpec & {fallback?:VoiceFallback; migration_notice?:string|null; omnivoice_configured?:boolean}
 export const noFallback:VoiceFallback = {live_reply:'none',prepare:'none',manual:'none',provider:null}
 export type VoiceProfile = {id:string;name:string;revision:number;updated_at:string;
  wav:{duration_s:number;sample_rate:number;channels:number;bytes:number};

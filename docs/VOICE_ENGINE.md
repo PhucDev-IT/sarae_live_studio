@@ -1,54 +1,35 @@
 # Sarae Voice Engine
 
-Sarae Web → **AI Assistant → Voice Settings** controls the voice used for new LIVE replies, prepared audio, manual speech and browser previews. The default remains Microsoft Edge TTS with `vi-VN-HoaiMyNeural`. Existing `tts_speak`, `tts_prepare`, `tts_clear` and `voice.speak` calls without provider fields continue to use Edge.
+Sarae Web → AI Assistant → Voice Settings supports **Microsoft Edge TTS** and **G-OmniVoice (Local AI)**. Edge defaults to `vi-VN-HoaiMyNeural`. Calls without provider fields continue to use Edge.
 
-## G-OmniVoice (Phase 3: Backend only)
+## G-OmniVoice
 
-A third provider, `omnivoice`, runs on the separate G-OmniVoice TTS Backend (`voice-server/`). Sarae Backend keeps
-the voice profiles (reference WAV in the Media Library storage, Whisper or manual transcript, revision), syncs them
-to the voice server, creates TTS jobs and sends `tts_speak` / `tts_prepare` commands carrying job ids only. Edge and
-ElevenLabs are unchanged and never call the voice server. Agents receive OmniVoice commands only when they announce
-the capability in their heartbeat (Phase 4); older Agents get a clear `AGENT_NO_OMNIVOICE` error instead.
-Details, API and the Phase 4 Agent contract: [TTS_SERVER.md section 17](TTS_SERVER.md).
+The standalone `voice-server/` loads the pinned model on the GPU. Backend owns reference WAV profiles, Auto Whisper/manual transcript and revisions, creates jobs, and sends job references to a capable Windows Agent. The Agent downloads WAV directly with a scoped read token or through Backend relay, then plays the existing OBS `Sarae Voice` Media Source. It does not load Torch/CUDA or create GPU jobs.
 
-## ElevenLabs setup
+Create/sync a profile, choose and save the default voice, select a Windows Agent and run active readiness/warmup. **Nghe thử** uses a profile-specific preview without changing the saved default, including while a session is RUNNING. **Phát qua OBS (giọng đã lưu)** sends a manual command and shows the utterance monitor. SENT is not PLAYED; OBS PLAYING does not prove viewer audibility.
 
-1. In Voice Settings, select ElevenLabs and save your API key. The Backend encrypts it in `owner_credentials`; its normal API responses show only whether a key exists. Configure `SARAE_CREDENTIAL_KEY` on the Backend for a persistent encryption key in production. Do not put the ElevenLabs key in Web environment variables or Agent config files.
-2. Click **Tải danh sách** to load TTS capable models from `GET /v1/models` and account voices from `GET /v2/voices`. Select a model and voice, or enter IDs manually. `eleven_flash_v2_5` is the initial model suggestion; the account must have access to the selected combination.
-3. Set speed (0.7–1.2), stability, similarity, and model supported style or speaker boost. Save, then use **Test Voice** to listen without starting a LIVE session. This preview uses the selected account's credits.
-4. Keep the `Sarae Voice` OBS Media Source with audio enabled. The Agent uses the existing source and ducking logic. A newly queued sentence snapshots provider, model, voice and settings, so later changes affect only new commands.
+Fallback defaults to none. The only supported provider fallback is Edge TTS, explicitly selected per manual/prepare/live_reply context. Expired/cancelled/session-ended or OBS errors never trigger a voice switch. Backend protects in-use OmniVoice settings/WAV/transcript from mutation during RUNNING or a pending start. Run Backend with one worker; locks/token state are process-local.
 
-The Backend sends non-secret settings in the existing Cloud command. An activated Windows Agent fetches the owner's ElevenLabs key via `GET /api/agents/voice-key/{agent_id}` using its Agent credential over HTTPS. The key is never included in browser responses, command payloads, acknowledgements or heartbeats. The Agent reads it only for a cache miss. There is no automatic provider fallback; an ElevenLabs failure is reported as a TTS failure.
+## Edge TTS
 
-## Runtime and monitoring
+Choose Hoài My or Nam Minh and rate -30% to +50%. Save or use **Lưu & nghe thử** to save then preview in the browser. Edge uses its existing bounded synthesis retries and cache; it does not call the GPU server or require an API key. Existing `tts_speak`, `tts_prepare`, `tts_clear` and local `voice.speak` remain available.
 
-`VoiceEngine` owns the bounded queue, TTL, preparation, disk cache, OBS playback, clear and video ducking. `ProviderRegistry` maps provider names to implementations of `TTSProvider`. A new provider implements `normalize` and `synthesize` and registers itself; the queue and playback engine need no provider specific changes. Cache keys include provider, model, voice, normalized settings, rate and text.
+## Removed provider compatibility
 
-ElevenLabs uses its official `POST /v1/text-to-speech/{voice_id}/stream` endpoint with `mp3_44100_128` output. It writes chunks directly to a temporary MP3 file, then atomically publishes the completed file for OBS. The Agent never accumulates the complete MP3 in memory. OBS Media Source plays completed local files, so the first received chunk is measured but playback waits for the full file. The flash model and cache/preparation reduce this delay. Transient 429/5xx/network failures retry up to three times with bounded backoff; auth, quota and bad request errors stop immediately. Error bodies are not logged because they may contain account information.
+ElevenLabs has been removed from Web, Backend config/command schemas, Agent Cloud/IPC schemas, provider registry, heartbeat capabilities, preview and fallback. Its catalog/key/Agent-key delivery endpoints have been removed. New requests selecting it are rejected; queued legacy commands fail validation rather than making external API calls.
 
-Agent logs include TTS request start, first audio, audio ready, OBS start/finish, provider/model/voice, character count, cache state and step latency. Backend records `AI_RESPONSE_READY` and queued voice events. The streaming TTS response does not currently expose a reliable per-request cost, so no monetary amount is inferred from character count.
+For stored legacy default settings, Backend reads Edge defaults and returns a `migration_notice` shown in Voice Settings. Legacy provider fallback modes become none; an existing OmniVoice default and comment-only/hold policies are preserved. This compatibility read does not rewrite storage. Save the desired supported voice to persist the change and clear the notice. Old encrypted credentials are inert and are not deleted from production storage by this code change.
 
-## Validation
+## OBS and upgrades
 
-- `agent-core`: run `python -m pytest tests/test_voice_queue.py tests/test_voice_providers.py -q` in its virtual environment. Provider HTTP calls and errors are mocked; no ElevenLabs credits are used.
-- `backend`: run `python -m pytest tests/test_ai_live_reply.py tests/test_voice_settings.py -q` with Backend dependencies and pytest. Owner isolation, Agent key authentication, catalog filtering and legacy command payloads are covered.
-- `web`: run `npm run build` after initializing `vendor/react-ui-core` and installing Web dependencies.
-- Production acceptance still needs one Test Voice with a real key and an OBS playback check on Windows. No TikTok LIVE is needed.
+Keep the existing Sarae Voice Media Source with audio enabled. Playback uses completed local files, one worker, deadlines and video ducking/restore. Preserve Agent home, especially `voice/utterances.sqlite` and `event_outbox.json`, across upgrades. Acceptance tombstones prevent replay after an uncertain crash; this can drop a sentence accepted just before crash. Losing telemetry is never a reason to replay audio.
 
-API references: [stream speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream), [list models](https://elevenlabs.io/docs/api-reference/models/list), [list voices](https://elevenlabs.io/docs/api-reference/voices/search), [error handling](https://elevenlabs.io/docs/eleven-api/resources/errors).
+Rebuild the Agent sidecar and desktop distribution together before installing an update; a source merge alone does not replace an already installed binary. Do not start a second GPU service with Agent startup. No Scheduled Task or production deployment is part of this removal.
 
+## Validation and operation
 
-## OmniVoice Agent integration (Phase 4)
+- Agent: run `.venv/Scripts/python.exe -m pytest -q` from `agent-core`.
+- Backend: run `.venv/Scripts/python.exe -m unittest discover -s tests -q` from `backend`.
+- Web: `npm run build`; browser fixtures are in `web/tests/voice_ui.py` (Vite port 5175).
 
-The activated Agent downloads existing Backend-orchestrated jobs through `voice/omnivoice.py`; it does not run a model or create jobs. `voice/jobs.py` integrates WAV caching, absolute deadlines, persistent utterance acceptance and observed OBS playback with the existing single voice worker. WAV is kept at mono PCM16 24 kHz. Direct read tokens are obtained through the authenticated Backend endpoint; USE_RELAY or a direct transport failure uses the Backend relay.
-
-Keep `voice/utterances.sqlite` and `event_outbox.json` across upgrades: acceptance survives a crash and uncertain utterances are not replayed. This may drop an accepted sentence after a crash before playback. Playback events are disk queued and carry no transcript or credentials. Owner-configured fallback is explicit; expired/cancelled/OBS errors never switch provider.
-
-Full contract, tests, real OBS offline measurements and remaining limits are documented in [TTS_SERVER.md section 18](TTS_SERVER.md#18-phase-4--windows-agent-2026-11-03). The optional real test is `backend/tests/test_tts_agent_obs_offline.py`; it requires explicit environment opt-in and refuses streaming/recording OBS.
-
-
-## Sarae Web (Phase 5)
-
-Open AI Assistant → Voice Settings and choose G-OmniVoice (Local AI). Create a named WAV profile with Auto Transcript (Whisper) by default, inspect sync/QC, then select and save it. Manual Transcript, replacing WAV, retry sync and deleting a profile are available in the profile manager. “Lưu & nghe thử” stores the selected configuration before calling the Backend preview endpoint; browser audio controls support pause and replay. Changing the selected default/WAV/transcript is guarded while a Sarae session is RUNNING.
-
-Fallback remains none unless explicitly selected. The session preparation dialog reads passive TTS status when opened; clicking Đồng bộ performs active sync/warmup. The AI monitor displays actual utterance lifecycle: SENT is not PLAYED. Web never receives voice-server credentials. Full APIs, validation, real browser/GPU preview results and Phase 6 requirements: [TTS_SERVER.md section 19](TTS_SERVER.md#19-phase-5--sarae-web-2026-11-03).
+Contracts and historical phase reports: [TTS_SERVER.md](TTS_SERVER.md). Real desktop/OBS measurements, remaining audio acceptance limits, local operating steps, retention and remote checklist: [TTS_PHASE6.md](TTS_PHASE6.md). Historical ElevenLabs regression results describe the code at the time of those phases, not the current provider set.

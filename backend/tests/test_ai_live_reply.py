@@ -196,17 +196,17 @@ class LiveReplyTests(SaasTestCase):
 
     # --- voice -------------------------------------------------------------------------------------------
 
-    def test_live_reply_uses_saved_elevenlabs_voice_without_key_in_command(self):
-        response = self.client.put("/api/ai/voice/config", json={"provider": "elevenlabs",
-            "model": "eleven_flash_v2_5", "voice": "voice123", "rate": 0,
-            "settings": {"stability": 0.5, "speed": 1.0}})
+    def test_live_reply_uses_saved_edge_voice_without_key_in_command(self):
+        response = self.client.put("/api/ai/voice/config", json={"provider": "edge",
+            "model": "edge-neural", "voice": "vi-VN-NamMinhNeural", "rate": 0,
+            "settings": {}})
         self.assertEqual(response.status_code, 200, response.text)
         self.options(auto_voice_reply=True, confirm_seconds=0)
         self.batch(("lan", "Lan", "giá bn shop"))
         payload = next(c["payload"] for c in self.sent if c["kind"] == "tts_speak")
         self.assertEqual((payload["provider"], payload["model"], payload["voice"]),
-                         ("elevenlabs", "eleven_flash_v2_5", "voice123"))
-        self.assertEqual(payload["settings"], {"stability": 0.5, "speed": 1.0})
+                         ("edge", "edge-neural", "vi-VN-NamMinhNeural"))
+        self.assertEqual(payload["settings"], {})
         self.assertNotIn("api_key", payload)
 
     def test_semi_auto_speaks_after_the_cancel_window_unless_cancelled(self):

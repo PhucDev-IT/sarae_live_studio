@@ -55,13 +55,11 @@ class VoiceEngine(JobVoiceMixin):
     def __init__(self, config: ConfigStore, obs: ObsController,
                  synthesize: Callable[[str, str, str, str], None] | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 registry: ProviderRegistry | None = None,
-                 key_resolver: Callable[[str], str | None] | None = None):
+                 registry: ProviderRegistry | None = None):
         self._config = config
         self._obs = obs
         self._legacy_synthesize = synthesize
         self._registry = registry or default_registry()
-        self.key_resolver = key_resolver
         self._clock = clock
         self._cond = threading.Condition()
         self._queue: deque[dict] = deque()
@@ -132,9 +130,8 @@ class VoiceEngine(JobVoiceMixin):
                 self._legacy_synthesize(text, voice, str(temp), f"{rate:+d}%")
             else:
                 provider_impl = self._registry.get(provider)
-                key_value = self.key_resolver(provider) if provider_impl.requires_key and self.key_resolver else None
                 provider_impl.synthesize(text, voice, spec["model"], spec["settings"], temp,
-                    key_value, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
+                    None, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
                                                 provider, int((self._clock() - started) * 1000)))
             if not temp.is_file() or temp.stat().st_size == 0:
                 raise AgentError("TTS_FAILED", "Dịch vụ TTS không trả về âm thanh", retryable=True)
@@ -280,7 +277,7 @@ class VoiceEngine(JobVoiceMixin):
             speaking = " ".join(filter(None, (self.current["intro"], self.current["text"])))[:80] \
                 if self.current else None
             from sarae_agent import __version__
-            return {"version": __version__, "capabilities": {"providers": ["edge", "elevenlabs"] + (["omnivoice"] if self.job_provider else []), "tts_job": 1 if self.job_provider else 0, "audio_path": ["direct", "relay"]}, "queue": len(self._queue), "speaking": speaking, "ducked": bool(self._ducked),
+            return {"version": __version__, "capabilities": {"providers": ["edge"] + (["omnivoice"] if self.job_provider else []), "tts_job": 1 if self.job_provider else 0, "audio_path": ["direct", "relay"]}, "queue": len(self._queue), "speaking": speaking, "ducked": bool(self._ducked),
                     "prepare_pending": len(self._prepare), "stats": dict(self.stats), "last": self.last}
 
     def close(self) -> None:

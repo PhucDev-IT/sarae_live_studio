@@ -52,18 +52,6 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 
 
-@router.get("/voice-key/{agent_id}")
-def agent_voice_key(agent_id: str, provider: Literal["elevenlabs"] = "elevenlabs",
-                    x_sarae_agent_key: str | None = Header(None)):
-    """Return the owner's key only to their activated Agent; never to the browser or command journal."""
-    from app import credentials
-    agent = verify_agent(agent_id, x_sarae_agent_key)
-    if agent_platform(agent_id) != "WINDOWS":
-        raise HTTPException(403, "Chỉ Windows Agent được dùng Voice Engine")
-    key = credentials.secret(agent["owner_id"], provider)
-    if not key:
-        raise HTTPException(404, "Chưa cấu hình ElevenLabs API key")
-    return JSONResponse({"api_key": key}, headers={"Cache-Control": "no-store"})
 DB = DATA_DIR / "agents.sqlite3"
 ONLINE_SECONDS = 35
 MAX_WAIT_SECONDS = 25
@@ -442,29 +430,19 @@ def _tts_spec(payload:dict)->dict:
                 or not re.match(r"^[a-f0-9]{32}$",payload["voice"]):
             raise HTTPException(422,"Payload G-OmniVoice không hợp lệ")
         return {"voice":payload["voice"],"provider":"omnivoice","model":"demo_default","settings":{}}
-    if provider not in ("edge","elevenlabs"):
+    if provider != "edge":
         raise HTTPException(422,"Nhà cung cấp TTS không được hỗ trợ")
     voice=payload.get("voice","vi-VN-HoaiMyNeural")
-    model=payload.get("model") or ("edge-neural" if provider=="edge" else "eleven_flash_v2_5")
+    model=payload.get("model") or "edge-neural"
     if not isinstance(voice,str) or not 1<=len(voice)<=100 or not isinstance(model,str) or not 1<=len(model)<=100:
         raise HTTPException(422,"Voice ID hoặc model ID không hợp lệ")
     if provider=="edge":
         if voice not in ("vi-VN-HoaiMyNeural","vi-VN-NamMinhNeural") or model!="edge-neural":
             raise HTTPException(422,"Giọng Edge TTS không được hỗ trợ")
-    elif not all(c.isalnum() or c in "_-" for c in voice+model):
-        raise HTTPException(422,"Voice ID hoặc model ID không hợp lệ")
-    settings=payload.get("settings") or {}
-    if not isinstance(settings,dict) or len(settings)>5 or settings.keys()-{"stability","similarity_boost","style","use_speaker_boost","speed"}:
-        raise HTTPException(422,"Voice settings không hợp lệ")
-    if provider=="edge" and settings:
+    options=payload.get("settings") or {}
+    if not isinstance(options,dict) or options:
         raise HTTPException(422,"Edge TTS không nhận voice settings")
-    for name in ("stability","similarity_boost","style"):
-        if name in settings and (isinstance(settings[name],bool) or not isinstance(settings[name],(int,float)) or not 0<=settings[name]<=1):
-            raise HTTPException(422,f"{name} phải từ 0 đến 1")
-    if "speed" in settings and (isinstance(settings["speed"],bool) or not isinstance(settings["speed"],(int,float)) or not 0.7<=settings["speed"]<=1.2):
-        raise HTTPException(422,"speed phải từ 0.7 đến 1.2")
-    if "use_speaker_boost" in settings and not isinstance(settings["use_speaker_boost"],bool):
-        raise HTTPException(422,"use_speaker_boost không hợp lệ")
+    settings={}
     out={"voice":voice}
     for name,value in (("provider",provider),("model",model),("settings",settings)):
         if name in payload:

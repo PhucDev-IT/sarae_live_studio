@@ -61,7 +61,7 @@ class RealVoiceServerTests(SaasTestCase):
         print(f"preview {time.perf_counter() - t0:.2f}s, inference {preview.headers.get('x-inference-ms')} ms")
 
         agent = self.activate_agent(self.owner_a, "GPU-PC")
-        caps = {"providers": ["edge", "elevenlabs", "omnivoice"], "tts_job": 1, "audio_path": ["relay"]}
+        caps = {"providers": ["edge", "omnivoice"], "tts_job": 1, "audio_path": ["relay"]}
         self.client.post("/api/agents/heartbeat", headers={"X-Sarae-Agent-Key": agent["agent_credential"]},
                          json={"agent_id": agent["agent_id"], "hostname": "GPU-PC", "voice": {"capabilities": caps}})
         ready = self.client.post("/api/ai/voice/readiness", json={"agent_id": agent["agent_id"]}).json()

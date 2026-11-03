@@ -73,7 +73,7 @@ class OmniVoiceTests(SaasTestCase):
 
     def agent(self, owner=None, capable=True, hostname="PC"):
         agent = self.activate_agent(owner or self.owner_a, hostname)
-        voice = {"queue": 0, **({"capabilities": {"providers": ["edge", "elevenlabs", "omnivoice"], "tts_job": 1,
+        voice = {"queue": 0, **({"capabilities": {"providers": ["edge", "omnivoice"], "tts_job": 1,
                                                   "audio_path": ["relay", "direct"]}} if capable else {})}
         r = self.client.post("/api/agents/heartbeat", headers={"X-Sarae-Agent-Key": agent["agent_credential"]},
                              json={"agent_id": agent["agent_id"], "hostname": hostname, "voice": voice})
@@ -324,7 +324,7 @@ class OmniVoiceTests(SaasTestCase):
         self.assertEqual(r.headers["x-sarae-error"], "TTS_BACKEND_UNREACHABLE")
         self.assertEqual(self.client.post("/api/ai/voice/preview", json={"text": "a" * 451}).status_code, 422)
 
-    def test_edge_and_elevenlabs_never_touch_the_voice_server(self):
+    def test_edge_never_touches_the_voice_server(self):
         agent = self.agent()
         r = self.speak(agent)
         self.assertEqual(r.status_code, 200, r.text)

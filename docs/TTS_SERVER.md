@@ -820,3 +820,9 @@ Chạy test giả: mở Vite port 5175, sau đó `agent-core/.venv/Scripts/pytho
 Báo cáo, số đo, ma trận lỗi, giới hạn nghiệm thu và checklist vận hành: [TTS_PHASE6.md](TTS_PHASE6.md). Dữ liệu latency đã loại credentials nằm trong [tts-phase6](tts-phase6/latency.json).
 
 Phase 6 thay thế giới hạn preview/locking ghi ở mục 19: OmniVoice preview nhận `voice_id` owner-scoped, không lưu default; Backend bảo vệ mutation giọng dùng trong RUNNING/pending start bằng khóa theo owner trong một process. Đã chạy toàn tuyến Web → Backend → GPU → ứng dụng Tauri Windows → OBS offline. Local **PARTIALLY READY**, remote production **BLOCKED/chưa nghiệm thu**; còn chờ nghe duyệt và bộ cài release/môi trường remote.
+
+## 21. Provider retirement — ElevenLabs removed (2026-11-03)
+
+Current provider support is Edge TTS + G-OmniVoice only. ElevenLabs implementation, Web controls, config/command schemas, heartbeat capability, preview, catalog/key endpoints and Agent key resolver have been removed. Stored legacy settings are read with a migration notice: retired default becomes Edge defaults; retired fallback modes become none while a valid OmniVoice default stays unchanged. No production data/key deletion is performed. Save the chosen supported voice to persist normalized settings. Old command payloads selecting the removed provider are rejected.
+
+See [VOICE_ENGINE.md](VOICE_ENGINE.md) for current operation. Earlier sections are historical phase acceptance reports and their ElevenLabs references no longer describe the supported providers. Rebuild/install Agent separately when deploying; push/merge does not update installed binaries.

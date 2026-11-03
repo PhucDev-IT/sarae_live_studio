@@ -74,7 +74,6 @@ class VoiceUiTests(unittest.TestCase):
         elif path=='/ai/voice/config':
             if method=='PUT':self.config.update(r.post_data_json)
             data=self.config
-        elif path=='/ai/voice/catalog':data=dict(models=[dict(id='eleven_flash_v2_5',name='Flash')],voices=[dict(id='voice11',name='Voice Eleven')])
         elif path=='/live/sessions':data=[dict(status='RUNNING')] if self.running else []
         elif path.endswith('/readiness'):data={'tts':self.readiness} if method=='GET' else {**self.readiness,'warmup':dict(cache='ram',ms=2)}
         elif path=='/ai/voice/utterances':data={'utterances':[dict(id=str(i),state=s,tts_job_state='running',part='body',voice_rev=1,created_at='2026-11-03T04:00:00Z',error_code=None) for i,s in enumerate(['NEW','SENT','PLAYING','PLAYED','CANCELLED','EXPIRED','FAILED'])]}
@@ -154,19 +153,26 @@ class VoiceUiTests(unittest.TestCase):
         expect(self.page.get_by_text(re.compile('Có phiên Sarae đang RUNNING'))).to_be_visible()
         self.assertEqual(self.config['provider'],'omnivoice')
 
-    def test_edge_elevenlabs_and_mobile(self):
+    def test_edge_and_mobile(self):
         self.page.get_by_label('Provider',exact=True).select_option('edge')
         expect(self.page.get_by_label('Tốc độ (%)')).to_be_visible()
         self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
         expect(self.page.get_by_label('Giọng nghe thử')).to_be_visible()
-        self.page.get_by_label('Provider',exact=True).select_option('elevenlabs')
-        expect(self.page.get_by_role('option',name='Voice Eleven')).to_have_count(1)
-        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
-        expect(self.page.get_by_text('Giọng thử đã sẵn sàng.',exact=False)).to_be_visible()
+        expect(self.page.get_by_label('Provider',exact=True).locator('option')).to_have_count(2)
+        expect(self.page.get_by_role('option',name='ElevenLabs',exact=True)).to_have_count(0)
         self.page.set_viewport_size({'width':390,'height':844})
         self.page.get_by_label('Provider',exact=True).select_option('omnivoice')
         self.page.screenshot(path='web/tests/voice-mobile.png',full_page=True)
         self.assertLessEqual(self.page.locator('body').evaluate('(e)=>e.scrollWidth'),390)
+
+    def test_retired_provider_notice_and_no_credential_calls(self):
+        notice='Provider cũ đã được gỡ bỏ. Hãy chọn và lưu giọng muốn dùng.'
+        self.config.update(provider='edge',model='edge-neural',voice='vi-VN-HoaiMyNeural',rate=5,settings={},migration_notice=notice)
+        self.page.reload()
+        expect(self.page.get_by_text(notice,exact=True)).to_be_visible()
+        expect(self.page.get_by_label('Provider',exact=True).locator('option')).to_have_count(2)
+        expect(self.page.get_by_label('ElevenLabs API key')).to_have_count(0)
+        self.assertFalse(any('/ai/voice/key' in str(call) or '/ai/voice/catalog' in str(call) for call in self.calls))
 
     def test_profile_rename_replace_and_sync(self):
         card=self.page.locator('article').first

@@ -1,5 +1,5 @@
 """The single path from Sarae to G-OmniVoice (provider "omnivoice"): utterances, jobs, Agent commands, readiness,
-LIVE leases and the audio relay. Edge and ElevenLabs never come here. Design: docs/TTS_SERVER.md sections 4-7, 17.
+LIVE leases and the audio relay. Edge never comes here. Design: docs/TTS_SERVER.md sections 4-7, 17.
 
 Utterance = one decision to say one clip (body, intro, or a prepared sentence). Its row links owner, Agent, LIVE
 session, reply, voice + revision, TTS job and Agent command; it never stores the text or any token.

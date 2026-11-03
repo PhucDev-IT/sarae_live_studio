@@ -219,7 +219,7 @@ class TtsPayload(Payload):
     fallback: dict | None = None
     text: str = Field(min_length=1, max_length=450)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
-    provider: Literal["edge", "elevenlabs", "omnivoice"] = "edge"
+    provider: Literal["edge", "omnivoice"] = "edge"
     model: str | None = Field(default=None, min_length=1, max_length=100)
     settings: dict = Field(default_factory=dict)
     # AI voice (backend/app/live_reply_director.py): speed in percent, not spoken after ttl_seconds, video ducking.
@@ -236,7 +236,7 @@ class TtsPreparePayload(Payload):
     """Answers generated into the voice cache before they are needed (nothing is played)."""
     texts: list[str] = Field(min_length=1, max_length=40)
     voice: str = Field(default="vi-VN-HoaiMyNeural", min_length=1, max_length=100)
-    provider: Literal["edge", "elevenlabs", "omnivoice"] = "edge"
+    provider: Literal["edge", "omnivoice"] = "edge"
     model: str | None = Field(default=None, min_length=1, max_length=100)
     settings: dict = Field(default_factory=dict)
     rate: int = Field(default=0, ge=-30, le=50)

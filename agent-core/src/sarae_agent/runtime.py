@@ -341,11 +341,6 @@ class AgentRuntime:
                 raise AgentError("CLOUD_URL_MISMATCH",
                                  "Cloud URL khác với Cloud đã kích hoạt Agent; khôi phục URL cũ hoặc kích hoạt lại",
                                  {"activated_cloud_url": identity.cloud_url})
-            def resolve_voice_key(provider: str) -> str:
-                from sarae_agent.cloud.client import CloudClient
-                with CloudClient(api_url, timeout=cfg.cloud.request_timeout_seconds) as client:
-                    return client.voice_key(identity.credential, identity.agent_id, provider)
-            self.voice.key_resolver = resolve_voice_key
             worker = CloudWorker(
                 agent_id=identity.agent_id, credential=identity.credential, api_url=api_url,
                 timeouts={"request": cfg.cloud.request_timeout_seconds, "heartbeat": cfg.cloud.heartbeat_seconds,

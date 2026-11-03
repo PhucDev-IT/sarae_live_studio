@@ -3,7 +3,7 @@ import {voiceCodeText,type TtsReadiness} from './voiceApi'
 
 export function TtsReadinessView({report,active=false}:{report:TtsReadiness|null;active?:boolean}){
  if(!report)return <p className="voice-muted">Chưa có kết quả kiểm tra TTS. Mở trang không tự đồng bộ giọng hoặc warmup GPU.</p>
- if(!report.applicable)return <p className="voice-muted">Giọng hiện tại dùng {report.provider==='edge'?'Edge TTS':'ElevenLabs'}; không cần GPU G-OmniVoice.</p>
+ if(!report.applicable)return <p className="voice-muted">Giọng hiện tại dùng Edge TTS; không cần GPU G-OmniVoice.</p>
  return <div className="voice-readiness">
   <Badge tone={report.ready?'success':'warning'}>{report.ready?'TTS sẵn sàng tại thời điểm kiểm tra':'TTS chưa sẵn sàng'}</Badge>
   <dl><div><dt>Dịch vụ</dt><dd>{report.service?.online?'Online':'Offline'}</dd></div><div><dt>Model</dt><dd>{({ready:'Sẵn sàng',loading:'Đang tải model',error:'Lỗi model/GPU'} as Record<string,string>)[report.service?.state||'']||'Chưa xác định'}</dd></div>

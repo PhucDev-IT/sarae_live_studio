@@ -290,7 +290,7 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
 def _send_omnivoice(st, reply: dict, options: ReplyOptions, intro: str | None, body: str, speech: str, ttl: float,
                     manual: bool):
     """G-OmniVoice through app/tts_orchestrator. Returns None when handled here (sent, or failed by policy), or the
-    fallback VoiceConfig (Edge/ElevenLabs) when the owner chose provider fallback: the caller sends it as usual."""
+    fallback VoiceConfig (Edge) when the owner chose provider fallback: the caller sends it as usual."""
     from app import tts_orchestrator
     from app.ai_voice import VoiceConfig, tts_http_error
     try:
