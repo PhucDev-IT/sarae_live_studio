@@ -579,6 +579,21 @@ def prerender(st: BatchState, product: dict, version: str, options) -> None:
         return
     try:
         voice = voice_config(st.owner_id)
+        if voice.provider == "omnivoice":
+            from app import tts_orchestrator
+            from app.ai_voice import VoiceConfig
+            try:
+                ctx = context(st.owner_id, st.agent_id)
+                done = tts_orchestrator.prepare(st.owner_id, st.agent_id, texts, ctx["session_id"] if ctx else None)
+                monitors(st.key).record("PREPARE", "audio_queued", f"G-OmniVoice: {done['accepted']} câu chuẩn bị")
+                return
+            except tts_orchestrator.SpeakRefused as exc:
+                mode, spec = tts_orchestrator.fallback(st.owner_id, "prepare")
+                if mode != "provider" or not exc.fallback_ok:
+                    monitors(st.key).record("PREPARE", "audio_skipped", f"G-OmniVoice: {exc.code}")
+                    return
+                voice = VoiceConfig.model_validate({**spec, "fallback": None})
+                monitors(st.key).record("TTS_FALLBACK", exc.code, f"Chuẩn bị bằng {voice.provider}")
         create_command(st.agent_id, st.owner_id, "tts_prepare", {"texts": texts, "provider": voice.provider,
             "model": voice.model, "voice": voice.voice, "rate": voice.rate, "settings": voice.settings})
     except HTTPException as exc:
@@ -687,6 +702,11 @@ def stop_voice(owner: Owner, agent_id: AgentId):
     from app.cloud_agents import create_command
     st = desk(owner, agent_id)
     cancelled = director.stop_all(st)
+    from app import tts_orchestrator
+    # G-OmniVoice clips already queued for this Agent are cancelled on the voice server too (no-op otherwise).
+    cancelled_jobs = tts_orchestrator.cancel_agent(st.owner_id, st.agent_id)
+    if cancelled_jobs:
+        monitors(st.key).record("TTS_STOP", "omnivoice", f"Huỷ {cancelled_jobs} câu G-OmniVoice chưa phát")
     try:
         command = create_command(st.agent_id, st.owner_id, "tts_clear", {})
     except HTTPException as exc:

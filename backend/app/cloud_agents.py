@@ -211,12 +211,19 @@ def _voice(report:dict|None)->dict|None:
         return None
     number=lambda v:int(v) if isinstance(v,(int,float)) and not isinstance(v,bool) and v>=0 else 0
     last=report.get("last") if isinstance(report.get("last"),dict) else None
-    return {"queue":number(report.get("queue")),"prepare_pending":number(report.get("prepare_pending")),
+    caps=report.get("capabilities") if isinstance(report.get("capabilities"),dict) else None
+    out={"queue":number(report.get("queue")),"prepare_pending":number(report.get("prepare_pending")),
             "speaking":str(report["speaking"])[:120] if report.get("speaking") else None,
             "ducked":bool(report.get("ducked")),
             "stats":{str(k)[:30]:number(v) for k,v in list((report.get("stats") or {}).items())[:12]} if isinstance(report.get("stats"),dict) else {},
             "last":{k:str(last[k])[:200] for k in ("status","code","message","provider","model","voice","duration_ms")
                     if last.get(k) is not None} if last else None}
+    if caps is not None:
+        # Phase 4 Agents announce what they can play (docs/TTS_SERVER.md 17.6); older Agents send nothing.
+        words=lambda v:[str(x)[:20] for x in v[:10] if isinstance(x,str)] if isinstance(v,list) else []
+        out["capabilities"]={"providers":words(caps.get("providers")),"tts_job":number(caps.get("tts_job")),
+                             "audio_path":words(caps.get("audio_path"))}
+    return out
 
 def _without_paths(verification:dict)->dict:
     """Drop absolute file paths of the Agent's PC before storing (the watched program's name is enough)."""
@@ -377,8 +384,48 @@ def _obs_connection(payload):
     out["password"]=password
     return out
 
+_TTS_ID=r"^[A-Za-z0-9_-]{3,64}$"
+
+def _tts_ref(value,name:str)->dict:
+    """{utterance_id, job_id} of a G-OmniVoice clip (ids only: the Agent fetches audio through its own channel)."""
+    import re
+    if not isinstance(value,dict) or not isinstance(value.get("utterance_id"),str) or not isinstance(value.get("job_id"),str) \
+            or not re.match(r"^[a-f0-9]{32}$",value["utterance_id"]) or not re.match(_TTS_ID,value["job_id"]):
+        raise HTTPException(422,f"{name} không hợp lệ")
+    return {"utterance_id":value["utterance_id"],"job_id":value["job_id"]}
+
+def _omnivoice(payload:dict,kind:str)->dict:
+    """Phase 4 contract (docs/TTS_SERVER.md 17.6). Never contains a token or a URL."""
+    if kind=="tts_speak":
+        tts=payload.get("tts")
+        if not isinstance(tts,dict):
+            raise HTTPException(422,"Thiếu thông tin job G-OmniVoice")
+        out={**_tts_ref(tts,"tts"),"voice_rev":_int(tts.get("voice_rev"),"voice_rev",1,10**9)}
+        deadline=tts.get("deadline_at")
+        try:
+            datetime.fromisoformat(deadline)
+        except (TypeError,ValueError) as exc:
+            raise HTTPException(422,"deadline_at không hợp lệ") from exc
+        out["deadline_at"]=deadline
+        if tts.get("audio_path") not in ("auto","relay"):
+            raise HTTPException(422,"audio_path không hợp lệ")
+        out["audio_path"]=tts["audio_path"]
+        if payload.get("intro") is not None:
+            out["intro"]=_tts_ref(tts.get("intro"),"tts.intro")
+        return {"tts":out}
+    refs=payload.get("tts_jobs")
+    if not isinstance(refs,list) or len(refs)!=len(payload.get("texts") or []):
+        raise HTTPException(422,"tts_jobs phải khớp từng câu chuẩn bị")
+    return {"tts_jobs":[_tts_ref(r,"tts_jobs") for r in refs]}
+
 def _tts_spec(payload:dict)->dict:
     provider=payload.get("provider","edge")
+    if provider=="omnivoice":
+        import re
+        if payload.get("model")!="demo_default" or payload.get("settings") or not isinstance(payload.get("voice"),str) \
+                or not re.match(r"^[a-f0-9]{32}$",payload["voice"]):
+            raise HTTPException(422,"Payload G-OmniVoice không hợp lệ")
+        return {"voice":payload["voice"],"provider":"omnivoice","model":"demo_default","settings":{}}
     if provider not in ("edge","elevenlabs"):
         raise HTTPException(422,"Nhà cung cấp TTS không được hỗ trợ")
     voice=payload.get("voice","vi-VN-HoaiMyNeural")
@@ -481,6 +528,9 @@ def validate_payload(kind:str,payload:dict|None)->dict:
             out["ttl_seconds"]=float(ttl)
         if "duck" in payload:out["duck"]=_bool(payload["duck"],"duck")
         if payload.get("intro") is not None:out["intro"]=_text(payload["intro"],"intro",1,120)
+        if out.get("provider")=="omnivoice":
+            if out.get("rate",0)!=0:raise HTTPException(422,"G-OmniVoice không nhận rate")
+            out.update(_omnivoice(payload,kind))
         return out
     if kind=="chat_send":
         from app.chat_payload import validate_chat_send
@@ -494,7 +544,10 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         texts=payload.get("texts")
         if not isinstance(texts,list) or not 1<=len(texts)<=40 or any(not isinstance(t,str) or not 1<=len(t)<=450 for t in texts):
             raise HTTPException(422,"texts: 1-40 câu, mỗi câu 1-450 ký tự")
-        return {"texts":texts,**_tts_spec(payload),"rate":_int(payload.get("rate",0),"rate",-30,50)}
+        out={"texts":texts,**_tts_spec(payload),"rate":_int(payload.get("rate",0),"rate",-30,50)}
+        if out.get("provider")=="omnivoice":
+            out.update(_omnivoice(payload,kind))
+        return out
     if kind=="local_playlist_start":
         return {"media_ids":_media_ids(payload.get("media_ids")),"loop":_bool(payload.get("loop",True),"loop")}
     if kind=="local_media_play":
@@ -621,6 +674,12 @@ def create_command(agent_id:str,owner_id:str,kind:str,payload:dict|None=None,*,i
     if (agent["platform"] == "ANDROID") != kind.startswith("android_"):
         raise HTTPException(422,"Lệnh không tương thích với loại Agent")
     payload=validate_payload(kind,payload)
+    if kind in ("tts_speak","tts_prepare") and payload.get("provider")=="omnivoice":
+        # Older Agents reject unknown providers and fields (extra="forbid"): never send them this payload.
+        from app.tts_orchestrator import supports_omnivoice
+        if not supports_omnivoice(agent_id):
+            raise HTTPException(409,"Windows Agent chưa hỗ trợ G-OmniVoice (cần cập nhật Agent)",
+                                headers={"X-Sarae-Error":"AGENT_NO_OMNIVOICE"})
     if idempotency_key is not None and not 1<=len(idempotency_key)<=120:
         raise HTTPException(422,"Idempotency-Key dài 1-120 ký tự")
     now=_now()

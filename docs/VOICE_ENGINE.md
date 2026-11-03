@@ -2,6 +2,15 @@
 
 Sarae Web → **AI Assistant → Voice Settings** controls the voice used for new LIVE replies, prepared audio, manual speech and browser previews. The default remains Microsoft Edge TTS with `vi-VN-HoaiMyNeural`. Existing `tts_speak`, `tts_prepare`, `tts_clear` and `voice.speak` calls without provider fields continue to use Edge.
 
+## G-OmniVoice (Phase 3: Backend only)
+
+A third provider, `omnivoice`, runs on the separate G-OmniVoice TTS Backend (`voice-server/`). Sarae Backend keeps
+the voice profiles (reference WAV in the Media Library storage, Whisper or manual transcript, revision), syncs them
+to the voice server, creates TTS jobs and sends `tts_speak` / `tts_prepare` commands carrying job ids only. Edge and
+ElevenLabs are unchanged and never call the voice server. Agents receive OmniVoice commands only when they announce
+the capability in their heartbeat (Phase 4); older Agents get a clear `AGENT_NO_OMNIVOICE` error instead.
+Details, API and the Phase 4 Agent contract: [TTS_SERVER.md section 17](TTS_SERVER.md).
+
 ## ElevenLabs setup
 
 1. In Voice Settings, select ElevenLabs and save your API key. The Backend encrypts it in `owner_credentials`; its normal API responses show only whether a key exists. Configure `SARAE_CREDENTIAL_KEY` on the Backend for a persistent encryption key in production. Do not put the ElevenLabs key in Web environment variables or Agent config files.

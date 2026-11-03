@@ -1,6 +1,6 @@
 # Sarae TTS Backend (G-OmniVoice) — Thiết kế đã duyệt
 
-> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0, 1 đã nghiệm thu; Phase 2 hoàn thành, chờ duyệt (mục 16). Phase 3 chưa bắt đầu.
+> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0–2 đã nghiệm thu; Phase 3 (tích hợp Sarae Backend) hoàn thành, chờ duyệt (mục 17). Phase 4 chưa bắt đầu.
 > Ký hiệu: ✅ đã xác minh trong source/đo thực tế · 🔶 giả định, cần kiểm chứng.
 
 ## 1. Quyết định đã chốt
@@ -525,3 +525,157 @@ Nhận xét: với một GPU và chi phí sàn khoảng 2,4 s mỗi câu, 10 câ
 - Read token không chứng minh danh tính máy (16.4); cần TLS/mạng riêng hoặc relay ở Phase 3–4.
 - `service.ps1` chưa được chạy thật trên máy này (cần bạn đồng ý tạo scheduled task).
 - Import thư viện mất 16–84 s tùy cache đĩa (khởi động lần đầu sau boot chậm).
+
+## 17. Phase 3 — tích hợp Sarae Backend
+
+### 17.1 Module và migration
+
+| File | Vai trò |
+|---|---|
+| `backend/app/tts_server.py` (mới) | Client HTTP duy nhất tới voice-server: health (cache 5 s), status, voice PUT/GET/DELETE/warmup, synthesize (preview), job create/get/cancel/cancel-tag, audio stream (relay), LIVE lease. URL chỉ lấy từ cấu hình, id kiểm tra bằng regex, không follow redirect, token orchestrator chỉ nằm trong header. Lỗi chia hai loại: `TtsUnavailable` (mạng, timeout, chưa cấu hình, 503) và `TtsError` (mã lỗi do voice-server trả về). Chỉ retry lời gọi idempotent; tạo job luôn mang `Idempotency-Key`. |
+| `backend/app/voice_profiles.py` (mới) | Bảng `voice_profiles` + API `/api/ai/voice/profiles` + đồng bộ (`ensure_synced`, `sync_pending`). |
+| `backend/app/tts_orchestrator.py` (mới) | Bảng `tts_utterances`; `speak`, `prepare`, `cancel_agent`, `session_ended`; capability của Agent; fallback; readiness; LIVE lease; reconcile; relay + token cho Agent; vòng nền 15 s. |
+| `backend/alembic/versions/20261103_0021_voice_profiles_tts_utterances.py` (mới) | Tạo 2 bảng (chỉ thêm; `ensure_schema` lúc khởi động là lưới an toàn giống các module khác). |
+| `ai_voice.py` | `VoiceConfig.provider` thêm `omnivoice` (model `demo_default`, rate 0, không settings, voice = id profile của chính owner); `FallbackPolicy`; nhánh preview và Speak thủ công. Edge/ElevenLabs không đổi. |
+| `cloud_agents.py` | Heartbeat giữ `voice.capabilities`; schema payload `omnivoice` cho `tts_speak`/`tts_prepare`; `create_command` từ chối 409 `AGENT_NO_OMNIVOICE` khi Agent chưa báo capability. |
+| `live_reply_director.py`, `ai_live_batches.py`, `live_sessions.py`, `main.py`, `config.py` | Mỗi nơi thêm một nhánh `provider == "omnivoice"` gọi orchestrator; Dừng giọng nói và kết thúc phiên hủy job; session readiness có thêm khóa `tts`; khởi động schema + vòng nền; 6 biến `SARAE_TTS_*`. |
+| Test | `tests/fake_voice_server.py` (voice-server giả qua `httpx.MockTransport`), `tests/test_tts_omnivoice.py` (27 test), `tests/test_tts_real_voice_server.py` (tùy chọn, model thật); `support.py` thêm 2 module vào danh sách patch session. |
+
+Không sửa Windows Agent, Web, OBS hay voice-server.
+
+### 17.2 API phía Sarae Backend
+
+| Method | Path | Ai gọi | Ghi chú |
+|---|---|---|---|
+| GET / POST | `/api/ai/voice/profiles` | owner (Web) | Danh sách; tải lên multipart `wav` + `name` (+ `transcript` tùy chọn). 201 kèm trạng thái sync (`PENDING` nếu voice-server offline) |
+| GET / PATCH / DELETE | `/api/ai/voice/profiles/{id}` | owner | PATCH `{name?, transcript?}`: transcript `null` quay về Whisper; DELETE trả 409 nếu giọng đang được chọn |
+| PUT | `/api/ai/voice/profiles/{id}/wav` | owner | Thay WAV: revision mới, transcript quay về Whisper, object cũ bị xóa |
+| POST | `/api/ai/voice/profiles/{id}/sync` | owner | Đẩy lại bản hiện tại lên voice-server (ví dụ khi thay máy GPU) |
+| GET | `/api/ai/voice/profiles/{id}/wav` | owner | WAV gốc, nguyên byte |
+| PUT / GET | `/api/ai/voice/config` | owner | Như cũ, thêm `omnivoice`, `fallback`, `omnivoice_configured` |
+| POST | `/api/ai/voice/preview` | owner | Với `omnivoice`: trả `audio/wav` của profile đang chọn ở revision hiện tại; header `X-Voice-Revision`; lỗi có `X-Sarae-Error`; không fallback |
+| POST | `/api/ai/voice/speak` | owner | Như cũ; với `omnivoice` trả thêm `utterances` (không có token) |
+| POST | `/api/ai/voice/readiness` `{agent_id}` | owner | Kiểm tra chủ động trước LIVE: service, model, sync, warmup, capability của Agent, GPU; không đặt lease |
+| GET | `/api/ai/voice/utterances?agent_id=` | owner | Trạng thái utterance (không có text, không có token) |
+| GET | `/api/live/sessions/{id}/readiness` | owner | Như cũ, thêm khóa `tts` (thụ động: không sync, không warmup, không lease) |
+| GET | `/api/agents/tts/audio/{utterance_id}?agent_id=&wait=` | Agent (`X-Sarae-Agent-Key`) | Relay WAV (stream) |
+| POST | `/api/agents/tts/audio/{utterance_id}/token?agent_id=` | Agent | Read token cho đường direct (chỉ có khi `SARAE_TTS_AGENT_URL` được đặt và token còn trong RAM); nếu không thì 404 `USE_RELAY` |
+
+Mã lỗi gửi cho Web nằm ở header `X-Sarae-Error` (cùng pattern với `MEDIA_NOT_READY`), ví dụ: `TTS_BACKEND_UNREACHABLE`, `TTS_NOT_READY`, `TTS_BUSY`, `AGENT_NO_OMNIVOICE`, `VOICE_NOT_FOUND`, `SESSION_ENDED`, `TEXT_TOO_LONG`.
+
+### 17.3 Luồng utterance → job → command
+
+```
+director / Speak / prepare
+   │  provider == omnivoice ?
+   ▼
+tts_orchestrator.speak()
+   1. phiên còn RUNNING?             không → SpeakRefused SESSION_ENDED (không fallback)
+   2. Agent báo capability?          không → AGENT_NO_OMNIVOICE (có thể fallback theo chính sách)
+   3. voice-server online + ready?   không → TTS_* (có thể fallback)
+   4. profile của owner, ensure_synced (đẩy lại nếu voice-server thiếu hoặc khác rev)
+   5. ghi utterance NEW (body, + intro nếu có), commit
+   6. POST /v1/tts/jobs  Idempotency-Key = utterance.id, priority live, deadline, reader = agent,
+      owner_ref = owner, tags agent:/owner:/session:   → JOB_CREATED   (VOICE_STALE → sync lại 1 lần)
+      lỗi → FAILED, hủy các job đã tạo
+   7. create_command(tts_speak, payload chỉ có id, key "tts:<utterance>") → SENT
+      lỗi → ABORTED, hủy job
+```
+
+| Tình huống | Phase 3 xử lý |
+|---|---|
+| Retry tạo job (mạng chập chờn) | Cùng `Idempotency-Key` → voice-server trả lại cùng job (đã test) |
+| Job tạo xong nhưng command lỗi | Utterance `ABORTED`, job bị hủy trên voice-server (đã test) |
+| Backend restart giữa job và command | `reconcile()` (khi khởi động và mỗi 15 s): utterance `NEW`/`JOB_CREATED` quá 120 s → `ORPHANED`, hủy job, **không gửi lại** (đã test) |
+| HTTP timeout phía Web | Không tự sinh utterance mới; operator bấm lại thì đó là một utterance mới, theo ý operator |
+| LIVE kết thúc | `finish_session` → `session_ended`: hủy job theo tag `session:<id>`, utterance → `CANCELLED`, nhả lease; `speak` sau đó trả `SESSION_ENDED` (đã test) |
+| Dừng giọng nói | `cancel_agent`: hủy tag `agent:<id>` + `tts_clear` như cũ (đã test) |
+| Job hết hạn | Không retry với deadline mới (key cũ trả lại job cũ); relay trả 410 (đã test) |
+| Voice đổi revision | Job giữ `voice_rev` lúc tạo (voice-server snapshot prompt); `tts_utterances.voice_rev` ghi lại |
+| Trạng thái | `tts_utterances.state` = vòng đời phía Sarae; `tts_job_state` = trạng thái GPU (cập nhật định kỳ); trạng thái phát (PLAYING/PLAYED) **chưa có**, cần sự kiện từ Agent ở Phase 4 |
+
+**Phát tối đa một lần**: Phase 3 bảo đảm mỗi utterance có tối đa một job và tối đa một lệnh `tts_speak` (command key cố định, `tts_speak` không retryable). Việc **không phát trùng** ở phía Agent cần dedup theo `utterance_id` ở Phase 4, nên Phase 3 chưa khẳng định điều này.
+
+### 17.4 Voice profile và storage
+
+- WAV gốc nằm trong storage provider của Media Library (`upload_provider`: R2 hoặc Google Drive; test dùng MEMORY), object `voice-<id>-r<revision>`. SQLite chỉ lưu provider, object id, SHA-256 và thông số audio; đọc lại có kiểm tra SHA-256.
+- Kiểm tra lúc tải lên: chỉ nhận WAV PCM, mono/stereo, 8–96 kHz, 1–20 s, ≤ 5 MB (QC đầy đủ do voice-server làm khi sync, kết quả lưu ở `qc.server`).
+- Transcript: mặc định Whisper (không gửi transcript, voice-server tự nhận dạng như demo; text Whisper được lưu về `transcript_asr`); sửa thủ công thì revision tăng; trả `null` thì quay về Whisper (cũng tăng revision).
+- `revision` tăng khi WAV hoặc transcript thay đổi. `tts_sync_state` có các giá trị PENDING / SYNCED / FAILED, kèm `tts_synced_revision` và `tts_rev`. `ensure_synced` có khóa theo profile (nhiều request đồng thời chỉ upload 1 lần, đã test) và tin kết quả kiểm tra trong 60 s; sau đó kiểm tra lại rev trên voice-server, thiếu thì upload lại (trường hợp thay máy GPU, đã test).
+- Voice-server offline: metadata vẫn đọc được; vòng nền tự đồng bộ khi voice-server trở lại (đã test).
+- Cách ly owner: mọi truy vấn lọc theo `owner_id` (owner khác nhận 404); id là uuid toàn cục; voice-server nhận `owner_ref` và kiểm tra lại; cấu hình giọng chỉ nhận profile của chính owner.
+
+### 17.5 Readiness, đồng bộ trước LIVE và lease
+
+| Bước | Khi nào | Có giữ GPU không |
+|---|---|---|
+| Kiểm tra trước LIVE (`POST /api/ai/voice/readiness`) | Khi người dùng bấm kiểm tra hoặc đồng bộ | Không: chỉ sync, warmup và đọc `GET /v1/admission/live` |
+| Readiness thụ động (`tts` trong session readiness) | Mỗi lần trang readiness gọi | Không |
+| Đặt lease | Vòng nền thấy phiên `RUNNING` của owner dùng omnivoice (≤ 15 s sau khi chạy) | Có, TTL 60 s |
+| Gia hạn lease | Mỗi 15 s khi phiên vẫn `RUNNING` | Có |
+| Hủy lease | `finish_session` (ngay lập tức) hoặc vòng nền thấy phiên không còn `RUNNING` | — |
+| Backend mất kết nối | Không gia hạn được → voice-server tự bỏ lease sau TTL | — |
+
+Readiness trả `ready: false` và cảnh báo `LONG_JOB_RUNNING` kèm ghi chú "ước tính, không phải cam kết" khi GPU đang chạy job dài; ngoài ra còn các cảnh báo `AGENT_NO_OMNIVOICE`, `VOICE_NOT_SYNCED`, `TTS_BACKEND_UNREACHABLE`, `TTS_NOT_READY`. Nhiều phiên dùng chung GPU thì mỗi phiên có một lease riêng (đã test).
+
+### 17.6 Bảo mật relay và read token
+
+- Relay `GET /api/agents/tts/audio/{utterance}`:
+  - Xác thực bằng `verify_agent` (khóa Agent hiện có).
+  - Utterance phải thuộc **đúng Agent đó và đúng owner của Agent**; nếu không thì 404 (không lộ thông tin tồn tại).
+  - Utterance đã hủy/hỏng/hết hạn (cộng 30 s ân hạn) thì trả 410.
+  - `job_id` lấy từ DB, không lấy từ request; host lấy từ cấu hình; redirect bị từ chối (502 `TTS_REDIRECT_REFUSED`, không có request nào rời khỏi host đã cấu hình, đã test).
+  - Stream theo chunk 64 KB; nếu `Content-Length` vượt `SARAE_TTS_RELAY_MAX_BYTES` thì 502 `AUDIO_TOO_LARGE`, nếu không có header thì cắt khi vượt ngưỡng.
+  - Upstream 202 → 202; `JOB_*` → 410/409; mạng lỗi → 502 `TTS_BACKEND_UNREACHABLE`.
+- Read token: chỉ giữ trong RAM của Backend (`_tokens`, tự xóa khi hết hạn); **không** lưu trong `tts_utterances`, payload command, response cho Web hay log (đã test cả 4). Agent lấy token qua endpoint `/token` (xác thực khóa Agent, đúng utterance của mình), và chỉ khi `SARAE_TTS_AGENT_URL` được đặt. Backend restart thì mất token → Agent dùng relay.
+- Token orchestrator không bao giờ rời Backend.
+
+### 17.7 Fallback
+
+`voice.fallback` = `{live_reply, prepare, manual, provider}`, mặc định `none` ở mọi mục.
+
+| Ngữ cảnh | none | comment_only | hold_for_operator | provider |
+|---|---|---|---|---|
+| LIVE reply | `voice=failed` + ghi chú mã lỗi; không nói, không comment | `_fallback` sẵn có (giữ câu để trả lời bằng comment) | `voice=review` | Gửi `tts_speak` bằng Edge/ElevenLabs đã cấu hình |
+| Prepare | Bỏ qua, ghi monitor | — | — | `tts_prepare` bằng provider dự phòng |
+| Speak thủ công | Lỗi HTTP kèm mã | — | — | Provider dự phòng |
+| Preview | Luôn trả lỗi, không fallback | | | |
+
+Không bao giờ fallback khi phiên LIVE đã kết thúc, câu đã hết hạn hoặc bị hủy (`fallback_ok = False`, đã test). Fallback khi Agent tải hoặc phát lỗi thuộc Phase 4.
+
+### 17.8 Kết quả kiểm thử
+
+| Bộ test | Kết quả |
+|---|---|
+| Toàn bộ Backend (unittest) | **383 pass** (356 cũ + 27 mới), 1 skipped (test thật tùy chọn); trước Phase 3 là 356 pass |
+| `test_tts_omnivoice.py` (voice-server giả) | 27 pass: CRUD và cô lập owner, WAV trong storage, kiểm tra WAV; revision và sync lại; offline rồi online; thay máy GPU; sync đồng thời (SQLite file); validate cấu hình; preview (WAV, đúng profile, offline, không fallback); Edge không chạm voice-server; Agent cũ không nhận payload mới (cả qua `create_command` trực tiếp); schema payload; speak tạo job + command không có token; retry idempotent; command lỗi → hủy job; voice-server từ chối; reconcile orphan; 5 speak đồng thời; director với 4 chính sách fallback và phiên đã kết thúc; kết thúc LIVE; lease nhiều phiên; readiness; Dừng giọng nói; prepare; relay (ủy quyền, lỗi upstream, redirect, offline, giới hạn kích thước, đã hủy); utterance hết hạn; token chỉ cho đúng Agent và không xuất hiện trong response Web; log không chứa token |
+| `test_tts_real_voice_server.py` (voice-server thật, RTX 3060) | 1 pass: sync voice 3,4 s (Whisper trùng Phase 0); preview 1,94 s; readiness ready (warmup `ram`); điều phối speak 58 ms (kiểm tra voice + job + command); relay 1,93 s cho 2,28 s audio (gồm chờ GPU); lease đặt và nhả đúng; voice-server dừng êm bằng stop-file |
+| Regression Edge/ElevenLabs | `test_voice_settings`, `test_ai_live_reply`, `test_cloud_agents`, `test_live_sessions`, `test_owner_isolation` pass không cần sửa |
+
+### 17.9 Rủi ro còn lại
+
+- Chưa có xác nhận phát từ Agent: `SENT` chưa có nghĩa là đã phát. "Không phát trùng" cần dedup theo `utterance_id` ở Phase 4.
+- Lease được đặt trong vòng ≤ 15 s sau khi phiên `RUNNING` (do vòng nền), không phải ngay lúc bấm Start.
+- Token chỉ nằm trong RAM: nếu Backend chạy nhiều tiến trình, token không chia sẻ được (hiện Backend là một tiến trình, đúng ràng buộc sẵn có).
+- Xóa profile khi voice-server offline để lại bản sao trên voice-server (không ai tham chiếu được; `sync` không tạo lại). Có thể dọn thủ công.
+- `tts_utterances` chưa có job dọn bản ghi cũ (vài chục byte mỗi câu); cần chính sách giữ (ví dụ 30 ngày) khi đưa vào chạy thật.
+- Một voice-server cho cả hệ thống (`SARAE_TTS_SERVER_URL` toàn cục); nhiều GPU theo owner chưa hỗ trợ.
+
+### 17.10 Việc Phase 4 cần làm trên Windows Agent
+
+1. **Capability trong heartbeat**: `voice.capabilities = {"providers": ["edge","elevenlabs","omnivoice"], "tts_job": 1, "audio_path": ["relay","direct"]}`. Backend chỉ gửi payload omnivoice khi có dòng này.
+2. **Schema payload** (`cloud/commands.py`):
+   - `TtsPayload.provider` thêm `"omnivoice"`; thêm `tts: {utterance_id, job_id, voice_rev, deadline_at, audio_path: "auto"|"relay", intro?: {utterance_id, job_id}}`.
+   - `TtsPreparePayload` thêm `tts_jobs: [{utterance_id, job_id}]`, khớp thứ tự với `texts`.
+3. **`OmniVoiceProvider`**:
+   - Tải WAV bằng relay `GET /api/agents/tts/audio/{utterance}?agent_id=&wait=20` với `X-Sarae-Agent-Key`.
+   - Nếu `audio_path == "auto"`: thử `POST …/token`, rồi gọi voice-server trực tiếp `GET {base_url}/v1/tts/jobs/{job_id}/audio` với `Authorization: Bearer <read_token>` và `X-Sarae-Agent-Id`; chỉ khi lỗi mạng mới quay về relay.
+   - Xử lý 202 (chờ thêm, không quá `deadline_at`) và 410 (bỏ câu, không fallback).
+4. **`VoiceEngine`**:
+   - Bỏ câu khi `now > deadline_at` (hạn tuyệt đối, ngoài TTL hiện có).
+   - Dedup theo `utterance_id` trong 15 phút.
+   - Cache theo provider với đuôi `.wav`.
+   - Intro và body là hai clip riêng, như hiện tại.
+5. **Sự kiện phát** qua `POST /api/agents/events`: `tts_playback {utterance_id, status: playing|played|expired|stopped|failed, code, a1..a4}` (mục 9), để Backend cập nhật utterance và đo độ trễ end-to-end.
+6. **Fallback lúc tải hoặc phát lỗi** theo `fallback` (Backend sẽ gửi spec trong payload ở Phase 4).
+7. Không đụng ducking, OBS, Edge hay ElevenLabs.

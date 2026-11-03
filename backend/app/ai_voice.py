@@ -30,15 +30,51 @@ SYNTH_ATTEMPTS = 4
 preview_locks = PerOwner(lambda _owner_id: RLock())
 
 
+OMNIVOICE_PRESET = "demo_default"
+
+
+class FallbackPolicy(BaseModel):
+    """What to do when G-OmniVoice cannot take a sentence (docs/TTS_SERVER.md 7.2). Default none everywhere: no voice
+    is ever switched unless the owner chose it. Expired, cancelled or ended-session sentences never fall back."""
+    live_reply: Literal["none", "comment_only", "provider", "hold_for_operator"] = "none"
+    prepare: Literal["none", "provider"] = "none"
+    manual: Literal["none", "provider"] = "none"
+    # {"provider": "edge"|"elevenlabs", "model", "voice", "rate", "settings"} used when a mode is "provider".
+    provider: dict | None = None
+
+    @model_validator(mode="after")
+    def valid_provider(self):
+        if "provider" in (self.live_reply, self.prepare, self.manual):
+            if not self.provider:
+                raise ValueError("Chọn giọng dự phòng (Edge hoặc ElevenLabs) cho chế độ provider")
+        if self.provider is not None:
+            spec = VoiceConfig.model_validate({**self.provider, "fallback": None})
+            if spec.provider == "omnivoice":
+                raise ValueError("Giọng dự phòng phải là Edge TTS hoặc ElevenLabs")
+            self.provider = {k: getattr(spec, k) for k in ("provider", "model", "voice", "rate", "settings")}
+        return self
+
+
 class VoiceConfig(BaseModel):
-    provider: Literal["edge", "elevenlabs"] = "edge"
+    provider: Literal["edge", "elevenlabs", "omnivoice"] = "edge"
     model: str = Field(default="edge-neural", min_length=1, max_length=100)
     voice: str = Field(default=VOICE, min_length=1, max_length=100)
     rate: int = Field(default=5, ge=-30, le=50)
     settings: dict = Field(default_factory=dict)
+    fallback: FallbackPolicy | None = Field(default_factory=FallbackPolicy)
 
     @model_validator(mode="after")
     def valid_spec(self):
+        if self.fallback is None:
+            self.fallback = FallbackPolicy()
+        if self.provider == "omnivoice":
+            # G-OmniVoice: `voice` is a voice profile id of this owner, the preset is the verified demo default,
+            # and nothing tunes it (no speed or voice settings).
+            if self.model != OMNIVOICE_PRESET or self.settings or self.rate != 0:
+                raise ValueError("G-OmniVoice dùng preset demo_default, rate 0 và không có voice settings")
+            if len(self.voice) != 32 or not all(c in "0123456789abcdef" for c in self.voice):
+                raise ValueError("Voice G-OmniVoice phải là id của một giọng đã tải lên")
+            return self
         if self.provider == "edge":
             if self.model != "edge-neural" or self.voice not in (VOICE, "vi-VN-NamMinhNeural"):
                 raise ValueError("Giọng hoặc model Edge TTS không hợp lệ")
@@ -72,14 +108,27 @@ def voice_config(owner_id: str) -> VoiceConfig:
 
 @router.get("/config")
 def read_voice_config(owner: Owner):
+    from app import tts_server
     config = voice_config(owner["id"])
-    return {**config.model_dump(), "has_api_key": bool(credentials.secret(owner["id"], "elevenlabs"))}
+    return {**config.model_dump(), "has_api_key": bool(credentials.secret(owner["id"], "elevenlabs")),
+            "omnivoice_configured": tts_server.configured()}
 
 
 @router.put("/config")
 def save_voice_config(body: VoiceConfig, owner: Owner):
+    if body.provider == "omnivoice":
+        from app import voice_profiles
+        with voice_profiles.SessionLocal() as db:
+            voice_profiles.owned(db, owner["id"], body.voice)          # 404 unless it is one of this owner's voices
     update_owner_settings(owner["id"], voice=body.model_dump())
     return read_voice_config(owner)
+
+
+def tts_http_error(exc) -> HTTPException:
+    """SpeakRefused / TtsUnavailable / TtsError as an HTTP error the Web can show; the code is in X-Sarae-Error."""
+    status = getattr(exc, "status", 503)
+    status = status if isinstance(status, int) and 400 <= status < 600 else 503
+    return HTTPException(status, f"G-OmniVoice: {exc.message or exc.code}", headers={"X-Sarae-Error": exc.code})
 
 
 class VoiceKeyBody(BaseModel):
@@ -137,8 +186,26 @@ def speak_on_agent(body: SpeakBody, owner: Owner):
     # Numbers, prices and short forms are read as words ("200k" -> "hai trăm nghìn").
     text = spoken(body.text)[:450]
     config = voice_config(owner["id"])
+    if config.provider == "omnivoice":
+        from app import tts_orchestrator
+        from app.owner_agents import owned_agent
+        agent = owned_agent(owner, body.agent_id, online=True)
+        try:
+            done = tts_orchestrator.speak(owner["id"], agent["id"], text=text, intro=None, ttl_seconds=120, duck=True,
+                                          session_id=None, reply_id=None, source="manual")
+            monitors(owner["id"]).record("TTS_QUEUED", f"omnivoice/{config.voice}", f"Gửi tới Agent {agent['hostname']}: {text}")
+            return {"status": "sent_to_agent", "agent": {k: agent[k] for k in ("id", "hostname", "platform", "online", "last_seen")},
+                    "command_id": done["command"]["command_id"], "voice": config.voice, "text": text,
+                    "utterances": done["utterances"]}
+        except tts_orchestrator.SpeakRefused as exc:
+            mode, spec = tts_orchestrator.fallback(owner["id"], "manual")
+            if mode != "provider" or not exc.fallback_ok:
+                raise tts_http_error(exc) from exc
+            config = VoiceConfig.model_validate({**spec, "fallback": None})
+            monitors(owner["id"]).record("TTS_FALLBACK", exc.code, f"Đọc bằng {config.provider} thay cho G-OmniVoice")
     payload = {"text": text, "provider": config.provider, "model": config.model,
-               "voice": body.voice or config.voice, "rate": config.rate, "settings": config.settings}
+               "voice": body.voice if body.voice and config.provider != "omnivoice" else config.voice,
+               "rate": config.rate, "settings": config.settings}
     sent = send_command(owner, body.agent_id, "tts_speak", payload)
     monitors(owner["id"]).record("TTS_QUEUED", f"{config.provider}/{config.model}/{payload['voice']}",
                                    f"Gửi tới Agent {sent['agent']['hostname']}: {text}")
@@ -157,6 +224,8 @@ def preview(body: PreviewBody, owner: Owner):
     config = voice_config(owner["id"])
     voice = body.voice or config.voice
     rate = body.rate if body.rate is not None else config.rate
+    if config.provider == "omnivoice":
+        return _omnivoice_preview(owner, config, body.text)
     if config.provider == "elevenlabs":
         if not all(c.isalnum() or c in "_-" for c in voice):
             raise HTTPException(422, "Voice ID ElevenLabs không hợp lệ")
@@ -227,3 +296,28 @@ def preview(body: PreviewBody, owner: Owner):
             raise HTTPException(502, f"Lỗi tạo giọng nói: {type(exc).__name__}: {str(exc)[:250]}") from exc
     finally:
         voice_lock.release()
+
+
+def _omnivoice_preview(owner: dict, config: VoiceConfig, text: str):
+    """Web -> Backend -> voice server -> WAV -> Web, with the owner's selected profile at its current revision.
+    No fallback: a preview must sound like the chosen voice or fail with a clear code."""
+    from app import tts_orchestrator, tts_server, voice_profiles
+    from app.voice_profiles import ensure_synced, owned
+    text = text.strip()
+    if len(text) > 450:
+        raise HTTPException(422, "Câu nghe thử G-OmniVoice tối đa 450 ký tự", headers={"X-Sarae-Error": "TEXT_TOO_LONG"})
+    monitor = monitors(owner["id"])
+    try:
+        with voice_profiles.SessionLocal() as db:
+            profile = owned(db, owner["id"], config.voice)
+            ensure_synced(db, profile)
+            profile_id, revision = profile.id, profile.revision
+        audio, headers = tts_server.synthesize(profile_id, text, OMNIVOICE_PRESET)
+    except (tts_server.TtsUnavailable, tts_server.TtsError, tts_orchestrator.SpeakRefused) as exc:
+        monitor.record("TTS_ERROR", getattr(exc, "code", "TTS_ERROR"), str(getattr(exc, "message", ""))[:250])
+        raise tts_http_error(exc) from exc
+    monitor.record("TTS_PREVIEW", f"omnivoice/{profile_id}", f"Đã tạo âm thanh thử ({len(audio)} bytes).")
+    return Response(content=audio, media_type="audio/wav",
+                    headers={"Cache-Control": "no-store", "X-Voice-Revision": str(revision),
+                             "X-Inference-Ms": headers.get("x-inference-ms", ""),
+                             "X-Audio-Ms": headers.get("x-audio-ms", "")})

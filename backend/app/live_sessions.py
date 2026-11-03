@@ -539,8 +539,12 @@ def session_readiness(session_id:int,owner:Owner,agent_id:str|None=None):
             target=owned_agent(owner,target)["id"]
         expected=db.execute(text("SELECT user_id FROM tiktok_accounts WHERE id=:a"),
                             {"a":item.tiktok_account_id}).scalar_one_or_none() if item.tiktok_account_id else None
-        return {"session_id":session_id,"agent_id":target,
+        report={"session_id":session_id,"agent_id":target,
                 **reconcile(db,owner["id"],target,ids_for(db,session_id),item.shop_id,expected_user_id=expected)}
+    # Passive TTS status (no sync, no warmup, no lease); POST /api/ai/voice/readiness performs the active check.
+    from app import tts_orchestrator
+    report["tts"]=tts_orchestrator.readiness(owner["id"],target)
+    return report
 
 @router.put("/{session_id}/products")
 def update_products(session_id: int, body: SessionProducts, owner: Owner):
@@ -991,6 +995,9 @@ def finish_session(session_id: int, owner: Owner):
         release_session(owner["id"], item.agent_id)
         if item.agent_id:
             cancel_commands(item.agent_id, session_id=session_id)
+        # G-OmniVoice: unfinished clips of this LIVE are cancelled and its GPU lease released (no-op otherwise).
+        from app import tts_orchestrator
+        tts_orchestrator.session_ended(owner["id"], session_id)
         stop = None
         if playing:
             stop = create_command(item.agent_id, owner["id"], "playback_stop", session_id=session_id,

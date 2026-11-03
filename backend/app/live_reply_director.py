@@ -263,6 +263,10 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
         _touch(reply, voice="review", note="; ".join(issues))
         return
     voice = voice_config(st.owner_id)
+    if voice.provider == "omnivoice":
+        voice = _send_omnivoice(st, reply, options, intro, body, speech, ttl, manual)
+        if voice is None:
+            return
     payload = {"text": body, "provider": voice.provider, "model": voice.model,
                "voice": voice.voice, "rate": voice.rate, "settings": voice.settings,
                "ttl_seconds": round(max(5.0, min(300.0, ttl)), 1), "duck": options.duck_video}
@@ -281,6 +285,48 @@ def send_voice(st, reply: dict, options: ReplyOptions, product_on_air: int | Non
     st.stats["spoken"] += 1
     _touch(reply, voice="sent", spoken_text=speech, command_id=command.get("command_id"), note="")
     monitors(st.key).record("TTS_QUEUED", f"{voice.provider}/{voice.model}/{voice.voice}", speech)
+
+
+def _send_omnivoice(st, reply: dict, options: ReplyOptions, intro: str | None, body: str, speech: str, ttl: float,
+                    manual: bool):
+    """G-OmniVoice through app/tts_orchestrator. Returns None when handled here (sent, or failed by policy), or the
+    fallback VoiceConfig (Edge/ElevenLabs) when the owner chose provider fallback: the caller sends it as usual."""
+    from app import tts_orchestrator
+    from app.ai_voice import VoiceConfig, tts_http_error
+    try:
+        done = tts_orchestrator.speak(st.owner_id, st.agent_id, text=body, intro=intro, ttl_seconds=ttl,
+                                      duck=options.duck_video, session_id=reply.get("session_id"),
+                                      reply_id=reply.get("id"), source="manual" if manual else "live_reply")
+    except tts_orchestrator.SpeakRefused as exc:
+        mode, spec = tts_orchestrator.fallback(st.owner_id, "manual" if manual else "live_reply")
+        note = f"G-OmniVoice: {exc.code}"
+        monitors(st.key).record("TTS_ERROR", exc.code, exc.message[:200])
+        if mode == "provider" and exc.fallback_ok:
+            monitors(st.key).record("TTS_FALLBACK", exc.code, f"Đọc bằng {spec['provider']} thay cho G-OmniVoice")
+            reply["_tts_fallback"] = exc.code
+            return VoiceConfig.model_validate({**spec, "fallback": None})
+        if manual:
+            raise tts_http_error(exc) from exc
+        if not exc.fallback_ok or mode == "none":
+            _touch(reply, voice="failed", note=note)              # reported, nothing else said or posted
+        elif mode == "comment_only":
+            _fallback(reply, note)                                # answered by comment instead
+        else:                                                     # hold_for_operator
+            _touch(reply, voice="review", note=note)
+        return None
+    except HTTPException as exc:                                  # the Agent command itself was refused
+        if manual:
+            raise
+        _fallback(reply, f"Không gửi được tới Agent: {exc.detail}")
+        return None
+    now = time.monotonic()
+    st.busy_until = max(st.busy_until, now) + estimate_seconds(speech, 0)
+    st.topic_last[topic(reply)] = now
+    st.stats["spoken"] += 1
+    reply["_utterances"] = [u["id"] for u in done["utterances"]]
+    _touch(reply, voice="sent", spoken_text=speech, command_id=done["command"].get("command_id"), note="")
+    monitors(st.key).record("TTS_QUEUED", "omnivoice", speech)
+    return None
 
 
 # ----- operator actions --------------------------------------------------------------------------------
