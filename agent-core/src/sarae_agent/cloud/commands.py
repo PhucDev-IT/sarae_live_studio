@@ -186,6 +186,7 @@ class OverlayPreviewPayload(Payload):
     position_ms: int = Field(default=0, ge=0, le=86_400_000)
     playing: bool = False
     seconds: int = Field(default=120, ge=10, le=600)
+    iteration: int = Field(default=0, ge=0, le=1_000_000)
 
 
 class SetAutoPinPayload(Payload):
@@ -397,7 +398,8 @@ class CommandRouter:
         """The editor's "Xem thử trên OBS" (never while a LIVE session plays or OBS streams)."""
         if self.overlay is None:
             raise AgentError("OVERLAY_UNAVAILABLE", "Agent chưa hỗ trợ overlay OBS")
-        return self.overlay.preview_on_obs(b.session_id, b.timeline_id, b.media_id, b.position_ms, b.playing, b.seconds, b.stop)
+        return self.overlay.preview_on_obs(b.session_id, b.timeline_id, b.media_id, b.position_ms, b.playing, b.seconds, b.stop,
+                                           iteration=b.iteration)
 
     def _stop(self):
         if self.voice is not None:

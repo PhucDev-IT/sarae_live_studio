@@ -8,7 +8,8 @@ import {
   ANIMATIONS, CANVAS, MAX_ELEMENTS, PRODUCT_FIELDS, clampFrame, endOf, normalizeElement, round4, safeImageUrl,
   type AnimationName, type BlockKind, type Frame, type Overlay, type OverlayElement, type OverlayIssue, type OverlayPreset, type TextStyle,
 } from './overlayModel'
-import { newStep, overlayName, trackName } from './overlayDraft'
+import { newStep, overlayName, secondsText, trackName } from './overlayDraft'
+import { MAX_SHOW_MS, MIN_SHOW_MS, showMsOf, type Appearance } from './overlaySchedule'
 import { hms } from '../liveSessionsApi'
 import type { LiveProduct } from '../liveSessionsApi'
 import { errorText } from '../mediaApi'
@@ -41,6 +42,8 @@ type Props = {
   onTemplatesChanged:()=>void
   /** Turn an overlay on / off (kept in the version, not shown). */
   onToggle:(index:number)=>void
+  /** Random schedule: the appearances of the loop shown for this video (indexes into `overlays`); null = fixed. */
+  plan:Appearance[]|null; iteration:number
 }
 
 const durationText = (ms:number) => {const s = Math.round(ms / 1000);return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`}
@@ -79,7 +82,8 @@ export default function OverlayPanel(p:Props){
               <span className="ove-card-text">
                 <span className="ove-card-title"><strong>{overlayName(o, p.presets)}</strong><span className={'st-chip' + (on ? ' is-on' : '')}>{on ? 'Đang bật' : 'Tạm ẩn'}</span>
                   {errors.some(x=>x.level === 'error') ? <Badge tone="danger">Lỗi</Badge> : errors.length ? <Badge tone="warning">Chú ý</Badge> : null}</span>
-                <small>{hms(o.start_ms)} – {hms(endOf(o))} ({durationText(o.duration_ms)}) · {trackName(o.template, p.presets)}</small>
+                <small>{p.plan ? `🎲 ${hms(o.start_ms)} – ${hms(endOf(o))} · mỗi lần ${secondsText(showMsOf(o))} · lượt ${p.iteration + 1}: ${p.plan.filter(a=>a.index === i).length} lần`
+                  : `${hms(o.start_ms)} – ${hms(endOf(o))} (${durationText(o.duration_ms)})`} · {trackName(o.template, p.presets)}</small>
                 {product && <span className="ove-card-product">{product.name}</span>}
               </span>
             </button>
@@ -246,6 +250,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         </div>
       </div>
 
+      {p.plan ? <RandomTiming {...p} index={index} overlay={o} change={change}/> : <>
       <h4 className="ove-col-title">Thời gian hiển thị</h4>
       <div className="ove-row ove-3">
         <Input label="Bắt đầu (giây)" type="number" min={0} step={0.1} value={String(o.start_ms / 1000)} onChange={e=>change({start_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'start')}/>
@@ -253,6 +258,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         <div className="ove-field-note"><span className="te-muted">Kết thúc</span><strong>{hms(endOf(o))}</strong>
           {editable && <button type="button" className="ove-link" onClick={()=>change({start_ms:Math.round(p.now / 100) * 100}, newStep('start-now'))}><Crosshair size={13}/>Bắt đầu tại {hms(p.now)}</button>}</div>
       </div>
+      </>}
 
       <details className="ove-more">
       <summary>Vị trí, lớp, độ trong suốt & hiệu ứng <small className="te-muted">(kéo trên khung xem trước cũng được)</small></summary>
@@ -301,6 +307,32 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
     </fieldset>
     {saving && <SaveTemplateModal overlay={o} presets={p.presets} onClose={()=>setSaving(false)} onSaved={p.onTemplatesChanged}/>}
   </Card>
+}
+
+/**
+ * Timing of an overlay in random mode: the window it may show in (its bar on the timeline, from … to …), how long one
+ * appearance lasts, and where it shows in the loop chosen above.
+ */
+function RandomTiming(p:Props & {index:number; overlay:Overlay; change:(patch:Partial<Overlay>, field:string)=>void}){
+  const {overlay:o, editable, change} = p
+  const shows = (p.plan ?? []).filter(a=>a.index === p.index)
+  const from = Math.round(p.now / 100) * 100
+  return <>
+    <h4 className="ove-col-title">Khoảng cho phép & thời lượng hiện <small className="te-muted">(ngẫu nhiên)</small></h4>
+    <div className="ove-row ove-3">
+      <Input label="Khoảng cho phép: từ (giây)" type="number" min={0} step={0.1} value={String(o.start_ms / 1000)}
+        onChange={e=>{const start = Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000));change({start_ms:start, duration_ms:Math.max(0, endOf(o) - start)}, 'start')}}/>
+      <Input label="đến (giây)" type="number" min={0} step={0.1} value={String(endOf(o) / 1000)}
+        onChange={e=>change({duration_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000) - o.start_ms)}, 'duration')}/>
+      <Input label="Thời lượng mỗi lần hiện (giây)" type="number" min={MIN_SHOW_MS / 1000} max={MAX_SHOW_MS / 1000} step={0.5} value={String(showMsOf(o) / 1000)}
+        onChange={e=>change({show_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'show')}/>
+      <div className="ove-field-note"><span className="te-muted">Khoảng</span><strong>{hms(o.start_ms)} – {hms(endOf(o))}</strong>
+        {editable && <button type="button" className="ove-link" onClick={()=>change({start_ms:from, duration_ms:Math.max(0, endOf(o) - from)}, newStep('start-now'))}><Crosshair size={13}/>Từ {hms(p.now)}</button>}
+        {editable && <button type="button" className="ove-link" onClick={()=>change({duration_ms:Math.max(0, from - o.start_ms)}, newStep('end-now'))}><Crosshair size={13}/>Đến {hms(p.now)}</button>}</div>
+    </div>
+    <p className="ove-shows"><span className="te-muted">Lượt {p.iteration + 1}:</span>{!shows.length ? <span>không hiện lần nào</span>
+      : shows.map(a=><button key={a.start_ms} type="button" className="ove-link" onClick={()=>p.onSeek(a.start_ms)} title="Tua tới lần hiện này">{hms(a.start_ms)}</button>)}</p>
+  </>
 }
 
 function Range({label, value, onChange}:{label:string; value:number; onChange:(v:number)=>void}){

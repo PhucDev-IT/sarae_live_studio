@@ -559,7 +559,8 @@ def validate_payload(kind:str,payload:dict|None)->dict:
         if not _media_id(payload.get("media_id")):raise HTTPException(422,"media_id không hợp lệ")
         return {**out,"timeline_id":_int(payload.get("timeline_id"),"timeline_id",1,2**31-1),"media_id":payload["media_id"],
                 "position_ms":_int(payload.get("position_ms",0),"position_ms",0,24*3600*1000),
-                "playing":_bool(payload.get("playing",False),"playing"),"seconds":_int(payload.get("seconds",120),"seconds",10,600)}
+                "playing":_bool(payload.get("playing",False),"playing"),"seconds":_int(payload.get("seconds",120),"seconds",10,600),
+                "iteration":_int(payload.get("iteration",0),"iteration",0,100_000)}
     if kind=="product_play":
         mode=payload.get("mode","immediate")
         if mode not in ("immediate","after_current"):

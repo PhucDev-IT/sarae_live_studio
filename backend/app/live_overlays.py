@@ -18,6 +18,13 @@ pixels of the 1080×1920 canvas.
 Images are never loaded from a URL given by the client: an image element points to an overlay asset (an image the
 owner uploaded here: MIME type and content checked, size limited, served only through a URL signed for its owner) or
 to a product of the owner's catalog.
+
+Each version also has an overlay schedule (`live_overlay_schedules`, no row = defaults). `fixed` is the model above.
+In `random` mode an overlay's `start_ms`..`start_ms + duration_ms` is the window it MAY show in, `show_ms` at a time:
+the video is cut into slots of `every_ms`, each slot holds at most one appearance, appearances are at least
+`min_gap_ms` apart and only one overlay is on screen. Every loop of the video draws a new plan seeded by
+`timeline_id:media_id:iteration`; the renderers compute it (web/src/overlay/overlaySchedule.ts is the spec), the
+Backend only stores, validates and snapshots the schedule.
 """
 import hashlib
 import json
@@ -59,6 +66,13 @@ MAX_VERSION_ASSET_BYTES = 60 * 1024 * 1024
 ASSET_TYPES = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "image/webp": b"RIFF"}
 SIGN_KIND = "overlay_asset"
 EPSILON = 1e-6
+# Random schedule (see the module docstring).
+SCHEDULE_MODES = ("fixed", "random")
+DEFAULT_SCHEDULE = {"mode": "fixed", "every_ms": 120_000, "min_gap_ms": 20_000}
+DEFAULT_SHOW_MS = 6000
+MIN_SHOW_MS, MAX_SHOW_MS = 1000, 600_000
+MIN_EVERY_MS, MAX_EVERY_MS = 10_000, 3_600_000
+MAX_GAP_MS = 600_000
 
 
 class OverlayEvent(Base):
@@ -73,6 +87,8 @@ class OverlayEvent(Base):
     label: Mapped[str] = mapped_column(String(200), default="")
     start_ms: Mapped[int] = mapped_column(Integer)
     duration_ms: Mapped[int] = mapped_column(Integer)
+    # Random schedule only: how long one appearance lasts (the start..start+duration window is where it may show).
+    show_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SHOW_MS, server_default=str(DEFAULT_SHOW_MS))
     # The product the overlay is about (product fields / images without their own product use it).
     product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Box on the 1080×1920 canvas, fractions 0–1.
@@ -111,11 +127,28 @@ class OverlayAsset(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class OverlaySchedule(Base):
+    """How the overlays of one version are scheduled (no row = DEFAULT_SCHEDULE)."""
+    __tablename__ = "live_overlay_schedules"
+    timeline_id: Mapped[int] = mapped_column(ForeignKey("live_timelines.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), index=True)
+    mode: Mapped[str] = mapped_column(String(10), default="fixed")
+    every_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SCHEDULE["every_ms"])
+    min_gap_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SCHEDULE["min_gap_ms"])
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 def ensure_schema(bind) -> None:
-    """Create the overlay tables if missing (startup; Alembic 20261031_0019 and 20261101_0020 do the same)."""
+    """Create the overlay tables and columns if missing (startup; Alembic 20261031_0019, 20261101_0020 and
+    20261104_0022 do the same)."""
+    from sqlalchemy import inspect, text
     OverlayAsset.__table__.create(bind=bind, checkfirst=True)
     OverlayEvent.__table__.create(bind=bind, checkfirst=True)
     OverlayTemplate.__table__.create(bind=bind, checkfirst=True)
+    OverlaySchedule.__table__.create(bind=bind, checkfirst=True)
+    if "show_ms" not in {c["name"] for c in inspect(bind).get_columns("live_overlay_events")}:
+        with bind.begin() as conn:
+            conn.execute(text(f"ALTER TABLE live_overlay_events ADD COLUMN show_ms INTEGER NOT NULL DEFAULT {DEFAULT_SHOW_MS}"))
 
 
 # ----- building blocks -------------------------------------------------------------------------------------------
@@ -216,6 +249,7 @@ class OverlayInput(BaseModel):
     label: str = Field(default="", max_length=200)
     start_ms: int = Field(ge=0, le=86_400_000)
     duration_ms: int = Field(ge=MIN_DURATION_MS, le=MAX_DURATION_MS)
+    show_ms: int = Field(default=DEFAULT_SHOW_MS, ge=MIN_SHOW_MS, le=MAX_SHOW_MS)
     product_id: int | None = Field(default=None, gt=0)
     layout: Layout
     animation_in: Animation = Field(default_factory=Animation)
@@ -234,8 +268,17 @@ class OverlayInput(BaseModel):
         return self
 
 
+class ScheduleInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    mode: Literal[SCHEDULE_MODES] = "fixed"
+    every_ms: int = Field(default=DEFAULT_SCHEDULE["every_ms"], ge=MIN_EVERY_MS, le=MAX_EVERY_MS)
+    min_gap_ms: int = Field(default=DEFAULT_SCHEDULE["min_gap_ms"], ge=0, le=MAX_GAP_MS)
+
+
 class OverlaysInput(BaseModel):
     overlays: list[OverlayInput] = Field(default_factory=list, max_length=MAX_OVERLAYS)
+    # None = keep the version's stored schedule.
+    schedule: ScheduleInput | None = None
 
 
 # ----- references -------------------------------------------------------------------------------------------------
@@ -293,8 +336,56 @@ def busiest(events) -> tuple[int, int]:
     return peak, at
 
 
-def overlay_issues(db, owner_id: str, item, events) -> list[dict]:
-    """What blocks approval (`level: error`) or deserves a look (`warning`), per overlay index where it applies."""
+def schedule_of(db, timeline_id: int | None) -> dict:
+    """The overlay schedule of a version (DEFAULT_SCHEDULE without a stored row)."""
+    row = db.get(OverlaySchedule, timeline_id) if timeline_id is not None else None
+    return {"mode": row.mode, "every_ms": row.every_ms, "min_gap_ms": row.min_gap_ms} if row else dict(DEFAULT_SCHEDULE)
+
+
+def empty_slots(events, every_ms: int) -> int:
+    """Slots [k·every, (k+1)·every) of one video, up to its last window end, where no overlay can fit a whole
+    appearance inside slot ∩ window (they stay empty on every loop)."""
+    end = max(e.start_ms + e.duration_ms for e in events)
+    empty = 0
+    for slot in range(0, end, every_ms):
+        if not any(max(slot, e.start_ms) + e.show_ms <= min(slot + every_ms, e.start_ms + e.duration_ms) for e in events):
+            empty += 1
+    return empty
+
+
+def random_issues(events, schedule: dict) -> list[dict]:
+    """What the random schedule adds: an appearance must fit its window, a slot and its own animations."""
+    found = []
+    every, gap = schedule["every_ms"], schedule["min_gap_ms"]
+    for index, e in enumerate(events):
+        if e.show_ms > e.duration_ms:
+            found.append({"level": "error", "code": "SHOW_LONGER_THAN_WINDOW", "overlay": index,
+                          "message": "Thời lượng mỗi lần hiện dài hơn khoảng cho phép của overlay"})
+        if e.show_ms > every:
+            found.append({"level": "error", "code": "SHOW_LONGER_THAN_SLOT", "overlay": index,
+                          "message": f"Thời lượng mỗi lần hiện dài hơn mật độ (1 lần mỗi {every // 1000} giây): "
+                                     "overlay không bao giờ hiện"})
+        if e.animation_in_ms + e.animation_out_ms > e.show_ms:
+            found.append({"level": "error", "code": "ANIMATION_LONGER_THAN_SHOW", "overlay": index,
+                          "message": "Thời gian hiệu ứng vào + ra dài hơn thời lượng mỗi lần hiện"})
+    enabled = [e for e in events if e.enabled]
+    if enabled and every < max(e.show_ms for e in enabled) + gap:
+        found.append({"level": "warning", "code": "DENSITY_TOO_HIGH",
+                      "message": "Mật độ dày hơn thời lượng hiện + khoảng nghỉ: một số ô sẽ trống"})
+    for media_id in dict.fromkeys(e.media_id for e in enabled):
+        empty = empty_slots([e for e in enabled if e.media_id == media_id], every)
+        if empty:
+            found.append({"level": "warning", "code": "NO_OVERLAY_IN_SLOTS", "media_id": media_id, "slots": empty,
+                          "message": f"{empty} ô không có overlay nào hiện được"})
+    return found
+
+
+def overlay_issues(db, owner_id: str, item, events, schedule: dict | None = None) -> list[dict]:
+    """What blocks approval (`level: error`) or deserves a look (`warning`), per overlay index where it applies.
+    `schedule` defaults to the stored schedule of the events' version."""
+    if schedule is None:
+        schedule = schedule_of(db, events[0].timeline_id if events else None)
+    random = schedule["mode"] == "random"
     found = []
     videos = session_videos(item)
     durations = video_durations(db, videos + [e.media_id for e in events])
@@ -321,6 +412,8 @@ def overlay_issues(db, owner_id: str, item, events) -> list[dict]:
     if total > MAX_VERSION_ASSET_BYTES:
         found.append({"level": "error", "code": "ASSETS_TOO_LARGE",
                       "message": f"Tổng ảnh overlay {total // (1024 * 1024)} MB (tối đa {MAX_VERSION_ASSET_BYTES // (1024 * 1024)} MB)"})
+    if random:  # one overlay on screen at a time: TOO_MANY_AT_ONCE cannot happen
+        return found + random_issues(events, schedule)
     for media_id in dict.fromkeys(e.media_id for e in events):
         peak, at = busiest([e for e in events if e.media_id == media_id and e.enabled])
         if peak > MAX_CONCURRENT:
@@ -331,7 +424,8 @@ def overlay_issues(db, owner_id: str, item, events) -> list[dict]:
 
 def summary_issue(db, owner_id: str, item, timeline_id: int) -> list[dict]:
     """One line for the timeline view when the overlays of a version have errors (details: the overlays API)."""
-    errors = [i for i in overlay_issues(db, owner_id, item, events_of(db, timeline_id)) if i["level"] == "error"]
+    errors = [i for i in overlay_issues(db, owner_id, item, events_of(db, timeline_id), schedule_of(db, timeline_id))
+              if i["level"] == "error"]
     if not errors:
         return []
     return [{"level": "error", "code": "OVERLAY_ERRORS",
@@ -342,7 +436,7 @@ def summary_issue(db, owner_id: str, item, timeline_id: int) -> list[dict]:
 
 def event_view(e: OverlayEvent) -> dict:
     return {"id": e.id, "media_id": e.media_id, "template": e.template, "label": e.label, "start_ms": e.start_ms,
-            "duration_ms": e.duration_ms, "product_id": e.product_id,
+            "duration_ms": e.duration_ms, "show_ms": e.show_ms, "product_id": e.product_id,
             "layout": {"x": e.x, "y": e.y, "width": e.width, "height": e.height, "z_index": e.z_index, "opacity": e.opacity},
             "animation_in": {"name": e.animation_in, "duration_ms": e.animation_in_ms},
             "animation_out": {"name": e.animation_out, "duration_ms": e.animation_out_ms},
@@ -351,15 +445,30 @@ def event_view(e: OverlayEvent) -> dict:
 
 def overlays_view(db, owner_id: str, item, timeline: LiveTimeline) -> dict:
     events = events_of(db, timeline.id)
+    schedule = schedule_of(db, timeline.id)
     return {"timeline_id": timeline.id, "version": timeline.version, "status": timeline.status,
-            "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
-            "overlays": [event_view(e) for e in events], "issues": overlay_issues(db, owner_id, item, events)}
+            "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "schedule": schedule,
+            "overlays": [event_view(e) for e in events], "issues": overlay_issues(db, owner_id, item, events, schedule)}
+
+
+def save_schedule(db, owner_id: str, timeline_id: int, schedule: "ScheduleInput") -> None:
+    row = db.get(OverlaySchedule, timeline_id)
+    if row is None:
+        row = OverlaySchedule(timeline_id=timeline_id, owner_id=owner_id)
+        db.add(row)
+    row.mode, row.every_ms, row.min_gap_ms, row.updated_at = schedule.mode, schedule.every_ms, schedule.min_gap_ms, now()
 
 
 def copy_events(db, source_id: int, target_id: int) -> None:
-    """Copy every overlay of a version into a new version (a new DRAFT starts from what the source shows)."""
+    """Copy every overlay of a version, and its schedule, into a new version (a new DRAFT starts from what the source
+    shows)."""
+    source = db.get(OverlaySchedule, source_id)
+    if source is not None:
+        db.add(OverlaySchedule(timeline_id=target_id, owner_id=source.owner_id, mode=source.mode,
+                               every_ms=source.every_ms, min_gap_ms=source.min_gap_ms))
     db.add_all(OverlayEvent(owner_id=e.owner_id, timeline_id=target_id, media_id=e.media_id, template=e.template,
-                            label=e.label, start_ms=e.start_ms, duration_ms=e.duration_ms, product_id=e.product_id,
+                            label=e.label, start_ms=e.start_ms, duration_ms=e.duration_ms, show_ms=e.show_ms,
+                            product_id=e.product_id,
                             x=e.x, y=e.y, width=e.width, height=e.height, z_index=e.z_index, opacity=e.opacity,
                             animation_in=e.animation_in, animation_in_ms=e.animation_in_ms,
                             animation_out=e.animation_out, animation_out_ms=e.animation_out_ms,
@@ -367,8 +476,11 @@ def copy_events(db, source_id: int, target_id: int) -> None:
                for e in events_of(db, source_id))
 
 
-def delete_events(db, timeline_ids) -> None:
+def delete_events(db, timeline_ids, schedule: bool = True) -> None:
+    """Overlays (and, unless `schedule` is False, the schedule) of versions being deleted; SQLite does not cascade."""
     db.execute(delete(OverlayEvent).where(OverlayEvent.timeline_id.in_(timeline_ids)))
+    if schedule:
+        db.execute(delete(OverlaySchedule).where(OverlaySchedule.timeline_id.in_(timeline_ids)))
 
 
 def count_events(db, timeline_id: int) -> int:
@@ -405,7 +517,8 @@ def snapshot(db, item, timeline: LiveTimeline) -> dict:
     products = owned_products(db, item.owner_id, set().union(*[product_refs(v["product_id"], els) for v, els in zip(views, elements)]))
     assets = owned_assets(db, item.owner_id, set().union(*[asset_refs(els) for els in elements]))
     content = {"session_id": item.id, "timeline_id": timeline.id, "version": timeline.version,
-               "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "overlays": views,
+               "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "schedule": schedule_of(db, timeline.id),
+               "overlays": views,
                "products": {str(p.id): {"name": p.name, "sku": p.sku, "price": p.price, "origin_price": p.origin_price}
                             for p in products.values()},
                "assets": {a.id: {"mime_type": a.mime_type, "sha256": a.sha256, "width": a.width, "height": a.height,
@@ -434,8 +547,9 @@ def list_overlays(session_id: int, timeline_id: int, owner: Owner):
 @router.put("/sessions/{session_id}/timelines/{timeline_id}/overlays")
 def save_overlays(session_id: int, timeline_id: int, body: OverlaysInput, owner: Owner):
     """Replace every overlay of a DRAFT, of every video (the editor saves the whole draft). Each overlay belongs to one
-    of the session's videos and ends before that video does; products and images must be the owner's. What only
-    blocks approval (too many overlays at once) is reported in `issues`."""
+    of the session's videos and ends before that video does; products and images must be the owner's. `schedule`
+    (fixed / random) is replaced when given, kept when omitted. What only blocks approval (too many overlays at once,
+    an appearance that cannot fit its window or slot) is reported in `issues`."""
     with SessionLocal() as db:
         item = session_of(db, session_id, owner)
         timeline = timeline_of(db, item, timeline_id)
@@ -460,9 +574,12 @@ def save_overlays(session_id: int, timeline_id: int, body: OverlaysInput, owner:
         assets = set().union(*[asset_refs(els) for els in dumped])
         if assets - set(owned_assets(db, owner["id"], assets)):
             raise HTTPException(422, "Có ảnh không thuộc kho overlay của tài khoản này")
-        delete_events(db, [timeline.id])
+        delete_events(db, [timeline.id], schedule=False)
+        if body.schedule is not None:
+            save_schedule(db, owner["id"], timeline.id, body.schedule)
         db.add_all(OverlayEvent(owner_id=owner["id"], timeline_id=timeline.id, media_id=o.media_id, template=o.template,
-                                label=o.label, start_ms=o.start_ms, duration_ms=o.duration_ms, product_id=o.product_id,
+                                label=o.label, start_ms=o.start_ms, duration_ms=o.duration_ms, show_ms=o.show_ms,
+                                product_id=o.product_id,
                                 x=o.layout.x, y=o.layout.y, width=o.layout.width, height=o.layout.height,
                                 z_index=o.layout.z_index, opacity=o.layout.opacity,
                                 animation_in=o.animation_in.name, animation_in_ms=o.animation_in.duration_ms,
@@ -512,7 +629,7 @@ def readiness(db, owner_id: str, item, agent_id: str | None = None) -> dict:
         add("ACTIVE_VERSION", False, "Chưa kích hoạt timeline: không có overlay để phát")
     else:
         events = events_of(db, timeline.id)
-        errors = [i for i in overlay_issues(db, owner_id, item, events) if i["level"] == "error"]
+        errors = [i for i in overlay_issues(db, owner_id, item, events, snap["schedule"]) if i["level"] == "error"]
         add("ACTIVE_VERSION", True, f"Phiên bản {timeline.version} đang ACTIVE: {len(snap['overlays'])} overlay bật")
         add("OVERLAYS_VALID", not errors, "Overlay hợp lệ" if not errors else "; ".join(i["message"] for i in errors[:3]))
         size = sum(a["size_bytes"] for a in snap["assets"].values())
@@ -575,6 +692,8 @@ class OverlayPreviewInput(BaseModel):
     position_ms: int = Field(default=0, ge=0, le=86_400_000)
     playing: bool = False
     seconds: int = Field(default=120, ge=10, le=600)
+    # Random schedule: the loop whose plan is shown (seed `timeline_id:media_id:iteration`).
+    iteration: int = Field(default=0, ge=0, le=100_000)
     stop: bool = False
 
 
@@ -597,7 +716,7 @@ def overlay_preview(session_id: int, timeline_id: int, body: OverlayPreviewInput
     owned_agent(owner, agent_id, online=True)
     payload = {"session_id": session_id, "stop": True} if body.stop else {
         "session_id": session_id, "timeline_id": timeline_id, "media_id": media_id, "position_ms": body.position_ms,
-        "playing": body.playing, "seconds": body.seconds, "stop": False}
+        "playing": body.playing, "seconds": body.seconds, "iteration": body.iteration, "stop": False}
     command = create_command(agent_id, owner["id"], "overlay_preview", payload, session_id=session_id)
     return {"agent_id": agent_id, "command_id": command["command_id"], "status": command.get("status")}
 

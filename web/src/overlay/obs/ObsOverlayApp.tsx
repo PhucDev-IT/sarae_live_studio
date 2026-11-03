@@ -138,6 +138,6 @@ export default function ObsOverlayApp(){
   if (!state?.show || !scene || !clock?.media_id) return null
   const ahead = clock.playing ? Math.min(clock.age_ms + Math.max(0, frameAt - state.receivedAt), MAX_AHEAD_MS) : 0
   return <div style={{position:'fixed', inset:0, background:'transparent'}} data-revision={scene.revision} data-media={clock.media_id}>
-    <OverlayRenderer scene={scene.scene} mediaId={clock.media_id} positionMs={clock.position_ms + Math.max(0, ahead)} apiBase={location.origin} animate/>
+    <OverlayRenderer scene={scene.scene} mediaId={clock.media_id} positionMs={clock.position_ms + Math.max(0, ahead)} iteration={clock.iteration ?? 0} apiBase={location.origin} animate/>
   </div>
 }

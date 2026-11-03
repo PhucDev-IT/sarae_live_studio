@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from sarae_agent.errors import AgentError
 from sarae_agent.overlay.cache import OverlayCache
 from sarae_agent.overlay.obs_source import ObsOverlaySource, ours_by_url
+from sarae_agent.overlay.schedule import random_plan
 from sarae_agent.overlay.server import OverlayServer
 from sarae_agent.overlay.service import OverlayService
 
@@ -599,6 +600,34 @@ class ServiceTests(unittest.TestCase):
         self.preview_ready()
         self.service.observe(5, "m" * 32, 0, "OBS_MEDIA_STATE_PLAYING", 0)
         self.assertIsNone(self.service.preview, "a LIVE playback takes over")
+
+    def test_preview_reports_the_editors_loop_iteration(self):
+        self.preview_ready(iteration=3)
+        self.assertEqual(self.service.renderer_state()["clock"]["iteration"], 3)
+        seq = self.service.renderer_state()["clock"]["seq"]
+        self.service.preview_on_obs(5, 11, "m" * 32, 1000, iteration=4)
+        clock = self.service.renderer_state()["clock"]
+        self.assertEqual((clock["iteration"], clock["seq"]), (4, seq + 1), "a new loop at the same position is a new clock")
+
+    def test_active_overlays_follow_the_random_plan_of_the_loop(self):
+        media = "m" * 32
+        snap = self.snap(overlays=3)
+        snap["schedule"] = {"mode": "random", "every_ms": 60_000, "min_gap_ms": 10_000}
+        for o in snap["overlays"]:
+            o["show_ms"] = 5000
+        self.snapshots[5] = snap
+        self.step()
+        self.service.renderer_ready({"revision": "r1", "ok": True})
+        for iteration in (0, 1):
+            plan = random_plan(snap["overlays"], media, snap["schedule"], snap["timeline_id"], iteration)
+            self.assertTrue(plan)
+            for a in plan[:4]:
+                self.service.observe(5, media, a["start_ms"], "OBS_MEDIA_STATE_PLAYING", iteration)
+                self.assertEqual(self.service.status()["active_overlays"], [snap["overlays"][a["index"]]["id"]])
+                self.service.observe(5, media, a["end_ms"], "OBS_MEDIA_STATE_PLAYING", iteration)
+                self.assertEqual(self.service.status()["active_overlays"], [], "end is exclusive; min gap after it")
+        self.assertNotEqual(random_plan(snap["overlays"], media, snap["schedule"], 1, 0),
+                            random_plan(snap["overlays"], media, snap["schedule"], 1, 1), "each loop draws its own plan")
 
     def test_the_active_version_never_replaces_the_previewed_draft(self):
         self.snapshots[5] = self.snap("active-r", 2)

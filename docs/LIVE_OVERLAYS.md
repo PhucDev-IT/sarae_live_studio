@@ -346,3 +346,35 @@ trên video (new, text with shadow). They are still only starting points.
 
 The OBS test scripts use their own Browser Source "Sarae Overlay (test)" and port 17895, so they never touch the
 "Sarae Overlay" source of an Agent running on the same PC.
+
+## 13. Random overlays (Ngẫu nhiên)
+
+A version has one switch for all its videos: **Cố định** (as above: an overlay shows from `start_ms` for
+`duration_ms`) or **Ngẫu nhiên**. In random mode the overlays are added exactly as before, but an overlay's bar is the
+**window it may show in** (e.g. product A is live 0:00–10:00, so its overlays never appear over product B) and it shows
+`show_ms` at a time. One overlay is on screen at a time, and every loop of the video draws a new plan.
+
+```
+schedule = {mode: "random", every_ms: 120000, min_gap_ms: 20000}      (per version; absent row = fixed)
+overlay  = {start_ms, duration_ms (= window), show_ms: 6000, …}
+
+video   |  slot 1  |  slot 2  |  slot 3  |  slot 4  |  slot 5  |      slots of every_ms from 0
+loop 1     [A1]          [A2]   [A1]        [B1]         [B2]         ≤ 1 appearance per slot
+loop 2   [A2]           [A1]        [A2]   [B2]       [B1]            ≥ min_gap_ms between two appearances
+```
+
+| Rule | Behaviour |
+|---|---|
+| Fits | An appearance lies fully inside its slot and inside its overlay's window; a slot where nothing fits stays empty |
+| Fair | The least shown overlays of the slot win, then those on their last chance (window ends before the next slot could hold them); the one just shown is skipped when there is another |
+| Seed | `timeline_id:media_id:iteration` (FNV-1a → mulberry32, integer only, 100 ms steps); `iteration` = the engine's loop count (0 = first play) |
+| Same everywhere | `web/src/overlay/overlaySchedule.ts` (editor and OBS renderer) and `agent-core/…/overlay/schedule.py` (Agent status) give the same plan, checked against `agent-core/tests/fixtures/overlay_schedule_vectors.json` |
+| Animations | The in/out animations play on each appearance |
+
+The renderer computes the plan itself from the snapshot (`schedule`, `timeline_id`, `show_ms`) and the clock's
+`iteration`, so nothing new travels at runtime. The editor shows the plan of a chosen loop ("Lượt N") on the timeline
+and in the preview; "Xem thử trên OBS" sends that loop (`iteration`) so OBS shows the same.
+
+Checks (random mode): errors `SHOW_LONGER_THAN_WINDOW`, `SHOW_LONGER_THAN_SLOT`, `ANIMATION_LONGER_THAN_SHOW`;
+warnings `DENSITY_TOO_HIGH` (every_ms < longest show_ms + min_gap_ms) and `NO_OVERLAY_IN_SLOTS` (slots of a video where
+no overlay fits). `TOO_MANY_AT_ONCE` does not apply (one at a time).
