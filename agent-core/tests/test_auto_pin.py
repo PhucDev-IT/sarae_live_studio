@@ -435,3 +435,12 @@ class LoginFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CardMatchTests(unittest.TestCase):
+    def test_spaces_and_a_struck_through_price_never_decide(self):
+        card = pin_card(0, "Áo sơ mi back to school  - ST Design", price="219.000₫359.000₫")
+        target = {"name": "Áo sơ mi back to school - ST Design", "image_url": "https://img.example/a.jpg",
+                  "price_text": "219000"}
+        self.assertTrue(AutoPinService._matches(card, target))
+        self.assertFalse(AutoPinService._matches(card, {**target, "price_text": "359000"}))

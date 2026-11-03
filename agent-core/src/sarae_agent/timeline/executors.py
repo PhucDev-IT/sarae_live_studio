@@ -68,6 +68,10 @@ class ConsolePinExecutor:
             if state.get("multiple_pins"):
                 done(False, None, "Nhiều product card đang ghim")
                 return
+            if state.get("pinned_product_id") is None and state.get("pin_maybe_hidden"):
+                # The virtual product list shows no pinned card, but one may be out of view: not a reading.
+                done(False, None, "Card đang ghim có thể nằm ngoài phần danh sách đang hiển thị")
+                return
             done(True, state.get("pinned_product_id"), None)
 
         self.auto_pin.submit_pin_state().add_done_callback(finished)

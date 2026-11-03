@@ -46,6 +46,30 @@ MAX_PRODUCTS = 100
 CHAT_WAIT_SECONDS = 60  # a chat command queued behind a long sync gives up (and is cancelled) after this
 PIN_BUTTON = "button.pc_pin_product_pin"
 UNPIN_BUTTON = "button.pc_pin_product_unpin"
+PIN_CONFIRM_MS = 5000  # after one click, how long TikTok may take to turn "Ghim" into "Bỏ ghim" (never clicked twice)
+PIN_CONFIRM_POLL_MS = 250
+SCROLL_SETTLE_MS = 300  # the virtual list renders the cards of a new scroll position
+MAX_SCROLL_STEPS = 40
+CARD_NOT_FOUND = "Không thấy product card của sản phẩm trên LIVE Console (đã cuộn hết danh sách sản phẩm)"
+PIN_NOT_CONFIRMED = f"Đã bấm Ghim nhưng TikTok chưa xác nhận sau {PIN_CONFIRM_MS // 1000} giây; không bấm lại"
+UNPIN_NOT_CONFIRMED = f"Đã bấm Bỏ ghim nhưng TikTok chưa xác nhận sau {PIN_CONFIRM_MS // 1000} giây; không bấm lại"
+
+# The Console's product list is virtual: only the cards near its visible part are in the page. This finds the list's
+# scroll box (the nearest scrollable ancestor of a pin button) to read ({op: "get"}) or set ({op: "set", top}) its
+# position; null when the list does not scroll. Scrolling only: nothing is clicked.
+CARD_LIST_SCROLL_JS = r"""
+({op, top}) => {
+  const button = document.querySelector('button.pc_pin_product_pin, button.pc_pin_product_unpin');
+  let box = button && button.parentElement;
+  while (box && !(box.scrollHeight > box.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(box).overflowY))) {
+    box = box.parentElement;
+  }
+  if (!box) return null;
+  if (op === 'set') box.scrollTop = top;
+  return {ok: true, top: box.scrollTop, max: box.scrollHeight - box.clientHeight,
+          step: Math.max(100, Math.floor(box.clientHeight * 0.8))};
+}
+"""
 
 # Read the card that owns each control. The ordinal is only a short-lived DOM handle, never a product ID.
 PIN_CARD_JS = r"""
@@ -180,6 +204,12 @@ class AccountMismatch(RuntimeError):
 
 class LoginRequired(RuntimeError):
     """The console sent the controlled browser to a login or verification page."""
+
+
+def _first_amount(text: str) -> str:
+    """Digits of the first amount in a price text: "219.000₫359.000₫" -> "219000", "225000" -> "225000"."""
+    match = re.search(r"\d[\d.,\s]*", text or "")
+    return re.sub(r"\D", "", match.group(0)) if match else ""
 
 
 def needs_login(url: str) -> bool:
@@ -358,15 +388,15 @@ class AutoPinService:
             return True
         if product_id and card.get("product_ids"):
             return False
-        if str(card.get("name") or "").casefold().strip() != str(target.get("name") or "").casefold().strip():
-            return False
+        if " ".join(str(card.get("name") or "").split()).casefold() != " ".join(str(target.get("name") or "").split()).casefold():
+            return False  # spaces never decide ("back to school  - ST" == "back to school - ST")
         # Name alone is allowed only when it identifies one card; image and price narrow a duplicate.
         image = target.get("image_url")
         if image and card.get("image_url") and image.split("?")[0] != card["image_url"].split("?")[0]:
             return False
         price = target.get("price_text")
-        if price and card.get("price_text") and re.sub(r"\D", "", price) != re.sub(r"\D", "", card["price_text"]):
-            return False
+        if price and card.get("price_text") and _first_amount(price) != _first_amount(card["price_text"]):
+            return False  # the selling price only: a struck-through original price may follow on the same line
         return True
 
     @classmethod
@@ -443,7 +473,53 @@ class AutoPinService:
                 "pinned_card": pinned[0] if len(pinned) == 1 else None,
                 "candidates": candidates, "ambiguous": len(candidates) > 1 or snapshot_ambiguous,
                 "resolved_product_id": target.get("tiktok_product_id") if target else None,
-                "multiple_pins": len(pinned) > 1}
+                "multiple_pins": len(pinned) > 1,
+                # No pinned card in the page while part of the virtual list is not rendered: a pinned card may be
+                # out of view, so "nothing pinned" is not known (the timeline then keeps what it knew).
+                "pin_maybe_hidden": not pinned and self._card_list(self._page, "get") is not None}
+
+    def _card_list(self, page, op: str, top: float | None = None) -> dict | None:
+        """Position of the Console's scrolling product list (see CARD_LIST_SCROLL_JS); None when it does not scroll."""
+        try:
+            box = page.evaluate(CARD_LIST_SCROLL_JS, {"op": op, "top": top})
+        except Exception:  # noqa: BLE001 - no list (or a page without it) is simply not scrollable
+            return None
+        return box if isinstance(box, dict) and box.get("ok") else None
+
+    def _scroll_search(self, page, find: Callable[[list[dict]], list[dict]]) -> tuple[list[dict], list[dict], float | None]:
+        """Scroll the virtual product list from the top, a page at a time, until find(cards) returns cards.
+        Returns (cards, found, origin): origin is the position to scroll back to (None when the list did not scroll).
+        Only scrolls: nothing is clicked here."""
+        box = self._card_list(page, "get")
+        if box is None:
+            return [], [], None
+        origin, top, cards = box["top"], 0.0, []
+        for _ in range(MAX_SCROLL_STEPS):
+            box = self._card_list(page, "set", top) or box
+            page.wait_for_timeout(SCROLL_SETTLE_MS)
+            cards = page.evaluate(PIN_CARD_JS, None)
+            found = find(cards)
+            if found:
+                return cards, found, origin
+            if top >= box["max"]:
+                break
+            top = min(top + box["step"], box["max"])
+        return cards, [], origin
+
+    def _restore_scroll(self, page, origin: float | None) -> None:
+        if origin is not None and page is not None:
+            self._card_list(page, "set", origin)
+
+    def _wait_confirmed(self, page, done: Callable[[dict], bool], target: dict | None = None) -> tuple[dict, bool]:
+        """After ONE click: read the Console until done(state) or PIN_CONFIRM_MS passed. Never clicks."""
+        deadline = time.monotonic() + PIN_CONFIRM_MS / 1000
+        while True:
+            state = self._pin_state_on_worker(target)
+            if done(state):
+                return state, True
+            if time.monotonic() >= deadline:
+                return state, False
+            page.wait_for_timeout(PIN_CONFIRM_POLL_MS)
 
     def _live_state_on_worker(self) -> dict:
         """LIVE / OFFLINE / UNKNOWN read from the controlled Console page; UNKNOWN when no Console is open."""
@@ -464,51 +540,74 @@ class AutoPinService:
                 raise RuntimeError("Nhiều sản phẩm trùng thông tin; cần người dùng xác nhận card")
             target = self._resolved_target(target)
             product_id = target.get("tiktok_product_id")
-            for attempt in range(3):
-                page, cards = self._cards(target)
-                matches = self._matching_cards(cards, target)
-                selected = target.get("confirmed_token")
-                if not selected and len(self._snapshot_matches(target)) > 1 and not any(
-                        product_id in c.get("product_ids", []) for c in matches):
-                    raise RuntimeError("Nhiều sản phẩm trùng thông tin; cần người dùng xác nhận card")
-                if selected is not None:
-                    matches = [c for c in matches if c.get("token") == selected]
-                if len(matches) > 1:
-                    raise RuntimeError("Nhiều product card trùng thông tin; cần người dùng xác nhận card")
-                if len(matches) == 1:
-                    card = matches[0]
-                    with guard if guard is not None else nullcontext():
-                        if current is not None and not current():
-                            raise RuntimeError("Video đã chuyển tiếp; hủy lệnh ghim cũ")
-                        if not card["pinned"]:
-                            page.evaluate(PIN_CARD_JS, card["token"])
-                            page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
-                        state = self._pin_state_on_worker(target)
-                    pinned = state.get("pinned_card")
-                    if pinned and pinned.get("token") == card.get("token"):
-                        result = {"status": "SUCCESS", "product_id": product_id, "card_name": pinned.get("name"), "card": pinned,
-                                  "action": "PIN_PRODUCT", "error": None}
-                        with self._lock:
-                            self._pin_state = result
-                        log.info("TikTok pin product=%s card=%s result=SUCCESS at=%s", product_id, card["index"], time.time())
-                        return result
-                if attempt < 2:
-                    page.wait_for_timeout(500)
-            raise RuntimeError("Không tìm thấy đúng product card hoặc TikTok chưa xác nhận ghim")
+            scrolled: list = []
+            try:
+                return self._pin_card(target, product_id, current, guard, scrolled)
+            finally:
+                if scrolled:
+                    self._restore_scroll(*scrolled)  # back to where the operator was looking
         except Exception as exc:
             with self._lock:
                 self._pin_state = {"status": "FAILED", "product_id": product_id, "action": "PIN_PRODUCT", "error": str(exc)[:300]}
             log.warning("TikTok pin product=%s result=FAILED at=%s: %s", product_id, time.time(), exc)
             raise
 
+    def _pin_card(self, target: dict, product_id: str | None, current, guard, scrolled: list) -> dict:
+        """Find the card (scrolling the virtual list when it is not rendered), click Ghim ONCE, wait for TikTok.
+        `scrolled` receives (page, origin) when the list was scrolled, for the caller to scroll back."""
+        for attempt in range(3):
+            page, cards = self._cards(target)
+            matches = self._matching_cards(cards, target)
+            if not matches:
+                cards, matches, origin = self._scroll_search(page, lambda found: self._matching_cards(found, target))
+                if origin is not None and not scrolled:
+                    scrolled[:] = [page, origin]
+            selected = target.get("confirmed_token")
+            if not selected and len(self._snapshot_matches(target)) > 1 and not any(
+                    product_id in c.get("product_ids", []) for c in matches):
+                raise RuntimeError("Nhiều sản phẩm trùng thông tin; cần người dùng xác nhận card")
+            if selected is not None:
+                matches = [c for c in matches if c.get("token") == selected]
+            if len(matches) > 1:
+                raise RuntimeError("Nhiều product card trùng thông tin; cần người dùng xác nhận card")
+            if len(matches) == 1:
+                card = matches[0]
+                clicked = False
+                with guard if guard is not None else nullcontext():
+                    if current is not None and not current():
+                        raise RuntimeError("Video đã chuyển tiếp; hủy lệnh ghim cũ")
+                    if not card["pinned"]:
+                        page.evaluate(PIN_CARD_JS, card["token"])
+                        page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
+                        clicked = True
+                # Outside the engine lock: TikTok may take a few seconds to show "Bỏ ghim".
+                state, confirmed = self._wait_confirmed(
+                    page, lambda s: (s.get("pinned_card") or {}).get("token") == card.get("token"), target)
+                pinned = state.get("pinned_card")
+                if confirmed:
+                    result = {"status": "SUCCESS", "product_id": product_id, "card_name": pinned.get("name"), "card": pinned,
+                              "action": "PIN_PRODUCT", "error": None}
+                    with self._lock:
+                        self._pin_state = result
+                    log.info("TikTok pin product=%s card=%s result=SUCCESS at=%s", product_id, card["index"], time.time())
+                    return result
+                if clicked:
+                    raise RuntimeError(PIN_NOT_CONFIRMED)  # never a second click: it would unpin again
+            if attempt < 2:
+                page.wait_for_timeout(500)
+        raise RuntimeError(CARD_NOT_FOUND)
+
     def _unpin_on_worker(self, expected_user_id: str | None = None,
                          current: Callable[[], bool] | None = None, guard=None) -> dict:
         with self._lock:
             self._pin_state = {"status": "PENDING", "product_id": self._pin_state.get("product_id"),
                                "card_name": self._pin_state.get("card_name"), "action": "UNPIN_PRODUCT", "error": None}
+        page, origin = None, None
         try:
             page, cards = self._cards({"expected_user_id": expected_user_id} if expected_user_id else None)
             pinned = [c for c in cards if c.get("pinned")]
+            if not pinned:  # the pinned card may be out of the rendered part of the virtual list
+                cards, pinned, origin = self._scroll_search(page, lambda found: [c for c in found if c.get("pinned")])
             if len(pinned) != 1:
                 raise RuntimeError("Không xác định được duy nhất product card đang ghim")
             with guard if guard is not None else nullcontext():
@@ -516,9 +615,9 @@ class AutoPinService:
                     raise RuntimeError("Phiên LIVE đã kết thúc hoặc chuyển; hủy lệnh bỏ ghim cũ")
                 page.evaluate(PIN_CARD_JS, pinned[0]["token"])
                 page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
-                state = self._pin_state_on_worker()
-            if state["pinned_card"] is not None:
-                raise RuntimeError("TikTok chưa xác nhận bỏ ghim")
+            _, confirmed = self._wait_confirmed(page, lambda s: s["pinned_card"] is None)
+            if not confirmed:
+                raise RuntimeError(UNPIN_NOT_CONFIRMED)
             result = {"status": "SUCCESS", "product_id": None, "card_name": None,
                       "action": "UNPIN_PRODUCT", "error": None}
             with self._lock:
@@ -532,6 +631,8 @@ class AutoPinService:
                                    "error": str(exc)[:300]}
             log.warning("TikTok unpin result=FAILED at=%s: %s", time.time(), exc)
             raise
+        finally:
+            self._restore_scroll(page, origin)  # back to where the operator was looking
 
     # --- step 1: login in plain Chrome ---------------------------------------------------
     def _profile_locked(self) -> bool:
