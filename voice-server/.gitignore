@@ -1,3 +1,6 @@
 .venv/
 bench/runs/
 *.pt
+data/
+.env
+src/*.egg-info/

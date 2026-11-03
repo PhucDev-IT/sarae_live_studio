@@ -18,4 +18,6 @@ uv pip install --python $py torch==2.8.0 torchaudio==2.8.0 --index https://downl
 if ($LASTEXITCODE -ne 0) { throw "Installing PyTorch CUDA failed" }
 uv pip install --python $py -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw "Installing requirements failed" }
+uv pip install --python $py -e ".[dev,bench]"
+if ($LASTEXITCODE -ne 0) { throw "Installing the sarae_voice package failed" }
 & $py -c "import torch, omnivoice; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'omnivoice', omnivoice.__version__ if hasattr(omnivoice, '__version__') else '?')"

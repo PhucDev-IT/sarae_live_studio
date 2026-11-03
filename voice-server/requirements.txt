@@ -9,6 +9,12 @@ numpy>=1.26,<3
 # Calls the official demo on 7862 for the demo arms of the A/B benchmark.
 gradio_client>=1.0,<3
 pytest>=8,<10
+# Service (Phase 1); also declared in pyproject.toml.
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+python-multipart>=0.0.20,<1
+pydantic-settings>=2.7,<3
+httpx>=0.27,<1
 # Bench only: second, independent ASR (CPU) to tell ASR errors from TTS word loss; process memory in the soak test.
 faster-whisper>=1.1,<2
 psutil>=5.9

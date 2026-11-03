@@ -352,3 +352,57 @@ Nhận định cho LIVE:
 - Chuẩn bị 40 câu trước LIVE mất khoảng 40 × 2,2 s ≈ 90 s GPU.
 - Job dài chiếm GPU 14 s (1 phút audio) đến 35 s (2 phút audio). Điều này xác nhận cần admission control khi LIVE; giới hạn 20 s audio cho prepare tương ứng khoảng 5 s chặn GPU.
 - Chưa đo: độ trễ end-to-end (Backend → Agent → OBS) và HTTP. Phần này đo ở Phase 1/6, chưa có cam kết latency.
+
+## 15. Phase 1 — service độc lập (`voice-server/src/sarae_voice`)
+
+### 15.1 Cấu trúc
+
+| Module | Vai trò |
+|---|---|
+| `config.py` | `Settings` từ biến môi trường `SARAE_VOICE_*` / `voice-server/.env`; checkpoint, revision và version thư viện được pin theo Phase 0 |
+| `engine.py` | `OmniVoiceEngine`: load một lần (`snapshot_download(revision=f2b73211…)` → `from_pretrained(..., float16)`), `create_voice_clone_prompt` (Whisper khi không có transcript), `generate` với preset `demo_default`; `FakeEngine` cùng interface cho test |
+| `gate.py` | `GpuGate`: một thread GPU duy nhất cho mọi lời gọi model; giới hạn số lời gọi đang chờ (429); không bắt đầu sau `queue_timeout_s` thì rút ra (503); event loop chỉ `await` |
+| `voices.py` | `VoiceStore`: `ref.wav` giữ nguyên byte, `profile.json`, `prompts/<compat>.pt + .json`, LRU trong RAM, `rev` và `compat` như mục 4 và 8.1 |
+| `api.py`, `schemas.py` | FastAPI, Pydantic, Bearer token theo scope, lỗi dạng `{"error": {"code", "message"}}`, OpenAPI tại `/docs` |
+| `__main__.py` | `python -m sarae_voice`: uvicorn với app object, nên chỉ chạy một tiến trình |
+
+### 15.2 API contract thực tế
+
+| Method | Path | Scope | Thành công | Lỗi chính |
+|---|---|---|---|---|
+| GET | `/health/live` | — | 200 `{"status":"alive"}` | — |
+| GET | `/health/ready` | — | 200 `{"state":"ready","error":null,"busy","pending"}` | 503 với `state` `loading`/`error` và `error.code` (`TTS_GPU_UNAVAILABLE`, `TTS_VERSION_MISMATCH`, `TTS_LOAD_FAILED`, `TTS_GPU_FAILED`) |
+| GET | `/v1/status` | orchestrator | 200: engine (checkpoint, revision, versions, preset, load_timings, GPU), memory, limits, gate, prompt_cache, synthesis p50/p95 | 401 |
+| PUT | `/v1/voices/{voice_id}` | orchestrator | 201 tạo hoặc đổi, 200 không đổi (cùng WAV, cùng transcript); body là `VoiceProfile` | 401, 413 `PAYLOAD_TOO_LARGE`, 422 `INVALID_AUDIO`/`INVALID_PARAMS`/`VOICE_ASR_FAILED`, 429, 503 |
+| GET | `/v1/voices` · `/v1/voices/{voice_id}` | orchestrator | 200 | 404 `VOICE_NOT_FOUND` |
+| PUT | `/v1/voices/{voice_id}/transcript` | orchestrator | 200 `VoiceProfile` (`{"transcript": null}` quay về text Whisper đã lưu, không chạy lại Whisper) | 404, 422 |
+| DELETE | `/v1/voices/{voice_id}` | orchestrator | 204 | 404 |
+| POST | `/v1/voices/{voice_id}/warmup` | orchestrator | 200 `{"voice_id","rev","cache":"ram"\|"disk"\|"encoded","ms"}` | 404, 503 |
+| POST | `/v1/tts/synthesize` | orchestrator | 200 `audio/wav` mono PCM16 24 kHz; header `X-Request-Id, X-Voice-Id, X-Voice-Rev, X-Preset, X-Sample-Rate, X-Audio-Ms, X-Queue-Ms, X-Inference-Ms, X-Prompt-Cache, X-Prompt-Ms, X-Server-Ms, X-Checkpoint-Revision, X-Trace` (compat của prompt, generation config, versions) | 404, 422 `TEXT_TOO_LONG`/`INVALID_PARAMS`, 429 `TTS_BUSY`, 503 `TTS_NOT_READY`/`TTS_QUEUE_TIMEOUT`/`TTS_GPU_FAILED`, 507 `TTS_OOM`, 500 `TTS_INFERENCE_FAILED` |
+
+Text chỉ được gộp khoảng trắng (`" ".join(text.split())`), không chuẩn hóa gì khác. `seed` là tùy chọn và mặc định không đặt, giống demo; chỉ dùng cho test tái lập. Token admin được dùng mọi endpoint của orchestrator. Service không khởi động nếu chưa có token.
+
+### 15.3 Kết quả đo (RTX 3060, chỉ một tiến trình CUDA)
+
+| Hạng mục | Kết quả |
+|---|---|
+| Unit test (FakeEngine) | 45 pass: auth, loading/ready/error, voice và cache, idempotent, invalidate, restart, compat mới, `.pt` hỏng, validation, OOM/inference/CUDA, 50 request liên tiếp, đồng thời (max active = 1, event loop không bị chặn), 429, queue timeout, OpenAPI |
+| GPU integration test | 13 pass: status đúng revision và version; transcript Whisper và số token **trùng Phase 0**; file `.pt` trùng prompt Phase 0; **6 câu qua API trùng từng mẫu với Phase 0**; đoạn 954 ký tự → 50,1 s audio trong 16,1 s; 30 request liên tiếp, VRAM cấp phát giữ 1,9 GiB; 3 request đồng thời chỉ có 1 lời gọi GPU cùng lúc (chờ 0 / 2,4 / 4,8 s); restart → warmup `disk` 9,5 ms, không mã hóa lại, audio trùng trước restart |
+| Qua HTTP thật (`run_http.py`) | **45/45 câu golden trùng từng mẫu với Phase 0**; Whisper cho đúng kết quả của S-ASR (đã được kiểm tra lại ở mục 14) |
+| Khởi động | Từ lúc spawn tiến trình đến khi ready: 18,1 s và 21,0 s (restart), trong đó import khoảng 16 s, load khoảng 3,6 s. Lần đầu trong ngày (cache đĩa còn lạnh) là 98 s 🔶 |
+| Đăng ký voice (Whisper) | 4,46 s phía server (gồm nạp Whisper), qua HTTP 4,53 s |
+| Prompt cache | RAM: 2,6 ms qua HTTP. Sau restart, đọc từ `.pt`: 14,5 ms server, 55 ms HTTP. Mã hóa lại: 0 lần |
+| Thời gian qua HTTP (client) | golden median 2,42 s / p95 2,57 s; live_short 2,35 / 2,62 s; live_typical 2,31 / 2,47 s; live_max 4,70 / 5,15 s |
+| Overhead HTTP (client − server) | median 2,4–2,8 ms (câu ngắn), live_max median 6 ms, p95 22 ms (WAV khoảng 900 KB) |
+| VRAM | Model 1,90 GiB; đỉnh cấp phát 5,47 GiB (reserved 5,79) trong lúc đăng ký voice có Whisper; sau khi giải phóng Whisper về 1,90 GiB; đỉnh khi chỉ sinh audio 2,0–2,2 GiB |
+
+Chênh lệch live_short (2,35 s qua HTTP so với 1,87 s ở 14.1): đã đo trong cùng một phiên, cùng 6 câu × 3 lần. Kết quả: thư viện trực tiếp 1,88 s, engine + GpuGate 1,88 s, FastAPI (TestClient) 1,88 s. **Service không làm chậm inference.** Con số của lần chạy HTTP là dao động trạng thái GPU trong lần chạy đó 🔶. Phase 2 cần đo lặp lại nhiều lần trước khi đặt ngưỡng admission.
+
+### 15.4 Còn tồn tại
+
+- Chưa có job, priority, LIVE lease, read token, relay, fallback, TTL dọn `data/outputs` (Phase 2+). `SARAE_VOICE_SAVE_OUTPUTS` mặc định tắt vì chưa có dọn dẹp.
+- Import thư viện chiếm khoảng 16 s mỗi lần khởi động; lần đầu sau khi máy khởi động có thể tới khoảng 100 s. Chưa có Windows service hay tự restart (Phase 2).
+- Lỗi CUDA nghiêm trọng đưa engine sang `error` và cần restart tiến trình; chưa tự phục hồi.
+- Lời gọi GPU đã bắt đầu thì không hủy được: client ngắt kết nối thì kết quả bị bỏ, nhưng GPU vẫn chạy hết lượt đó.
+- Giới hạn 450 ký tự cho endpoint đồng bộ; đoạn dài chỉ chạy được khi tăng `SARAE_VOICE_MAX_TEXT_CHARS`. Đoạn dài thuộc job của Phase 2.
+- Một token cho mọi voice: chưa phân quyền theo owner ở phía voice-server (Sarae Backend kiểm tra owner ở Phase 3).

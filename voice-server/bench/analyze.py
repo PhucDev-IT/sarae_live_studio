@@ -56,8 +56,8 @@ def main() -> None:
     args = ap.parse_args()
     run = RUNS / args.run_name
     texts = {i["id"]: i for i in golden()}
-    rows = read_jsonl(run / "library.jsonl") + read_jsonl(run / "demo.jsonl")
-    rows = [r for r in rows if r.get("wav")]
+    rows = read_jsonl(run / "library.jsonl") + read_jsonl(run / "demo.jsonl") + read_jsonl(run / "http.jsonl")
+    rows = [r for r in rows if r.get("wav") and r.get("item") in texts]
 
     asr_path = run / "asr.jsonl"
     cached = {r["wav"]: r["text"] for r in read_jsonl(asr_path)}
