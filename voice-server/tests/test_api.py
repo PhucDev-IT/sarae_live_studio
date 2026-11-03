@@ -267,7 +267,7 @@ async def _concurrent(app, n: int, text: str = "Dạ có size Mờ nha chị."):
 
 
 def test_concurrent_requests_never_run_in_parallel_and_loop_stays_free(app_factory):
-    c, engine = app_factory(FakeEngine(delay_s=0.15), max_pending=8)
+    c, engine = app_factory(FakeEngine(delay_s=0.15), queue_preview=8)
     wait_ready(c)
     put_voice(c)
     responses, (live_status, live_s) = asyncio.run(_concurrent(c.app, 5))
@@ -279,7 +279,7 @@ def test_concurrent_requests_never_run_in_parallel_and_loop_stays_free(app_facto
 
 
 def test_backpressure_rejects_with_retry_after(app_factory):
-    c, engine = app_factory(FakeEngine(delay_s=0.2), max_pending=2)
+    c, engine = app_factory(FakeEngine(delay_s=0.2), queue_preview=1)
     wait_ready(c)
     put_voice(c)
     responses, _ = asyncio.run(_concurrent(c.app, 5))
@@ -290,7 +290,7 @@ def test_backpressure_rejects_with_retry_after(app_factory):
 
 
 def test_queue_timeout_withdraws_waiting_call(app_factory):
-    c, engine = app_factory(FakeEngine(delay_s=0.4), max_pending=8, queue_timeout_s=0.2)
+    c, engine = app_factory(FakeEngine(delay_s=0.4), queue_preview=8, queue_timeout_s=0.2)
     wait_ready(c)
     put_voice(c)
     calls_before = engine.calls["synthesize"]

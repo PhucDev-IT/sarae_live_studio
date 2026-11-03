@@ -190,8 +190,8 @@ class VoiceStore:
             shutil.rmtree(prompts, ignore_errors=True)
 
     # --- prompt cache ----------------------------------------------------------------------------
-    async def prompt(self, voice_id: str) -> tuple[Any, str, float, dict]:
-        """(prompt, cache, ms, profile) with cache in ram | disk | encoded."""
+    async def prompt(self, voice_id: str, klass: str = "preview") -> tuple[Any, str, float, dict]:
+        """(prompt, cache, ms, profile) with cache in ram | disk | encoded. Encoding runs at `klass` priority."""
         profile = self.get(voice_id)
         key = self.compat(profile)
         if key in self._ram:
@@ -200,9 +200,27 @@ class VoiceStore:
             return self._ram[key][1], "ram", 0.0, profile
         async with self._lock(voice_id):
             profile = self.get(voice_id)
-            return await self._ensure_prompt(profile)
+            return await self._ensure_prompt(profile, klass)
 
-    async def _ensure_prompt(self, profile: dict) -> tuple[Any, str, float, dict]:
+    def peek(self, voice_id: str, compat: str) -> tuple[Any, str] | None:
+        """The prompt for exactly this compat from RAM or the .pt file, without the GPU; None if it must be encoded.
+        Jobs take this snapshot at creation, so a voice changed while they wait does not change their audio."""
+        if compat in self._ram:
+            self._ram.move_to_end(compat)
+            self.stats["ram_hit"] += 1
+            return self._ram[compat][1], "ram"
+        pt, meta_path = self._dir(voice_id) / "prompts" / f"{compat}.pt", self._dir(voice_id) / "prompts" / f"{compat}.json"
+        try:
+            if json.loads(meta_path.read_text(encoding="utf-8")).get("compat") != compat:
+                return None
+            prompt = self.engine.load_prompt(pt)
+        except Exception:  # noqa: BLE001 - missing or damaged: the job encodes it through the GPU lane
+            return None
+        self._remember(compat, voice_id, prompt)
+        self.stats["disk_hit"] += 1
+        return prompt, "disk"
+
+    async def _ensure_prompt(self, profile: dict, klass: str = "preview") -> tuple[Any, str, float, dict]:
         voice_id, key = profile["voice_id"], self.compat(profile)
         if key in self._ram:
             self.stats["ram_hit"] += 1
@@ -224,7 +242,8 @@ class VoiceStore:
                 log.warning("Prompt cache for %s rejected (%s); rebuilding", voice_id, type(exc).__name__)
         t = profile["transcript"]
         ref_text = t["manual_text"] if t["mode"] == "manual" else t["asr_text"]   # None -> Whisper, like the demo
-        result, _, run_ms = await self.gate.run(self.engine.create_prompt, self._dir(voice_id) / "ref.wav", ref_text)
+        result, _, run_ms = await self.gate.run(self.engine.create_prompt, self._dir(voice_id) / "ref.wav", ref_text,
+                                                klass=klass, label=f"prompt:{voice_id}")
         folder.mkdir(parents=True, exist_ok=True)
         for old in folder.iterdir():                 # one compat per voice on disk
             old.unlink(missing_ok=True)

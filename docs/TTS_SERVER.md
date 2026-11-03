@@ -1,6 +1,6 @@
 # Sarae TTS Backend (G-OmniVoice) — Thiết kế đã duyệt
 
-> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0 (baseline) đang thực hiện; Phase 1 trở đi chờ duyệt.
+> Trạng thái: **kiến trúc A đã duyệt** (2026-11-02). Phase 0, 1 đã nghiệm thu; Phase 2 hoàn thành, chờ duyệt (mục 16). Phase 3 chưa bắt đầu.
 > Ký hiệu: ✅ đã xác minh trong source/đo thực tế · 🔶 giả định, cần kiểm chứng.
 
 ## 1. Quyết định đã chốt
@@ -380,7 +380,7 @@ Nhận định cho LIVE:
 | POST | `/v1/voices/{voice_id}/warmup` | orchestrator | 200 `{"voice_id","rev","cache":"ram"\|"disk"\|"encoded","ms"}` | 404, 503 |
 | POST | `/v1/tts/synthesize` | orchestrator | 200 `audio/wav` mono PCM16 24 kHz; header `X-Request-Id, X-Voice-Id, X-Voice-Rev, X-Preset, X-Sample-Rate, X-Audio-Ms, X-Queue-Ms, X-Inference-Ms, X-Prompt-Cache, X-Prompt-Ms, X-Server-Ms, X-Checkpoint-Revision, X-Trace` (compat của prompt, generation config, versions) | 404, 422 `TEXT_TOO_LONG`/`INVALID_PARAMS`, 429 `TTS_BUSY`, 503 `TTS_NOT_READY`/`TTS_QUEUE_TIMEOUT`/`TTS_GPU_FAILED`, 507 `TTS_OOM`, 500 `TTS_INFERENCE_FAILED` |
 
-Text chỉ được gộp khoảng trắng (`" ".join(text.split())`), không chuẩn hóa gì khác. `seed` là tùy chọn và mặc định không đặt, giống demo; chỉ dùng cho test tái lập. Token admin được dùng mọi endpoint của orchestrator. Service không khởi động nếu chưa có token.
+Text: Phase 1 gộp khoảng trắng (`" ".join(text.split())`); từ Phase 2 chỉ `text.strip()`, đúng như demo (mục 16.6). `seed` là tùy chọn và mặc định không đặt, giống demo; chỉ dùng cho test tái lập. Token admin được dùng mọi endpoint của orchestrator. Service không khởi động nếu chưa có token.
 
 ### 15.3 Kết quả đo (RTX 3060, chỉ một tiến trình CUDA)
 
@@ -406,3 +406,122 @@ Chênh lệch live_short (2,35 s qua HTTP so với 1,87 s ở 14.1): đã đo tr
 - Lời gọi GPU đã bắt đầu thì không hủy được: client ngắt kết nối thì kết quả bị bỏ, nhưng GPU vẫn chạy hết lượt đó.
 - Giới hạn 450 ký tự cho endpoint đồng bộ; đoạn dài chỉ chạy được khi tăng `SARAE_VOICE_MAX_TEXT_CHARS`. Đoạn dài thuộc job của Phase 2.
 - Một token cho mọi voice: chưa phân quyền theo owner ở phía voice-server (Sarae Backend kiểm tra owner ở Phase 3).
+
+## 16. Phase 2 — job, scheduler, LIVE admission, bảo mật, vận hành
+
+### 16.1 Module mới và module đã sửa
+
+| Module | Vai trò |
+|---|---|
+| `gate.py` (mở rộng `GpuGate`) | Một worker thread GPU; priority `system < live < preview < prepare < long < benchmark`; mỗi lớp có queue giới hạn riêng (429); deadline (không bắt đầu sau hạn); hủy khi còn queued; cờ hủy khi đang chạy; `hold` để giữ long/benchmark khi đang LIVE; fair-share chống treo; `close()` + `join()` khi tắt; `run()` của Phase 1 giữ nguyên |
+| `jobs.py` | Vòng đời job, snapshot voice/prompt/config, idempotency, result cache, read token, purge |
+| `results.py` | Result cache riêng với prompt cache; khóa theo owner, voice, rev, compat, checkpoint, config, text, seed; TTL và giới hạn dung lượng; file của job chưa hết hạn được ghim, không bị xóa |
+| `tokens.py` | Read token HMAC-SHA256 theo từng job |
+| `admission.py` | LIVE lease có TTL, nhiều session cùng lúc |
+| `metrics.py` | Registry Prometheus nhỏ, không cần thêm dependency |
+| `instance.py` | Khóa file: mỗi data dir chỉ một tiến trình |
+| `supervisor.py` | Khởi động lại khi crash hoặc lỗi CUDA, dừng êm qua stop-file |
+| `api.py`, `schemas.py`, `config.py`, `__main__.py`, `voices.py`, `engine.py` | Endpoint mới, middleware đo HTTP, dọn dẹp định kỳ, graceful shutdown, `text.strip()`; `VoiceStore.peek` lấy prompt không cần GPU; FakeEngine có `block` để test tất định |
+
+`max_pending` của Phase 1 được thay bằng giới hạn queue theo lớp (`SARAE_VOICE_QUEUE_*`). Endpoint đồng bộ thuộc lớp `preview`.
+
+### 16.2 API Phase 2 (bổ sung vào 15.2)
+
+| Method | Path | Auth | Thành công | Lỗi chính |
+|---|---|---|---|---|
+| POST | `/v1/tts/jobs` (header `Idempotency-Key` tùy chọn) | orchestrator | 202 `created: new` hoặc `result_cache`; 200 `created: replay`. Body: `JobView` + `read_token` + `read_token_expires_at` (chỉ trả trong response này) | 404 `VOICE_NOT_FOUND` (kể cả sai owner), 409 `IDEMPOTENCY_CONFLICT`, 422 `TEXT_TOO_LONG`/`DEADLINE_PASSED`/`INVALID_PARAMS`, 423 `LIVE_ACTIVE`, 429 `TTS_BUSY`, 503 |
+| GET | `/v1/tts/jobs/{id}?wait=0..20` | orchestrator | 200 `JobView` (không bao giờ chứa token) | 404 `JOB_NOT_FOUND`, 410 `JOB_LOST` (job của lần chạy trước), 410 `JOB_GONE` (đã quá thời gian giữ) |
+| GET | `/v1/tts/jobs/{id}/audio?wait=0..20` | read token + `X-Sarae-Agent-Id`, hoặc orchestrator | 200 `audio/wav` (header `X-Job-Id, X-Source, X-Audio-Ms, X-Queue-Ms, X-Inference-Ms`); 202 `JobView` khi đang queued/running | 401 `TTS_AUTH`/`TOKEN_EXPIRED`, 403 `TOKEN_SCOPE`, 409 `JOB_FAILED`, 410 `JOB_CANCELLED`/`JOB_EXPIRED`/`JOB_LOST`/`RESULT_GONE` |
+| DELETE | `/v1/tts/jobs/{id}` | orchestrator | 200 `JobView` (queued → cancelled; running → `cancel_requested`, cancelled khi trả về; done → cancelled, mất quyền đọc) | 404/410 |
+| DELETE | `/v1/tts/jobs?tag=session:123` | orchestrator | 200 `{"cancelled": n}` | 422 |
+| PUT | `/v1/admission/live` `{owner_ref, session_id, ttl_s 5–300}` | orchestrator | 200 `{live_active, leases[], gpu{state,busy,running{class,elapsed_s,estimated_remaining_s},queued}, ready_for_live, reason}` | 422 |
+| GET / DELETE | `/v1/admission/live` (`?owner_ref=&session_id=` khi DELETE) | orchestrator | như trên (+ `removed`) | — |
+| GET | `/metrics` | orchestrator | Prometheus text | 401 |
+
+`JobView`: `job_id, state, cancel_requested, voice_id, voice_rev, prompt_compat, preset, generation_config, priority, chars, seed, deadline_at, reader_agent_id, owner_ref, tags, created_at, started_at, finished_at, source (generated | result_cache), error, timings (queue_ms, inference_ms, prompt_cache, estimated_audio_s), audio (bytes, audio_ms, sample_rate, sha256), reads`.
+
+Deadline mặc định khi không gửi: live 60 s, preview 60 s, prepare 15 phút, long và benchmark 1 giờ; tối đa `max_deadline_s` (1 giờ). Live, preview và prepare tối đa 450 ký tự; long và benchmark tối đa 5000.
+
+### 16.3 Vòng đời job và scheduler
+
+```
+POST -> [admission] -> [owner + voice] -> fingerprint -> Idempotency-Key? -- trùng --> cùng job (replay) / khác --> 409
+                                                   |-> result cache hit -> done (source=result_cache), không dùng GPU
+                                                   |-> snapshot prompt (RAM/.pt) -> GpuGate.submit (429 nếu lớp đầy)
+queued --(worker: ưu tiên tuyệt đối, FIFO trong lớp, fair turn)--> running --> done -> result cache (ghim)
+  | quá deadline khi tới lượt -> expired (không bao giờ chạy)        | hủy -> chạy nốt, bỏ audio -> cancelled
+  | DELETE -> cancelled (rút khỏi queue)                              | lỗi -> failed (TTS_OOM, TTS_INFERENCE_FAILED...)
+  | lớp long/benchmark khi có lease LIVE -> giữ lại (không bắt đầu) cho tới khi hết lease hoặc hết deadline
+```
+
+- **Snapshot**: lúc tạo job, server chụp `voice_rev`, `prompt_compat`, generation config và chính `VoiceClonePrompt` (từ RAM hoặc `.pt`). Đổi voice khi job đang chờ không đổi audio của job đó (test `test_voice_change_while_queued_keeps_the_snapshot`). Nếu prompt phải mã hóa lại mà voice đã đổi rev thì job lỗi `VOICE_CHANGED`.
+- **Fingerprint** (idempotency) gồm voice_id, rev, compat, text, preset, config, seed, owner_ref, reader_agent_id, priority. Deadline và tags không thuộc fingerprint, nên retry tính lại deadline vẫn là cùng job.
+- **Fair-share** (thay cơ chế aging thử đầu tiên): ưu tiên tuyệt đối; một job lớp thấp đã chờ `starvation_s` (30 s) được 1 lượt sau mỗi `fair_every` (4) lượt lớp cao. Cơ chế aging ban đầu đẩy prepare lên ngang live sau 30 s, khiến live trong một đợt 30 job phải chờ tới 55 s; đã bị loại bỏ.
+- **Restart**: job chỉ nằm trong RAM. `job_id` bắt đầu bằng boot id (6 hex), nên id của lần chạy trước trả 410 `JOB_LOST` và không bao giờ được sinh lại; read token cũ cũng hết hiệu lực vì khóa ký đổi theo tiến trình.
+- **Dọn dẹp** (mỗi `cleanup_interval_s`): job đã kết thúc quá `job_retention_s` và đã qua deadline thì bị xóa (truy cập sau đó trả `JOB_GONE`; job `done` chưa ai đọc được tính vào `generated_not_consumed`); file result quá TTL hoặc vượt `result_max_bytes` (LRU, trừ file đang ghim); file `.tmp` mồ côi; output debug.
+
+### 16.4 Bảo mật read token — mô hình thực tế
+
+- Token = `base64url({j: job_id, a: reader_agent_id, exp, k: key_id}).base64url(HMAC-SHA256)`. Khóa ngẫu nhiên theo từng tiến trình (hoặc `SARAE_VOICE_READ_TOKEN_SECRET`). `exp = min(deadline + 60 s, now + 900 s)`.
+- Mỗi lần đọc audio, server kiểm tra: chữ ký, hạn, `job_id` trong token khớp đường dẫn, `X-Sarae-Agent-Id` khớp `a`, rồi đến **trạng thái job**. Job bị hủy hoặc hết hạn thì trả 410 dù token còn hạn; đây là cách thu hồi.
+- Token chỉ trả về trong response tạo job (gọi bằng token orchestrator). `GET` job, `/v1/status`, `/metrics` và log không chứa token (có test kiểm tra). Agent không bao giờ cần token orchestrator.
+- **Giới hạn**: `X-Sarae-Agent-Id` là giá trị do client tự gửi, không chứng minh danh tính máy; nó chỉ ngăn dùng nhầm token giữa các agent. Năng lực thực sự nằm ở việc **giữ token**. Ai có token trong thời hạn thì đọc được đúng audio của job đó. Vì vậy:
+  - Phase 3–4 phải chuyển token chỉ qua kênh command đã xác thực của Sarae (`X-Sarae-Agent-Key`, HTTPS) và che token khỏi command view trên Web.
+  - Kết nối Agent → voice-server cần TLS hoặc mạng riêng (Tailscale/WireGuard); trên HTTP thuần trong LAN, token có thể bị nghe lén.
+  - Muốn ràng buộc máy thật thì cần mTLS hoặc Backend relay (Agent xác thực bằng khóa Agent với Backend). Phase 2 chưa giải quyết điều này.
+  - Một token orchestrator dùng chung cho mọi owner. Phân quyền owner ở voice-server chỉ dựa trên `owner_ref` do Backend gửi (Backend là bên được tin cậy).
+- Result cache không làm lộ audio giữa các owner: khóa chứa `owner_ref` và voice; voice có `owner_ref` thì job khác owner nhận 404. Audio trong cache chỉ được đọc qua token của chính job mới.
+- Giới hạn kích thước: WAV tham chiếu 5 MB; output tối đa 32 MB; text 450 hoặc 5000 ký tự. Relay qua Backend (Phase 3) không nhận URL từ client.
+
+### 16.5 LIVE admission
+
+- Có lease LIVE: job `long`/`benchmark` mới bị từ chối 423; job đã nằm trong queue thì bị giữ lại, không bắt đầu; `prepare` chỉ được nhận nếu ước tính audio ≤ 20 s.
+- Lease không được gia hạn thì tự hết hạn. Có thể có nhiều lease từ nhiều owner và session.
+- **Job dài đã chạy trước khi lease được tạo**: không preempt được. `PUT /v1/admission/live` trả `ready_for_live: false`, `reason: LONG_JOB_RUNNING`, kèm `running.estimated_remaining_s`. Con số này là ước tính theo độ dài text, **không phải cam kết**. Đo thực tế với job 114 s audio: ước tính còn 29,6–30,6 s, thực tế live phải chờ 31,5 s (benchmark) và 42,2 s (trong pytest). Ước tính có thể lệch khoảng 40 %.
+- Hệ quả cho Phase 3: bước Đồng bộ trước LIVE phải gọi lease sớm, đọc `ready_for_live`, rồi hiển thị trạng thái "GPU bận, còn khoảng X s" và chờ hoặc cho operator quyết định. Không được bắt đầu LIVE với giả định GPU đã sẵn sàng.
+
+### 16.6 Tương thích với Phase 1
+
+- `demo_default`, checkpoint, generation config, Whisper mặc định, prompt cache RAM và `.pt`, restart: giữ nguyên. Toàn bộ 45 test Phase 1 vẫn pass; chỉ đổi tham số `max_pending` sang `queue_preview`.
+- **Whitespace**: Phase 1 gộp khoảng trắng, còn demo dùng `text.strip()`. Phase 2 sửa cả endpoint đồng bộ lẫn job thành `text.strip()`, có test xác nhận engine nhận đúng chuỗi đã strip (giữ nguyên khoảng trắng kép và xuống dòng ở giữa). Kết quả đã đo của Phase 0/1 không bị ảnh hưởng, vì mọi câu golden và perf đều là một dòng, không có khoảng trắng kép. Lưu ý: thư viện xóa `\n` mà không chèn khoảng trắng, nên Sarae Backend nên gửi text một dòng (Agent hiện đã gộp khoảng trắng).
+- Audio qua job trùng từng mẫu với Phase 0 (3 câu có seed, `test_gpu_jobs.py`), giống như endpoint đồng bộ (45/45 ở Phase 1).
+
+### 16.7 Kết quả kiểm thử
+
+| Bộ test | Kết quả |
+|---|---|
+| Unit (FakeEngine) | **78 pass** (45 Phase 1 + 33 Phase 2): lifecycle; read token (sai job, sai agent, thiếu header, chữ ký giả, hết hạn, job bị hủy, không xuất hiện trong status/metrics); idempotency replay và 409; result cache (hit, khác seed, khác checkpoint, cô lập owner); thứ tự priority; fair turn; job lớp thấp mới tạo không chen trước live; queue đầy theo lớp; 36 job đồng thời (một lane, đúng priority, FIFO trong lớp); hủy khi queued, running, done; hủy theo tag; deadline; snapshot voice; job dài trước LIVE và job long bị giữ; nhiều lease và lease hết hạn; OOM; giới hạn output; JOB_LOST sau restart; dọn job và result (JOB_GONE, `generated_not_consumed`); giới hạn dung lượng cache; metrics; graceful shutdown; stop-file và CUDA failure yêu cầu thoát; instance lock |
+| Process (FakeEngine, `SARAE_VOICE_PROCESS_TESTS=1`) | **1 pass**: supervisor khởi động lại sau khi tiến trình con bị kill (PID mới); instance thứ hai trên cùng data dir thoát với mã 2; dừng êm qua stop-file (server exit 0) |
+| GPU (model thật) | **19 pass** (13 Phase 1 + 6 Phase 2): audio qua job trùng Phase 0 và result cache trả cùng bytes; job dài 114 s đang chạy khi tạo lease → `LONG_JOB_RUNNING`, live chạy sau khi job dài xong, job bị hủy khi queued thì không chạy; hủy job dài đang chạy thì audio bị bỏ; 30 job hỗn hợp chỉ một lane, VRAM cấp phát giữ 1,9 GiB |
+
+### 16.8 Benchmark nhiều job cùng chờ (HTTP thật, RTX 3060)
+
+| Kịch bản | Kết quả |
+|---|---|
+| A — 30 job cùng lúc (10 live, 10 preview, 10 prepare; câu LIVE điển hình), chạy lại riêng | Tổng 67,8 s; inference p50 2,44 s, p95 2,65 s; chờ queue live p50 10,1 s / max 19,9 s; preview p50 32,3 s / max 44,9 s; prepare p50 55,1 s / max 65,3 s (prepare được 1 lượt công bằng); tạo job qua HTTP p50 2,7 ms / p95 4,8 ms; tải WAV bằng read token p50 26,8 ms / p95 41,8 ms (khoảng 225 KB); GPU 98 %, 1918 MHz, 69 °C |
+| A — lần chạy đầu | Vài lượt inference mất 25–37 s (p95 25,5 s), nên live phải chờ p50 60 s. Chạy lại riêng không tái hiện được. Nghi do tải GPU bên ngoài hoặc trạng thái clock 🔶 |
+| B — một câu live mỗi 3 s trong lúc 40 job prepare đang chạy | Live chờ queue p50 1,4 s / p95 2,4 s (tối đa bằng một lượt prepare đang chạy); live inference p50 2,5 s; 50/50 job done; 4 lượt công bằng cho prepare |
+| C — job dài 114 s audio đang chạy khi tạo lease | `ready_for_live: false`, `LONG_JOB_RUNNING`, ước tính còn 29,6 s; live thực tế chờ 31,5 s; job long mới bị 423 |
+| VRAM | Cấp phát 1,90 GiB khi rảnh; đỉnh 5,47 GiB lúc đăng ký voice bằng Whisper; reserved khi chạy job 2,1–2,6 GiB |
+
+Nhận xét: với một GPU và chi phí sàn khoảng 2,4 s mỗi câu, 10 câu live xếp hàng thì câu cuối chờ khoảng 20 s, mà TTL live mặc định là 60 s. Sarae (director) nên tiếp tục đọc từng câu một như hiện tại, không đẩy nhiều câu live cùng lúc. Câu nào không kịp thì `expired`, không đọc trễ.
+
+### 16.9 Vận hành Windows
+
+- Dev: `scripts\run.ps1` (foreground).
+- Service: `scripts\service.ps1 install|start|stop|restart|status|logs|uninstall`. Task Scheduler chạy `pythonw -m sarae_voice.supervisor` lúc đăng nhập (`-AtStartup`: lúc khởi động máy, cần lưu mật khẩu).
+- Supervisor: khởi động lại khi crash hoặc khi gặp exit 75 (lỗi CUDA), backoff 2–60 s, bỏ cuộc sau 10 lần lỗi nhanh trong 10 phút; exit 2 (cấu hình sai hoặc đã có instance khác) thì không khởi động lại.
+- Dừng: `stop` ghi `supervisor.stop`; supervisor ghi `server.stop`; server rút các job đang chờ (cancelled, "Server shutting down"), đợi lời gọi GPU đang chạy tối đa `shutdown_grace_s`, rồi thoát; chỉ kill tiến trình con của chính nó sau thời gian chờ.
+- Lỗi CUDA: engine chuyển sang `error` (`TTS_GPU_FAILED`), service ngừng nhận việc, tiến trình tự thoát với mã 75 để supervisor khởi động lại sạch.
+- Khóa `data\.instance.lock` và `data\.supervisor.lock`; log trong `data\logs\` (xoay vòng 20 MB).
+- Không script nào dừng tiến trình GPU khác. Chưa thử `service.ps1 install` trên máy này vì nó tạo scheduled task (thay đổi cấu hình hệ thống); supervisor đã được test trực tiếp.
+
+### 16.10 Còn tồn tại
+
+- Ước tính thời gian còn lại của job dài lệch tới khoảng 40 %; chỉ dùng để hiển thị, không dùng để hứa.
+- Không preempt được lời gọi GPU đang chạy; job dài chạy trước LIVE vẫn chặn câu live (đã đo 31–42 s).
+- Bất thường hiệu năng trong lần chạy đầu (lượt sinh 25–37 s) chưa rõ nguyên nhân; Phase 3 nên theo dõi `tts_inference_seconds` p95 và GPU clock.
+- Job và idempotency key nằm trong RAM; restart thì mất (trả `JOB_LOST`, đúng thiết kế), Backend phải tạo job mới.
+- Read token không chứng minh danh tính máy (16.4); cần TLS/mạng riêng hoặc relay ở Phase 3–4.
+- `service.ps1` chưa được chạy thật trên máy này (cần bạn đồng ý tạo scheduled task).
+- Import thư viện mất 16–84 s tùy cache đĩa (khởi động lần đầu sau boot chậm).

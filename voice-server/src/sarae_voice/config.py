@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,9 +36,40 @@ class Settings(BaseSettings):
     min_ref_seconds: float = 1.0
     max_ref_seconds: float = 20.0                # longer clips would take a different preprocessing path
     prompt_ram_cache: int = Field(default=16, ge=1)
-    max_pending: int = Field(default=4, ge=1)    # GPU calls waiting or running; more -> 429
     queue_timeout_s: float = 30.0                # not started within this -> 503, never run late
     save_outputs: bool = False                   # keep every WAV + metadata under data/outputs (debug)
+
+    # --- Phase 2: jobs, scheduling, admission, results, operation ------------------------------------------
+    job_max_chars: int = Field(default=5000, ge=1, le=20000)   # long-form jobs; live/preview/prepare keep max_text_chars
+    queue_live: int = 8                          # bounded queue per priority class
+    queue_preview: int = 4
+    queue_prepare: int = 50
+    queue_long: int = 5
+    queue_benchmark: int = 2
+    starvation_s: float = 30.0                   # a lower-class call waiting this long gets a fair turn ...
+    fair_every: int = 4                          # ... after every 4 higher-class starts
+    max_deadline_s: float = 3600.0
+    job_retention_s: float = 900.0               # finished jobs (and idempotency keys) kept this long
+    result_ttl_s: float = 86400.0                # result cache files
+    result_max_bytes: int = 1024 * 1024 * 1024
+    max_output_bytes: int = 32 * 1024 * 1024     # one WAV (24 kHz PCM16 ≈ 11 min)
+    read_token_max_ttl_s: float = 900.0
+    read_token_secret: str = ""                  # empty: random per process (tokens die with the jobs on restart)
+    live_lease_max_ttl_s: float = 300.0
+    prepare_live_max_audio_s: float = 20.0       # prepare jobs accepted during a LIVE lease up to this estimate
+    chars_per_audio_s: float = 19.0              # Phase 0: 954 chars -> 50 s; only for estimates, never promises
+    cleanup_interval_s: float = 300.0
+    shutdown_grace_s: float = 30.0               # wait for the running GPU call on shutdown
+    exit_on_gpu_failure: bool = True             # CUDA failure -> exit so the supervisor restarts a clean process
+
+    def queue_limits(self) -> dict[str, int]:
+        return {"live": self.queue_live, "preview": self.queue_preview, "prepare": self.queue_prepare,
+                "long": self.queue_long, "benchmark": self.queue_benchmark, "system": 1000}
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute(cls, value: Path) -> Path:
+        return value if value.is_absolute() else ROOT / value     # relative to voice-server/, whatever the cwd
 
     @staticmethod
     def _split(raw: str) -> set[str]:

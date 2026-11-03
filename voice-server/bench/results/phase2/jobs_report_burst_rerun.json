@@ -1,0 +1,209 @@
+{
+  "startup_s": 18.2,
+  "A_burst_30": {
+    "wall_s": 67.8,
+    "states": 30,
+    "create_ms": {
+      "n": 30,
+      "p50": 2.7,
+      "p95": 4.8,
+      "max": 7.0
+    },
+    "download_ms": {
+      "n": 30,
+      "p50": 26.8,
+      "p95": 41.8,
+      "max": 51.7
+    },
+    "download_bytes_p50": 224684.0,
+    "inference_ms": {
+      "n": 30,
+      "p50": 2437.5,
+      "p95": 2649.3,
+      "max": 2672.0
+    },
+    "queue_ms_live": {
+      "n": 10,
+      "p50": 10070.0,
+      "p95": 18847.6,
+      "max": 19938.0
+    },
+    "queue_ms_preview": {
+      "n": 10,
+      "p50": 32344.0,
+      "p95": 43810.9,
+      "max": 44922.0
+    },
+    "queue_ms_prepare": {
+      "n": 10,
+      "p50": 55062.5,
+      "p95": 64093.1,
+      "max": 65282.0
+    }
+  },
+  "status_end": {
+    "memory": {
+      "allocated_gib": 1.9,
+      "reserved_gib": 2.117,
+      "peak_allocated_gib": 5.466,
+      "peak_reserved_gib": 5.785,
+      "device_free_gib": 8.835,
+      "device_total_gib": 12.0
+    },
+    "gate": {
+      "pending": 0,
+      "busy": false,
+      "running": null,
+      "queued": {
+        "live": 0,
+        "preview": 0,
+        "prepare": 0,
+        "long": 0,
+        "benchmark": 0
+      },
+      "queue_limits": {
+        "system": 1000,
+        "live": 20,
+        "preview": 20,
+        "prepare": 60,
+        "long": 5,
+        "benchmark": 2
+      },
+      "rejected": 0,
+      "timed_out": 0,
+      "max_active_seen": 1,
+      "fair_turns": 1,
+      "by_class": {
+        "system": {
+          "started": 1,
+          "done": 1,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "live": {
+          "started": 10,
+          "done": 10,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "preview": {
+          "started": 11,
+          "done": 11,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "prepare": {
+          "started": 10,
+          "done": 10,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "long": {
+          "started": 0,
+          "done": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        },
+        "benchmark": {
+          "started": 0,
+          "done": 0,
+          "failed": 0,
+          "cancelled": 0,
+          "expired": 0,
+          "rejected": 0
+        }
+      }
+    },
+    "jobs": {
+      "live": {
+        "done": 10
+      },
+      "preview": {
+        "done": 10
+      },
+      "prepare": {
+        "done": 10
+      }
+    },
+    "prompt_cache": {
+      "ram_hit": 30,
+      "disk_hit": 0,
+      "encoded": 1,
+      "disk_rejected": 0,
+      "ram_entries": 1
+    },
+    "result_cache": {
+      "hit": 0,
+      "miss": 30,
+      "stored": 30,
+      "evicted": 0,
+      "rejected": 0,
+      "files": 30,
+      "bytes": 5726760,
+      "pinned": 30
+    },
+    "latency": {
+      "job_inference": {
+        "n": 30,
+        "p50_ms": 2437.5,
+        "p95_ms": 2649.3,
+        "max_ms": 2672.0
+      },
+      "job_queue_wait": {
+        "live": {
+          "n": 10,
+          "p50_ms": 10070.0,
+          "p95_ms": 18847.6,
+          "max_ms": 19938.0
+        },
+        "preview": {
+          "n": 10,
+          "p50_ms": 32344.0,
+          "p95_ms": 43810.9,
+          "max_ms": 44922.0
+        },
+        "prepare": {
+          "n": 10,
+          "p50_ms": 55062.5,
+          "p95_ms": 64093.1,
+          "max_ms": 65282.0
+        },
+        "long": {
+          "n": 0
+        },
+        "benchmark": {
+          "n": 0
+        }
+      },
+      "http_synthesize": {
+        "n": 0
+      },
+      "http_job_audio": {
+        "n": 30,
+        "p50_ms": 0.9,
+        "p95_ms": 2.4,
+        "max_ms": 7.4
+      }
+    },
+    "generated_not_consumed": 0,
+    "discarded_after_inference": 0
+  },
+  "metrics_sample": [
+    "tts_jobs_created_total{how=\"new\",priority=\"live\"} 10",
+    "tts_jobs_created_total{how=\"new\",priority=\"prepare\"} 10",
+    "tts_jobs_created_total{how=\"new\",priority=\"preview\"} 10",
+    "tts_jobs_finished_total{priority=\"live\",state=\"done\"} 10",
+    "tts_jobs_finished_total{priority=\"prepare\",state=\"done\"} 10",
+    "tts_jobs_finished_total{priority=\"preview\",state=\"done\"} 10"
+  ]
+}

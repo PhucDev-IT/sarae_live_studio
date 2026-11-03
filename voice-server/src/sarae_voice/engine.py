@@ -246,6 +246,9 @@ class FakeEngine:
         self.fail_next: str | None = None        # "oom" | "inference" | "cuda" for the next synthesize
         self.calls: dict[str, int] = {"load": 0, "create_prompt": 0, "asr": 0, "synthesize": 0, "load_prompt": 0}
         self.prompt_texts: list[str | None] = []
+        self.synth_texts: list[str] = []         # exactly what reached the engine
+        self.synth_prompts: list[str] = []       # ref_text of the prompt each call used
+        self.block: threading.Event | None = None   # when set by a test, synthesize waits for it (a "long" GPU call)
         self._active = 0
         self.max_active = 0
         self._lock = threading.Lock()
@@ -293,6 +296,10 @@ class FakeEngine:
             self.max_active = max(self.max_active, self._active)
         try:
             self.calls["synthesize"] += 1
+            self.synth_texts.append(text)
+            self.synth_prompts.append(prompt.ref_text)
+            if self.block is not None:
+                self.block.wait(timeout=30)
             time.sleep(self.delay_s)
             fail, self.fail_next = self.fail_next, None
             if fail == "oom":
