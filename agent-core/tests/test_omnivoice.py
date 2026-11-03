@@ -239,3 +239,54 @@ os._exit(0)
 '''
     subprocess.run([sys.executable, '-c', code, 'queued'], check=True)
     subprocess.run([sys.executable, '-c', code, 'duplicate'], check=True)
+
+
+def test_outbox_overflow_does_not_erase_acceptance(home):
+    from sarae_agent.config import paths
+    box=EventOutbox(limit=2,path=paths.root/'outbox.json')
+    voice=VoiceEngine(ConfigStore(),None);voice._ensure_worker=lambda:None
+    voice.event_sink=box.push
+    options=dict(provider='omnivoice',voice='c'*32,tts=ref(),duck=False)
+    assert voice.speak('Xin chào',**options)['status']=='queued'
+    for i in range(5):box.push({'type':'tts_playback','detail':{'status':'sample','i':i}})
+    assert box.pending()==2
+    voice.close()
+    restarted=VoiceEngine(ConfigStore(),None)
+    assert restarted.speak('Xin chào',**options)['status']=='duplicate'
+    restarted.close()
+
+
+def test_relay_unreachable_is_bounded(tmp_path):
+    calls=[]
+    def offline(r):
+        calls.append(r)
+        raise httpx.ConnectError('offline')
+    with pytest.raises(AgentError) as error:
+        provider(offline).download(ref(),tmp_path/'x.wav',lambda:None,'auto')
+    assert error.value.code=='TTS_BACKEND_UNREACHABLE'
+    assert len(calls)==2
+
+
+def test_cancelled_job_does_not_relay(tmp_path):
+    calls=[]
+    def cancel(r):
+        calls.append(r)
+        return httpx.Response(410,json={'error':{'code':'JOB_CANCELLED'}})
+    with pytest.raises(AgentError) as error:
+        provider(cancel).download(ref(),tmp_path/'x.wav',lambda:None,'relay')
+    assert error.value.code=='TTS_CANCELLED'
+    assert len(calls)==1
+
+
+def test_obs_unavailable_never_falls_back(home):
+    class MissingObs(Obs):
+        def play_file(self,*args,**kwargs):raise AgentError('OBS_NOT_CONNECTED','offline')
+    v=VoiceEngine(ConfigStore(),MissingObs());v.POLL_SECONDS=.001
+    v.job_provider=provider(lambda r:httpx.Response(200,content=wav()))
+    events=[];v.event_sink=events.append
+    v.speak('Xin chào',voice='c'*32,provider='omnivoice',tts={**ref(),'audio_path':'relay'},duck=False,
+            fallback={'mode':'provider','provider':{'provider':'edge','voice':'vi-VN-HoaiMyNeural'}})
+    idle(v)
+    assert events[-1]['detail']['status']=='failed'
+    assert events[-1]['detail']['error_code']=='OBS_NOT_CONNECTED'
+    v.close()

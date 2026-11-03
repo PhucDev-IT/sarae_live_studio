@@ -102,6 +102,77 @@ class OmniVoiceTests(SaasTestCase):
     def speak(self, agent, text="Dạ có size Mờ nha chị."):
         return self.client.post("/api/ai/voice/speak", json={"agent_id": agent["agent_id"], "text": text})
 
+    def test_phase6_preview_override_does_not_change_default_or_live(self):
+        first, other = self.profile(), self.profile(name="Giọng thử")
+        self.select(first["id"])
+        agent = self.agent()
+        self.running_session(agent_id=agent["agent_id"])
+        before = self.client.get("/api/ai/voice/config").json()
+        r = self.client.post("/api/ai/voice/preview", json={"text": "Dạ có size Mờ nha chị.", "voice_id": other["id"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.get("/api/ai/voice/config").json(), before)
+        self.assertEqual(self.client.post("/api/ai/voice/preview", headers=self.B,
+            json={"text": "Xin chào", "voice_id": other["id"]}).status_code, 404)
+
+    def test_phase6_running_and_pending_start_protect_used_voice(self):
+        selected, unused = self.profile(), self.profile(name="Giọng chưa dùng")
+        self.select(selected["id"])
+        agent = self.agent()
+        sid = self.running_session(agent_id=agent["agent_id"])
+        for status in ("RUNNING", "DRAFT"):
+            with self.Session() as db:
+                from app.live_sessions import LiveSession
+                row = db.get(LiveSession, sid);row.status = status;db.commit()
+            r = self.client.put("/api/ai/voice/config",json={"provider":"edge","model":"edge-neural","voice":"vi-VN-HoaiMyNeural","rate":5,"settings":{}})
+            self.assertEqual(r.status_code,409,r.text)
+            r = self.client.patch("/api/ai/voice/profiles/"+selected["id"],json={"transcript":"Nội dung mới"})
+            self.assertEqual(r.status_code,409,r.text)
+            r = self.client.put("/api/ai/voice/profiles/"+selected["id"]+"/wav", files={"wav":("new.wav",make_wav(tone=2000),"audio/wav")})
+            self.assertEqual(r.status_code,409,r.text)
+            self.assertEqual(self.client.patch("/api/ai/voice/profiles/"+unused["id"],json={"transcript":"Giọng độc lập"}).status_code,200)
+            self.assertEqual(self.client.patch("/api/ai/voice/profiles/"+selected["id"],json={"name":"Đổi tên an toàn"}).status_code,200)
+
+    def test_phase6_owner_lock_serializes_concurrent_start_and_mutation(self):
+        from app.voice_policy import owner_voice_lock
+        from app.live_sessions import LiveSession
+        self.select(self.profile()["id"])
+        agent=self.agent()
+        entered,release=threading.Event(),threading.Event()
+        def pending_start():
+            with owner_voice_lock(self.owner_a["id"]):
+                entered.set();release.wait(5)
+                with self.Session() as db:
+                    db.add(LiveSession(name="Pending",owner_id=self.owner_a["id"],status="DRAFT",agent_id=agent["agent_id"]))
+                    db.commit()
+        starter=threading.Thread(target=pending_start);starter.start();self.assertTrue(entered.wait(2))
+        results=[]
+        def mutate():
+            results.append(self.client.put("/api/ai/voice/config",json={"provider":"edge","model":"edge-neural","voice":"vi-VN-HoaiMyNeural","rate":5,"settings":{}}))
+        writer=threading.Thread(target=mutate);writer.start();time.sleep(.05);self.assertFalse(results)
+        release.set();starter.join(5);writer.join(5)
+        self.assertEqual(results[0].status_code,409)
+
+    def test_phase6_clear_waits_for_inflight_job_publication(self):
+        self.file_database()
+        self.select(self.profile()["id"])
+        agent=self.agent()
+        entered,release=threading.Event(),threading.Event()
+        create=tts_server.create_job
+        def slow_create(**kwargs):
+            entered.set();release.wait(5);return create(**kwargs)
+        result=[]
+        def speak():
+            result.append(tts_orchestrator.speak(self.owner_a["id"],agent["agent_id"],text="Câu đang tạo nha.",
+                intro=None,ttl_seconds=30,duck=False,session_id=None,reply_id=None,source="manual"))
+        with patch.object(tts_server,"create_job",slow_create):
+            speaker=threading.Thread(target=speak);speaker.start();self.assertTrue(entered.wait(2))
+            cleared=[]
+            clearer=threading.Thread(target=lambda:cleared.append(tts_orchestrator.cancel_agent(self.owner_a["id"],agent["agent_id"])))
+            clearer.start();time.sleep(.05);self.assertFalse(cleared)
+            release.set();speaker.join(5);clearer.join(5)
+        self.assertEqual(len(result),1)
+        self.assertEqual(self.utterances()[0].state,"CANCELLED")
+
     # --- voice profiles ---------------------------------------------------------------------------------
     def test_phase4_playback_events_authorization_and_terminal_state(self):
         self.select(self.profile()["id"])
@@ -429,6 +500,7 @@ class OmniVoiceTests(SaasTestCase):
         from app.ai_live_batches import live_key, states
         p = self.profile()
         agent = self.agent()
+        self.select(p["id"])
         sid = self.running_session(agent_id=agent["agent_id"])
         st = states(live_key(self.owner_a["id"], agent["agent_id"]))
         self.addCleanup(states.discard, st.key)

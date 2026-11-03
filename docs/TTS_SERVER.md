@@ -814,3 +814,9 @@ Chạy test giả: mở Vite port 5175, sau đó `agent-core/.venv/Scripts/pytho
 - SENT chờ audio được suy ra từ tts_job_state; Backend không cung cấp riêng accepted/waiting_audio/ready trong danh sách utterance. Trạng thái PLAYING/PLAYED dựa trên event Phase 4.
 - ElevenLabs regression Web dùng API giả, không tiêu credits thật. Chưa nghiệm thu Firefox/Safari, deployment VPS/CORS production origin, VPN/TLS và tải GPU dài hạn.
 - Phase 6 cần nghiệm thu toàn tuyến Web → Backend → GPU → Agent → OBS offline, p50/p95 theo cache hit/miss/direct/relay, lỗi mạng/reconnect/restart/session-ended và nghe kiểm tra chất lượng. Cấu hình storage, TLS/VPN, Agent đúng capability và preset giữ nguyên trước triển khai. **Phase 6 chưa được triển khai trong lượt Phase 5.**
+
+## 20. Phase 6 — Full E2E và deployment readiness (2026-11-03)
+
+Báo cáo, số đo, ma trận lỗi, giới hạn nghiệm thu và checklist vận hành: [TTS_PHASE6.md](TTS_PHASE6.md). Dữ liệu latency đã loại credentials nằm trong [tts-phase6](tts-phase6/latency.json).
+
+Phase 6 thay thế giới hạn preview/locking ghi ở mục 19: OmniVoice preview nhận `voice_id` owner-scoped, không lưu default; Backend bảo vệ mutation giọng dùng trong RUNNING/pending start bằng khóa theo owner trong một process. Đã chạy toàn tuyến Web → Backend → GPU → ứng dụng Tauri Windows → OBS offline. Local **PARTIALLY READY**, remote production **BLOCKED/chưa nghiệm thu**; còn chờ nghe duyệt và bộ cài release/môi trường remote.

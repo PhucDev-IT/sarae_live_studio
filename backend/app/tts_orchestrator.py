@@ -19,6 +19,7 @@ response). An Agent gets one through POST /api/agents/tts/audio/{utterance}/toke
 (GET /api/agents/tts/audio/{utterance}), both authenticated with its existing Agent key.
 """
 from __future__ import annotations
+from app.voice_policy import owner_voice_lock
 
 import hashlib
 import logging
@@ -254,99 +255,101 @@ def _audio_path() -> str:
 def speak(owner_id: str, agent_id: str, *, text: str, intro: str | None, ttl_seconds: float, duck: bool,
           session_id: int | None, reply_id: int | None, source: str) -> dict:
     """Body (+ intro) -> TTS jobs -> one tts_speak command. Raises SpeakRefused or HTTPException (command)."""
-    from app.cloud_agents import create_command
-    from fastapi import HTTPException as _HTTPException
-    _session_running(owner_id, session_id)
-    if not supports_omnivoice(agent_id):
-        raise SpeakRefused("AGENT_NO_OMNIVOICE", "Windows Agent chưa hỗ trợ G-OmniVoice (cần cập nhật Agent)", status=409)
-    _ready_or_refuse()
-    deadline = now() + timedelta(seconds=max(5.0, min(300.0, ttl_seconds)))
-    with SessionLocal() as db:
-        profile = _profile(db, owner_id)
-        _synced(db, profile)
-        parts = [("body", text)] + ([("intro", intro)] if intro else [])
-        rows = [_new(db, owner_id=owner_id, agent_id=agent_id, session_id=session_id, reply_id=reply_id, source=source,
-                     part=part, profile=profile, text=t, priority="live", deadline=deadline) for part, t in parts]
-        db.commit()
-        jobs = {}
-        for u, (_, t) in zip(rows, parts):
+    with owner_voice_lock(owner_id):
+        from app.cloud_agents import create_command
+        from fastapi import HTTPException as _HTTPException
+        _session_running(owner_id, session_id)
+        if not supports_omnivoice(agent_id):
+            raise SpeakRefused("AGENT_NO_OMNIVOICE", "Windows Agent chưa hỗ trợ G-OmniVoice (cần cập nhật Agent)", status=409)
+        _ready_or_refuse()
+        deadline = now() + timedelta(seconds=max(5.0, min(300.0, ttl_seconds)))
+        with SessionLocal() as db:
+            profile = _profile(db, owner_id)
+            _synced(db, profile)
+            parts = [("body", text)] + ([("intro", intro)] if intro else [])
+            rows = [_new(db, owner_id=owner_id, agent_id=agent_id, session_id=session_id, reply_id=reply_id, source=source,
+                         part=part, profile=profile, text=t, priority="live", deadline=deadline) for part, t in parts]
+            db.commit()
+            jobs = {}
+            for u, (_, t) in zip(rows, parts):
+                try:
+                    jobs[u.part] = _job(db, u, t)
+                except tts_server.TtsUnavailable as exc:
+                    _fail(db, rows, "FAILED", exc.code, exc.message)
+                    raise SpeakRefused(exc.code, exc.message) from exc
+                except tts_server.TtsError as exc:
+                    _fail(db, rows, "FAILED", exc.code, exc.message)
+                    raise SpeakRefused(exc.code, exc.message or exc.code, status=502) from exc
+            body = rows[0]
+            tts = {"utterance_id": body.id, "job_id": body.tts_job_id, "voice_rev": profile.revision,
+                   "deadline_at": deadline.isoformat(), "audio_path": _audio_path()}
+            if intro:
+                tts["intro"] = {"utterance_id": rows[1].id, "job_id": rows[1].tts_job_id}
+            payload = {"text": text, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
+                       "settings": {}, "ttl_seconds": round(max(5.0, min(300.0, ttl_seconds)), 1), "duck": duck, "tts": tts}
+            mode, spec = fallback(owner_id, source if source in ("manual", "prepare") else "live_reply")
+            payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
+            if intro:
+                payload["intro"] = intro
             try:
-                jobs[u.part] = _job(db, u, t)
-            except tts_server.TtsUnavailable as exc:
-                _fail(db, rows, "FAILED", exc.code, exc.message)
-                raise SpeakRefused(exc.code, exc.message) from exc
-            except tts_server.TtsError as exc:
-                _fail(db, rows, "FAILED", exc.code, exc.message)
-                raise SpeakRefused(exc.code, exc.message or exc.code, status=502) from exc
-        body = rows[0]
-        tts = {"utterance_id": body.id, "job_id": body.tts_job_id, "voice_rev": profile.revision,
-               "deadline_at": deadline.isoformat(), "audio_path": _audio_path()}
-        if intro:
-            tts["intro"] = {"utterance_id": rows[1].id, "job_id": rows[1].tts_job_id}
-        payload = {"text": text, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
-                   "settings": {}, "ttl_seconds": round(max(5.0, min(300.0, ttl_seconds)), 1), "duck": duck, "tts": tts}
-        mode, spec = fallback(owner_id, source if source in ("manual", "prepare") else "live_reply")
-        payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
-        if intro:
-            payload["intro"] = intro
-        try:
-            command = create_command(agent_id, owner_id, "tts_speak", payload, idempotency_key=f"tts:{body.id}",
-                                     session_id=session_id,
-                                     context={"module": "tts_orchestrator", "utterances": [u.id for u in rows]})
-        except _HTTPException as exc:
-            _fail(db, rows, "ABORTED", "COMMAND_FAILED", str(exc.detail))
-            raise
-        for u in rows:
-            u.command_id, u.state, u.updated_at = command.get("command_id"), "SENT", now()
-        db.commit()
-        return {"command": command, "utterances": [view(u) for u in rows], "voice_rev": profile.revision}
+                command = create_command(agent_id, owner_id, "tts_speak", payload, idempotency_key=f"tts:{body.id}",
+                                         session_id=session_id,
+                                         context={"module": "tts_orchestrator", "utterances": [u.id for u in rows]})
+            except _HTTPException as exc:
+                _fail(db, rows, "ABORTED", "COMMAND_FAILED", str(exc.detail))
+                raise
+            for u in rows:
+                u.command_id, u.state, u.updated_at = command.get("command_id"), "SENT", now()
+            db.commit()
+            return {"command": command, "utterances": [view(u) for u in rows], "voice_rev": profile.revision}
 
 
 def prepare(owner_id: str, agent_id: str, texts: list[str], session_id: int | None) -> dict:
     """Prepared answers: prepare-priority jobs (result cache makes repeats free) and one tts_prepare command."""
-    from app.cloud_agents import create_command
-    from fastapi import HTTPException as _HTTPException
-    if not supports_omnivoice(agent_id):
-        raise SpeakRefused("AGENT_NO_OMNIVOICE", "Windows Agent chưa hỗ trợ G-OmniVoice (cần cập nhật Agent)", status=409)
-    _ready_or_refuse()
-    deadline = now() + timedelta(minutes=15)
-    with SessionLocal() as db:
-        profile = _profile(db, owner_id)
-        _synced(db, profile)
-        rows = [_new(db, owner_id=owner_id, agent_id=agent_id, session_id=session_id, reply_id=None, source="prepare",
-                     part="prepare", profile=profile, text=t, priority="prepare", deadline=deadline) for t in texts]
-        db.commit()
-        kept, refs = [], []
-        for u, t in zip(rows, texts):
+    with owner_voice_lock(owner_id):
+        from app.cloud_agents import create_command
+        from fastapi import HTTPException as _HTTPException
+        if not supports_omnivoice(agent_id):
+            raise SpeakRefused("AGENT_NO_OMNIVOICE", "Windows Agent chưa hỗ trợ G-OmniVoice (cần cập nhật Agent)", status=409)
+        _ready_or_refuse()
+        deadline = now() + timedelta(minutes=15)
+        with SessionLocal() as db:
+            profile = _profile(db, owner_id)
+            _synced(db, profile)
+            rows = [_new(db, owner_id=owner_id, agent_id=agent_id, session_id=session_id, reply_id=None, source="prepare",
+                         part="prepare", profile=profile, text=t, priority="prepare", deadline=deadline) for t in texts]
+            db.commit()
+            kept, refs = [], []
+            for u, t in zip(rows, texts):
+                try:
+                    _job(db, u, t)
+                    kept.append(t)
+                    refs.append({"utterance_id": u.id, "job_id": u.tts_job_id})
+                except tts_server.TtsUnavailable as exc:
+                    _fail(db, [r for r in rows if r.state != "JOB_CREATED" or r is u], "FAILED", exc.code, exc.message)
+                    if not kept:
+                        raise SpeakRefused(exc.code, exc.message) from exc
+                    break
+                except tts_server.TtsError as exc:          # e.g. queue full / LIVE active: keep what was accepted
+                    _fail(db, [u], "FAILED", exc.code, exc.message)
+            if not kept:
+                raise SpeakRefused("TTS_REFUSED", "Máy chủ giọng nói không nhận câu chuẩn bị nào")
+            sent = [r for r in rows if r.state == "JOB_CREATED"]
+            payload = {"texts": kept, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
+                       "settings": {}, "tts_jobs": refs}
+            mode, spec = fallback(owner_id, "prepare")
+            payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
             try:
-                _job(db, u, t)
-                kept.append(t)
-                refs.append({"utterance_id": u.id, "job_id": u.tts_job_id})
-            except tts_server.TtsUnavailable as exc:
-                _fail(db, [r for r in rows if r.state != "JOB_CREATED" or r is u], "FAILED", exc.code, exc.message)
-                if not kept:
-                    raise SpeakRefused(exc.code, exc.message) from exc
-                break
-            except tts_server.TtsError as exc:          # e.g. queue full / LIVE active: keep what was accepted
-                _fail(db, [u], "FAILED", exc.code, exc.message)
-        if not kept:
-            raise SpeakRefused("TTS_REFUSED", "Máy chủ giọng nói không nhận câu chuẩn bị nào")
-        sent = [r for r in rows if r.state == "JOB_CREATED"]
-        payload = {"texts": kept, "provider": "omnivoice", "model": PRESET, "voice": profile.id, "rate": 0,
-                   "settings": {}, "tts_jobs": refs}
-        mode, spec = fallback(owner_id, "prepare")
-        payload["fallback"] = {"mode": "provider", "provider": spec} if mode == "provider" and spec else {"mode": "none"}
-        try:
-            command = create_command(agent_id, owner_id, "tts_prepare", payload, session_id=session_id,
-                                     idempotency_key=f"ttsprep:{sent[0].id}",
-                                     context={"module": "tts_orchestrator", "utterances": [u.id for u in sent]})
-        except _HTTPException as exc:
-            _fail(db, sent, "ABORTED", "COMMAND_FAILED", str(exc.detail))
-            raise
-        for u in sent:
-            u.command_id, u.state, u.updated_at = command.get("command_id"), "SENT", now()
-        db.commit()
-        return {"command": command, "accepted": len(sent), "refused": len(rows) - len(sent)}
+                command = create_command(agent_id, owner_id, "tts_prepare", payload, session_id=session_id,
+                                         idempotency_key=f"ttsprep:{sent[0].id}",
+                                         context={"module": "tts_orchestrator", "utterances": [u.id for u in sent]})
+            except _HTTPException as exc:
+                _fail(db, sent, "ABORTED", "COMMAND_FAILED", str(exc.detail))
+                raise
+            for u in sent:
+                u.command_id, u.state, u.updated_at = command.get("command_id"), "SENT", now()
+            db.commit()
+            return {"command": command, "accepted": len(sent), "refused": len(rows) - len(sent)}
 
 
 def _cancel_where(owner_id: str, condition, code: str, message: str, tag: str | None) -> int:
@@ -366,20 +369,22 @@ def _cancel_where(owner_id: str, condition, code: str, message: str, tag: str | 
 
 def cancel_agent(owner_id: str, agent_id: str) -> int:
     """Dừng giọng nói: every open utterance of this Agent is cancelled on the voice server too."""
-    return _cancel_where(owner_id, TtsUtterance.agent_id == agent_id, "STOPPED", "Dừng giọng nói", f"agent:{agent_id}")
+    with owner_voice_lock(owner_id):
+        return _cancel_where(owner_id, TtsUtterance.agent_id == agent_id, "STOPPED", "Dừng giọng nói", f"agent:{agent_id}")
 
 
 def session_ended(owner_id: str, session_id: int) -> int:
     """LIVE finished: cancel its unfinished jobs, release its lease; speak() refuses the session from now on."""
-    n = _cancel_where(owner_id, TtsUtterance.session_id == session_id, "SESSION_ENDED", "Phiên LIVE đã kết thúc",
-                      f"session:{session_id}")
-    if (owner_id, session_id) in _leased and tts_server.configured():
-        try:
-            tts_server.delete_lease(owner_id, str(session_id))
-        except (tts_server.TtsUnavailable, tts_server.TtsError):
-            pass                                        # expires by itself after its TTL
-    _leased.discard((owner_id, session_id))
-    return n
+    with owner_voice_lock(owner_id):
+        n = _cancel_where(owner_id, TtsUtterance.session_id == session_id, "SESSION_ENDED", "Phiên LIVE đã kết thúc",
+                          f"session:{session_id}")
+        if (owner_id, session_id) in _leased and tts_server.configured():
+            try:
+                tts_server.delete_lease(owner_id, str(session_id))
+            except (tts_server.TtsUnavailable, tts_server.TtsError):
+                pass                                        # expires by itself after its TTL
+        _leased.discard((owner_id, session_id))
+        return n
 
 
 # --- readiness and LIVE leases ---------------------------------------------------------------------------

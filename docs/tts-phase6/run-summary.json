@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-03",
+  "desktop": "Tauri debug v0.3.0 with rebuilt PyInstaller sidecar; isolated fixture home",
+  "core_sha256": "B913AD6BF8727BB69613EEC4D1F64CA25F8D6DCEB2CE1469361B74204370697C",
+  "desktop_sha256": "AA03F0A3FF588C1F86EB72DBC383F9E85F4E3658916FEBF85AA7F6123BEA7984",
+  "file_db_soak": {
+    "test_seconds": 166.097,
+    "failed": 0,
+    "played": 100
+  },
+  "wav_checks": {
+    "mono_pcm16_24000": 208,
+    "sha256_match_agent_cache": 208,
+    "samples": 208
+  },
+  "final_obs": {
+    "settings_restored": true,
+    "mute_restored": true,
+    "recording": false,
+    "video_volume_restored": true,
+    "streaming": false
+  },
+  "local": "PARTIALLY READY",
+  "remote": "BLOCKED / not tested"
+}

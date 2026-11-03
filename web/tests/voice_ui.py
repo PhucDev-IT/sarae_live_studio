@@ -111,11 +111,11 @@ class VoiceUiTests(unittest.TestCase):
             expect(self.page.get_by_text(label,exact=True)).to_be_visible()
 
     def test_preview_wav_replay_and_error_no_fallback(self):
-        self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).click()
+        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
         expect(self.page.get_by_label('Giọng nghe thử')).to_be_visible()
         self.assertEqual(len([c for c in self.calls if c[1]=='/ai/voice/preview']),1)
         self.preview_error=429
-        self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).click()
+        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
         expect(self.page.get_by_text(re.compile('GPU đang bận hoặc hàng đợi'))).to_be_visible()
         self.assertEqual(self.config['provider'],'omnivoice')
 
@@ -157,11 +157,11 @@ class VoiceUiTests(unittest.TestCase):
     def test_edge_elevenlabs_and_mobile(self):
         self.page.get_by_label('Provider',exact=True).select_option('edge')
         expect(self.page.get_by_label('Tốc độ (%)')).to_be_visible()
-        self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).click()
+        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
         expect(self.page.get_by_label('Giọng nghe thử')).to_be_visible()
         self.page.get_by_label('Provider',exact=True).select_option('elevenlabs')
         expect(self.page.get_by_role('option',name='Voice Eleven')).to_have_count(1)
-        self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).click()
+        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
         expect(self.page.get_by_text('Giọng thử đã sẵn sàng.',exact=False)).to_be_visible()
         self.page.set_viewport_size({'width':390,'height':844})
         self.page.get_by_label('Provider',exact=True).select_option('omnivoice')
@@ -178,7 +178,7 @@ class VoiceUiTests(unittest.TestCase):
         self.page.get_by_role('dialog').get_by_label('WAV giọng mẫu').set_input_files({'name':'new.wav','mimeType':'audio/wav','buffer':wav()})
         self.page.get_by_role('dialog').get_by_role('button',name='Lưu giọng mẫu').click()
         expect(card.get_by_text('Chờ đồng bộ',exact=True)).to_be_visible()
-        expect(self.page.get_by_role('button',name='Lưu & nghe thử',exact=True)).to_be_disabled()
+        expect(self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$'))).to_be_disabled()
         card.get_by_role('button',name='Đồng bộ lại').click()
         expect(card.get_by_text('Đã đồng bộ',exact=True)).to_be_visible()
         self.assertEqual(len([c for c in self.calls if c[0]=='PUT' and c[1].endswith('/wav')]),1)
@@ -187,7 +187,7 @@ class VoiceUiTests(unittest.TestCase):
         self.page.get_by_role('button',name='Đồng bộ TTS của phiên').evaluate('(b)=>{b.click();b.click()}')
         expect(self.page.get_by_text('Đã warmup (2 ms)',exact=True)).to_be_visible()
         self.assertEqual(len([c for c in self.calls if c[0]=='POST' and c[1]=='/ai/voice/readiness']),1)
-        self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).evaluate('(b)=>{b.click();b.click()}')
+        self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).evaluate('(b)=>{b.click();b.click()}')
         expect(self.page.get_by_label('Giọng nghe thử')).to_be_visible()
         self.assertEqual(len([c for c in self.calls if c[1]=='/ai/voice/preview']),1)
 
@@ -196,7 +196,7 @@ class VoiceUiTests(unittest.TestCase):
         self.readiness.update(ready=False,warnings=['TTS_BACKEND_UNREACHABLE'],service=dict(configured=True,online=False,state=None))
         self.page.reload()
         expect(self.page.locator('article').get_by_text('Giọng shop',exact=False)).to_be_visible()
-        expect(self.page.get_by_role('button',name='Lưu & nghe thử',exact=True)).to_be_disabled()
+        expect(self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$'))).to_be_disabled()
         expect(self.page.get_by_text('Offline',exact=True)).to_be_visible()
         expect(self.page.get_by_text('TTS sẵn sàng tại thời điểm kiểm tra',exact=True)).to_have_count(0)
 
@@ -204,7 +204,7 @@ class VoiceUiTests(unittest.TestCase):
         for status in (409,422,429,503):
             with self.subTest(status=status):
                 self.preview_error=status
-                self.page.get_by_role('button',name='Lưu & nghe thử',exact=True).click()
+                self.page.get_by_role('button',name=re.compile('^(Lưu & nghe thử|Nghe thử)$')).click()
                 text={409:'Giọng đang được sử dụng.',422:'Nội dung chưa hợp lệ.',429:'GPU đang bận hoặc hàng đợi',503:'Model TTS chưa sẵn sàng'}[status]
                 expect(self.page.get_by_text(re.compile(re.escape(text)))).to_be_visible()
         self.assertEqual(self.config['provider'],'omnivoice')

@@ -11,6 +11,8 @@ import httpx
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.voice_policy import owner_voice_lock, require_voice_mutable
+
 from app.identity import current_owner, owner_settings, update_owner_settings
 from app.ownership import Owner
 from app.per_owner import PerOwner
@@ -116,12 +118,18 @@ def read_voice_config(owner: Owner):
 
 @router.put("/config")
 def save_voice_config(body: VoiceConfig, owner: Owner):
-    if body.provider == "omnivoice":
-        from app import voice_profiles
-        with voice_profiles.SessionLocal() as db:
-            voice_profiles.owned(db, owner["id"], body.voice)          # 404 unless it is one of this owner's voices
-    update_owner_settings(owner["id"], voice=body.model_dump())
-    return read_voice_config(owner)
+    with owner_voice_lock(owner["id"]):
+        if body.provider == "omnivoice":
+            from app import voice_profiles
+            with voice_profiles.SessionLocal() as db:
+                voice_profiles.owned(db, owner["id"], body.voice)          # 404 unless it is one of this owner's voices
+        current = voice_config(owner["id"])
+        if body.model_dump(exclude={"fallback"}) != current.model_dump(exclude={"fallback"}) and "omnivoice" in (body.provider, current.provider):
+            from app import voice_profiles
+            with voice_profiles.SessionLocal() as db:
+                require_voice_mutable(db, owner["id"])
+        update_owner_settings(owner["id"], voice=body.model_dump())
+        return read_voice_config(owner)
 
 
 def tts_http_error(exc) -> HTTPException:
@@ -214,6 +222,7 @@ def speak_on_agent(body: SpeakBody, owner: Owner):
 
 
 class PreviewBody(BaseModel):
+    voice_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     text: str = Field(min_length=1, max_length=1000)
     voice: str | None = Field(default=None, min_length=1, max_length=100)
     rate: int | None = Field(default=None, ge=-30, le=50)
@@ -222,6 +231,8 @@ class PreviewBody(BaseModel):
 def preview(body: PreviewBody, owner: Owner):
     """Generate a Vietnamese MP3 for browser playback; OBS and LIVE are not required."""
     config = voice_config(owner["id"])
+    if body.voice_id is not None:
+        config = VoiceConfig(provider="omnivoice", model=OMNIVOICE_PRESET, voice=body.voice_id, rate=0, settings={})
     voice = body.voice or config.voice
     rate = body.rate if body.rate is not None else config.rate
     if config.provider == "omnivoice":

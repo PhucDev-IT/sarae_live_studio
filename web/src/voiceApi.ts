@@ -53,7 +53,7 @@ export const voiceApi = {
  sync:(id:string)=>request<VoiceProfile>(`${profiles}/${id}/sync`,{method:'POST'}),
  remove:(id:string)=>request<void>(`${profiles}/${id}`,{method:'DELETE'}),
  wav:(id:string)=>voiceResponse(`${profiles}/${id}/wav`).then(r=>r.blob()),
- preview:(text:string)=>voiceResponse('/ai/voice/preview',voiceJson('POST',{text})).then(r=>r.blob()),
+ preview:(text:string,voice_id?:string)=>voiceResponse('/ai/voice/preview',voiceJson('POST',{text,...(voice_id?{voice_id}:{})})).then(r=>r.blob()),
  readiness:(agent_id:string)=>request<TtsReadiness>('/ai/voice/readiness',voiceJson('POST',{agent_id})),
  passive:(session:number,agent:string)=>request<{tts:TtsReadiness}>(`/live/sessions/${session}/readiness?agent_id=${encodeURIComponent(agent)}`).then(r=>r.tts),
  utterances:(agent:string)=>request<{utterances:Utterance[]}>(`/ai/voice/utterances?agent_id=${encodeURIComponent(agent)}&limit=12`),

@@ -3,6 +3,7 @@ import {KeyRound,Play,Save,Trash2,Volume2} from 'lucide-react'
 import {apiRequest,errorText} from './mediaApi'
 import {voiceApi,requireVoiceIdle,noFallback,type VoiceConfig,type VoiceProvider as Provider,type VoiceProfile,type TtsReadiness} from './voiceApi'
 import VoiceProfiles from './VoiceProfiles'
+import VoiceUtterances from './VoiceUtterances'
 import {TtsReadinessView} from './TtsReadiness'
 import {useAgent} from './agentContext'
 import './voice-settings.css'
@@ -53,12 +54,12 @@ export default function VoiceSettings(){
   setConfig(c);setMessage('Đã lưu cấu hình giọng nói cho Agent')
  }
  const test=async(next=config)=>{
-  await save(next)
+  if(next.provider!=='omnivoice')await save(next)
   audio.current?.pause()
-  const url=URL.createObjectURL(await voiceApi.preview(sample))
+  const url=URL.createObjectURL(await voiceApi.preview(sample,next.provider==='omnivoice'?next.voice:undefined))
   setAudioUrl(url);setMessage('Giọng thử đã sẵn sàng. Bấm phát ở trình nghe bên dưới.')
  }
- const previewProfile=(profile:VoiceProfile)=>{if(!window.confirm('Nghe thử giọng này sẽ lưu làm giọng mặc định. Tiếp tục?'))return;void run(()=>test({...config,provider:'omnivoice',voice:profile.id,model:'demo_default',rate:0,settings:{}}))}
+ const previewProfile=(profile:VoiceProfile)=>void run(()=>test({...config,provider:'omnivoice',voice:profile.id,model:'demo_default',rate:0,settings:{}}))
  const fallback=config.fallback||noFallback
  const setFallback=(patch:Partial<typeof fallback>)=>update({fallback:{...fallback,...patch}})
  const models=config.provider==='edge'?[{id:'edge-neural',name:'Edge Neural'}]:catalog.models
@@ -109,9 +110,16 @@ export default function VoiceSettings(){
    </details>
   </>}
   <label>Câu nghe thử<input maxLength={config.provider==='omnivoice'?450:1000} value={sample} onChange={e=>setSample(e.target.value)}/></label>
-  <div className="ais-voice-actions"><button type="button" disabled={busy||!config.model||!config.voice} onClick={()=>void run(()=>save())}><Save size={16}/> Lưu giọng nói</button><button type="button" disabled={busy||!config.model||!config.voice||!sample.trim()||(config.provider==='omnivoice'&&!profiles.find(p=>p.id===config.voice)?.sync.up_to_date)} onClick={()=>void run(()=>test())}><Play size={16}/>{busy?'Đang xử lý…':'Lưu & nghe thử'}</button></div>
-  <p>Thay đổi giọng được lưu cho toàn owner. Khi có phiên RUNNING, hãy kết thúc phiên trước khi đổi hoặc nghe thử cấu hình khác.</p>
+  <div className="ais-voice-actions"><button type="button" disabled={busy||!config.model||!config.voice} onClick={()=>void run(()=>save())}><Save size={16}/> Lưu giọng nói</button><button type="button" disabled={busy||!config.model||!config.voice||!sample.trim()||(config.provider==='omnivoice'&&!profiles.find(p=>p.id===config.voice)?.sync.up_to_date)} onClick={()=>void run(()=>test())}><Play size={16}/>{busy?'Đang xử lý…':config.provider==='omnivoice'?'Nghe thử':'Lưu & nghe thử'}</button></div>
+  <p>Thay đổi giọng được lưu cho toàn owner. Khi có phiên RUNNING, hãy kết thúc phiên trước khi lưu thay đổi. Nghe thử G-OmniVoice không đổi giọng mặc định.</p>
   {audioUrl&&<audio aria-label="Giọng nghe thử" ref={audio} src={audioUrl} controls/>}
+  <button type="button" disabled={busy||!agent?.online||agent.platform==='ANDROID'||!sample.trim()||sample.length>450} onClick={()=>void run(async()=>{
+   const stored=await voiceApi.config()
+   if(stored.provider!==config.provider||stored.voice!==config.voice)throw new Error('Lưu cấu hình giọng trước khi phát qua OBS. Nghe thử trình duyệt không lưu mặc định.')
+   if(!window.confirm('Phát câu này qua nguồn Sarae Voice trong OBS của Agent đang chọn?'))return
+   await apiRequest('/ai/voice/speak',json('POST',{agent_id:agentId,text:sample}));setMessage('Đã gửi yêu cầu tới Agent. Xem trạng thái OBS bên dưới.')
+  })}>Phát qua OBS (giọng đã lưu)</button>
+  {agentId&&<VoiceUtterances agentId={agentId}/>}
   {(error||message)&&<div role={error?'alert':'status'} className={'ais-alert '+(error?'is-error':'')}>{error||message}</div>}
  </section>
 }

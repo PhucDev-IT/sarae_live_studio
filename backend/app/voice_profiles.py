@@ -14,6 +14,8 @@ Metadata stays readable when the voice server is offline; syncing resumes from t
 """
 from __future__ import annotations
 
+from app.voice_policy import owner_voice_lock, require_voice_mutable
+
 import hashlib
 import io
 import json
@@ -299,24 +301,26 @@ def get_profile(profile_id: str, owner: Owner):
 @router.patch("/{profile_id}")
 def patch_profile(profile_id: str, body: ProfilePatch, owner: Owner):
     """Rename, or change the transcript (new revision: the voice server rebuilds the prompt)."""
-    with SessionLocal() as db:
-        row = owned(db, owner["id"], profile_id)
-        if "name" in body.model_fields_set and body.name:
-            row.name = body.name.strip()
-        if "transcript" in body.model_fields_set:
-            manual = clean_transcript(body.transcript)
-            source = "manual" if manual else "asr"
-            if (source, manual) != (row.transcript_source, row.transcript_manual):
-                row.transcript_source, row.transcript_manual = source, manual
-                row.revision += 1
-                row.tts_sync_state = "PENDING"
-                forget(row.id)
-        row.updated_at = now()
-        db.commit()
-        if row.tts_synced_revision != row.revision:
-            try_sync(db, row)
-            db.refresh(row)
-        return view(row)
+    with owner_voice_lock(owner["id"]):
+        with SessionLocal() as db:
+            row = owned(db, owner["id"], profile_id)
+            if "name" in body.model_fields_set and body.name:
+                row.name = body.name.strip()
+            if "transcript" in body.model_fields_set:
+                manual = clean_transcript(body.transcript)
+                source = "manual" if manual else "asr"
+                if (source, manual) != (row.transcript_source, row.transcript_manual):
+                    require_voice_mutable(db, owner["id"], row.id)
+                    row.transcript_source, row.transcript_manual = source, manual
+                    row.revision += 1
+                    row.tts_sync_state = "PENDING"
+                    forget(row.id)
+            row.updated_at = now()
+            db.commit()
+            if row.tts_synced_revision != row.revision:
+                try_sync(db, row)
+                db.refresh(row)
+            return view(row)
 
 
 @router.put("/{profile_id}/wav")
@@ -329,26 +333,28 @@ async def replace_wav(profile_id: str, owner: Owner, wav: UploadFile = File(...)
 
 
 def _replace(owner_id: str, profile_id: str, data: bytes, info: dict) -> dict:
-    with SessionLocal() as db:
-        row = owned(db, owner_id, profile_id)
-        if info["sha256"] == row.wav_sha256:
+    with owner_voice_lock(owner_id):
+        with SessionLocal() as db:
+            row = owned(db, owner_id, profile_id)
+            if info["sha256"] == row.wav_sha256:
+                return view(row)
+            require_voice_mutable(db, owner_id, row.id)
+            old = (row.storage_provider, row.storage_object_id)
+            provider_name, object_id = _store(db, owner_id, row.id, row.revision + 1, data)
+            row.storage_provider, row.storage_object_id = provider_name, object_id
+            row.wav_sha256, row.wav_bytes = info["sha256"], info["bytes"]
+            row.sample_rate, row.channels, row.duration_s = info["sample_rate"], info["channels"], info["duration_s"]
+            row.transcript_source, row.transcript_manual, row.transcript_asr = "asr", None, None
+            row.qc_json = json.dumps({"local": info}, ensure_ascii=False)
+            row.revision += 1
+            row.tts_sync_state = "PENDING"
+            row.updated_at = now()
+            db.commit()
+            forget(row.id)
+            _delete_object(db, *old)
+            try_sync(db, row)
+            db.refresh(row)
             return view(row)
-        old = (row.storage_provider, row.storage_object_id)
-        provider_name, object_id = _store(db, owner_id, row.id, row.revision + 1, data)
-        row.storage_provider, row.storage_object_id = provider_name, object_id
-        row.wav_sha256, row.wav_bytes = info["sha256"], info["bytes"]
-        row.sample_rate, row.channels, row.duration_s = info["sample_rate"], info["channels"], info["duration_s"]
-        row.transcript_source, row.transcript_manual, row.transcript_asr = "asr", None, None
-        row.qc_json = json.dumps({"local": info}, ensure_ascii=False)
-        row.revision += 1
-        row.tts_sync_state = "PENDING"
-        row.updated_at = now()
-        db.commit()
-        forget(row.id)
-        _delete_object(db, *old)
-        try_sync(db, row)
-        db.refresh(row)
-        return view(row)
 
 
 @router.post("/{profile_id}/sync")
@@ -384,21 +390,23 @@ def download_wav(profile_id: str, owner: Owner):
 
 @router.delete("/{profile_id}", status_code=204)
 def delete_profile(profile_id: str, owner: Owner):
-    from app.ai_voice import voice_config
-    with SessionLocal() as db:
-        row = owned(db, owner["id"], profile_id)
-        config = voice_config(owner["id"])
-        if config.provider == "omnivoice" and config.voice == row.id:
-            raise HTTPException(409, "Giọng này đang được chọn trong Voice Settings; chọn giọng khác trước khi xoá")
-        old = (row.storage_provider, row.storage_object_id)
-        db.delete(row)
-        db.commit()
-        forget(profile_id)
-        _delete_object(db, *old)
-    try:
-        tts_server.delete_voice(profile_id)
-    except (tts_server.TtsUnavailable, tts_server.TtsError) as exc:
-        log.info("voice %s not removed from the voice server now: %s", profile_id, getattr(exc, "code", ""))
-    return None
+    with owner_voice_lock(owner["id"]):
+        from app.ai_voice import voice_config
+        with SessionLocal() as db:
+            row = owned(db, owner["id"], profile_id)
+            config = voice_config(owner["id"])
+            require_voice_mutable(db, owner["id"], row.id)
+            if config.provider == "omnivoice" and config.voice == row.id:
+                raise HTTPException(409, "Giọng này đang được chọn trong Voice Settings; chọn giọng khác trước khi xoá")
+            old = (row.storage_provider, row.storage_object_id)
+            db.delete(row)
+            db.commit()
+            forget(profile_id)
+            _delete_object(db, *old)
+        try:
+            tts_server.delete_voice(profile_id)
+        except (tts_server.TtsUnavailable, tts_server.TtsError) as exc:
+            log.info("voice %s not removed from the voice server now: %s", profile_id, getattr(exc, "code", ""))
+        return None
 
 

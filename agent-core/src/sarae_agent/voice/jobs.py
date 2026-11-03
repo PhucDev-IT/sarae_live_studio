@@ -163,6 +163,7 @@ class JobVoiceMixin:
                 if seen:
                     self._job_event(clip_item, "playing", **clip_info,
                         playback_start_ms=int((self._clock()-item["queued_at"])*1000),
+                        obs_startup_ms=int((self._clock()-started)*1000),
                         observation="OBS_MEDIA_STATE_PLAYING")
                 while self._clock() - started < self.MAX_SPEECH_SECONDS:
                     if self._interrupt.wait(self.POLL_SECONDS):
@@ -172,6 +173,7 @@ class JobVoiceMixin:
                         seen = True
                         self._job_event(clip_item, "playing", **clip_info,
                             playback_start_ms=int((self._clock()-item["queued_at"])*1000),
+                            obs_startup_ms=int((self._clock()-started)*1000),
                             observation="OBS_MEDIA_STATE_PLAYING")
                     elif state.get("state") == "OBS_MEDIA_STATE_STOPPED" and seen:
                         raise AgentError("TTS_CANCELLED", "OBS đã dừng phát")

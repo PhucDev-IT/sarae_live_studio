@@ -788,7 +788,7 @@ def _claim(agent_id:str):
             started_at=COALESCE(started_at,?),updated_at=? WHERE command_id=?""",
             (json.dumps(tokens),_at(lease_seconds(row["kind"])),now,now,row["command_id"]))
     return {"command_id":row["command_id"],"kind":row["kind"],"payload":json.loads(row["payload"]),
-            "claim_token":token,"attempt":row["attempts"]+1,"expires_at":row["expires_at"]}
+            "session_id":row["session_id"], "claim_token":token,"attempt":row["attempts"]+1,"expires_at":row["expires_at"]}
 
 @router.get("/commands/{agent_id}/next")
 async def next_command(agent_id:str,wait:int=Query(0,ge=0,le=MAX_WAIT_SECONDS),
