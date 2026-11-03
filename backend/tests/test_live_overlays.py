@@ -359,6 +359,126 @@ class OverlayApiTests(SaasTestCase):
         foreign = self.client.get("/api/agent-media/overlay-snapshot", params={"agent_id": self.agent["agent_id"], "session_id": other, "timeline_id": tid}, headers=key)
         self.assertEqual(foreign.status_code, 404)
 
+    # ----- random schedule -----
+    def put_schedule(self, tid, overlays, status=200, **schedule):
+        saved = self.client.put(f"{self.base}/{tid}/overlays", json={"overlays": overlays, "schedule": schedule})
+        self.assertEqual(saved.status_code, status, saved.text)
+        return saved.json()
+
+    def codes(self, view):
+        return [i["code"] for i in view["issues"]]
+
+    def test_the_schedule_defaults_to_fixed_is_saved_and_kept(self):
+        tid = self.new()
+        default = {"mode": "fixed", "every_ms": 120_000, "min_gap_ms": 20_000}
+        self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"], default)
+        self.assertEqual(self.put(tid, [self.overlay()])["overlays"][0]["show_ms"], 6000)
+        saved = self.put_schedule(tid, [self.overlay(start=0, duration=12_000, show_ms=4000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        random = {"mode": "random", "every_ms": 10_000, "min_gap_ms": 0}
+        self.assertEqual((saved["schedule"], saved["overlays"][0]["show_ms"]), (random, 4000))
+        self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"], random)
+        self.assertEqual(self.put(tid, [self.overlay(start=0, duration=12_000)])["schedule"], random,
+                         "no schedule in the body keeps the stored one")
+        for bad in ({"mode": "shuffle"}, {"every_ms": 9_999}, {"every_ms": 3_600_001}, {"min_gap_ms": -1},
+                    {"min_gap_ms": 600_001}, {"extra": 1}):
+            self.put_schedule(tid, [], status=422, **bad)
+        self.put(tid, [self.overlay(show_ms=999)], status=422)
+        self.put(tid, [self.overlay(show_ms=600_001)], status=422)
+        self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 200)
+        self.put_schedule(tid, [self.overlay()], status=409, mode="fixed")
+        copy = self.new(copy_from=tid)
+        copied = self.client.get(f"{self.base}/{copy}/overlays").json()
+        self.assertEqual((copied["schedule"], copied["overlays"][0]["show_ms"]), (random, 6000), "a new draft copies the schedule")
+        self.put_schedule(copy, [], mode="fixed")
+        self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"], random, "the source is unchanged")
+
+    def test_deleting_versions_and_sessions_leaves_no_schedule(self):
+        from app.live_overlays import OverlaySchedule
+        tid = self.new()
+        self.put_schedule(tid, [], mode="random")
+        self.assertEqual(self.client.delete(f"{self.base}/{tid}").status_code, 204)
+        other = self.new()
+        self.put_schedule(other, [], mode="random")
+        self.assertEqual(self.client.delete(f"/api/live/sessions/{self.sid}").status_code, 204)
+        with self.Session() as db:
+            self.assertEqual(db.query(OverlaySchedule).count(), 0)
+
+    def test_the_snapshot_carries_the_schedule(self):
+        tid = self.new()
+        self.put(tid, [self.overlay(show_ms=2000)])
+        snap = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
+        self.assertEqual((snap["schedule"]["mode"], snap["overlays"][0]["show_ms"]), ("fixed", 2000))
+        self.put_schedule(tid, [self.overlay(show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        changed = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
+        self.assertEqual(changed["schedule"], {"mode": "random", "every_ms": 10_000, "min_gap_ms": 0})
+        self.assertNotEqual(changed["revision"], snap["revision"], "the schedule is part of the revision")
+
+    def test_random_issues(self):
+        tid = self.new()
+        window = dict(start=0, duration=12_000)
+        fine = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertEqual(fine["issues"], [])
+        crowded = [self.overlay(start=1000 * i, duration=6000, show_ms=2000) for i in range(5)]
+        self.assertNotIn("TOO_MANY_AT_ONCE", self.codes(self.put_schedule(tid, crowded, mode="random", every_ms=10_000, min_gap_ms=0)),
+                         "one overlay at a time in random mode")
+        found = self.put_schedule(tid, [self.overlay(start=0, duration=3000, show_ms=4000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertIn("SHOW_LONGER_THAN_WINDOW", self.codes(found))
+        found = self.put_schedule(tid, [self.overlay(**window, show_ms=11_000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertIn("SHOW_LONGER_THAN_SLOT", self.codes(found))
+        self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 409, "errors block approval")
+        slow = self.overlay(**window, show_ms=1000, animation_in={"name": "fade", "duration_ms": 600},
+                            animation_out={"name": "fade", "duration_ms": 600})
+        self.assertIn("ANIMATION_LONGER_THAN_SHOW", self.codes(self.put_schedule(tid, [slow], mode="random", every_ms=10_000, min_gap_ms=0)))
+        dense = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=9000)
+        self.assertEqual([(i["code"], i["level"]) for i in dense["issues"]], [("DENSITY_TOO_HIGH", "warning")])
+        # Slots of 10 s: 0–10 s and 10–20 s (up to the last window end of the video).
+        first = self.overlay(start=0, duration=5000, show_ms=2000)
+        fits = self.put_schedule(tid, [first, self.overlay(start=11_000, duration=1500, show_ms=1000)],
+                                 mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertEqual(fits["issues"], [])
+        disabled = self.put_schedule(tid, [first, self.overlay(start=9_000, duration=2500, show_ms=2000, enabled=False)],
+                                     mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertEqual(disabled["issues"], [], "a disabled overlay does not extend the slots")
+        holes = self.put_schedule(tid, [first, self.overlay(start=9_000, duration=2500, show_ms=2000)],
+                                  mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertEqual([(i["code"], i["media_id"], i["slots"], i["level"]) for i in holes["issues"]],
+                         [("NO_OVERLAY_IN_SLOTS", self.main, 1, "warning")],
+                         "9–11.5 s straddles the slot edge: neither 9–10 s nor 10–11.5 s holds a 2 s appearance")
+        self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 200, "warnings do not block approval")
+
+    def test_the_preview_sends_the_iteration(self):
+        tid = self.new()
+        self.put(tid, [self.overlay()])
+        url = f"{self.base}/{tid}/overlay-preview"
+        self.assertEqual(self.client.post(url, json={"agent_id": self.agent["agent_id"], "iteration": -1}).status_code, 422)
+        self.assertEqual(self.client.post(url, json={"agent_id": self.agent["agent_id"], "iteration": 100_001}).status_code, 422)
+        from unittest.mock import patch
+        from app import cloud_agents
+        for body, expected in (({}, 0), ({"iteration": 7}, 7)):
+            with patch("app.cloud_agents.create_command", wraps=cloud_agents.create_command) as create:
+                sent = self.client.post(url, json={"agent_id": self.agent["agent_id"], **body})
+            self.assertEqual(sent.status_code, 202, sent.text)
+            kind, payload = create.call_args.args[2:4]
+            self.assertEqual((kind, payload["iteration"]), ("overlay_preview", expected))
+            self.assertEqual(cloud_agents.validate_payload(kind, payload)["iteration"], expected, "the Agent channel accepts it")
+
+    def test_ensure_schema_adds_show_ms_to_an_old_table(self):
+        from sqlalchemy import create_engine, inspect, text
+        from app.live_overlays import ensure_schema
+        from app.live_timeline import ensure_schema as timeline_schema
+        engine = create_engine("sqlite://")
+        timeline_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE live_overlay_events (id INTEGER PRIMARY KEY, timeline_id INTEGER, media_id VARCHAR(32))"))
+            conn.execute(text("INSERT INTO live_overlay_events (id, timeline_id, media_id) VALUES (1, 1, 'x')"))
+        ensure_schema(engine)
+        ensure_schema(engine)  # idempotent
+        self.assertIn("show_ms", {c["name"] for c in inspect(engine).get_columns("live_overlay_events")})
+        self.assertIn("live_overlay_schedules", inspect(engine).get_table_names())
+        with engine.connect() as conn:
+            self.assertEqual(conn.execute(text("SELECT show_ms FROM live_overlay_events")).scalar(), 6000)
+        engine.dispose()
+
     def template_body(self, **extra):
         overlay = self.overlay()
         body = {"name": "Giá vàng", "template": "MY_PRICE", "layout": overlay["layout"], "elements": overlay["elements"],

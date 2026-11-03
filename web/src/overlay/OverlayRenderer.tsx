@@ -3,6 +3,7 @@ import {
   CANVAS, animationState, fieldText, productOf, safeImageUrl, shownAt,
   type ImageElement, type Overlay, type OverlayElement, type OverlayScene, type TextStyle,
 } from './overlayModel'
+import { sceneAt } from './overlaySchedule'
 import './overlay-fonts'
 import './overlay-renderer.css'
 
@@ -17,8 +18,10 @@ import './overlay-renderer.css'
  *
  * Images: only asset URLs and product photos from the scene, filtered by `safeImageUrl` (signed `/api/…` or https).
  */
-export default function OverlayRenderer({scene, mediaId, positionMs, apiBase, animate = true, placeholders = false, className, children}:{
+export default function OverlayRenderer({scene:source, mediaId, positionMs, iteration = 0, apiBase, animate = true, placeholders = false, className, children}:{
   scene:OverlayScene; mediaId:string|null; positionMs:number
+  /** Loop of the video: a random schedule draws its own plan per loop (overlaySchedule). */
+  iteration?:number
   /** Base the signed `/api/…` URLs resolve against (the Backend origin). */
   apiBase:string
   /** false: overlays are drawn fully shown (an editor paused on a frame); true: in/out animations from the clock. */
@@ -44,6 +47,7 @@ export default function OverlayRenderer({scene, mediaId, positionMs, apiBase, an
     observer.observe(el)
     return ()=>observer.disconnect()
   },[])
+  const scene = sceneAt(source, mediaId, positionMs, iteration)
   const shown = shownAt(scene.overlays, mediaId, positionMs)
   return <div ref={root} className={'ovr-root' + (className ? ' ' + className : '')}>
     <div className="ovr-canvas" style={{width:CANVAS.width, height:CANVAS.height, transform:`translate(${box.left}px, ${box.top}px) scale(${box.scale})`, visibility:box.scale ? 'visible' : 'hidden'}}>

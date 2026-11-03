@@ -386,6 +386,16 @@ class PayloadValidationTests(unittest.TestCase):
         self.bad("product_play", {**good, "media_ids": ["A" * 64]})
         self.bad("product_play", {**good, "media_ids": [MID] * 301})
 
+    def test_overlay_preview_iteration(self):
+        good = {"session_id": 7, "timeline_id": 3, "media_id": MID, "position_ms": 1500}
+        self.assertEqual(cloud_agents.validate_payload("overlay_preview", good)["iteration"], 0, "optional, first loop")
+        self.assertEqual(cloud_agents.validate_payload("overlay_preview", {**good, "iteration": 12})["iteration"], 12)
+        self.bad("overlay_preview", {**good, "iteration": -1})
+        self.bad("overlay_preview", {**good, "iteration": "1"})
+        self.bad("overlay_preview", {**good, "iteration": True})
+        self.assertEqual(cloud_agents.validate_payload("overlay_preview", {"session_id": 7, "stop": True}),
+                         {"session_id": 7, "stop": True})
+
     def test_select_seek_and_no_param_kinds(self):
         self.assertEqual(cloud_agents.validate_payload("playback_select", {"index": 0}), {"index": 0})
         self.bad("playback_select", {"index": -1})
