@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Alert, Badge, Button, Card, ConfirmModal, EmptyState, Input, Kbd, Modal, SegmentedControl, Select, Switch, useToast } from './ui/core'
 import {
-  ArrowLeft, Check, CheckCircle2, CircleAlert, Copy, Crosshair, FilePlus2, Info, Layers, MonitorCheck, MonitorPlay, MonitorX, Pause, Pin, PinOff, Play, Plus, Rocket, Save, SkipBack,
+  ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Copy, Crosshair, FilePlus2, Info, Layers, MonitorCheck, MonitorPlay, MonitorX, Pause, Pin, PinOff, Play, Plus, Rocket, Save, SkipBack,
   SkipForward, StickyNote, Trash2,
 } from 'lucide-react'
 import { api, apiRequest, assetUrl, errorText, waitCommand } from './mediaApi'
@@ -14,7 +14,8 @@ import {
 import TimelineAIPanel from './TimelineAIPanel'
 import { overlaysApi, type OverlayAsset, type OverlayTemplates } from './overlaysApi'
 import { EXTRA_PRESETS, endOf, fromPreset, MIN_DURATION_MS, type Overlay, type OverlayIssue, type OverlayPreset, type OverlayScene } from './overlay/overlayModel'
-import { blocksSave, copyOverlay, hasClipboard, localIssues, newStep, pastedOverlay, useOverlayDraft } from './overlay/overlayDraft'
+import { blocksSave, clampSchedule, copyOverlay, hasClipboard, localIssues, newStep, parseSpan, pastedOverlay, secondsText, spanText, useOverlayDraft } from './overlay/overlayDraft'
+import { DEFAULT_SCHEDULE, DEFAULT_SHOW_MS, MAX_GAP_MS, planOf, type OverlaySchedule, type ScheduleMode } from './overlay/overlaySchedule'
 import { OverlayPreview, type PreviewMode } from './overlay/OverlayStage'
 import OverlayPanel, { TemplateLibrary } from './overlay/OverlayPanel'
 import OverlayReadinessPanel from './overlay/OverlayReadinessPanel'
@@ -71,9 +72,11 @@ export default function TimelineEditor(){
   const [revision,setRevision] = useState(0)
   // ----- overlays of the version shown (every video), with undo / redo
   const draft = useOverlayDraft()
-  const {overlays, reset:resetOverlays} = draft
-  // The overlays as last loaded or saved ("discard changes" goes back to them).
-  const timelineOverlays = useRef<Overlay[]>([])
+  const {overlays, schedule, reset:resetOverlays} = draft
+  // The overlays and schedule as last loaded or saved ("discard changes" goes back to them).
+  const timelineOverlays = useRef<{overlays:Overlay[]; schedule:OverlaySchedule}>({overlays:[], schedule:DEFAULT_SCHEDULE})
+  // Random schedule: the loop of the video previewed ("Lượt N" = iteration N - 1), in the editor and on OBS.
+  const [iteration,setIteration] = useState(0)
   const [serverOverlayIssues,setServerOverlayIssues] = useState<OverlayIssue[]>([])
   const [ovSelected,setOvSelected] = useState<number|null>(null)
   const [templates,setTemplates] = useState<OverlayTemplates|null>(null)
@@ -119,7 +122,7 @@ export default function TimelineEditor(){
     void Promise.all([timelinesApi.get(sessionId, versionId), overlaysApi.list(sessionId, versionId)]).then(([t, view])=>{
       if (!alive) return
       setTimeline(t);setMarkers(t.markers ?? []);setDirty(false);setSelected(null)
-      timelineOverlays.current = view.overlays;resetOverlays(view.overlays);setServerOverlayIssues(view.issues);setOvSelected(null)
+      timelineOverlays.current = {overlays:view.overlays, schedule:view.schedule};resetOverlays(view.overlays, view.schedule);setServerOverlayIssues(view.issues);setOvSelected(null)
     }).catch(e=>toast.push({tone:'danger', title:'Không tải được phiên bản', description:errorText(e, '')}))
     return ()=>{alive = false}
   },[sessionId, versionId, revision, toast, resetOverlays])
@@ -215,12 +218,15 @@ export default function TimelineEditor(){
   },[templates])
   /** Snapshot-shaped input of the renderer: the draft's overlays with the catalog products and images they can read. */
   const scene = useMemo<OverlayScene>(()=>({
-    overlays,
+    overlays, timeline_id:versionId ?? 0, schedule,
     products:Object.fromEntries(products.map(p=>[String(p.id), {name:p.name, sku:p.sku, price:p.price ?? null, origin_price:p.origin_price ?? null, image_url:p.image_url}])),
     assets:Object.fromEntries((assets ?? []).map(a=>[a.id, a])),
-  }),[overlays, products, assets])
+  }),[overlays, versionId, schedule, products, assets])
+  const random = schedule.mode === 'random'
+  // The appearances of the loop shown (same scene object as the renderer's, so planOf's cache is shared).
+  const plan = random ? planOf(scene, videoId, iteration) : null
   const overlayLocal = localIssues(overlays, {durationOf, hasProduct:id=>productById.has(id), hasAsset:id=>assets ? assets.some(a=>a.id === id) : null,
-    maxConcurrent:templates?.max_concurrent ?? 4})
+    maxConcurrent:templates?.max_concurrent ?? 4, schedule})
   const overlayIssues = draft.dirty ? overlayLocal
     : [...overlayLocal, ...serverOverlayIssues.filter(i=>!overlayLocal.some(l=>l.code === i.code && l.overlay === i.overlay && l.media_id === i.media_id))]
   const overlayBlocking = overlayLocal.some(blocksSave)
@@ -231,7 +237,8 @@ export default function TimelineEditor(){
   const toggleOverlay = (index:number) => draft.set(list=>list.map((o, i)=>i === index ? {...o, enabled:o.enabled === false} : o), newStep('enabled'))
   /** Previous / next event of the video shown (a marker, an overlay's start or end). */
   const jump = (direction:-1|1) => {
-    const times = [...new Set([0, ...shown.map(x=>x.m.at_ms), ...overlays.filter(o=>o.media_id === videoId).flatMap(o=>[o.start_ms, endOf(o)])])].sort((a, b)=>a - b)
+    const spans = plan ?? overlays.filter(o=>o.media_id === videoId).map(o=>({start_ms:o.start_ms, end_ms:endOf(o)}))
+    const times = [...new Set([0, ...shown.map(x=>x.m.at_ms), ...spans.flatMap(o=>[o.start_ms, o.end_ms])])].sort((a, b)=>a - b)
     const target = direction > 0 ? times.find(t=>t > now + 200) : [...times].reverse().find(t=>t < now - 200)
     if (target != null) seek(target)
   }
@@ -246,10 +253,16 @@ export default function TimelineEditor(){
     const last = shown.map(x=>x.m).filter(m=>m.at_ms <= ms && m.action !== 'NO_ACTION').at(-1)
     return last?.action === 'PIN_PRODUCT' ? last.product_id : null
   }
+  /** Random schedule: a new overlay may show from `start` until the next marker of the video (the next product), or its end. */
+  const windowFrom = (start:number) => {
+    const until = shown.map(x=>x.m.at_ms).filter(t=>t > start).sort((a, b)=>a - b)[0] ?? duration ?? start + schedule.every_ms
+    return Math.max(DEFAULT_SHOW_MS, until - start)
+  }
   const addOverlay = (preset:OverlayPreset|null) => {
     if (!videoId) return
     const created = fromPreset(preset, videoId, 0, pinnedAt(now))
-    const next = {...created, ...fitTime(Math.round(now / 100) * 100, created.duration_ms)}
+    const start = Math.round(now / 100) * 100
+    const next = {...created, show_ms:DEFAULT_SHOW_MS, ...fitTime(start, random ? windowFrom(start) : created.duration_ms)}
     draft.set(list=>[...list, next])
     selectOverlay(overlays.length)
   }
@@ -258,9 +271,9 @@ export default function TimelineEditor(){
   const duplicateOverlay = (index:number) => {
     const {id:_id, ...source} = overlays[index]
     const copy:Overlay = structuredClone(source)
-    // Right after the original when it fits, else at the same time slightly lower.
-    if (duration == null || endOf(copy) + copy.duration_ms <= duration) copy.start_ms = endOf(copy)
-    else copy.layout = {...copy.layout, y:Math.min(1 - copy.layout.height, copy.layout.y + 0.03)}
+    // Right after the original when it fits, else at the same time slightly lower; random: same window (a variant to draw from).
+    if (!random && (duration == null || endOf(copy) + copy.duration_ms <= duration)) copy.start_ms = endOf(copy)
+    else if (!random) copy.layout = {...copy.layout, y:Math.min(1 - copy.layout.height, copy.layout.y + 0.03)}
     draft.set(list=>[...list.slice(0, index + 1), copy, ...list.slice(index + 1)])
     selectOverlay(index + 1)
   }
@@ -274,8 +287,13 @@ export default function TimelineEditor(){
   }
   /** Plays the overlay's entry (or exit) from just before it, then pauses: the animations run from the clock. */
   const previewAnimation = (index:number, part:'in'|'out') => {
-    const o = overlays[index], el = player.current
-    if (!o || !el) return
+    const item = overlays[index], el = player.current
+    if (!item || !el) return
+    // Random schedule: the animations play on an appearance of the loop shown (the next one from here, else the first).
+    const shows = plan?.filter(a=>a.index === index)
+    if (shows && !shows.length) {toast.push({tone:'warning', title:`Overlay này không hiện ở lượt ${iteration + 1}`, description:'Chọn lượt khác hoặc nới khoảng cho phép.'});return}
+    const a = shows ? shows.find(x=>x.start_ms >= now - 1000) ?? shows[0] : null
+    const o = a ? {...item, start_ms:a.start_ms, duration_ms:a.end_ms - a.start_ms} : item
     const from = part === 'in' ? o.start_ms - 400 : endOf(o) - o.animation_out.duration_ms - 600
     seek(Math.max(0, from))
     stopAt.current = part === 'in' ? o.start_ms + o.animation_in.duration_ms + 800 : endOf(o) + 400
@@ -286,8 +304,8 @@ export default function TimelineEditor(){
   const previewAgent = session?.agent_id ?? tabAgent
   const sendPreview = useCallback((body:{position_ms?:number; playing?:boolean; stop?:boolean}) => {
     if (sessionId == null || versionId == null) return Promise.resolve(null)
-    return overlaysApi.preview(sessionId, versionId, {agent_id:previewAgent, media_id:videoId, seconds:180, ...body})
-  },[sessionId, versionId, previewAgent, videoId])
+    return overlaysApi.preview(sessionId, versionId, {agent_id:previewAgent, media_id:videoId, seconds:180, iteration, ...body})
+  },[sessionId, versionId, previewAgent, videoId, iteration])
   const startPreview = async () => {
     if (unsaved) {toast.push({tone:'warning', title:'Lưu nháp trước khi xem thử', description:'Agent đọc phiên bản đã lưu.'});return}
     if (!previewAgent) {toast.push({tone:'warning', title:'Chưa chọn Agent Windows', description:'Chọn máy Agent ở thanh trên cùng (OBS đang mở trên máy đó).'});return}
@@ -301,19 +319,20 @@ export default function TimelineEditor(){
     finally{setPreviewBusy(false)}
   }
   const stopPreview = useCallback(()=>{setObsPreview(false);void sendPreview({stop:true})?.catch(()=>{})},[sendPreview])
-  // Follow the editor: play / pause, a seek or another video moves the overlay on OBS; renewed every minute.
-  const lastSent = useRef<{at:number; ms:number; playing:boolean; video:string|null}>({at:0, ms:0, playing:false, video:null})
+  // Follow the editor: play / pause, a seek, another video or another loop moves the overlay on OBS; renewed every minute.
+  const lastSent = useRef<{at:number; ms:number; playing:boolean; video:string|null; iteration:number}>({at:0, ms:0, playing:false, video:null, iteration:0})
   useEffect(()=>{
     if (!obsPreview) return
     const last = lastSent.current, wall = Date.now()
     const expected = last.playing ? last.ms + (wall - last.at) : last.ms
-    if (playing === last.playing && videoId === last.video && Math.abs(now - expected) < 1500 && wall - last.at < 60_000) return
+    const same = playing === last.playing && videoId === last.video && iteration === last.iteration
+    if (same && Math.abs(now - expected) < 1500 && wall - last.at < 60_000) return
     const timer = window.setTimeout(()=>{
-      lastSent.current = {at:Date.now(), ms:now, playing, video:videoId}
+      lastSent.current = {at:Date.now(), ms:now, playing, video:videoId, iteration}
       void sendPreview({position_ms:Math.round(now), playing})?.catch(()=>{})
-    }, playing === last.playing && videoId === last.video ? 350 : 0)
+    }, same ? 350 : 0)
     return ()=>window.clearTimeout(timer)
-  },[obsPreview, now, playing, videoId, sendPreview])
+  },[obsPreview, now, playing, videoId, iteration, sendPreview])
   // Leaving the page or another version ends the preview (not a new video or a seek: those only move it).
   const sendRef = useRef(sendPreview)
   useEffect(()=>{sendRef.current = sendPreview},[sendPreview])
@@ -337,8 +356,8 @@ export default function TimelineEditor(){
       setTimelines(list=>list.map(t=>t.id === saved.id ? {...t, marker_count:saved.marker_count, updated_at:saved.updated_at} : t))
     }
     if (draft.dirty) {
-      const view = await overlaysApi.save(timeline.session_id, timeline.id, overlays)
-      timelineOverlays.current = view.overlays;resetOverlays(view.overlays);setServerOverlayIssues(view.issues)
+      const view = await overlaysApi.save(timeline.session_id, timeline.id, overlays, schedule)
+      timelineOverlays.current = {overlays:view.overlays, schedule:view.schedule};resetOverlays(view.overlays, view.schedule);setServerOverlayIssues(view.issues)
       // The version's own issues (OVERLAY_ERRORS) follow its overlays.
       const fresh = await timelinesApi.get(timeline.session_id, timeline.id)
       setTimeline(t=>t ? {...t, issues:fresh.issues, overlay_count:fresh.overlay_count, updated_at:fresh.updated_at} : fresh)
@@ -437,6 +456,8 @@ export default function TimelineEditor(){
         {status && <Badge tone={status.tone}>{status.label}</Badge>}
         {session.status === 'RUNNING' && <Badge tone="danger" dot>Phiên đang LIVE</Badge>}
       </div>
+      {timeline && <ScheduleBar schedule={schedule} editable={!!editable} iteration={iteration} onIteration={setIteration}
+        onChange={(patch, key)=>draft.setSchedule(patch, key)} onSeal={draft.seal}/>}
     </div>
 
     <div className="ts-bar">
@@ -479,14 +500,14 @@ export default function TimelineEditor(){
           <Switch label="Vùng an toàn" checked={showZones} onChange={e=>setShowZones(e.target.checked)}/>
         </div>
         <div ref={frameBox} className="ts-frame">
-          <OverlayPreview scene={scene} mediaId={videoId} now={now} animate={playing} apiBase={api} mode={previewMode} showZones={showZones}
+          <OverlayPreview scene={scene} mediaId={videoId} now={now} iteration={iteration} animate={playing} apiBase={api} mode={previewMode} showZones={showZones}
             selected={ovSelected} editable={!!editable} onSelect={selectOverlay} onGestureEnd={draft.seal}
             onLayout={(index, layout, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, layout} : o), gesture)}>
             {streamUrl ? <video ref={player} src={streamUrl} preload="metadata" crossOrigin="anonymous" playsInline onClick={toggle}/> : <p className="te-muted">Không mở được video này trong Thư viện.</p>}
           </OverlayPreview>
         </div>
         <PreviewPlayerBar playing={playing} muted={muted} now={now} duration={duration} disabled={!streamUrl} onToggle={toggle} onMute={toggleMute} onSeek={seek} onFullscreen={fullscreen}/>
-        <p className="ove-note"><Info size={14}/>{previewMode === 'tiktok'
+        <p className="ove-note"><Info size={14}/>{random ? `Ngẫu nhiên: đang xem lượt ${iteration + 1}. Mỗi vòng phát video là một lượt có lịch hiện riêng; OBS ở vòng ${iteration + 1} hiện y hệt. Thanh overlay trên timeline là khoảng được phép hiện.` : previewMode === 'tiktok'
           ? 'Mô phỏng gần đúng giao diện người xem TikTok (bình luận, thẻ sản phẩm, thanh công cụ): vị trí thật thay đổi theo phiên bản app, điện thoại và cài đặt, không chính xác 100%.'
           : 'Khung OBS thật 1080×1920. Khi tạm dừng, overlay hiện đầy đủ để dễ chỉnh; hiệu ứng vào/ra chạy khi phát.'}</p>
       </Card>
@@ -509,7 +530,7 @@ export default function TimelineEditor(){
         </div>
         <StudioTimeline duration={duration} now={now} zoom={zoom} onZoom={setZoom} editable={!!editable}
           markers={shown.map(x=>({marker:x.m, index:x.i}))} selectedMarker={selected} product={id=>productById.get(id)}
-          overlays={videoOverlays} selectedOverlay={ovSelected} presets={presets} issues={overlayIssues} assetUrlOf={assetUrlOf}
+          overlays={videoOverlays} selectedOverlay={ovSelected} presets={presets} issues={overlayIssues} assetUrlOf={assetUrlOf} plan={plan} iteration={iteration}
           onSeek={seek} onSelectMarker={i=>{selectMarker(i);seek(markers[i].at_ms)}} onMoveMarker={moveTo}
           onSelectOverlay={selectOverlay} onGestureEnd={draft.seal} onToggleOverlay={toggleOverlay} onAddOverlay={()=>setAddingOverlay(true)}
           onTimeOverlay={(index, start_ms, duration_ms, gesture)=>draft.set(list=>list.map((o, i)=>i === index ? {...o, start_ms, duration_ms} : o), gesture)}/>
@@ -534,7 +555,8 @@ export default function TimelineEditor(){
       presets={presets} products={products} assets={assets ?? []} issues={overlayIssues} apiBase={api} canUndo={draft.canUndo} canRedo={draft.canRedo} canPaste={canPaste}
       blocking={overlayBlocking || local.some(i=>i.level === 'error')} onSelect={selectOverlay} onAdd={addOverlay} onChange={changeOverlay} onSeal={draft.seal}
       onRemove={removeOverlay} onDuplicate={duplicateOverlay} onCopy={copySelected} onPaste={paste} onUndo={draft.undo} onRedo={draft.redo}
-      onPreview={previewAnimation} onSeek={seek} onSave={()=>void save()} onRevert={()=>{resetOverlays(timelineOverlays.current);setOvSelected(null)}}
+      onPreview={previewAnimation} onSeek={seek} onSave={()=>void save()} plan={plan} iteration={iteration}
+      onRevert={()=>{resetOverlays(timelineOverlays.current.overlays, timelineOverlays.current.schedule);setOvSelected(null)}}
       onAssetsChanged={setAssets} readOnlyAction={readOnlyAction} onTemplatesChanged={loadTemplates} onToggle={toggleOverlay}/>}
     {tab === 'pins' && <div className="te-grid">
       <Card className="te-markers" padding={false} title={<span className="te-card-title"><Pin size={17}/>Các mốc của video này ({shown.length}{markers.length !== shown.length ? ` / ${markers.length} cả phiên` : ''})</span>}
@@ -565,6 +587,47 @@ export default function TimelineEditor(){
 }
 
 const ACTION_ICON:Record<MarkerAction, typeof Pin> = {PIN_PRODUCT:Pin, UNPIN_PRODUCT:PinOff, NO_ACTION:StickyNote}
+
+/**
+ * "Cố định ⇄ Ngẫu nhiên" of the version (all its videos, docs/LIVE_OVERLAYS.md §13). Random: density ("1 lần mỗi" —
+ * slots of that length, at most one appearance each), the shared minimum gap, and the loop previewed ("Lượt N"; 🎲 picks
+ * another one). The schedule is part of the overlay draft (undo / redo, saved with the overlays); the loop is only a view.
+ */
+function ScheduleBar({schedule, editable, iteration, onIteration, onChange, onSeal}:{
+  schedule:OverlaySchedule; editable:boolean; iteration:number; onIteration:(n:number)=>void
+  onChange:(patch:Partial<OverlaySchedule>, key:string)=>void; onSeal:()=>void
+}){
+  const random = schedule.mode === 'random'
+  const commit = (patch:Partial<OverlaySchedule>) => {onChange(clampSchedule({...schedule, ...patch}), newStep('schedule'));onSeal()}
+  const reroll = () => {let n = iteration;while (n === iteration) n = Math.floor(Math.random() * 100);onIteration(n)}
+  return <div className={'ts-sched' + (random ? ' is-random' : '')}>
+    <SegmentedControl<ScheduleMode> value={schedule.mode} onChange={mode=>commit({mode})}
+      items={[{value:'fixed', label:'Cố định', disabled:!editable}, {value:'random', label:'Ngẫu nhiên 🎲', disabled:!editable}]}/>
+    {random && <>
+      <label className="ts-sched-field" title="Video được chia thành các khoảng bằng nhau từ đầu; mỗi khoảng hiện tối đa 1 overlay (phút:giây hoặc số giây)">
+        1 lần mỗi<CommitInput value={spanText(schedule.every_ms)} disabled={!editable} width={58} onCommit={ms=>commit({every_ms:ms})}/></label>
+      <label className="ts-sched-field" title={`Khoảng nghỉ ngắn nhất giữa hai lần hiện (0–${MAX_GAP_MS / 1000} giây)`}>
+        Nghỉ tối thiểu<CommitInput value={String(schedule.min_gap_ms / 1000)} disabled={!editable} width={46} onCommit={ms=>commit({min_gap_ms:ms})}/>s</label>
+      <div className="ts-loop" role="group" aria-label="Lượt xem trước"
+        title={`Mỗi vòng phát video là một lượt với lịch hiện riêng (${secondsText(schedule.every_ms)} một lần). Xem trước và “Xem thử trên OBS” dùng lượt này.`}>
+        <span>Lượt</span>
+        <button type="button" aria-label="Lượt trước" disabled={iteration === 0} onClick={()=>onIteration(Math.max(0, iteration - 1))}><ChevronLeft size={14}/></button>
+        <b>{iteration + 1}</b>
+        <button type="button" aria-label="Lượt sau" onClick={()=>onIteration(iteration + 1)}><ChevronRight size={14}/></button>
+        <button type="button" className="ts-loop-dice" aria-label="Chọn một lượt ngẫu nhiên" title="Chọn một lượt ngẫu nhiên" onClick={reroll}>🎲</button>
+      </div>
+    </>}
+  </div>
+}
+
+/** A small duration input (seconds, or minutes:seconds) applied on Enter or when left; an invalid value goes back. */
+function CommitInput({value, disabled, width, onCommit}:{value:string; disabled:boolean; width:number; onCommit:(ms:number)=>void}){
+  const [text,setText] = useState(value)
+  useEffect(()=>setText(value),[value])
+  const apply = () => {const ms = parseSpan(text);if (ms != null && text !== value) onCommit(ms);setText(value)}
+  return <input className="ts-sched-input" style={{width}} value={text} disabled={disabled} inputMode="decimal" onChange={e=>setText(e.target.value)} onBlur={apply}
+    onKeyDown={e=>{if (e.key === 'Enter') {e.preventDefault();apply()} else if (e.key === 'Escape') setText(value)}}/>
+}
 
 /** One marker: exact time (HH:MM:SS), action, product, label; AI suggestions show their evidence and need a review. */
 function MarkerRow({marker:m, index, selected, editable, issues, productOptions, product, duration, now, onSelect, onChange, onMove, onRemove}:{

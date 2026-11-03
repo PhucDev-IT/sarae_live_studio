@@ -2,6 +2,25 @@
 .ts-page{gap:16px}
 .ts-head{display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap}
 
+/* schedule of the version: Cố định | Ngẫu nhiên, density, minimum gap, loop previewed */
+.ts-sched{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;margin-left:auto;padding:4px 6px 4px 4px;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface)}
+.ts-sched .ui-segmented button{white-space:nowrap}
+.ts-sched.is-random{border-color:color-mix(in srgb,var(--ui-primary) 45%,var(--ui-border))}
+.ts-sched-field{display:inline-flex;align-items:center;gap:6px;color:var(--ui-text-muted);font-size:12.5px;white-space:nowrap}
+.ts-sched-input{height:28px;box-sizing:border-box;padding:0 7px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface-2);color:var(--ui-text);
+  font:inherit;font-size:12.5px;font-variant-numeric:tabular-nums;text-align:center}
+.ts-sched-input:focus{outline:none;border-color:var(--ui-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--ui-primary) 25%,transparent)}
+.ts-sched-input:disabled{opacity:.6}
+.ts-loop{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:9px;background:var(--ui-surface-2);font-size:12.5px;color:var(--ui-text-muted)}
+.ts-loop > span{padding:0 4px 0 6px}
+.ts-loop b{min-width:22px;color:var(--ui-text);text-align:center;font-variant-numeric:tabular-nums}
+.ts-loop button{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:7px;background:none;color:var(--ui-text);font:inherit;cursor:pointer}
+.ts-loop button:hover:not(:disabled){background:var(--ui-surface-3)}
+.ts-loop button:disabled{opacity:.35;cursor:default}
+.ts-loop .ts-loop-dice{font-size:14px}
+.ove-shows{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:0;font-size:12.5px;font-variant-numeric:tabular-nums}
+.ove-shows .ove-link{margin:0}
+
 /* video chips + draft actions */
 .ts-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .ts-videos{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;min-width:0}

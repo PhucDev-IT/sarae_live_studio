@@ -3,7 +3,8 @@ import { ChevronDown, ChevronRight, Eye, EyeOff, Image as ImageIcon, Layers, Max
 import { assetUrl } from '../mediaApi'
 import { ACTION_LABEL, hms, type LiveProduct, type MarkerAction, type TimelineMarker } from '../liveSessionsApi'
 import { MIN_DURATION_MS, endOf, type Overlay, type OverlayIssue, type OverlayPreset } from '../overlay/overlayModel'
-import { newStep, overlayName } from '../overlay/overlayDraft'
+import { newStep, overlayName, secondsText } from '../overlay/overlayDraft'
+import { showMsOf, type Appearance } from '../overlay/overlaySchedule'
 import { ticksOf } from '../timelineView'
 import { overlayThumb } from './thumbs'
 import './studio-timeline.css'
@@ -33,6 +34,8 @@ function Thumb({src, size = 28, icon}:{src?:string|null; size?:number; icon?:Rea
  * the video's pin markers (cards with the product's photo, on as many lanes as needed so none hides another) and one
  * row per overlay (eye to turn it on / off, status, a clip with its product photo, name and times; drag to move, edges
  * to trim). Press and drag on the ruler or any empty part to seek. Zoom with the presets, the slider or ⌘/Ctrl + wheel.
+ * Random schedule (`plan` given): a clip is the window the overlay may show in (hatched, dragged the same way) and the
+ * appearances of the chosen loop are the solid segments inside it.
  */
 export default function StudioTimeline(p:{
   duration:number|null; now:number; zoom:number; onZoom:(zoom:number)=>void; editable:boolean
@@ -41,6 +44,8 @@ export default function StudioTimeline(p:{
   onSeek:(ms:number)=>void; onSelectMarker:(index:number)=>void; onMoveMarker:(index:number, ms:number)=>number
   onSelectOverlay:(index:number)=>void; onTimeOverlay:(index:number, start:number, length:number, gesture:string)=>void; onGestureEnd:()=>void
   onToggleOverlay:(index:number)=>void; onAddOverlay:()=>void
+  /** Random schedule: the appearances of the loop shown (indexes into the whole overlay list); absent = fixed. */
+  plan?:Appearance[]|null; iteration?:number
 }){
   const scroller = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
@@ -221,6 +226,7 @@ export default function StudioTimeline(p:{
             const warn = !error && p.issues.some(i=>i.overlay === item.index)
             const productName = o.product_id != null ? p.product(o.product_id)?.name : undefined
             const name = overlayName(o, p.presets)
+            const shows = p.plan ? p.plan.filter(a=>a.index === item.index) : null
             return <div key={item.index} className={'st-row st-ov' + (item.index === p.selectedOverlay ? ' is-selected' : '')}>
               <div className="st-head st-row-head">
                 <button type="button" className="st-eye" title={on ? 'Đang bật: bấm để tạm ẩn' : 'Tạm ẩn: bấm để bật'} aria-label={on ? 'Tạm ẩn overlay' : 'Bật overlay'}
@@ -228,13 +234,16 @@ export default function StudioTimeline(p:{
                 <button type="button" className="st-row-name" onClick={()=>{p.onSelectOverlay(item.index);p.onSeek(o.start_ms)}} title={name}>{name}</button>
                 <span className={'st-chip' + (on ? ' is-on' : '')}>{on ? 'Đang bật' : 'Tạm ẩn'}</span>
               </div>
-              <button type="button" className={'st-clip' + (on ? '' : ' is-off') + (error ? ' is-error' : warn ? ' is-warn' : '')}
+              <button type="button" className={'st-clip' + (shows ? ' is-window' : '') + (on ? '' : ' is-off') + (error ? ' is-error' : warn ? ' is-warn' : '')}
                 style={{left:x(o.start_ms), width:Math.max(8, x(endOf(o)) - x(o.start_ms))}} onPointerDown={e=>onClipDown(e, item)}
-                title={`${name} · ${hms(o.start_ms)} → ${hms(endOf(o))}`}>
-                <Thumb src={overlayThumb(o, p.product, p.assetUrlOf)} size={26} icon={<Layers size={13}/>}/>
-                <span className="st-clip-name">{productName ?? name}</span>
-                <span className="st-clip-time">{hms(o.start_ms)} – {hms(endOf(o))}</span>
+                title={shows ? `${name} · được hiện trong ${hms(o.start_ms)} → ${hms(endOf(o))}, mỗi lần ${secondsText(showMsOf(o))} · lượt ${(p.iteration ?? 0) + 1}: ${shows.length} lần`
+                  : `${name} · ${hms(o.start_ms)} → ${hms(endOf(o))}`}>
+                <Thumb src={overlayThumb(o, p.product, p.assetUrlOf)} size={shows ? 22 : 26} icon={<Layers size={13}/>}/>
+                <span className="st-clip-name">{shows && <i className="st-dice" aria-hidden>🎲</i>}{productName ?? name}</span>
+                <span className="st-clip-time">{shows ? `${shows.length} lần · ` : ''}{hms(o.start_ms)} – {hms(endOf(o))}</span>
               </button>
+              {shows?.map(a=><span key={a.start_ms} className={'st-appear' + (p.now >= a.start_ms && p.now < a.end_ms ? ' is-now' : '')}
+                style={{left:x(a.start_ms), width:Math.max(3, x(a.end_ms) - x(a.start_ms))}} title={`Hiện ${hms(a.start_ms)} – ${hms(a.end_ms)}`}/>)}
             </div>
           })}
           {p.editable && <div className="st-row st-add-row"><div className="st-head st-row-head"/>

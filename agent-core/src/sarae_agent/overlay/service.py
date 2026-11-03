@@ -11,7 +11,8 @@
 Time: there is no overlay clock. The state is reconciled from what the PlaybackEngine reports (`observe`): session,
 media id, position, media state, loop iteration (the engine reports on every watchdog tick, and at once when a video
 starts, on a seek, a pause and a resume). An overlay is active when `start_ms <= position < start_ms + duration_ms` on
-that media (`shown_at`, the rule of the web preview). The renderer polls this state (no queue of show/hide commands:
+that media (`shown_at`, the rule of the web preview); in random mode, when the loop's plan (overlay/schedule.py, seeded
+by the loop iteration) has an appearance there (`shown_in`). The renderer polls this state (no queue of show/hide commands:
 a reconnecting renderer simply reads the current state, nothing past is replayed); between two reports it may advance
 by the elapsed time only while the media state is PLAYING, at most 1.5 s. A paused video holds its position: the
 engine does not report while paused, so the pause flag of the engine keeps that position valid.
@@ -35,6 +36,7 @@ import time
 from typing import Callable
 
 from sarae_agent.errors import AgentError
+from sarae_agent.overlay import schedule
 from sarae_agent.overlay.cache import OverlayCache
 from sarae_agent.overlay.obs_source import URL_MARKER, ObsOverlaySource
 from sarae_agent.overlay.server import OverlayServer
@@ -55,6 +57,18 @@ def shown_at(overlays: list[dict], media_id: str | None, position_ms: int) -> li
     return [o for _, _, o in sorted(found, key=lambda x: (x[0], x[1]))]
 
 
+def shown_in(scene: dict, media_id: str | None, position_ms: int, iteration: int = 0, plan: list[dict] | None = None) -> list[dict]:
+    """Overlays of `scene` on screen at `position_ms` of loop `iteration` (web: overlaySchedule.sceneAt + isShown).
+    Fixed mode: `shown_at`. Random mode: the one appearance of the loop's plan covering that position, if any."""
+    overlays = scene.get("overlays") or []
+    if not schedule.is_random(scene):
+        return shown_at(overlays, media_id, position_ms)
+    if plan is None:
+        plan = schedule.random_plan(overlays, media_id, schedule.schedule_of(scene), scene.get("timeline_id") or 0, iteration)
+    now = next((a for a in plan if a["start_ms"] <= position_ms < a["end_ms"]), None)
+    return [] if now is None else [overlays[now["index"]]]
+
+
 def snapshot_problem(snapshot: dict) -> str | None:
     """Why a snapshot cannot be shown (limits), None when it can."""
     overlays = snapshot.get("overlays") or []
@@ -65,6 +79,8 @@ def snapshot_problem(snapshot: dict) -> str | None:
             return f"hiệu ứng dài hơn {MAX_ANIMATION_MS} ms"
         if not (isinstance(o.get("start_ms"), int) and isinstance(o.get("duration_ms"), int) and o["duration_ms"] > 0):
             return "thời gian overlay không hợp lệ"
+    if schedule.is_random(snapshot):
+        return None  # windows may overlap: one appearance at a time by construction
     for media_id in {o.get("media_id") for o in overlays}:
         edges = sorted([(o["start_ms"], 1) for o in overlays if o.get("media_id") == media_id and o.get("enabled", True) is not False]
                        + [(o["start_ms"] + o["duration_ms"], -1) for o in overlays
@@ -128,6 +144,7 @@ class OverlayService:
         self._refused: str | None = None
         # {session_id, timeline_id, media_id, position_ms, playing, at, until} while the editor previews on OBS.
         self.preview: dict | None = None
+        self._plan: tuple | None = None  # ((revision, media_id, iteration), random plan) of active_ids
         self._state = "idle"
 
     # ----- setup -----
@@ -207,9 +224,11 @@ class OverlayService:
         if p is None:
             return
         position = int(p["position_ms"] + ((now - p["at"]) * 1000 if p["playing"] else 0))
-        if self.clock is None or self.clock.get("position_ms") != position or self.clock.get("media_id") != p["media_id"]:
+        iteration = p.get("iteration", 0)
+        if (self.clock is None or self.clock.get("position_ms") != position or self.clock.get("media_id") != p["media_id"]
+                or self.clock.get("iteration") != iteration):
             seq = (self.clock or {}).get("seq", 0) + 1
-            self.clock = {"session_id": p["session_id"], "media_id": p["media_id"], "position_ms": position, "iteration": 0, "seq": seq,
+            self.clock = {"session_id": p["session_id"], "media_id": p["media_id"], "position_ms": position, "iteration": iteration, "seq": seq,
                           "media_state": "OBS_MEDIA_STATE_PLAYING" if p["playing"] else "OBS_MEDIA_STATE_PAUSED"}
         self.observed_at = now
 
@@ -234,8 +253,15 @@ class OverlayService:
         with self._lock:
             if self.active is None or self.clock is None:
                 return []
-            return [o.get("id") for o in shown_at(self.active["scene"].get("overlays") or [], self.clock.get("media_id"),
-                                                    self.clock.get("position_ms", 0))]
+            scene, media_id, iteration = self.active["scene"], self.clock.get("media_id"), self.clock.get("iteration", 0)
+            plan = None
+            if schedule.is_random(scene):  # one plan per (revision, video, loop): status asks often
+                key = (self.active["revision"], media_id, iteration)
+                if self._plan is None or self._plan[0] != key:
+                    self._plan = (key, schedule.random_plan(scene.get("overlays") or [], media_id, schedule.schedule_of(scene),
+                                                            scene.get("timeline_id") or 0, iteration))
+                plan = self._plan[1]
+            return [o.get("id") for o in shown_in(scene, media_id, self.clock.get("position_ms", 0), iteration, plan)]
 
     def renderer_state(self, ack: dict | None = None) -> dict:
         """What the renderer draws now (it polls). `ack`: the revision and clock seq it drew last."""
@@ -468,9 +494,10 @@ class OverlayService:
                             "overlay_count": len(snapshot.get("overlays") or []), "since": now}
 
     def preview_on_obs(self, session_id: int, timeline_id: int | None = None, media_id: str | None = None, position_ms: int = 0,
-                       playing: bool = False, seconds: int = 120, stop: bool = False) -> dict:
+                       playing: bool = False, seconds: int = 120, stop: bool = False, iteration: int = 0) -> dict:
         """The editor's "Xem thử trên OBS": show this version (a draft included) at the editor's position, without
-        activating it or going LIVE; or stop. Repeated calls move the position (seek / play / pause) and renew it."""
+        activating it or going LIVE; or stop. Repeated calls move the position (seek / play / pause) and renew it.
+        `iteration`: the editor's loop of the video (random mode draws a plan per loop)."""
         if stop:
             with self._lock:
                 if self.preview is not None:
@@ -497,7 +524,8 @@ class OverlayService:
                 log.info("Xem thử overlay trên OBS: phiên %s, phiên bản #%s", session_id, timeline_id)
             self.session_id = session_id
             self.preview = {"session_id": session_id, "timeline_id": timeline_id, "media_id": media_id,
-                            "position_ms": int(position_ms), "playing": bool(playing), "at": now, "until": now + seconds}
+                            "position_ms": int(position_ms), "playing": bool(playing), "iteration": max(0, int(iteration or 0)),
+                            "at": now, "until": now + seconds}
             self._preview_clock(now)
         self._wake.set()
         return {"preview": True, **self.status()}

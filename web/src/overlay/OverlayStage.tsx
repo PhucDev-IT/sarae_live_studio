@@ -5,6 +5,7 @@ import {
   type Frame, type OverlayLayout, type OverlayScene,
 } from './overlayModel'
 import { newStep } from './overlayDraft'
+import { planOf, sceneAt } from './overlaySchedule'
 import { hms } from '../liveSessionsApi'
 
 export type PreviewMode = 'obs' | 'tiktok'
@@ -17,8 +18,10 @@ const pct = (v:number) => `${v * 100}%`
  * own layer: the selected overlay's box with handles (drag to move, handles to resize; positions are stored as fractions
  * of the 1080×1920 canvas), the safe zones and, in TikTok mode, the simulated viewer UI.
  */
-export function OverlayPreview({scene, mediaId, now, animate, apiBase, mode, showZones, selected, editable, onSelect, onLayout, onGestureEnd, children}:{
+export function OverlayPreview({scene, mediaId, now, iteration = 0, animate, apiBase, mode, showZones, selected, editable, onSelect, onLayout, onGestureEnd, children}:{
   scene:OverlayScene; mediaId:string; now:number; animate:boolean; apiBase:string; mode:PreviewMode; showZones:boolean
+  /** Loop of the video previewed (a random schedule shows that loop's plan, like OBS at that loop). */
+  iteration?:number
   selected:number|null; editable:boolean; onSelect:(index:number|null)=>void
   onLayout:(index:number, layout:OverlayLayout, gesture:string)=>void; onGestureEnd:()=>void
   /** The video element (drawn under everything). */
@@ -26,9 +29,22 @@ export function OverlayPreview({scene, mediaId, now, animate, apiBase, mode, sho
 }){
   const frame = useRef<HTMLDivElement>(null)
   const drag = useRef<{index:number; handle:Handle; x:number; y:number; start:OverlayLayout; key:string}|null>(null)
-  const visible = scene.overlays.map((o, index)=>({o, index})).filter(x=>isShown(x.o, mediaId, now))
+  // What the renderer draws now (random schedule: only the appearance covering `now`), same indexes as `scene`.
+  const drawn = sceneAt(scene, mediaId, now, iteration)
+  const random = scene.schedule?.mode === 'random'
+  const visible = drawn.overlays.map((o, index)=>({o, index})).filter(x=>isShown(x.o, mediaId, now))
   const current = selected != null ? scene.overlays[selected] : undefined
   const selectedHere = current && current.media_id === mediaId ? current : undefined
+  const selectedShown = selected != null && !!drawn.overlays[selected] && isShown(drawn.overlays[selected], mediaId, now)
+  /** Where the selected overlay is when it is not on screen: its times, or (random) its next appearance in this loop. */
+  const hiddenNote = () => {
+    if (!selectedHere || selected == null) return ''
+    if (selectedHere.enabled === false) return 'Đang tắt'
+    if (!random) return `Hiện ${hms(selectedHere.start_ms)}–${hms(endOf(selectedHere))}`
+    const own = planOf(scene, mediaId, iteration).filter(a=>a.index === selected)
+    const next = own.find(a=>a.start_ms >= now) ?? own[0]
+    return next ? `Lượt ${iteration + 1}: hiện ${hms(next.start_ms)}–${hms(next.end_ms)}${own.length > 1 ? ` (${own.length} lần)` : ''}` : `Lượt ${iteration + 1}: không hiện`
+  }
 
   const onDown = (e:ReactPointerEvent, index:number, handle:Handle) => {
     e.stopPropagation()
@@ -60,7 +76,7 @@ export function OverlayPreview({scene, mediaId, now, animate, apiBase, mode, sho
 
   return <div ref={frame} className={'ove-frame is-' + mode} onPointerDown={()=>onSelect(null)} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
     {children}
-    <OverlayRenderer scene={scene} mediaId={mediaId} positionMs={now} animate={animate} apiBase={apiBase} placeholders/>
+    <OverlayRenderer scene={scene} mediaId={mediaId} positionMs={now} iteration={iteration} animate={animate} apiBase={apiBase} placeholders/>
     {mode === 'tiktok' && <TikTokChrome/>}
     {showZones && <div className="ove-zones" aria-hidden>
       <span className="ove-safe" style={{left:pct(SAFE_AREA.x), top:pct(SAFE_AREA.y), width:pct(SAFE_AREA.width), height:pct(SAFE_AREA.height)}}><small>Vùng an toàn</small></span>
@@ -70,11 +86,11 @@ export function OverlayPreview({scene, mediaId, now, animate, apiBase, mode, sho
     {visible.filter(x=>x.index !== selected).map(({o, index})=><button key={index} type="button" className="ove-hit" aria-label={`Chọn overlay ${index + 1}`}
       style={{left:pct(o.layout.x), top:pct(o.layout.y), width:pct(o.layout.width), height:pct(o.layout.height)}}
       onPointerDown={e=>onDown(e, index, 'move')}/>)}
-    {selectedHere && selected != null && <div className={'ove-sel' + (isShown(selectedHere, mediaId, now) ? '' : ' is-hidden') + (coveredBy(selectedHere.layout).length ? ' is-covered' : '') + (editable ? ' is-editable' : '')}
+    {selectedHere && selected != null && <div className={'ove-sel' + (selectedShown ? '' : ' is-hidden') + (coveredBy(selectedHere.layout).length ? ' is-covered' : '') + (editable ? ' is-editable' : '')}
       style={{left:pct(selectedHere.layout.x), top:pct(selectedHere.layout.y), width:pct(selectedHere.layout.width), height:pct(selectedHere.layout.height)}}
       onPointerDown={e=>onDown(e, selected, 'move')}>
       <span className="ove-sel-size">{Math.round(selectedHere.layout.width * CANVAS.width)}×{Math.round(selectedHere.layout.height * CANVAS.height)}</span>
-      {!isShown(selectedHere, mediaId, now) && <span className="ove-sel-note">{selectedHere.enabled === false ? 'Đang tắt' : `Hiện ${hms(selectedHere.start_ms)}–${hms(endOf(selectedHere))}`}</span>}
+      {!selectedShown && <span className="ove-sel-note">{hiddenNote()}</span>}
       {editable && HANDLES.map(h=><span key={h} className={'ove-handle is-' + h} onPointerDown={e=>onDown(e, selected, h)}/>)}
     </div>}
   </div>

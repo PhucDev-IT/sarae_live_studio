@@ -7,6 +7,8 @@
  * (text, product_field, image, shape). `template` is only a free label naming the arrangement.
  */
 
+import type { OverlaySchedule } from './overlaySchedule'
+
 export const CANVAS = {width:1080, height:1920} as const
 export const MIN_DURATION_MS = 500
 export const MAX_DURATION_MS = 3_600_000
@@ -38,12 +40,16 @@ export type Overlay = {
   layout:OverlayLayout; animation_in:Animation; animation_out:Animation; elements:OverlayElement[]
   /** Missing in a snapshot (it only holds enabled overlays). */
   enabled?:boolean
+  /** Random schedule: how long one appearance lasts (start_ms..start_ms + duration_ms is then the window it may show in). */
+  show_ms?:number
 }
 export type SceneProduct = {name:string; sku?:string; price?:number|null; origin_price?:number|null; image_url?:string}
 export type SceneAsset = {url:string; mime_type?:string; sha256?:string; width?:number; height?:number; size_bytes?:number}
 /** Snapshot-shaped input of a renderer: overlays plus the products and images they read, keyed by id. */
 export type OverlayScene = {
   canvas?:{width:number; height:number}; overlays:Overlay[]
+  /** The version (seed of the random plan) and how its overlays are scheduled (absent = fixed). */
+  timeline_id?:number; schedule?:OverlaySchedule
   products:Record<string, SceneProduct>; assets:Record<string, SceneAsset>
 }
 /** A preset of GET /api/live/overlay-templates: a starting point, never a type. */
@@ -91,6 +97,7 @@ export function normalizeOverlay(raw:Partial<Overlay> & {media_id:string}):Overl
     animation_in:{name:raw.animation_in?.name ?? 'fade', duration_ms:num(raw.animation_in?.duration_ms, 300)},
     animation_out:{name:raw.animation_out?.name ?? 'fade', duration_ms:num(raw.animation_out?.duration_ms, 300)},
     elements:(raw.elements ?? []).map(e=>normalizeElement(e)), enabled:raw.enabled !== false,
+    show_ms:Math.round(num(raw.show_ms, 6000)),
   }
 }
 
