@@ -620,6 +620,22 @@ class CaptchaMonitor:
                             "score": round(score, 3), "template": matched,
                             "image_path": str(paths.monitor_captures / image_name),
                             "window_title": target["title"]})
+                    # --- auto solve ---
+                    if finding.get("challenge_type") in ("PUZZLE", "SHAPES", "puzzle", "shapes") or kind in ("CAPTCHA_CHALLENGE", "INACTIVITY_WARNING"):
+                        try:
+                            # solver được inject từ runtime
+                            solver = getattr(self, "_solver", None)
+                            if solver is not None:
+                                result = solver.try_solve(
+                                    challenge_type=finding.get("challenge_type") or kind,
+                                    image_path=str(paths.monitor_captures / image_name),
+                                )
+                                if result.success:
+                                    log.info("Auto-solve thành công: %s", result.detail)
+                                else:
+                                    log.warning("Auto-solve thất bại: %s", result.error)
+                        except Exception:
+                            log.exception("Lỗi khi gọi auto-solver")    
                     elif self._detected and negative >= CONFIRM_FRAMES:
                         self._detected = False
                         old_kind = self._detected_kind
@@ -658,3 +674,5 @@ class CaptchaMonitor:
                 old.unlink()
             except OSError:
                 pass
+    def set_solver(self, solver) -> None:
+    self._solver = solver

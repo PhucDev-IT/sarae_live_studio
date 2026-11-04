@@ -43,6 +43,7 @@ from sarae_agent.timeline.executors import AssumeLiveGate, ConsoleLiveGate, Cons
 from sarae_agent.timeline.scheduler import TimelineScheduler
 from sarae_agent.voice.tts import VoiceService
 from sarae_agent.windows.win32 import hostname
+from sarae_agent.monitoring.solver import CaptchaSolver
 
 log = logging.getLogger("sarae.runtime")
 
@@ -90,6 +91,12 @@ class AgentRuntime:
         self.playback = PlaybackService(self.engine, self.emit)
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.sadcaptcha = SadCaptchaAnalyzer()
+        self.solver = CaptchaSolver(
+            analyzer=self.sadcaptcha,
+            emit=self.emit,
+            notify_owner=self._notify_owner_captcha_failed,  # xem bên dưới
+        )
+        self.monitor.set_solver(self.solver)
         self.voice = VoiceService(self.config, self.obs)
         from sarae_agent.voice.omnivoice import OmniVoiceProvider
         self.voice.job_provider = OmniVoiceProvider(self._cloud)
@@ -547,3 +554,14 @@ class AgentRuntime:
             log.exception("Không đóng được overlay")
         self.obs.close()
         log.info("Agent Core đã giải phóng tài nguyên")
+
+    def _notify_owner_captcha_failed(self, text: str) -> None:
+    """Gửi cảnh báo khi giải captcha thất bại nhiều lần."""
+    log.warning("CAPTCHA FAIL NOTIFY: %s", text)
+    # Emit event để Cloud / GUI có thể forward sang Telegram
+    self.emit("monitor.captcha_owner_alert", {
+        "message": text,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    # TODO: nếu bạn đã có bot Telegram thì gọi ở đây
+    # self.telegram.send(text)
