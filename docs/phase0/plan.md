@@ -1,6 +1,6 @@
 # Phase 0 — Kế hoạch triển khai & trạng thái
 
-> Trạng thái tổng: **`PENDING_USER_INPUT`** (2026-11-03). Phase 0.1 xong; 0.2 có công cụ, chờ video thật; 0.3–0.7 chưa chạy (cần tải model + GPU rảnh).
+> Trạng thái tổng: **`PENDING_USER_REVIEW`** (2026-11-04 18:00). Mọi bước kỹ thuật 0.1–0.8 đã chạy; chờ người dùng xem video và điền [quality_review.md §4](quality_review.md). Kết luận: [final_report.md](final_report.md).
 > Nghiên cứu source: [source_research.md](source_research.md).
 
 ## 1. Ba cấu hình sẽ benchmark
@@ -46,10 +46,10 @@ flowchart TB
 
 | # | Việc | Vì sao chặn |
 |---|---|---|
-| U1 | Video A (static), B (natural motion), C (~60 s) — MP4 từ điện thoại, 1080×1920, đủ sáng, mặt không bị che | Không có video thật thì Phase 0 không thể PASS |
-| U2 | Cho phép tải model ~4,7 GB (HF `TMElyralab/MuseTalk` chỉ `musetalkV15/*`, `sd-vae-ft-mse`, `whisper-tiny`, `DWPose`, face-parse, s3fd) | §15 đề bài: không tự tải model lớn |
-| U3 | Tải `wav2lip256.pth` từ Google Drive/Quark của LiveTalking (bạn tải giúp, hoặc cho phép tôi dùng gdown) | file không có trên HF, không có checksum |
-| U4 | Chọn giọng: `voice_id` trên voice-server để sinh 24 câu, hoặc đưa WAV có sẵn | cùng audio cho mọi engine |
+| ~~U1~~ | ✅ 2026-11-04: nhận 3 clip `.MOV`, đã chuẩn hóa | |
+| ~~U2~~ | ✅ 2026-11-04: người dùng cho phép; đã tải 4,2 GB, hash khớp | |
+| ~~U3~~ | ✅ 2026-11-04: người dùng đã tải `wav2lip256.pth` | |
+| ~~U4~~ | ✅ 2026-11-04: người dùng chọn giọng đã lưu **ST DESIGN 1** (`cfc00c36…`) trên voice-server | |
 | U5 | Khung giờ **không LIVE** để chạy GPU (benchmark + endurance 30 phút × 3 cấu hình ≈ 2–3 giờ) | VRAM/GPU đang chia với OBS |
 | U6 | Quyết định về watermark LiveTalking (giữ để benchmark, hay bỏ trong fork chỉ dùng nội bộ) | README LT §8 |
 
@@ -71,3 +71,14 @@ Các bước cài engine và chạy benchmark sẽ được thêm vào đây khi
 | 2026-11-03 23:40 | Clone shallow 2 repo | LT `c7269433`, MT `0a89dec4` |
 | 2026-11-03 23:42 | Smoke test `validate_video.py` trên clip dựng từ ảnh demo MuseTalk (`yongen.jpeg`, zoom/pan 6 s) | Công cụ chạy đúng (WARN do 720p/6 s/bitrate thấp — đúng kỳ vọng). **Không phải căn cứ PASS** |
 | 2026-11-03 | Không chạy GPU, không tải model, không gọi TTS server | Do máy đang LIVE |
+| 2026-11-04 14:00 | Kiểm tra máy: không có OBS, GPU 9% / 3,2 GB | Bắt đầu tải model |
+| 2026-11-04 14:00–14:11 | Tải model chọn lọc từ huggingface.co | Lần 1 lỗi CDN Xet (`getaddrinfo failed`) cho `unet.pth`, `sd-vae`; tải lại `HF_HUB_DISABLE_XET=1` + pin revision → OK. 4,2 GB, SHA-256 khớp ([models.md](models.md)) |
+| 2026-11-04 14:12–14:25 | Kiểm tra 3 clip người dùng | Phát hiện lỗi tracker (nhận tay là mặt) → sửa; cắt đoạn bật/tắt máy; chuẩn hóa 25 fps. A WARN, B WARN, C FAIL (quay đầu gần profile — giữ làm stress test) ([input_validation.md](input_validation.md)) |
+| 2026-11-04 14:31 | Người dùng tự tải `wav2lip256.pth` | 214,7 MB, torch zip hợp lệ, không có hash công bố để đối chiếu |
+| 2026-11-04 ~14:40 | Bật voice-server (`run.ps1`), sinh 24 câu + 6 chuỗi bằng giọng ST DESIGN 1 | 65 s; ASR kiểm tra: không câu nào đọc sai nội dung; TTS chênh độ lớn 10 dB → thêm gain tĩnh về −23 LUFS ([audio_testset.md](audio_testset.md)). Tắt voice-server sau khi xong (VRAM về 873 MB) |
+| 2026-11-04 15:00 | Cài env `livetalking` (py3.12, torch 2.9.1+cu128, dlib-bin + face_recognition --no-deps) và `musetalk` (py3.10, torch 2.0.1+cu118, mmcv 2.0.1 wheel OpenMMLab, mmpose 1.1.0; chumpy cần `--no-build-isolation`; bỏ tensorflow/gradio/tensorboard vì chỉ `app.py`/`train.py` dùng) | Cả hai nhận CUDA RTX 3060. Env ở `F:\Coder\phase0_vendor\envs\` |
+| 2026-11-04 15:00–15:58 | Tạo avatar Wav2Lip clip B mặc định | **Tràn VRAM** (S3FD batch 16 × 1080×1920), >58 phút chưa xong → dừng. Batch 2: 155 s |
+| 2026-11-04 16:00–16:50 | Benchmark realtime 3 cấu hình trên clip B (+ W2L trên A, C) | [benchmark.md](benchmark.md). Chỉ LT-W2L256 đạt realtime |
+| 2026-11-04 16:50 | Video so sánh + quan sát chất lượng | [quality_review.md](quality_review.md) |
+| 2026-11-04 16:48–17:21 | Endurance 32 phút LT-W2L256 (run1) | FPS/RAM/VRAM hợp lệ; latency sai do adapter khớp tên câu lặp lại → sửa (khóa theo lượt feed), chạy lại (run2) |
+| 2026-11-04 17:25–17:58 | Endurance run2 LT-W2L256 | ✅ 32 phút, 24,96 FPS, stall 3 s, trễ p50 0,97 s (trôi +0,2 s/giờ), RAM phẳng ([final_report.md §7](final_report.md)) |

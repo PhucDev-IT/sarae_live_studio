@@ -30,6 +30,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 DEFAULT_MODEL = HERE.parent / "models" / "face_detection_yunet_2023mar.onnx"
 DETECT_WIDTH = 640  # frames are downscaled to this width for detection only
+FACE_SCORE = 0.85  # below this YuNet boxes on real model videos were hands, not faces (2026-11-04 review)
 
 # Initial heuristics, per video kind. Tune them after the first real model videos are reviewed;
 # every threshold that decides a verdict lives here so the report can quote it.
@@ -167,6 +168,14 @@ def iou(a: FrameRow, b: FrameRow) -> float:
     return inter / union if union else 0.0
 
 
+def box_iou(a, b) -> float:
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return float(inter / union) if union else 0.0
+
+
 def analyse_frames(path: Path, model: Path, stride: int) -> tuple[list[FrameRow], float, tuple[int, int], dict]:
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -178,6 +187,7 @@ def analyse_frames(path: Path, model: Path, stride: int) -> tuple[list[FrameRow]
     first_small = last_small = None
     frame_diffs: list[float] = []
     size = (0, 0)
+    last_box = None
     idx = -1
     while True:
         ok, frame = cap.read()
@@ -193,6 +203,10 @@ def analyse_frames(path: Path, model: Path, stride: int) -> tuple[list[FrameRow]
         if detector is None:
             detector = cv2.FaceDetectorYN.create(str(model), "", (small.shape[1], small.shape[0]), 0.6, 0.3, 50)
         _, faces = detector.detect(small)
+        if faces is not None:
+            # YuNet fires on gesturing hands at ~0.6-0.8; only confident boxes count as faces.
+            faces = faces[faces[:, 14] >= FACE_SCORE]
+            faces = faces if len(faces) else None
         row = FrameRow(idx=idx, t=idx / fps, faces=0 if faces is None else len(faces))
 
         grey = cv2.cvtColor(cv2.resize(frame, (160, round(160 * h / w))), cv2.COLOR_BGR2GRAY).astype(np.float32)
@@ -206,7 +220,13 @@ def analyse_frames(path: Path, model: Path, stride: int) -> tuple[list[FrameRow]
             frame_diffs.append(row.global_motion)
 
         if row.faces:
-            f = max(faces, key=lambda r: r[2] * r[3]) / np.array([scale] * 14 + [1.0])
+            # Follow the same person: the box overlapping the previous one, else the most confident.
+            if last_box is not None:
+                f = max(faces, key=lambda r: (box_iou(r[:4] / scale, last_box), r[14]))
+            else:
+                f = max(faces, key=lambda r: r[14])
+            f = f / np.array([scale] * 14 + [1.0])
+            last_box = f[:4]
             row.score = float(f[14])
             row.x, row.y, row.w, row.h = map(float, f[:4])
             reye, leye, nose, rmouth, lmouth = f[4:14].reshape(5, 2)

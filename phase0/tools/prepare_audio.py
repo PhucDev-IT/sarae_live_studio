@@ -5,8 +5,9 @@ Source of speech, in order of preference:
   --voice-id ID    synthesize through the local Sarae Voice Server (voice-server/, G-OmniVoice)
 
 Every output is 16 kHz mono s16 PCM, the format both LiveTalking and MuseTalk feed to Whisper/mel.
-Tempo changes use ffmpeg atempo (pitch kept) and are written to manifest.json, so both engines get
-byte-identical audio. Do not run --voice-id during a LIVE: the TTS server shares the GPU with it.
+Tempo changes use ffmpeg atempo (pitch kept), and each sentence gets one static gain to --target-lufs
+(capped at -1 dBTP); both are written to manifest.json, so both engines get byte-identical audio.
+TTS output stays untouched in raw/ and is reused on re-runs (no second TTS call). Do not run --voice-id during a LIVE: the TTS server shares the GPU with it.
 
     uv run python tools/prepare_audio.py --voice-id shop_main [--out outputs/phase0/audio]
 """
@@ -17,6 +18,7 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TESTSET = ROOT / "phase0" / "testsets" / "vi_sentences.json"
 VOICE_ENV = ROOT / "voice-server" / ".env"
 RATE = 16000
+PEAK_CEILING = -1.0  # dBTP; the loudness gain never pushes a sentence above this
 
 
 def token_from_env() -> str:
@@ -54,6 +57,21 @@ def to_pcm16k(src: Path, dst: Path, tempo: float | None) -> None:
     if filters:
         cmd += ["-af", ",".join(filters)]
     subprocess.run(cmd + [str(dst)], check=True)
+
+
+def loudness(path: Path) -> tuple[float, float]:
+    """Integrated loudness (LUFS) and true peak (dBTP) via ffmpeg ebur128."""
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af", "ebur128=peak=true",
+                          "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8").stderr
+    summary = err[err.rfind("Summary:"):]
+    i = float(re.search(r"I:\s+(-?[\d.]+) LUFS", summary).group(1))
+    peak = float(re.search(r"Peak:\s+(-?[\d.]+) dBFS", summary).group(1))
+    return i, peak
+
+
+def level(pcm: np.ndarray, gain_db: float) -> np.ndarray:
+    # One static gain per sentence: no compression, so mouth-opening cues keep their dynamics.
+    return np.clip(pcm.astype(np.float64) * 10 ** (gain_db / 20), -32768, 32767).astype(np.int16)
 
 
 def read_pcm(path: Path) -> np.ndarray:
@@ -82,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--server", default="http://127.0.0.1:8780")
     ap.add_argument("--out", type=Path, default=ROOT / "outputs" / "phase0" / "audio")
     ap.add_argument("--seed", type=int, default=20261103)
+    ap.add_argument("--target-lufs", type=float, default=-23.0,
+                    help="per-sentence static gain to this loudness (TTS output varied -21..-31 LUFS)")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Vietnamese text on a cp1252 console
     if not shutil.which("ffmpeg"):
@@ -111,10 +131,14 @@ def main(argv: list[str] | None = None) -> int:
             chunks.append(read_pcm(conv))
             if i < len(parts) - 1:
                 chunks.append(silence(s.get("pause_ms", 800)))
-        pcm[s["id"]] = np.concatenate(chunks)
         out = sent_dir / f"{s['id']}.wav"
+        write_pcm(out, np.concatenate(chunks))
+        lufs, peak = loudness(out)
+        gain = min(args.target_lufs - lufs, PEAK_CEILING - peak)
+        pcm[s["id"]] = level(np.concatenate(chunks), gain)
         write_pcm(out, pcm[s["id"]])
         manifest["sentences"][s["id"]] = {"text": s["text"], "tags": s["tags"], "tempo": s.get("tempo"),
+                                          "tts_lufs": lufs, "tts_peak_dbtp": peak, "gain_db": round(gain, 2),
                                           "seconds": round(len(pcm[s["id"]]) / RATE, 3),
                                           "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
         print(f"{s['id']}  {manifest['sentences'][s['id']]['seconds']:6.2f} s  {s['text'][:60]}")
