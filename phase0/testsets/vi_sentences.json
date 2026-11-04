@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "language": "vi",
+  "note": "Phase 0.5 test set. Both engines must use exactly the same WAV files. 'tempo' is applied after TTS with ffmpeg atempo (pitch kept) and is recorded in the manifest; 'pause_ms' inserts real silence at '|' markers.",
+  "sentences": [
+    {"id": "s01", "tags": ["short"], "text": "Dạ em chào cả nhà ạ!"},
+    {"id": "s02", "tags": ["short", "question"], "text": "Chị lấy màu nào ạ?"},
+    {"id": "s03", "tags": ["short"], "text": "Có size M nha chị."},
+    {"id": "s04", "tags": ["price", "excited"], "text": "Chị em ơi, mẫu áo này hôm nay chỉ có một trăm năm mươi chín nghìn thôi nha!"},
+    {"id": "s05", "tags": ["price"], "text": "Giá gốc ba trăm hai mươi nghìn, live hôm nay giảm còn một trăm chín mươi chín nghìn."},
+    {"id": "s06", "tags": ["price", "number"], "text": "Combo hai cái chỉ ba trăm bốn mươi lăm nghìn, tiết kiệm năm mươi lăm nghìn đồng."},
+    {"id": "s07", "tags": ["number"], "text": "Còn đúng mười hai suất cuối cùng thôi, cả nhà nhanh tay nha."},
+    {"id": "s08", "tags": ["customer_answer", "number"], "text": "Dạ chị cao mét sáu, nặng năm mươi ký thì mình có thể tham khảo size M nhé."},
+    {"id": "s09", "tags": ["customer_answer"], "text": "Dạ bạn Linh hỏi có ship COD không, bên em có ship COD toàn quốc nha bạn."},
+    {"id": "s10", "tags": ["question"], "text": "Mọi người đã nhận được hàng chưa, cho em xin vài dòng đánh giá với ạ?"},
+    {"id": "s11", "tags": ["product_intro"], "text": "Em sẽ cho mọi người xem kỹ hơn phần cổ áo và chất liệu vải nha."},
+    {"id": "s12", "tags": ["product_intro", "long"], "text": "Chất vải này là cotton co giãn bốn chiều, mặc mùa hè rất mát, giặt máy thoải mái mà không bị xù lông hay phai màu đâu ạ."},
+    {"id": "s13", "tags": ["product_intro", "long"], "text": "Thiết kế cổ tròn, tay lỡ, form rộng vừa phải nên ai hơi có bụng một chút mặc vào vẫn che khuyết điểm rất tốt, đi làm hay đi chơi đều hợp."},
+    {"id": "s14", "tags": ["long"], "text": "Hôm nay em lên live để giới thiệu bộ sưu tập mới gồm năm màu là trắng, đen, be, xanh rêu và hồng phấn, mỗi màu đều có đủ size từ S đến XL cho cả nhà lựa chọn."},
+    {"id": "s15", "tags": ["fast", "excited"], "tempo": 1.25, "text": "Nhanh tay lên cả nhà ơi, đơn nào chốt trong năm phút tới em tặng thêm quà nha!"},
+    {"id": "s16", "tags": ["fast"], "tempo": 1.25, "text": "Bấm vào giỏ hàng số ba, chọn màu, chọn size, rồi bấm mua ngay là xong ạ."},
+    {"id": "s17", "tags": ["slow"], "tempo": 0.85, "text": "Mọi người nhìn kỹ đường may ở phần vai này nhé, rất chắc chắn và đều tay."},
+    {"id": "s18", "tags": ["slow"], "tempo": 0.85, "text": "Dạ, em xin cảm ơn cả nhà đã ở lại xem live với em đến giờ này."},
+    {"id": "s19", "tags": ["pause"], "pause_ms": 800, "text": "Mẫu này đẹp lắm ạ.|Nhưng mà số lượng có hạn thôi nha.|Ai thích thì chốt sớm nhé."},
+    {"id": "s20", "tags": ["pause", "price"], "pause_ms": 1200, "text": "Giá niêm yết là hai trăm chín mươi chín nghìn.|Trong live hôm nay thì sao ạ?|Chỉ còn một trăm bốn mươi chín nghìn thôi!"},
+    {"id": "s21", "tags": ["excited"], "text": "Wow, cả nhà ơi, đơn thứ một trăm của buổi live rồi, em cảm ơn mọi người nhiều lắm!"},
+    {"id": "s22", "tags": ["customer_answer", "question"], "text": "Dạ chị hỏi áo này có màu đen không ạ? Có chị nha, màu đen đang còn đủ size luôn."},
+    {"id": "s23", "tags": ["phonetic"], "text": "Ưu đãi ưng ý, ổn áp, ấm áp, êm ái, ống tay ôm ấp ạ."},
+    {"id": "s24", "tags": ["phonetic"], "text": "Mua một tặng một, mười một giờ mười một phút, mười một nghìn một trăm mười một đồng."}
+  ],
+  "sequences": [
+    {"id": "q_short", "note": "Phase 0.7 case 1: one short sentence", "items": ["s04"]},
+    {"id": "q_multi", "note": "case 2: consecutive sentences, 300 ms gaps", "gap_ms": 300, "items": ["s01", "s11", "s12", "s04", "s08"]},
+    {"id": "q_long", "note": "case 3: one long talk (~45 s)", "gap_ms": 150, "items": ["s14", "s13", "s12", "s05", "s06", "s07"]},
+    {"id": "q_talk_silence_talk", "note": "case 4: talk, 4 s silence, talk, 2 s silence, talk", "gaps_ms": [4000, 2000], "items": ["s04", "s11", "s08"]},
+    {"id": "q_main", "note": "Phase 0.3/0.4 comparison audio: speech and silence segments mixed", "gaps_ms": [500, 2500, 400, 3000, 600, 1500], "items": ["s01", "s04", "s08", "s11", "s19", "s22", "s24"]}
+  ],
+  "endurance": {"id": "q_endurance_30min", "note": "case 5: all sentences in a fixed shuffled order with 0.3-3 s gaps until 30 min", "seed": 20261103, "target_s": 1800}
+}

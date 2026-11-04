@@ -34,3 +34,9 @@ backend/data/agent_commands.lock
 
 # Google Drive OAuth PoC output (file names / folder IDs of a real account)
 google_drive_poc_report*.json
+
+# Phase 0 Digital Human: engine outputs, user videos and model weights stay local
+outputs/phase0/
+inputs/phase0/
+phase0/.venv/
+phase0/models/
