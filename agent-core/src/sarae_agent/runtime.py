@@ -33,6 +33,7 @@ from sarae_agent.media.cloud_cache import CloudMediaCache, cache_dir, cached_pat
 import httpx
 from sarae_agent.monitoring.captcha import CaptchaMonitor
 from sarae_agent.monitoring.sadcaptcha import SadCaptchaAnalyzer
+from sarae_agent.monitoring.solver import CaptchaSolver
 from sarae_agent.obs.controller import ObsController, ObsSettingsStore
 from sarae_agent.overlay.cache import OverlayCache
 from sarae_agent.overlay.service import OverlayService
@@ -43,7 +44,6 @@ from sarae_agent.timeline.executors import AssumeLiveGate, ConsoleLiveGate, Cons
 from sarae_agent.timeline.scheduler import TimelineScheduler
 from sarae_agent.voice.tts import VoiceService
 from sarae_agent.windows.win32 import hostname
-from sarae_agent.monitoring.solver import CaptchaSolver
 
 log = logging.getLogger("sarae.runtime")
 
@@ -91,12 +91,11 @@ class AgentRuntime:
         self.playback = PlaybackService(self.engine, self.emit)
         self.monitor = CaptchaMonitor(self.config, self.emit)
         self.sadcaptcha = SadCaptchaAnalyzer()
-        self.solver = CaptchaSolver(
-            analyzer=self.sadcaptcha,
-            emit=self.emit,
-            notify_owner=self._notify_owner_captcha_failed,  # xem bên dưới
-        )
+        
+        self.solver = CaptchaSolver(analyzer=self.sadcaptcha, emit=self.emit)
+        self.solver._monitor = self.monitor
         self.monitor.set_solver(self.solver)
+
         self.voice = VoiceService(self.config, self.obs)
         from sarae_agent.voice.omnivoice import OmniVoiceProvider
         self.voice.job_provider = OmniVoiceProvider(self._cloud)
@@ -555,13 +554,25 @@ class AgentRuntime:
         self.obs.close()
         log.info("Agent Core đã giải phóng tài nguyên")
 
-    def _notify_owner_captcha_failed(self, text: str) -> None:
-    """Gửi cảnh báo khi giải captcha thất bại nhiều lần."""
-    log.warning("CAPTCHA FAIL NOTIFY: %s", text)
-    # Emit event để Cloud / GUI có thể forward sang Telegram
-    self.emit("monitor.captcha_owner_alert", {
-        "message": text,
-        "at": datetime.now(timezone.utc).isoformat(),
-    })
-    # TODO: nếu bạn đã có bot Telegram thì gọi ở đây
-    # self.telegram.send(text)
+    def _notify_owner_captcha_failed(self, text: str, level: str = "error") -> None:
+        """
+        Gửi cảnh báo CAPTCHA lên Cloud → Telegram.
+        level: "success" | "error"
+        """
+        log.warning("CAPTCHA NOTIFY [%s]: %s", level, text)
+
+        payload = {
+            "message": text,
+            "level": level,                          # success / error
+            "at": datetime.now(timezone.utc).isoformat(),
+            "source": "captcha_solver",
+        }
+        self.emit("monitor.captcha_owner_alert", payload)
+
+        # Nếu Cloud worker có method gửi Telegram trực tiếp (tùy bạn đã wire chưa):
+        # if hasattr(self, "_cloud") and self._cloud is not None:
+        #     try:
+        #         self._cloud.send_telegram_alert(text, level=level)
+        #     except Exception:
+        #         log.exception("Cloud telegram gửi thất bại")
+

@@ -27,7 +27,9 @@ log = logging.getLogger("sarae.solver")
 MAX_ATTEMPTS_PER_CHALLENGE = 3
 MAX_RETRIES_ONCE = 2          # retry trong 1 lần gọi try_solve
 DEBUG_SAVE_CROPS = False      # bật True khi cần lưu ảnh crop để debug
-
+# Đầu file
+MAX_RETRIES_ONCE = 5              # tối đa 5 lần thử giải 1 challenge
+NOTIFY_FAIL_STREAK = 3            # từ lần fail thứ 3 trở đi → gửi Telegram
 
 @dataclass
 class SolveResult:
@@ -146,12 +148,8 @@ class CaptchaSolver:
         self._solving = False
         self._fail_streak = 0
 
-    def try_solve(
-        self,
-        challenge_type: str | None,
-        image_path: str | None = None,
-    ) -> SolveResult:
-        """Called by CaptchaMonitor after a confirmed detection."""
+
+    def try_solve(self, challenge_type: str | None, image_path: str | None = None) -> SolveResult:
         with self._lock:
             if self._solving:
                 return SolveResult(False, error="Đang giải captcha khác")
@@ -159,6 +157,7 @@ class CaptchaSolver:
 
         try:
             result = self._solve_with_retries(challenge_type, image_path)
+
             if result.success:
                 self._fail_streak = 0
                 self._emit("monitor.captcha_solved", {
@@ -166,6 +165,12 @@ class CaptchaSolver:
                     "detail": result.detail,
                     "attempts": result.attempts,
                 })
+                self._report_outcome(
+                    "captcha_solved",
+                    challenge_type=result.challenge_type,
+                    solve_attempts=result.attempts,
+                    solve_detail=result.detail,
+                )
             else:
                 self._fail_streak += 1
                 self._emit("monitor.captcha_solve_failed", {
@@ -173,16 +178,63 @@ class CaptchaSolver:
                     "attempts": result.attempts,
                     "fail_streak": self._fail_streak,
                 })
-                if self._fail_streak >= MAX_ATTEMPTS_PER_CHALLENGE:
-                    msg = (
-                        f"⚠️ Không giải được CAPTCHA sau {self._fail_streak} lần.\n"
-                        f"Lỗi cuối: {result.error or 'unknown'}"
+                exhausted = result.attempts >= MAX_RETRIES_ONCE
+                if exhausted or self._fail_streak >= NOTIFY_FAIL_STREAK:
+                    status = "captcha_solve_exhausted" if exhausted else "captcha_solve_failed"
+                    self._report_outcome(
+                        status,
+                        challenge_type=challenge_type,
+                        solve_attempts=result.attempts,
+                        fail_streak=self._fail_streak,
+                        solve_error=result.error,
                     )
-                    self._notify(msg)
+
             return result
         finally:
             with self._lock:
                 self._solving = False
+
+
+    def _report_outcome(self, status: str, **extra) -> None:
+        monitor = getattr(self, "_monitor", None)
+        if monitor is not None and hasattr(monitor, "set_solve_outcome"):
+            try:
+                monitor.set_solve_outcome(status, **extra)
+                return
+            except Exception:
+                log.exception("set_solve_outcome thất bại")
+        # fallback
+        self._emit("monitor.captcha_status", {"status": status, **extra})
+
+
+    def _set_verification_status(self, status: str, **extra) -> None:
+        """
+        Đẩy status vào CaptchaMonitor để lần heartbeat tiếp theo
+        Cloud nhận được và gửi Telegram qua captcha_transition.
+        """
+        if not hasattr(self, "_monitor") or self._monitor is None:
+            # fallback: emit event để runtime gắn vào verification
+            self._emit("monitor.captcha_status", {"status": status, **extra})
+            return
+        try:
+            self._monitor.set_solve_outcome(status, **extra)
+        except Exception:
+            log.exception("Không cập nhật được verification status")
+
+    def _notify(self, text: str, level: str = "error") -> None:
+        """Emit event để Cloud forward sang Telegram."""
+        log.warning("Owner notify [%s]: %s", level, text)
+        if self._notify_owner:
+            try:
+                self._notify_owner(text, level=level)
+            except TypeError:
+                # backward-compatible nếu notify_owner cũ chỉ nhận 1 arg
+                try:
+                    self._notify_owner(text)
+                except Exception:
+                    log.exception("Gửi thông báo owner thất bại")
+            except Exception:
+                log.exception("Gửi thông báo owner thất bại")
 
     def _notify(self, text: str) -> None:
         log.warning("Owner notify: %s", text)

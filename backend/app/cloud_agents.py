@@ -235,42 +235,128 @@ def _without_paths(verification:dict)->dict:
 # agent_status.captcha_alert retains the active verification kind across transient errors so one
 # continuous appearance creates only one alert, even if its subtype changes.
 
-def captcha_transition(previous:str|None,verification:dict)->tuple[str|None,str|None]:
+def captcha_transition(previous: str | None, verification: dict) -> tuple[str | None, str | None]:
     """Return (alert state to store, alert kind to send now or None) for one heartbeat."""
-    state=verification.get("state") if isinstance(verification,dict) else None
-    state=state if isinstance(state,dict) else {}
-    status=state.get("status")
-    if status in ("inactivity_warning","captcha_challenge","unknown_verification"):
-        return (status,None) if previous in ("inactivity_warning","captcha_challenge","unknown_verification") else (status,"verification_detected")
-    if status=="captcha_detected":  # older Agent versions
-        return ("detected",None) if previous=="detected" else ("detected","captcha_detected")
-    if status=="watching" and previous in ("inactivity_warning","captcha_challenge","unknown_verification"):
-        return "cleared","verification_cleared"
-    if status=="watching" and previous=="detected":
-        return "cleared","captcha_cleared"
-    if not state.get("running",True) or status in ("idle","stopped","starting"):
-        return None,None    # monitor stopped: a CAPTCHA seen after the next start is a new one
-    return previous,None
+    state = verification.get("state") if isinstance(verification, dict) else None
+    state = state if isinstance(state, dict) else {}
+    status = state.get("status")
 
-def captcha_message(kind:str,hostname:str,verification:dict,at:str)->str:
-    events=verification.get("events") if isinstance(verification.get("events"),list) else []
-    event=next((e for e in events if isinstance(e,dict) and e.get("kind")==kind),None)
-    detail=(event or {}).get("detail") or ("Phát hiện giao diện xác minh trên TikTok LIVE Studio" if kind.endswith("detected")
-                                     else "Không còn thấy giao diện xác minh; chưa xác minh đã giải thành công.")
-    detected_at=(event or {}).get("at") or at
-    state=verification.get("state") if isinstance(verification.get("state"),dict) else {}
-    score=state.get("match_score")
-    confidence=f"\nĐộ tin cậy: {score:.3f}" if kind.endswith("detected") and isinstance(score,(int,float)) else ""
-    event_type=state.get("event_type") or ("CAPTCHA_CHALLENGE" if kind=="captcha_detected" else
-                                           str(state.get("status", "VERIFICATION_CLEARED")).upper())
-    labels={"INACTIVITY_WARNING":"Cảnh báo LIVE không hoạt động, yêu cầu xác minh",
-            "CAPTCHA_CHALLENGE":"Hộp thoại CAPTCHA", "UNKNOWN_VERIFICATION":"Giao diện xác minh chưa phân loại",
-            "VERIFICATION_CLEARED":"Không còn thấy giao diện xác minh"}
-    label=labels.get(event_type,"Không còn thấy giao diện xác minh") if kind.endswith("detected") else labels["VERIFICATION_CLEARED"]
-    if kind=="captcha_detected":
-        label="Nghi vấn CAPTCHA"  # compatibility with older Agents
-    subtype=f"\nDạng CAPTCHA: {state['challenge_type']}" if state.get("challenge_type") and kind.endswith("detected") else ""
-    return f"Sarae LIVE | {kind}\nMáy: {hostname}\nSự kiện: {event_type if kind.endswith('detected') else kind}\nTrạng thái: {label}{subtype}{confidence}\n{detail}\nThời gian: {detected_at}"
+    # --- Detected (giữ nguyên) ---
+    if status in ("inactivity_warning", "captcha_challenge", "unknown_verification"):
+        return (status, None) if previous in (
+            "inactivity_warning", "captcha_challenge", "unknown_verification"
+        ) else (status, "verification_detected")
+
+    if status == "captcha_detected":  # older Agent
+        return ("detected", None) if previous == "detected" else ("detected", "captcha_detected")
+
+    # --- Solved / Failed (mới) ---
+    if status == "captcha_solved":
+        # Chỉ gửi 1 lần khi chuyển sang solved
+        return ("solved", "captcha_solved") if previous != "solved" else ("solved", None)
+
+    if status in ("captcha_solve_failed", "captcha_solve_exhausted"):
+        # Gửi khi mới chuyển sang failed/exhausted, hoặc đổi subtype
+        kind = "captcha_solve_exhausted" if status == "captcha_solve_exhausted" else "captcha_solve_failed"
+        return (status, kind) if previous != status else (status, None)
+
+    # --- Cleared ---
+    if status == "watching" and previous in (
+        "inactivity_warning", "captcha_challenge", "unknown_verification",
+        "detected", "solved", "captcha_solve_failed", "captcha_solve_exhausted",
+    ):
+        if previous in ("solved",):
+            return "cleared", None  # đã báo solved rồi, không cần cleared
+        if previous in ("captcha_solve_failed", "captcha_solve_exhausted"):
+            return "cleared", None
+        return "cleared", "verification_cleared" if previous != "detected" else "captcha_cleared"
+
+    if not state.get("running", True) or status in ("idle", "stopped", "starting"):
+        return None, None
+
+    return previous, None
+
+
+def captcha_message(kind: str, hostname: str, verification: dict, at: str) -> str:
+    events = verification.get("events") if isinstance(verification.get("events"), list) else []
+    event = next((e for e in events if isinstance(e, dict) and e.get("kind") == kind), None)
+    state = verification.get("state") if isinstance(verification.get("state"), dict) else {}
+    detected_at = (event or {}).get("at") or at
+    detail = (event or {}).get("detail") or ""
+
+    # --- Solved ---
+    if kind == "captcha_solved":
+        ctype = state.get("challenge_type") or "?"
+        attempts = state.get("solve_attempts") or (event or {}).get("attempts") or "?"
+        extra = (event or {}).get("detail") or state.get("solve_detail") or ""
+        return (
+            f"Sarae LIVE | CAPTCHA đã giải\n"
+            f"Máy: {hostname}\n"
+            f"Loại: {ctype}\n"
+            f"Số lần thử: {attempts}\n"
+            f"{extra}\n"
+            f"Thời gian: {detected_at}"
+        )
+
+    # --- Failed / Exhausted ---
+    if kind in ("captcha_solve_failed", "captcha_solve_exhausted"):
+        ctype = state.get("challenge_type") or "?"
+        attempts = state.get("solve_attempts") or (event or {}).get("attempts") or "?"
+        fail_streak = state.get("fail_streak") or (event or {}).get("fail_streak") or "?"
+        err = (event or {}).get("error") or state.get("solve_error") or detail or "unknown"
+        title = "Không giải được CAPTCHA (hết retry)" if kind == "captcha_solve_exhausted" else "CAPTCHA giải thất bại"
+        return (
+            f"Sarae LIVE | {title}\n"
+            f"Máy: {hostname}\n"
+            f"Loại: {ctype}\n"
+            f"Lần thử: {attempts}\n"
+            f"Fail streak: {fail_streak}\n"
+            f"Lỗi: {err}\n"
+            f"Thời gian: {detected_at}"
+        )
+
+    # --- Detected / Cleared (giữ logic cũ) ---
+    detail = detail or (
+        "Phát hiện giao diện xác minh trên TikTok LIVE Studio"
+        if kind.endswith("detected")
+        else "Không còn thấy giao diện xác minh; chưa xác minh đã giải thành công."
+    )
+    score = state.get("match_score")
+    confidence = (
+        f"\nĐộ tin cậy: {score:.3f}"
+        if kind.endswith("detected") and isinstance(score, (int, float))
+        else ""
+    )
+    event_type = state.get("event_type") or (
+        "CAPTCHA_CHALLENGE" if kind == "captcha_detected"
+        else str(state.get("status", "VERIFICATION_CLEARED")).upper()
+    )
+    labels = {
+        "INACTIVITY_WARNING": "Cảnh báo LIVE không hoạt động, yêu cầu xác minh",
+        "CAPTCHA_CHALLENGE": "Hộp thoại CAPTCHA",
+        "UNKNOWN_VERIFICATION": "Giao diện xác minh chưa phân loại",
+        "VERIFICATION_CLEARED": "Không còn thấy giao diện xác minh",
+    }
+    label = (
+        labels.get(event_type, "Không còn thấy giao diện xác minh")
+        if kind.endswith("detected")
+        else labels["VERIFICATION_CLEARED"]
+    )
+    if kind == "captcha_detected":
+        label = "Nghi vấn CAPTCHA"
+    subtype = (
+        f"\nDạng CAPTCHA: {state['challenge_type']}"
+        if state.get("challenge_type") and kind.endswith("detected")
+        else ""
+    )
+    return (
+        f"Sarae LIVE | {kind}\n"
+        f"Máy: {hostname}\n"
+        f"Sự kiện: {event_type if kind.endswith('detected') else kind}\n"
+        f"Trạng thái: {label}{subtype}{confidence}\n"
+        f"{detail}\n"
+        f"Thời gian: {detected_at}"
+    )
 
 def telegram_error(exc:Exception,token:str="")->str:
     """Return a useful API error without exposing the token embedded in Telegram URLs."""

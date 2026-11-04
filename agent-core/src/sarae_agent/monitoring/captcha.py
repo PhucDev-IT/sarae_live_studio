@@ -276,14 +276,59 @@ class CaptchaMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.events: deque[dict] = deque(maxlen=100)
-        self.state: dict = {"running": False, "status": "idle", "window_found": False, "window_visible": False,
-                            "window_title": "", "window_info": None, "process_running": None,
-                            "last_scan": None, "error": None, "events_count": 0, "match_score": None,
-                            "matched_template": None, "monitors_detected": None, "capture_bounds": None}
+        self.state: dict = {
+            "running": False, "status": "idle", "window_found": False, "window_visible": False,
+            "window_title": "", "window_info": None, "process_running": None,
+            "last_scan": None, "error": None, "events_count": 0, "match_score": None,
+            "matched_template": None, "monitors_detected": None, "capture_bounds": None,
+            # --- solve outcome (solver ghi vào) ---
+            "challenge_type": None, "solve_attempts": None, "fail_streak": None,
+            "solve_detail": None, "solve_error": None,
+        }
         self._detected = False
         self._detected_kind: str | None = None
+        self._solver = None
+        self._solve_outcome: dict | None = None   # status tạm thời để heartbeat gửi 1 lần
         self._template_cache: dict[Path, tuple[int, int, object | None]] = {}
         self._mask_cache: dict[Path, tuple[int, int, object | None]] = {}
+
+
+    def set_solver(self, solver) -> None:
+        self._solver = solver
+
+
+    def set_solve_outcome(self, status: str, **extra) -> None:
+        """
+        Gọi từ solver sau khi giải xong.
+        status: captcha_solved | captcha_solve_failed | captcha_solve_exhausted
+        """
+        outcome = {
+            "status": status,
+            "at": _now(),
+            **{k: v for k, v in extra.items() if v is not None},
+        }
+        with self._guard:
+            self._solve_outcome = outcome
+            # Cập nhật luôn vào state để status() / heartbeat thấy ngay
+            self.state["status"] = status
+            if "challenge_type" in outcome:
+                self.state["challenge_type"] = outcome["challenge_type"]
+            if "solve_attempts" in outcome:
+                self.state["solve_attempts"] = outcome["solve_attempts"]
+            if "fail_streak" in outcome:
+                self.state["fail_streak"] = outcome["fail_streak"]
+            if "solve_detail" in outcome:
+                self.state["solve_detail"] = outcome["solve_detail"]
+            if "solve_error" in outcome:
+                self.state["solve_error"] = outcome["solve_error"]
+
+        detail = (
+            f"CAPTCHA đã giải ({extra.get('challenge_type') or '?'})"
+            if status == "captcha_solved"
+            else f"CAPTCHA giải thất bại: {extra.get('solve_error') or status}"
+        )
+        self._event(status, detail)
+        self._status_changed()
 
     # --- templates ------------------------------------------------------------------------
     def _read_template(self, path: Path):
@@ -525,8 +570,31 @@ class CaptchaMonitor:
                     "templates": self._active_count(templates)}
 
     def heartbeat_view(self) -> dict:
+        """
+        Dùng trong heartbeat lên Cloud.
+        Nếu vừa có solve outcome → ưu tiên status đó (1 lần), rồi clear.
+        """
         data = self.status()
         data["events"] = [{k: e[k] for k in ("at", "kind", "detail")} for e in data["events"][:10]]
+
+        with self._guard:
+            outcome = self._solve_outcome
+            if outcome:
+                state = data["state"]
+                state["status"] = outcome["status"]
+                for key in ("challenge_type", "solve_attempts", "fail_streak",
+                            "solve_detail", "solve_error"):
+                    if key in outcome and outcome[key] is not None:
+                        state[key] = outcome[key]
+                # Chỉ gửi 1 lần qua heartbeat → clear
+                self._solve_outcome = None
+                # Đưa status về watching để lần heartbeat sau không spam
+                # (Cloud đã nhận transition rồi)
+                if self.state.get("status") in (
+                    "captcha_solved", "captcha_solve_failed", "captcha_solve_exhausted"
+                ):
+                    self.state["status"] = "watching"
+
         return data
 
     # --- internals -----------------------------------------------------------------------
@@ -621,21 +689,30 @@ class CaptchaMonitor:
                             "image_path": str(paths.monitor_captures / image_name),
                             "window_title": target["title"]})
                     # --- auto solve ---
-                    if finding.get("challenge_type") in ("PUZZLE", "SHAPES", "puzzle", "shapes") or kind in ("CAPTCHA_CHALLENGE", "INACTIVITY_WARNING"):
+                    if (
+                        self._detected
+                        and self._solver is not None
+                        and finding.get("challenge_type") in ("PUZZLE", "SHAPES", "puzzle", "shapes")
+                    ):
                         try:
-                            # solver được inject từ runtime
-                            solver = getattr(self, "_solver", None)
-                            if solver is not None:
-                                result = solver.try_solve(
-                                    challenge_type=finding.get("challenge_type") or kind,
-                                    image_path=str(paths.monitor_captures / image_name),
-                                )
-                                if result.success:
-                                    log.info("Auto-solve thành công: %s", result.detail)
-                                else:
-                                    log.warning("Auto-solve thất bại: %s", result.error)
+                            # image_path: dùng ảnh vừa capture nếu có, không thì None
+                            img_path = None
+                            if "image_name" in locals() and image_name:
+                                img_path = str(paths.monitor_captures / image_name)
+
+                            result = self._solver.try_solve(
+                                challenge_type=finding.get("challenge_type"),
+                                image_path=img_path,
+                            )
+                            if result.success:
+                                log.info("Auto-solve thành công: %s", result.detail)
+                                # Cho phép cleared ở vòng sau
+                                self._detected = False
+                                self._detected_kind = None
+                            else:
+                                log.warning("Auto-solve thất bại: %s", result.error)
                         except Exception:
-                            log.exception("Lỗi khi gọi auto-solver")    
+                            log.exception("Lỗi khi gọi auto-solver") 
                     elif self._detected and negative >= CONFIRM_FRAMES:
                         self._detected = False
                         old_kind = self._detected_kind
@@ -674,5 +751,3 @@ class CaptchaMonitor:
                 old.unlink()
             except OSError:
                 pass
-    def set_solver(self, solver) -> None:
-    self._solver = solver
