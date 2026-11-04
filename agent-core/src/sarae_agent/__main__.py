@@ -48,7 +48,13 @@ def self_check() -> int:
         report["dpapi_roundtrip"] = f"ERROR {exc}"
     from sarae_agent.config import paths
     report["data_root"] = str(paths.root)
-    ok = all(not str(v).startswith("ERROR") for v in report["modules"].values()) and report["dpapi_roundtrip"] is True
+    from sarae_agent.monitoring.captcha import builtin_templates, template_specs
+    import cv2
+    import numpy as np
+    loaded = {name for name, _ in builtin_templates(cv2, np)}
+    report["builtins"] = {name: name in loaded for name in template_specs()}
+    ok = (all(not str(v).startswith("ERROR") for v in report["modules"].values()) and
+          report["dpapi_roundtrip"] is True and bool(report["builtins"]) and all(report["builtins"].values()))
     report["ok"] = ok
     print(json.dumps(report, ensure_ascii=True, indent=2))
     return 0 if ok else 1

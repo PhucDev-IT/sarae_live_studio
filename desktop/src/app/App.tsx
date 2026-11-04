@@ -78,7 +78,7 @@ function CaptchaBanner() {
     <div className="banner banner-danger pulse">
       <ScanEye size={16} />
       <div>
-        <strong>Phát hiện CAPTCHA trên TikTok LIVE Studio</strong>
+        <strong>{'kind' in state.captcha ? ({ INACTIVITY_WARNING: 'LIVE yêu cầu xác minh do không hoạt động', CAPTCHA_CHALLENGE: 'Phát hiện hộp CAPTCHA', UNKNOWN_VERIFICATION: 'Giao diện xác minh chưa phân loại' }[state.captcha.kind]) : 'Phát hiện hộp CAPTCHA'} trên TikTok LIVE Studio</strong>
         <p>Lúc {new Date(state.captcha.at).toLocaleTimeString('vi-VN')}. Hãy xử lý trực tiếp trên máy.</p>
       </div>
       <Button variant="ghost" icon={<X size={14} />} onClick={clearCaptcha} aria-label="Ẩn" />

@@ -9,7 +9,6 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib import request, parse
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.identity import current_owner
@@ -29,13 +28,15 @@ guard=threading.RLock()
 stop_signal=threading.Event()
 worker=None
 state={"running":False,"window_found":False,"window_title":"","window_visible":False,"status":"idle","last_scan":None,"error":None,"events_count":0}
-config={"interval_seconds":2.0,"threshold":0.82,"telegram_enabled":False,"telegram_chat_id":"","template_loaded":False}
+config={"interval_seconds":240.0,"threshold":0.82,"template_loaded":False}
 config_file=ROOT/"monitor_config.json"
 try:
     saved=json.loads(config_file.read_text(encoding="utf-8"))
     if isinstance(saved,dict):
-        values={k:saved[k] for k in ("interval_seconds","threshold","telegram_enabled","telegram_chat_id") if k in saved}
+        values={k:saved[k] for k in ("interval_seconds","threshold") if k in saved}
         config.update(values)
+        if not isinstance(config["interval_seconds"],(int,float)) or not 180<=config["interval_seconds"]<=240:
+            config["interval_seconds"]=240.0
 except (OSError,ValueError,TypeError):
     pass
 template_dir=ROOT/"templates"
@@ -50,10 +51,8 @@ positive_count=0
 negative_count=0
 
 class ConfigBody(BaseModel):
-    interval_seconds:float=Field(default=2.0,ge=0.5,le=15)
+    interval_seconds:float=Field(default=240.0,ge=180,le=240)
     threshold:float=Field(default=0.82,ge=0.65,le=0.99)
-    telegram_enabled:bool=False
-    telegram_chat_id:str=Field(default="",max_length=50)
 class TemplateBody(BaseModel):
     png_base64:str=Field(min_length=20,max_length=5_000_000)
 
@@ -62,20 +61,6 @@ def emit(kind,detail,image=None):
     with guard:
         events.append(event)
         state["events_count"]+=1
-    if config["telegram_enabled"] and kind in ("captcha_detected","captcha_cleared","monitor_error"):
-        threading.Thread(target=notify,args=(event,),daemon=True).start()
-
-def notify(event):
-    token=settings.sarae_telegram_bot_token.strip()
-    chat=config["telegram_chat_id"].strip()
-    if not token or not chat:return
-    message=f"Sarae LIVE | {event['kind']}\n{event['detail']}\n{event['at']}"
-    try:
-        req=request.Request("https://api.telegram.org/bot"+token+"/sendMessage",
-                            data=parse.urlencode({"chat_id":chat,"text":message}).encode(),method="POST")
-        request.urlopen(req,timeout=8).close()
-    except Exception as exc:
-        with guard:state["error"]="Telegram: "+str(exc)[:160]
 
 def dependencies():
     if os.name!="nt":raise RuntimeError("Monitor cần Windows Desktop")
@@ -124,6 +109,7 @@ def loop():
     try:
         cv2,np,mss,win32gui=dependencies()
         while not stop_signal.is_set():
+            next_delay=config["interval_seconds"]
             try:
                 target=find_window(win32gui)
                 hwnd=target['hwnd'] if target else None
@@ -131,7 +117,7 @@ def loop():
                 with guard:
                     state.update(window_found=hwnd is not None,window_title=title,
                                  window_visible=bool(target and not target["minimized"]),
-                                 window_info=target,last_scan=datetime.now(timezone.utc).isoformat(),error=None)
+                                 window_info=target,error=None)
                 if not hwnd or win32gui.IsIconic(hwnd):
                     with guard:state["status"]="window_unavailable"
                     positive_count=negative_count=0
@@ -156,6 +142,7 @@ def loop():
                     state["capture_bounds"]={"left":left,"top":top,
                                              "width":right-left,"height":bottom-top}
                     state["monitors_detected"]=monitor_count
+                    state["last_scan"]=datetime.now(timezone.utc).isoformat()
                 gray=cv2.cvtColor(shot,cv2.COLOR_BGRA2GRAY)
                 scores=[]
                 for candidate in all_templates():
@@ -174,22 +161,24 @@ def loop():
                 detected=score>=config["threshold"]
                 positive_count=positive_count+1 if detected else 0
                 negative_count=negative_count+1 if not detected else 0
-                with guard:state.update(status="captcha_detected" if last_detection else "watching",match_score=round(score,3),match_scale=matched_scale,matched_template=matched_name)
+                if detected and not last_detection and positive_count<2:
+                    next_delay=2.5
+                with guard:state.update(status="unknown_verification" if last_detection else "watching",match_score=round(score,3),match_scale=matched_scale,matched_template=matched_name)
                 if not last_detection and positive_count>=2:
                     last_detection=True
                     image_name="detected_"+datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")+".png"
                     cv2.imwrite(str(ROOT/image_name),shot)
-                    with guard:state["status"]="captcha_detected"
-                    emit("captcha_detected","Khớp mẫu CAPTCHA, điểm "+str(round(score,3)),image_name)
+                    with guard:state["status"]="unknown_verification"
+                    emit("verification_detected","Khớp ảnh mẫu xác minh chưa phân loại, điểm "+str(round(score,3)),image_name)
                 elif last_detection and negative_count>=2:
                     last_detection=False
                     with guard:state["status"]="watching"
-                    emit("captcha_cleared","Không còn thấy mẫu CAPTCHA; chưa xác minh đã giải thành công.")
+                    emit("verification_cleared","Không còn thấy ảnh mẫu xác minh; chưa xác minh đã giải thành công.")
             except Exception as exc:
                 with guard:state.update(status="error",error=str(exc)[:250])
                 stop_signal.wait(config["interval_seconds"])
                 continue
-            stop_signal.wait(config["interval_seconds"])
+            stop_signal.wait(next_delay)
     except Exception as exc:
         with guard:state.update(status="error",error=str(exc),running=False)
         emit("monitor_error",str(exc))
@@ -274,14 +263,57 @@ def local_templates_only():
 @router.get("/status")
 def agent_status(owner:Owner,agent_id:AgentId):
     from app.owner_agents import owned_agent,public
+    from app.cloud_agents import telegram_config
     agent=owned_agent(owner,agent_id)
     verification=agent.get("status",{}).get("verification") or {}
     if not agent["online"]:
         state_={**(verification.get("state") or {}),"running":False,"status":"agent_offline"}
     else:
         state_=verification.get("state") or {"running":False,"status":"idle","error":None}
-    return {"state":state_,"config":verification.get("config") or DEFAULT_CONFIG,
-            "events":verification.get("events") or [],"agent":public(agent)}
+    monitor_config={**DEFAULT_CONFIG,**{k:v for k,v in (verification.get("config") or {}).items()
+                                      if k in ("interval_seconds","threshold")}}
+    telegram=telegram_config(owner["id"],agent_id)
+    telegram_status=("Chưa có Bot Token" if not telegram["token_configured"] else
+                     "Chưa có Chat ID" if not telegram["chat_id"] else "Sẵn sàng")
+    return {"state":state_,"config":monitor_config,
+            "events":verification.get("events") or [],"agent":public(agent),
+            "telegram_status":telegram_status,"telegram":telegram,
+            "builtins_ready":bool(verification.get("builtins_ready")),
+            "template_status":verification.get("template_status") or []}
+
+class TelegramSettingsBody(BaseModel):
+    enabled:bool=False
+    chat_id:str=""
+    bot_token:str|None=None
+    clear_token:bool=False
+
+@router.put("/telegram/config")
+def configure_telegram(body:TelegramSettingsBody,owner:Owner,agent_id:AgentId):
+    from app.owner_agents import owned_agent
+    from app.cloud_agents import save_telegram_config
+    owned_agent(owner,agent_id)
+    if len(body.chat_id)>50 or body.bot_token is not None and len(body.bot_token)>200:
+        raise HTTPException(422,"Cấu hình Telegram không hợp lệ")
+    return save_telegram_config(owner["id"],agent_id,body.enabled,body.chat_id,body.bot_token,body.clear_token)
+
+@router.post("/telegram/test")
+def test_telegram(owner:Owner,agent_id:AgentId):
+    from app.owner_agents import owned_agent
+    from app.cloud_agents import send_telegram,telegram_error,telegram_config
+    agent=owned_agent(owner,agent_id)
+    config=telegram_config(owner["id"],agent_id,with_token=True)
+    token=config["token"]
+    if not token:
+        raise HTTPException(503,"Chưa có Bot Token trên Cloud Backend")
+    chat_id=config["chat_id"].strip()
+    if not chat_id:
+        raise HTTPException(422,"Chưa có Chat ID")
+    text=f"Sarae LIVE | test\nMáy: {agent['hostname']}\nSự kiện: telegram_test\nTrạng thái: Kiểm tra cấu hình\nThời gian: {datetime.now(timezone.utc).isoformat()}"
+    try:
+        send_telegram(chat_id,text,token)
+    except Exception as exc:
+        raise HTTPException(502,telegram_error(exc,token)) from None
+    return {"ok":True,"message":"Telegram đã nhận thông báo thử"}
 
 @router.put("/config")
 def agent_configure(body:ConfigBody,owner:Owner,agent_id:AgentId):

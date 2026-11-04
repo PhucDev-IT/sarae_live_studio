@@ -41,7 +41,7 @@ from sarae_agent.errors import AgentError, as_agent_error
 from sarae_agent.logging_setup import correlation_id
 
 log = logging.getLogger("sarae.cloud.worker")
-
+CAPTURE_MAX_SIDE = 2560  # verification screenshots are downscaled above this before upload
 
 class Backoff:
     def __init__(self, base: float = 2.0, cap: float = 60.0):
@@ -139,6 +139,39 @@ class CloudWorker:
     def poke(self) -> None:
         """Send a heartbeat as soon as possible (e.g. CAPTCHA detected, playback changed)."""
         self._wake.set()
+
+    def upload_capture(self, at: str, image_path: str) -> None:
+        """Send the full Studio-window screenshot of a confirmed detection so the OWNER's Telegram alert can show
+        it (the Cloud waits briefly for it). Best effort, off the heartbeat thread."""
+        threading.Thread(target=self._upload_capture, args=(at, image_path), daemon=True,
+                         name="cloud-capture").start()
+
+    def _upload_capture(self, at: str, image_path: str) -> None:
+        try:
+            import cv2
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if image is None:
+                return
+            scale = CAPTURE_MAX_SIDE / max(image.shape[:2])
+            if scale < 1:
+                image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            ok, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                return
+            for attempt in range(2):
+                client = self._client
+                if client is None:
+                    return
+                try:
+                    client.upload_verification_capture(self._credential, self.agent_id, at, jpeg.tobytes())
+                    return
+                except CloudError as exc:
+                    if attempt or not exc.retryable:
+                        raise
+                    self._stop.wait(3)
+        except Exception as exc:  # noqa: BLE001 - the text alert still goes out without the picture
+            log.warning("Không gửi được ảnh màn hình xác minh lên Cloud: %s", exc,
+                        extra={"code": getattr(exc, "code", "CAPTURE_UPLOAD_FAILED")})
 
     # --- connection state ----------------------------------------------------------------
     def _set_connection(self, connected: bool, state: str, error: dict | None = None,

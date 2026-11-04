@@ -9,6 +9,7 @@ error code so the worker can decide between retry (transient) and stop (requires
                                                     attempt, expires_at} | null}
     POST /agents/commands/ack                       {agent_id, command_id, claim_token, success, result}
     POST /agents/events                             {agent_id, events: [{seq, type, session_id, product_id, detail}]}
+    POST /agents/verification-capture?agent_id=&at=  JPEG of the Studio window for the Telegram alert of detection `at`
     GET  /captcha-templates/agent?agent_id=          {templates: [{id, sha256, bytes}]} (set by SUPER_ADMIN)
     GET  /captcha-templates/agent/{id}/image?agent_id=   PNG/JPEG bytes
 Agent endpoints authenticate with the X-Sarae-Agent-Key header.
@@ -102,11 +103,16 @@ class CloudClient:
         self.close()
 
     def _send(self, method: str, path: str, context: str, *, key: str | None = None,
-              json: Any = None, params: dict | None = None, timeout: float | None = None) -> httpx.Response:
-        headers = {"X-Sarae-Agent-Key": key} if key else None
+              json: Any = None, params: dict | None = None, timeout: float | None = None,
+              content: bytes | None = None, content_type: str | None = None) -> httpx.Response:
+        headers = {"X-Sarae-Agent-Key": key} if key else {}
+        if content_type:
+            headers["Content-Type"] = content_type
         extra = {} if timeout is None else {"timeout": httpx.Timeout(timeout, connect=min(6.0, timeout))}
+        if content is not None:
+            extra["content"] = content
         try:
-            response = self._http.request(method, path, json=json, params=params, headers=headers, **extra)
+            response = self._http.request(method, path, json=json, params=params, headers=headers or None, **extra)
         except httpx.TimeoutException as exc:
             raise CloudError("CLOUD_TIMEOUT", f"Cloud không phản hồi ({type(exc).__name__})",
                              retryable=True) from exc
@@ -161,6 +167,11 @@ class CloudClient:
     def post_events(self, key: str, agent_id: str, events: list[dict]) -> dict:
         return self._request("POST", "/agents/events", "events", key=key,
                              json={"agent_id": agent_id, "events": events[:200]})
+
+    def upload_verification_capture(self, key: str, agent_id: str, at: str, jpeg: bytes) -> dict:
+        return self._request("POST", "/agents/verification-capture", "verification_capture", key=key,
+                             params={"agent_id": agent_id, "at": at}, content=jpeg, content_type="image/jpeg",
+                             timeout=30.0)
 
     def sync_tiktok_products(self, key: str, agent_id: str, products: list[dict], account: dict) -> dict:
         return self._request("POST", "/tiktok-products/sync", "tiktok_sync", key=key,

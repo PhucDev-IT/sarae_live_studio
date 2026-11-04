@@ -278,10 +278,8 @@ class ChatSendPayload(Payload):
 
 
 class MonitorConfigPayload(Payload):
-    interval_seconds: float = Field(default=2.0, ge=0.5, le=15)
+    interval_seconds: float = Field(default=240.0, ge=180, le=240)
     threshold: float = Field(default=0.82, ge=0.65, le=0.99)
-    telegram_enabled: bool = False
-    telegram_chat_id: str = Field(default="", max_length=50)
 
 
 class CommandRouter:

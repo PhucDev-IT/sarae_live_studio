@@ -146,8 +146,6 @@ export interface MonitorState {
 export interface MonitorConfig {
   interval_seconds: number
   threshold: number
-  telegram_enabled: boolean
-  telegram_chat_id: string
   autostart: boolean
 }
 
@@ -164,6 +162,7 @@ export interface MonitorStatus {
   config: MonitorConfig
   events: MonitorEvent[]
   templates: number
+  builtins_ready: boolean
 }
 
 export interface CoreInfo {
@@ -228,6 +227,8 @@ export interface LogEntry {
 export interface TemplateInfo {
   name: string
   bytes: number
+  source: 'custom' | 'built-in' | 'cloud'
+  status: 'Ready' | 'Missing' | 'Invalid'
 }
 
 export type Voice = 'vi-VN-HoaiMyNeural' | 'vi-VN-NamMinhNeural'
@@ -286,6 +287,8 @@ export interface CoreMethods {
   'monitor.stop': [NoParams, MonitorStatus]
   'monitor.config': [Partial<MonitorConfig>, MonitorConfig]
   'monitor.templates.list': [NoParams, { templates: TemplateInfo[] }]
+  'monitor.templates.set_custom': [{ name: string; image_base64: string }, { templates: TemplateInfo[] }]
+  'monitor.templates.reset': [{ name: string }, { templates: TemplateInfo[] }]
   'voice.speak': [{ text: string; voice?: Voice; rate?: number; duck?: boolean; intro?: string }, { status: string; id: string; position: number; source: string; voice: string; chars: number }]
   'voice.clear': [NoParams, { cleared: number; stopped: boolean }]
   'voice.status': [NoParams, { queue: number; prepare_pending: number; speaking: string | null; ducked: boolean; stats: Record<string, number>; last: Record<string, unknown> | null }]
@@ -310,6 +313,8 @@ export interface CoreEvents {
   'monitor.status_changed': MonitorStatus
   'monitor.captcha_detected': { at: string; score: number; template: string; image_path: string; window_title: string }
   'monitor.captcha_cleared': { at: string }
+  'monitor.verification_detected': { at: string; kind: 'INACTIVITY_WARNING' | 'CAPTCHA_CHALLENGE' | 'UNKNOWN_VERIFICATION'; challenge_type: string | null; score: number; template: string; image_path: string; window_title: string }
+  'monitor.verification_cleared': { at: string; kind: string | null }
   'command.received': CommandEntry
   'command.finished': CommandEntry
   'log.entry': LogEntry

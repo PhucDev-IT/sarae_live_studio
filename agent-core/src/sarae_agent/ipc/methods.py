@@ -60,11 +60,18 @@ class LoopParams(Strict):
 
 
 class MonitorConfigParams(Strict):
-    interval_seconds: float | None = Field(default=None, ge=0.5, le=15)
+    interval_seconds: float | None = Field(default=None, ge=180, le=240)
     threshold: float | None = Field(default=None, ge=0.65, le=0.99)
-    telegram_enabled: bool | None = None
-    telegram_chat_id: str | None = Field(default=None, max_length=50)
     autostart: bool | None = None
+
+
+class CustomTemplateParams(Strict):
+    name: str = Field(min_length=1, max_length=80)
+    image_base64: str = Field(min_length=1, max_length=4_100_000)
+
+
+class ResetTemplateParams(Strict):
+    name: str = Field(min_length=1, max_length=80)
 
 
 class SpeakParams(Strict):
@@ -193,8 +200,9 @@ def register_all(server: IpcServer, rt: AgentRuntime) -> None:
     reg("monitor.start", lambda _: rt.monitor.start())
     reg("monitor.stop", lambda _: rt.monitor.stop())
     reg("monitor.config", lambda p: rt.monitor.configure(p.model_dump(exclude_none=True)), MonitorConfigParams)
-    # Templates come from Sarae through the Cloud (cloud/worker.py); the GUI can only count them.
     reg("monitor.templates.list", lambda _: {"templates": rt.monitor.templates()})
+    reg("monitor.templates.set_custom", lambda p: rt.monitor.set_custom_template(p.name, p.image_base64), CustomTemplateParams)
+    reg("monitor.templates.reset", lambda p: rt.monitor.reset_custom_template(p.name), ResetTemplateParams)
 
     # voice
     reg("voice.speak", lambda p: rt.voice.speak(p.text, p.voice, rate=p.rate, duck=p.duck, intro=p.intro,

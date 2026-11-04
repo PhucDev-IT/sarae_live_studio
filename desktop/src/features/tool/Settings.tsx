@@ -3,13 +3,14 @@ import { LogOut, Settings2 } from 'lucide-react'
 import { useApp } from '../../app/store'
 import { ActionButton, Input, Toggle } from '../../app/ui'
 import { call } from '../../services/core'
-import type { MethodParams } from '../../types/ipc'
+import type { MethodParams, TemplateInfo } from '../../types/ipc'
 
 /** Rarely changed, folded by default: startup behaviour, OBS connection, this device. */
 export function Settings() {
   const { state, run, refresh, refreshConfig } = useApp()
   const config = state.config
   const agent = state.status?.agent
+  const monitor = state.status?.monitor
   const [host, setHost] = useState('')
   const [port, setPort] = useState(4455)
   const [password, setPassword] = useState('')
@@ -18,6 +19,24 @@ export function Settings() {
   const [sourceA, setSourceA] = useState('')
   const [sourceB, setSourceB] = useState('')
   const [cameraInput, setCameraInput] = useState('')
+  const [templates, setTemplates] = useState<TemplateInfo[]>([])
+
+  useEffect(() => {
+    void call('monitor.templates.list').then(result => setTemplates(result.templates)).catch(() => undefined)
+  }, [agent?.state])
+
+  const uploadTemplate = async (name: string, file?: File) => {
+    if (!file) return
+    const image_base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(new Error('Không đọc được ảnh mẫu'))
+      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+      reader.readAsDataURL(file)
+    })
+    const result = await run(() => call('monitor.templates.set_custom', { name, image_base64 }))
+    if (result) setTemplates(result.templates)
+    await refresh()
+  }
 
   useEffect(() => {
     if (!config) return
@@ -44,6 +63,37 @@ export function Settings() {
         <Toggle checked={config.agent.autostart} label="Tự kết nối Cloud" onChange={(v) => void setConfig({ agent: { autostart: v } })} />
         <Toggle checked={config.obs.auto_connect} label="Tự kết nối OBS" onChange={(v) => void setConfig({ obs: { auto_connect: v } })} />
         <Toggle checked={config.monitor.autostart} label="Tự bật giám sát CAPTCHA" onChange={(v) => void setConfig({ monitor: { autostart: v } })} />
+      </div>
+
+      <div className="settings-group">
+        <h3>Built-in Templates — {monitor?.builtins_ready ? 'Ready' : 'Missing'}</h3>
+        <p className="muted small">Lần chụp gần nhất: {monitor?.state.last_scan ? new Date(monitor.state.last_scan).toLocaleString('vi-VN') : 'Chưa chụp'} · Số màn hình: {monitor?.state.monitors_detected ?? 'Chưa kiểm tra'} · Cửa sổ: {monitor?.state.window_title || 'Chưa tìm thấy'}</p>
+        <p className="muted small">Chu kỳ kiểm tra: {config.monitor.interval_seconds} giây. Telegram được cấu hình theo từng OWNER trên Cloud.</p>
+        <details>
+          <summary>Lịch sử giao diện xác minh</summary>
+          {monitor?.events.filter(event => event.kind === 'verification_detected' || event.kind === 'verification_cleared' || event.kind === 'captcha_detected' || event.kind === 'captcha_cleared').map(event => (
+            <p className="muted small" key={event.id}>{new Date(event.at).toLocaleString('vi-VN')} · {event.kind} · {event.detail}</p>
+          ))}
+        </details>
+        <p className="muted small">Ảnh mẫu tích hợp được nạp tự động. Trạng thái từng ảnh:</p>
+        {templates.filter(t => t.source !== 'cloud').map(template => (
+          <div className="inline" key={template.name}>
+            <span>{template.name}: {template.status} ({template.source})</span>
+            {template.source === 'custom' && <ActionButton onAction={async () => {
+              const result = await run(() => call('monitor.templates.reset', { name: template.name }))
+              if (result) setTemplates(result.templates)
+              await refresh()
+            }}>Reset to Default</ActionButton>}
+          </div>
+        ))}
+        <details>
+          <summary>Advanced Settings — Custom Templates</summary>
+          {templates.filter(t => t.source !== 'cloud').map(template => (
+            <label key={template.name} className="inline">{template.name}
+              <input type="file" accept="image/png" onChange={e => void uploadTemplate(template.name, e.target.files?.[0])} />
+            </label>
+          ))}
+        </details>
       </div>
 
       <div className="settings-group">

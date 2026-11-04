@@ -10,6 +10,9 @@ const MONITOR_LABEL: Record<string, [string, Tone]> = {
   starting: ['Đang khởi động', 'info'],
   watching: ['Đang giám sát', 'ok'],
   captcha_detected: ['Phát hiện CAPTCHA', 'danger'],
+  inactivity_warning: ['LIVE yêu cầu xác minh do không hoạt động', 'warn'],
+  captcha_challenge: ['Phát hiện hộp CAPTCHA', 'danger'],
+  unknown_verification: ['Giao diện xác minh chưa phân loại', 'warn'],
   window_unavailable: ['Không thấy cửa sổ TikTok LIVE Studio', 'warn'],
   template_missing_or_invalid: ['Ảnh mẫu không hợp lệ', 'warn'],
   stopped: ['Tắt', 'muted'],
@@ -148,12 +151,11 @@ function CaptchaRow() {
   if (!monitor) return null
   const s = monitor.state
   const [label, tone] = MONITOR_LABEL[s.status] ?? [s.status, 'muted' as Tone]
-  // Detection data comes from Sarae through the Cloud (nothing to add here); it arrives once Cloud is connected.
   const noTemplate = monitor.templates === 0
   return (
     <Row icon={<ScanEye size={16} />} title="Giám sát CAPTCHA"
-      status={noTemplate && !s.running ? 'Đang chờ dữ liệu nhận diện từ Sarae (cần Kết nối Cloud)'
-        : s.error && s.status === 'error' ? s.error : label}
+      status={noTemplate && !s.running ? 'Chưa có ảnh mẫu hợp lệ; xem Cài đặt nâng cao'
+        : s.error && (s.status === 'error' || s.status === 'template_missing_or_invalid') ? s.error : label}
       tone={noTemplate && !s.running ? 'warn' : tone}
       control={<Switch checked={s.running} disabled={noTemplate && !s.running} label="Giám sát CAPTCHA" onToggle={(value) =>
         run(() => call(value ? 'monitor.start' : 'monitor.stop')).then(refresh)} />} />

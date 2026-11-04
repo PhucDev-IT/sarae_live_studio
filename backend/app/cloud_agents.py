@@ -39,8 +39,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Literal
-from urllib import parse, request
-from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from urllib import parse, request, error as urlerror
+from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -53,6 +53,10 @@ router = APIRouter(prefix="/api/agents", tags=["Windows Agents"])
 
 
 DB = DATA_DIR / "agents.sqlite3"
+# Latest verification screenshot per Agent, kept only until its Telegram alert is sent.
+CAPTURE_DIR = DATA_DIR / "verification_captures"
+CAPTURE_MAX_BYTES = 6_000_000
+CAPTURE_WAIT_SECONDS = 20.0   # a detection alert waits this long for the Agent's screenshot
 ONLINE_SECONDS = 35
 MAX_WAIT_SECONDS = 25
 FINAL = ("SUCCESS", "FAILED", "TIMEOUT", "CANCELLED")
@@ -118,6 +122,9 @@ def connection():
     db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_commands_idempotency
         ON agent_commands(agent_id, idempotency_key) WHERE idempotency_key IS NOT NULL""")
     db.execute("CREATE INDEX IF NOT EXISTS ix_agent_commands_queue ON agent_commands(agent_id, status, created_at)")
+    db.execute("""CREATE TABLE IF NOT EXISTS agent_telegram_settings (
+        agent_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+        chat_id TEXT NOT NULL DEFAULT '', token_enc TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)""")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_events (
         agent_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
         created_at TEXT NOT NULL, processed INTEGER NOT NULL DEFAULT 0,
@@ -219,20 +226,26 @@ def _without_paths(verification:dict)->dict:
     info=state.get("window_info")
     if isinstance(info,dict) and info.get("exe_path"):
         state["window_info"]={**info,"exe_path":str(info["exe_path"]).replace("\\","/").rsplit("/",1)[-1]}
-    return {**verification,"state":state} if verification else verification
+    config=verification.get("config") if isinstance(verification.get("config"),dict) else {}
+    config={k:v for k,v in config.items() if k not in ("telegram_enabled","telegram_chat_id")}
+    return {**verification,"state":state,"config":config} if verification else verification
 
-# ----- CAPTCHA alert --------------------------------------------------------------------------------
-# The Agent never holds the Telegram bot token: the Cloud sends the alert when a heartbeat shows the monitor's status
-# change. agent_status.captcha_alert keeps the last alert sent ("detected"/"cleared"), so a heartbeat in between
-# (error, window_unavailable) does not send the same alert again.
+# ----- Verification alert ---------------------------------------------------------------------------
+# The Agent never holds the Telegram bot token. The Cloud sends on monitor status transitions.
+# agent_status.captcha_alert retains the active verification kind across transient errors so one
+# continuous appearance creates only one alert, even if its subtype changes.
 
 def captcha_transition(previous:str|None,verification:dict)->tuple[str|None,str|None]:
     """Return (alert state to store, alert kind to send now or None) for one heartbeat."""
     state=verification.get("state") if isinstance(verification,dict) else None
     state=state if isinstance(state,dict) else {}
     status=state.get("status")
-    if status=="captcha_detected":
+    if status in ("inactivity_warning","captcha_challenge","unknown_verification"):
+        return (status,None) if previous in ("inactivity_warning","captcha_challenge","unknown_verification") else (status,"verification_detected")
+    if status=="captcha_detected":  # older Agent versions
         return ("detected",None) if previous=="detected" else ("detected","captcha_detected")
+    if status=="watching" and previous in ("inactivity_warning","captcha_challenge","unknown_verification"):
+        return "cleared","verification_cleared"
     if status=="watching" and previous=="detected":
         return "cleared","captcha_cleared"
     if not state.get("running",True) or status in ("idle","stopped","starting"):
@@ -241,32 +254,166 @@ def captcha_transition(previous:str|None,verification:dict)->tuple[str|None,str|
 
 def captcha_message(kind:str,hostname:str,verification:dict,at:str)->str:
     events=verification.get("events") if isinstance(verification.get("events"),list) else []
-    detail=next((e.get("detail") for e in events if isinstance(e,dict) and e.get("kind")==kind and e.get("detail")),
-                None) or ("Phát hiện CAPTCHA trên TikTok LIVE Studio" if kind=="captcha_detected"
-                          else "Không còn thấy mẫu CAPTCHA; chưa xác minh đã giải thành công.")
-    return f"Sarae LIVE | {kind}\nMáy: {hostname}\n{detail}\n{at}"
+    event=next((e for e in events if isinstance(e,dict) and e.get("kind")==kind),None)
+    detail=(event or {}).get("detail") or ("Phát hiện giao diện xác minh trên TikTok LIVE Studio" if kind.endswith("detected")
+                                     else "Không còn thấy giao diện xác minh; chưa xác minh đã giải thành công.")
+    detected_at=(event or {}).get("at") or at
+    state=verification.get("state") if isinstance(verification.get("state"),dict) else {}
+    score=state.get("match_score")
+    confidence=f"\nĐộ tin cậy: {score:.3f}" if kind.endswith("detected") and isinstance(score,(int,float)) else ""
+    event_type=state.get("event_type") or ("CAPTCHA_CHALLENGE" if kind=="captcha_detected" else
+                                           str(state.get("status", "VERIFICATION_CLEARED")).upper())
+    labels={"INACTIVITY_WARNING":"Cảnh báo LIVE không hoạt động, yêu cầu xác minh",
+            "CAPTCHA_CHALLENGE":"Hộp thoại CAPTCHA", "UNKNOWN_VERIFICATION":"Giao diện xác minh chưa phân loại",
+            "VERIFICATION_CLEARED":"Không còn thấy giao diện xác minh"}
+    label=labels.get(event_type,"Không còn thấy giao diện xác minh") if kind.endswith("detected") else labels["VERIFICATION_CLEARED"]
+    if kind=="captcha_detected":
+        label="Nghi vấn CAPTCHA"  # compatibility with older Agents
+    subtype=f"\nDạng CAPTCHA: {state['challenge_type']}" if state.get("challenge_type") and kind.endswith("detected") else ""
+    return f"Sarae LIVE | {kind}\nMáy: {hostname}\nSự kiện: {event_type if kind.endswith('detected') else kind}\nTrạng thái: {label}{subtype}{confidence}\n{detail}\nThời gian: {detected_at}"
 
-def send_telegram(chat_id:str,text:str):
-    token=settings.sarae_telegram_bot_token.strip()
+def telegram_error(exc:Exception,token:str="")->str:
+    """Return a useful API error without exposing the token embedded in Telegram URLs."""
+    if isinstance(exc,urlerror.HTTPError):
+        try:
+            body=json.loads(exc.read(4096))
+            description=str(body.get("description") or "")[:160]
+        except (ValueError,TypeError,OSError):
+            description=""
+        if token:
+            description=description.replace(token,"[redacted]")
+        return f"Telegram HTTP {exc.code}"+(f": {description}" if description else "")
+    message=str(exc).replace(token,"[redacted]") if token else str(exc)
+    return message[:160]
+
+def telegram_config(owner_id:str,agent_id:str,*,with_token:bool=False)->dict:
+    from app.credentials import decrypt
+    with _db() as db:
+        row=db.execute("SELECT enabled,chat_id,token_enc FROM agent_telegram_settings WHERE owner_id=? AND agent_id=?",
+                       (owner_id,agent_id)).fetchone()
+    token=decrypt(row["token_enc"]) if row and row["token_enc"] else None
+    result={"enabled":bool(row["enabled"]) if row else False,
+            "chat_id":row["chat_id"] if row else "", "token_configured":bool(token)}
+    if with_token:
+        result["token"]=token or ""
+    return result
+
+def save_telegram_config(owner_id:str,agent_id:str,enabled:bool,chat_id:str,token:str|None,clear_token:bool=False)->dict:
+    from app.credentials import encrypt
+    with _db() as db:
+        previous=db.execute("SELECT token_enc FROM agent_telegram_settings WHERE owner_id=? AND agent_id=?",
+                            (owner_id,agent_id)).fetchone()
+        encrypted="" if clear_token else encrypt(token.strip()) if token is not None and token.strip() else \
+                  (previous["token_enc"] if previous else "")
+        db.execute("""INSERT INTO agent_telegram_settings(agent_id,owner_id,enabled,chat_id,token_enc,updated_at)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET owner_id=excluded.owner_id,
+            enabled=excluded.enabled,chat_id=excluded.chat_id,token_enc=excluded.token_enc,
+            updated_at=excluded.updated_at""",
+            (agent_id,owner_id,int(enabled),chat_id.strip(),encrypted,_now()))
+    return telegram_config(owner_id,agent_id)
+
+def _telegram_result(body):
+    if isinstance(body,bytes) and body:
+        result=json.loads(body)
+        if result.get("ok") is False:
+            raise ValueError("Telegram API: "+str(result.get("description") or "unknown error")[:160])
+
+def send_telegram(chat_id:str,text:str,token:str):
     req=request.Request("https://api.telegram.org/bot"+token+"/sendMessage",
                         data=parse.urlencode({"chat_id":chat_id,"text":text}).encode(),method="POST")
-    request.urlopen(req,timeout=8).close()
+    with request.urlopen(req,timeout=8) as response:
+        _telegram_result(response.read(4096))
 
-def _alert(agent_id:str,chat_id:str,text:str):
+def send_telegram_photo(chat_id:str,caption:str,photo:bytes,token:str):
+    """sendPhoto with a multipart JPEG; Telegram limits captions to 1024 characters."""
+    boundary=uuid.uuid4().hex
+    field=lambda name,value:(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                             f'{value}\r\n').encode()
+    data=(field("chat_id",chat_id)+field("caption",caption[:1024])+
+          (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="tiktok-live-studio.jpg"\r\n'
+           'Content-Type: image/jpeg\r\n\r\n').encode()+photo+f"\r\n--{boundary}--\r\n".encode())
+    req=request.Request("https://api.telegram.org/bot"+token+"/sendPhoto",data=data,method="POST",
+                        headers={"Content-Type":"multipart/form-data; boundary="+boundary})
+    with request.urlopen(req,timeout=30) as response:
+        _telegram_result(response.read(4096))
+
+def _capture_files(agent_id:str):
+    return CAPTURE_DIR/f"{agent_id}.jpg",CAPTURE_DIR/f"{agent_id}.json"
+
+def take_capture(agent_id:str,at:str)->bytes|None:
+    """The Agent's screenshot of detection ``at`` (removed once read), or None if it has not arrived."""
+    image,meta=_capture_files(agent_id)
     try:
-        send_telegram(chat_id,text)
-    except Exception as exc:  # best effort: a Telegram outage must never affect the Agent channel
-        log.warning("Telegram CAPTCHA alert for %s failed: %s",agent_id,str(exc)[:160])
+        if json.loads(meta.read_text(encoding="utf-8")).get("at")!=at:
+            return None
+        photo=image.read_bytes()
+    except (OSError,ValueError):
+        return None
+    image.unlink(missing_ok=True)
+    meta.unlink(missing_ok=True)
+    return photo
 
-def alert_captcha(agent_id:str,kind:str,hostname:str,verification:dict,at:str)->bool:
-    """Send the alert in the background when the OWNER enabled Telegram in the monitor config; True if started."""
-    config=verification.get("config") if isinstance(verification.get("config"),dict) else {}
-    chat_id=str(config.get("telegram_chat_id") or "").strip()
-    if config.get("telegram_enabled") is not True or not chat_id or not settings.sarae_telegram_bot_token.strip():
+def _alert(agent_id:str,chat_id:str,text:str,token:str,capture_at:str|None=None):
+    try:
+        photo=None
+        if capture_at:
+            deadline=time.monotonic()+CAPTURE_WAIT_SECONDS
+            while (photo:=take_capture(agent_id,capture_at)) is None and time.monotonic()<deadline:
+                time.sleep(0.5)
+        if photo:
+            try:
+                send_telegram_photo(chat_id,text,photo,token)
+                return
+            except Exception as exc:  # the text alert still matters more than the picture
+                log.warning("Telegram screenshot for %s failed: %s",agent_id,telegram_error(exc,token))
+                text+="\n(Không gửi được ảnh màn hình)"
+        elif capture_at:
+            text+="\n(Agent chưa gửi ảnh màn hình)"
+        send_telegram(chat_id,text,token)
+    except Exception as exc:  # best effort: a Telegram outage must never affect the Agent channel
+        log.warning("Telegram CAPTCHA alert for %s failed: %s",agent_id,telegram_error(exc,token))
+
+def alert_captcha(owner_id:str,agent_id:str,kind:str,hostname:str,verification:dict,at:str)->bool:
+    """Send an alert using the OWNER's encrypted Cloud settings for this Agent."""
+    config=telegram_config(owner_id,agent_id,with_token=True)
+    chat_id=config["chat_id"].strip()
+    token=config["token"]
+    if not config["enabled"] or not chat_id or not token:
         return False
-    threading.Thread(target=_alert,args=(agent_id,chat_id,captcha_message(kind,hostname,verification,at)),
+    capture_at=None
+    if kind.endswith("detected"):  # the Agent uploads the screenshot of this event, keyed by its time
+        events=verification.get("events") if isinstance(verification.get("events"),list) else []
+        event=next((e for e in events if isinstance(e,dict) and e.get("kind")==kind),None)
+        capture_at=str(event["at"]) if event and event.get("at") else None
+    threading.Thread(target=_alert,args=(agent_id,chat_id,captcha_message(kind,hostname,verification,at),token,capture_at),
                      daemon=True,name="sarae-captcha-alert").start()
     return True
+
+@router.post("/verification-capture")
+async def verification_capture(request:Request,
+                               agent_id:str=Query(min_length=1,max_length=80,pattern=r"^[A-Za-z0-9_-]+$"),
+                               at:str=Query(min_length=1,max_length=64),
+                               x_sarae_agent_key:str|None=Header(None)):
+    """Full TikTok LIVE Studio window (JPEG) of one confirmed detection, attached to its Telegram alert so the
+    OWNER can see whether the detection was right."""
+    await run_in_threadpool(verify_agent,agent_id,x_sarae_agent_key)
+    declared=request.headers.get("content-length") or "0"
+    if not declared.isdigit() or int(declared)>CAPTURE_MAX_BYTES:
+        raise HTTPException(413,"Ảnh màn hình quá lớn")
+    photo=await request.body()
+    if len(photo)>CAPTURE_MAX_BYTES:
+        raise HTTPException(413,"Ảnh màn hình quá lớn")
+    if not photo.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(422,"Ảnh màn hình phải là JPEG")
+    def store():
+        CAPTURE_DIR.mkdir(parents=True,exist_ok=True)
+        image,meta=_capture_files(agent_id)
+        meta.unlink(missing_ok=True)             # never pair a new picture with the previous event's time
+        image.with_suffix(".tmp").write_bytes(photo)
+        image.with_suffix(".tmp").replace(image)
+        meta.write_text(json.dumps({"at":at}),encoding="utf-8")
+    await run_in_threadpool(store)
+    return {"ok":True}
 
 @router.post("/heartbeat")
 def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
@@ -287,7 +434,7 @@ def heartbeat(body:Heartbeat, x_sarae_agent_key:str|None=Header(None)):
                       captcha_alert=excluded.captcha_alert""",
                       (body.agent_id,body.hostname,at,json.dumps(sanitized,ensure_ascii=False),captcha_alert))
     if alert_kind:
-        alert_captcha(body.agent_id,alert_kind,body.hostname,verification,at)
+        alert_captcha(agent["owner_id"],body.agent_id,alert_kind,body.hostname,verification,at)
     # Compare what the Agent really plays with the Cloud's LIVE sessions (e.g. after a reconnect or restart).
     from app.live_sessions import reconcile_playback
     reconcile_playback(agent["owner_id"],body.agent_id,body.playback or {})

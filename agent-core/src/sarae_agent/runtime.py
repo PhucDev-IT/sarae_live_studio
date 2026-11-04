@@ -47,7 +47,8 @@ log = logging.getLogger("sarae.runtime")
 
 AGENT_STATES = ("stopped", "starting", "running", "disconnected", "error", "stopping")
 # Events that should reach the Cloud quickly instead of waiting for the next heartbeat.
-URGENT_EVENTS = {"monitor.captcha_detected", "monitor.captcha_cleared", "playback.changed", "obs.status_changed"}
+URGENT_EVENTS = {"monitor.verification_detected", "monitor.verification_cleared",
+                 "monitor.captcha_detected", "monitor.captcha_cleared", "playback.changed", "obs.status_changed"}
 # Heartbeat `obs` subset still read by the web Agent page (AgentCloudStatus).
 OBS_SNAPSHOT_KEYS = ("connected", "running", "paused", "media_state", "product_id", "index", "count",
                      "last_status", "error")
@@ -226,6 +227,8 @@ class AgentRuntime:
         worker = self.worker
         if worker is not None and name in URGENT_EVENTS:
             worker.poke()
+        if worker is not None and name == "monitor.verification_detected" and data.get("image_path"):
+            worker.upload_capture(str(data.get("at") or ""), str(data["image_path"]))
         self._emit_raw(name, data)
         if name == "command.finished":
             self._maybe_pin_current_video()

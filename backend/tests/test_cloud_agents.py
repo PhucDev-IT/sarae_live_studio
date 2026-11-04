@@ -506,20 +506,36 @@ class AgentErrorCodeTests(AgentChannelBase):
         self.assertEqual(self.activate(third).status_code, 200)
 
 
+JPEG = b"\xff\xd8\xff\xe0 jpeg"
+
+
 class CaptchaAlertTests(AgentChannelBase):
     def setUp(self):
         super().setUp()
         self.sent = []
-        self.token = patch.object(cloud_agents.settings, "sarae_telegram_bot_token", "123:TEST")
-        self.token.start()
+        cloud_agents.save_telegram_config(self.owner_id,self.agent_id,True,"-100777","123:TEST")
         self.sender = patch.object(cloud_agents, "send_telegram",
-                                   side_effect=lambda chat, text: self.sent.append((chat, text)))
+                                   side_effect=lambda chat, text, token: self.sent.append((chat, text)))
         self.sender.start()
+        self.photos = []
+        self.capture_patches = [
+            patch.object(cloud_agents, "CAPTURE_DIR", Path(self.tmp.name) / "captures"),
+            patch.object(cloud_agents, "CAPTURE_WAIT_SECONDS", 0.3),
+            patch.object(cloud_agents, "send_telegram_photo",
+                         side_effect=lambda chat, caption, photo, token: self.photos.append((chat, caption, photo)))]
+        for item in self.capture_patches:
+            item.start()
 
     def tearDown(self):
+        for item in self.capture_patches:
+            item.stop()
         self.sender.stop()
-        self.token.stop()
         super().tearDown()
+
+    def upload(self, at, photo=JPEG, headers=None):
+        return self.client.post("/api/agents/verification-capture", params={"agent_id": self.agent_id, "at": at},
+                                content=photo, headers={**(self.headers if headers is None else headers),
+                                                        "Content-Type": "image/jpeg"})
 
     @staticmethod
     def wait_alerts():
@@ -528,6 +544,7 @@ class CaptchaAlertTests(AgentChannelBase):
                 thread.join(5)
 
     def post_beat(self, status, enabled=True, chat="-100777", running=True, events=None):
+        cloud_agents.save_telegram_config(self.owner_id,self.agent_id,enabled,chat,None)
         verification = {"state": {"running": running, "status": status, "match_score": 0.91},
                         "config": {"telegram_enabled": enabled, "telegram_chat_id": chat},
                         "events": events or []}
@@ -552,6 +569,8 @@ class CaptchaAlertTests(AgentChannelBase):
         self.assertIn("Sarae LIVE | captcha_detected", text)
         self.assertIn("PC-1", text)
         self.assertIn("Khớp mẫu, điểm 0.91", text)
+        self.assertIn("Độ tin cậy: 0.910", text)
+        self.assertIn("Trạng thái: Nghi vấn CAPTCHA", text)
         self.beat("captcha_detected")
         self.beat("error")                   # a transient scan error while the CAPTCHA is still up
         self.beat("window_unavailable")
@@ -568,6 +587,22 @@ class CaptchaAlertTests(AgentChannelBase):
         self.beat("captcha_detected")
         self.assertEqual(self.kinds(), ["Sarae LIVE | captcha_detected"])
 
+    def test_warning_and_challenge_have_distinct_alerts_without_duplicates(self):
+        self.beat("inactivity_warning", events=[{"at": "t", "kind": "verification_detected", "detail": "Yêu cầu xác minh"}])
+        self.assertIn("Sự kiện: INACTIVITY_WARNING", self.sent[-1][1])
+        self.assertIn("Trạng thái: Cảnh báo LIVE không hoạt động", self.sent[-1][1])
+        self.beat("inactivity_warning")
+        self.beat("error")
+        self.beat("inactivity_warning")
+        self.assertEqual(len(self.sent), 1)
+        self.beat("captcha_challenge")
+        self.beat("captcha_challenge")
+        self.assertEqual(len(self.sent), 1)
+        self.beat("watching")
+        self.assertEqual(self.kinds()[-1], "Sarae LIVE | verification_cleared")
+        self.beat("captcha_challenge")
+        self.assertIn("Sự kiện: CAPTCHA_CHALLENGE", self.sent[-1][1])
+
     def test_stopped_monitor_forgets_the_alert(self):
         self.beat("captcha_detected")
         self.beat("stopped", running=False)
@@ -580,8 +615,8 @@ class CaptchaAlertTests(AgentChannelBase):
         self.beat("watching", enabled=False)
         self.beat("captcha_detected", chat="  ")
         self.beat("watching", chat="  ")
-        with patch.object(cloud_agents.settings, "sarae_telegram_bot_token", ""):
-            self.beat("captcha_detected")
+        cloud_agents.save_telegram_config(self.owner_id,self.agent_id,True,"-100777",None,clear_token=True)
+        self.beat("captcha_detected")
         self.assertEqual(self.sent, [])
         # The change was seen while alerts were off: a later heartbeat does not re-send it.
         self.beat("captcha_detected")
@@ -600,17 +635,90 @@ class CaptchaAlertTests(AgentChannelBase):
             self.beat("watching")
         self.assertIn("telegram down", logs.output[0])
 
+    def test_detection_alert_carries_the_uploaded_screenshot(self):
+        event = {"at": "2026-11-04T01:00:00+00:00", "kind": "verification_detected",
+                 "detail": "Cảnh báo LIVE không hoạt động, TikTok yêu cầu xác minh"}
+        self.assertEqual(self.upload(event["at"]).status_code, 200)
+        self.beat("inactivity_warning", events=[event])
+        self.assertEqual(self.sent, [])                      # sent as a photo, not as text
+        chat, caption, photo = self.photos[0]
+        self.assertEqual((chat, photo), ("-100777", JPEG))
+        self.assertIn("Sự kiện: INACTIVITY_WARNING", caption)
+        self.assertFalse(any((Path(self.tmp.name) / "captures").iterdir()))   # removed once sent
+        self.beat("watching")                                 # cleared: plain text, no picture
+        self.assertEqual(self.kinds(), ["Sarae LIVE | verification_cleared"])
+        self.assertEqual(len(self.photos), 1)
+
+    def test_screenshot_arriving_after_the_heartbeat_is_awaited(self):
+        event = {"at": "t2", "kind": "verification_detected", "detail": "Hộp thoại CAPTCHA"}
+        with patch.object(cloud_agents, "CAPTURE_WAIT_SECONDS", 5):
+            self.assertEqual(self.post_beat("captcha_challenge", events=[event]).status_code, 200)
+            time.sleep(0.3)
+            self.assertEqual(self.upload("t2").status_code, 200)
+            self.wait_alerts()
+        self.assertEqual(len(self.photos), 1)
+
+    def test_missing_or_stale_screenshot_falls_back_to_text(self):
+        self.assertEqual(self.upload("an-older-detection").status_code, 200)
+        self.beat("captcha_challenge", events=[{"at": "t3", "kind": "verification_detected", "detail": "x"}])
+        self.assertEqual(self.photos, [])
+        self.assertIn("(Agent chưa gửi ảnh màn hình)", self.sent[0][1])
+
+    def test_failed_photo_send_still_sends_text(self):
+        self.upload("t4")
+        with patch.object(cloud_agents, "send_telegram_photo", side_effect=OSError("too big")):
+            self.beat("captcha_challenge", events=[{"at": "t4", "kind": "verification_detected", "detail": "x"}])
+        self.assertIn("(Không gửi được ảnh màn hình)", self.sent[0][1])
+
+    def test_capture_upload_is_validated(self):
+        self.assertIn(self.upload("t", headers={"X-Sarae-Agent-Key": "wrong"}).status_code, (401, 403))
+        self.assertEqual(self.upload("t", photo=b"\x89PNG not jpeg").status_code, 422)
+        with patch.object(cloud_agents, "CAPTURE_MAX_BYTES", 10):
+            self.assertEqual(self.upload("t", photo=JPEG + b"0" * 20).status_code, 413)
+
+    def test_send_telegram_photo_request(self):
+        self.capture_patches[2].stop()
+        try:
+            with patch.object(cloud_agents.request, "urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value.read.return_value = b'{"ok":true}'
+                cloud_agents.send_telegram_photo("-100777", "x" * 2000, JPEG, "123:TEST")
+        finally:
+            self.capture_patches[2].start()
+        req = urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "https://api.telegram.org/bot123:TEST/sendPhoto")
+        self.assertIn("multipart/form-data; boundary=", req.headers["Content-type"])
+        self.assertIn(b'name="chat_id"\r\n\r\n-100777\r\n', req.data)
+        self.assertIn(b"x" * 1024 + b"\r\n", req.data)
+        self.assertNotIn(b"x" * 1025, req.data)
+        self.assertIn(b"Content-Type: image/jpeg\r\n\r\n" + JPEG + b"\r\n--", req.data)
+
     def test_send_telegram_request(self):
         self.sender.stop()
         try:
             with patch.object(cloud_agents.request, "urlopen") as urlopen:
-                cloud_agents.send_telegram("-100777", "Sarae LIVE | captcha_detected")
+                cloud_agents.send_telegram("-100777", "Sarae LIVE | captcha_detected", "123:TEST")
         finally:
             self.sender.start()
         req = urlopen.call_args.args[0]
         self.assertEqual(req.full_url, "https://api.telegram.org/bot123:TEST/sendMessage")
         self.assertIn(b"chat_id=-100777", req.data)
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 8)
+
+    def test_telegram_api_error_keeps_token_out_of_message(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        self.sender.stop()
+        try:
+            failure = HTTPError("https://api.telegram.org/bot123:TEST/sendMessage", 400,
+                                "Bad Request", {}, BytesIO(b'{"description":"Bad chat ID 123:TEST"}'))
+            with patch.object(cloud_agents.request, "urlopen", side_effect=failure):
+                with self.assertRaises(HTTPError) as raised:
+                    cloud_agents.send_telegram("-100777", "test", "123:TEST")
+            message = cloud_agents.telegram_error(raised.exception, "123:TEST")
+            self.assertIn("Telegram HTTP 400", message)
+            self.assertNotIn("123:TEST", message)
+        finally:
+            self.sender.start()
 
     def test_old_agent_status_table_gets_the_alert_column(self):
         import sqlite3
@@ -622,6 +730,7 @@ class CaptchaAlertTests(AgentChannelBase):
                     (self.agent_id, "PC-1", "2026-01-01T00:00:00+00:00", "{}"))
         old.commit()
         old.close()
+        cloud_agents.save_telegram_config(self.owner_id,self.agent_id,True,"-100777","123:TEST")
         self.beat("captcha_detected")
         self.assertEqual(len(self.sent), 1)
 

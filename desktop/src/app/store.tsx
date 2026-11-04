@@ -17,7 +17,7 @@ interface State {
   config: AgentConfigView | null
   logs: LogEntry[]
   commands: CommandEntry[]
-  captcha: CoreEvents['monitor.captcha_detected'] | null
+  captcha: CoreEvents['monitor.verification_detected'] | CoreEvents['monitor.captcha_detected'] | null
   toasts: Toast[]
 }
 
@@ -28,7 +28,7 @@ type Action =
   | { type: 'config'; config: AgentConfigView }
   | { type: 'logs'; logs: LogEntry[]; replace?: boolean }
   | { type: 'command'; entry: CommandEntry }
-  | { type: 'captcha'; alert: CoreEvents['monitor.captcha_detected'] | null }
+  | { type: 'captcha'; alert: CoreEvents['monitor.verification_detected'] | CoreEvents['monitor.captcha_detected'] | null }
   | { type: 'toast'; toast: Toast }
   | { type: 'dismiss'; id: number }
 
@@ -149,9 +149,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'patch', patch: { monitor: frame.data } })
       } else if (isEvent(frame, 'command.received') || isEvent(frame, 'command.finished')) {
         dispatch({ type: 'command', entry: frame.data })
-      } else if (isEvent(frame, 'monitor.captcha_detected')) {
+      } else if (isEvent(frame, 'monitor.verification_detected') || isEvent(frame, 'monitor.captcha_detected')) {
         dispatch({ type: 'captcha', alert: frame.data })
-      } else if (isEvent(frame, 'monitor.captcha_cleared')) {
+      } else if (isEvent(frame, 'monitor.verification_cleared') || isEvent(frame, 'monitor.captcha_cleared')) {
         dispatch({ type: 'captcha', alert: null })
       } else if (isEvent(frame, 'log.entry')) {
         dispatch({ type: 'logs', logs: [frame.data] })

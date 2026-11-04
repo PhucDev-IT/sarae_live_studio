@@ -66,6 +66,54 @@ class OwnerRuntimeTests(SaasTestCase):
         self.assertEqual(self.client.post("/api/verification-monitor/start", params=on).status_code, 409)
         self.assertEqual(self.client.get("/api/verification-monitor/status", params=on).json()["state"]["status"], "agent_offline")
 
+    def test_telegram_test_is_owner_scoped_and_never_returns_token(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        on = {"agent_id": agent["agent_id"]}
+        endpoint = "/api/verification-monitor/telegram/test"
+        payload = {"enabled": True, "chat_id": "-100777", "bot_token": "123:SECRET"}
+        saved = self.client.put("/api/verification-monitor/telegram/config", params=on, json=payload)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertNotIn("123:SECRET", saved.text)
+        status = self.client.get("/api/verification-monitor/status", params=on)
+        self.assertEqual(status.json()["telegram_status"], "Sẵn sàng")
+        self.assertNotIn("123:SECRET", status.text)
+        from app.cloud_agents import DB
+        self.assertNotIn(b"123:SECRET", DB.read_bytes())
+        denied_save = self.client.put("/api/verification-monitor/telegram/config", headers=self.B,
+                                      params=on, json=payload)
+        self.assertEqual(denied_save.status_code, 404)
+        with patch("app.cloud_agents.send_telegram") as sender:
+                response = self.client.post(endpoint, params=on)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(sender.call_args.args[0], "-100777")
+                self.assertIn("PC-A", sender.call_args.args[1])
+                self.assertEqual(sender.call_args.args[2], "123:SECRET")
+                self.assertNotIn("123:SECRET", response.text)
+                denied = self.client.post(endpoint, headers=self.B, params=on)
+                self.assertEqual(denied.status_code, 404)
+        with patch("app.cloud_agents.send_telegram", side_effect=OSError("Telegram down; 123:SECRET")):
+                failed = self.client.post(endpoint, params=on)
+                self.assertEqual(failed.status_code, 502)
+                self.assertIn("Telegram down", failed.text)
+                self.assertNotIn("123:SECRET", failed.text)
+        self.client.put("/api/verification-monitor/telegram/config", params=on,
+                        json={"enabled": True, "chat_id": "-100777", "clear_token": True})
+        missing = self.client.post(endpoint, params=on)
+        self.assertEqual(missing.status_code, 503)
+        self.assertEqual(self.client.get("/api/verification-monitor/status", params=on).json()["telegram_status"], "Chưa có Bot Token")
+
+    def test_monitor_interval_validation(self):
+        agent = self.activate_agent(self.owner_a, "PC-A")
+        on = {"agent_id": agent["agent_id"]}
+        endpoint = "/api/verification-monitor/config"
+        for interval in (179, 241):
+            self.assertEqual(self.client.put(endpoint, params=on,
+                                             json={"interval_seconds": interval, "threshold": 0.82}).status_code, 422)
+        for interval in (180, 240):
+            response = self.client.put(endpoint, params=on,
+                                       json={"interval_seconds": interval, "threshold": 0.82})
+            self.assertEqual(response.status_code, 200, response.text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -128,10 +128,8 @@ class ObsConfig(BaseModel):
 
 class MonitorConfig(BaseModel):
     """Same field names/limits as the Cloud `monitor_config` command payload."""
-    interval_seconds: float = Field(default=2.0, ge=0.5, le=15)
+    interval_seconds: float = Field(default=240.0, ge=180, le=240)
     threshold: float = Field(default=0.82, ge=0.65, le=0.99)
-    telegram_enabled: bool = False
-    telegram_chat_id: str = Field(default="", max_length=50)
     autostart: bool = False
 
 
@@ -258,6 +256,18 @@ class ConfigStore:
         if int(raw.get("version") or 1) != CONFIG_VERSION:
             raw = _migrate(raw)
             migrated = True
+        # Older installations scanned every few seconds. Preserve other settings while
+        # moving that obsolete interval to the new safe default.
+        monitor = raw.get("monitor")
+        if isinstance(monitor, dict):
+            for obsolete in ("telegram_enabled", "telegram_chat_id"):
+                if obsolete in monitor:
+                    monitor.pop(obsolete)
+                    migrated = True
+            interval = monitor.get("interval_seconds")
+            if isinstance(interval, (int, float)) and not isinstance(interval, bool) and interval < 180:
+                monitor["interval_seconds"] = 240.0
+                migrated = True
         try:
             config = AgentConfig.model_validate(raw)
         except ValidationError as exc:

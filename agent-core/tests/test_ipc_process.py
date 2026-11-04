@@ -28,6 +28,15 @@ def test_ready_event_and_status(core):
                    for m in methods)  # local video folders are retired
 
 
+def test_builtin_templates_ready_without_custom_or_cloud(core):
+    monitor = core.request("monitor.status")["result"]
+    assert monitor["builtins_ready"] is True
+    assert monitor["templates"] == 8
+    templates = core.request("monitor.templates.list")["result"]["templates"]
+    assert {t["name"] for t in templates if t["source"] == "built-in" and t["status"] == "Ready"} >= {
+        "inactivity_modal_top.png", "shapes_challenge_popup.png", "puzzle_challenge_popup.png"}
+
+
 def test_bad_frames_do_not_kill_core(core):
     core.send_raw(b"this is not json\n")
     core.send_raw(b'{"v":1,"type":"request","request_id":"x1","method":"playback.play","params":{"media_id":1,"extra":2}}\n')

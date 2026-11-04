@@ -30,6 +30,9 @@ sarae-agent-core = "sarae_agent.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"sarae_agent.monitoring" = ["resources/*.png", "resources/templates.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -1,49 +1,46 @@
-# CAPTCHA Monitor V1 — Windows
+# CAPTCHA Monitor — Windows Agent
 
-V1 **chỉ phát hiện sự hiện diện của hình ảnh CAPTCHA** qua ảnh chụp màn hình và gửi cảnh báo; **không tự giải, click hoặc kéo thanh**.
+Monitor phân biệt cảnh báo inactivity, hộp CAPTCHA và giao diện xác minh chưa rõ loại trong cửa sổ TikTok LIVE Studio; không giải, click hoặc kéo thanh xác minh. Agent tìm cửa sổ theo tên executable, chụp phần cửa sổ nằm trong desktop ảo (hỗ trợ nhiều màn hình) và so khớp template bằng OpenCV.
 
-## Cài đặt
-Tại thư mục `backend`:
+## Chu kỳ
 
-```powershell
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
-```
+- Mặc định chụp ngay khi bật, sau đó mỗi 240 giây. OWNER có thể đặt 180–240 giây trên trang CAPTCHA Monitor.
+- Một lần khớp nghi vấn được chụp lại sau 2,5 giây. Chỉ sau hai lần khớp liên tiếp mới ghi `verification_detected` kèm loại sự kiện.
+- Khi cùng giao diện xác minh còn hiện, Agent và Cloud không gửi lại cảnh báo. Hai lần quét không khớp liên tiếp ghi `verification_cleared`; sự kiện này không chứng minh thử thách đã được giải thành công.
+- Chu kỳ chụp không thay đổi Cloud heartbeat hoặc polling của web UI.
+- Matcher so khớp bản đồ gradient (Sobel) ở 1/2 độ phân giải, quét thô scale 0,6–1,6 ở 1/4 rồi tinh chỉnh quanh vị trí tìm được; vùng màn hình phẳng không bao giờ tính là khớp. Một khung 1920×1080 mất khoảng 1–1,5 giây. Ngưỡng mặc định vẫn là 0,82.
 
-Chạy frontend rồi mở `http://localhost:5173/#/verification-monitor`.
+## Templates
 
-## Thử phát hiện
+Agent ưu tiên custom hợp lệ, sau đó built-in hợp lệ, rồi ảnh được Cloud đồng bộ. Ảnh custom có thể upload và reset trong Advanced Settings của desktop app. Ảnh bị hỏng được bỏ qua. Cloud chỉ đồng bộ các file do Cloud quản lý và không xóa custom/built-in.
 
-1. Mở TikTok LIVE Studio trên **màn hình chính**, không minimize và không bị ứng dụng khác che.
-2. Chuẩn bị **ảnh mẫu cắt nhỏ** lấy từ chi tiết nhận diện CAPTCHA mà bạn có quyền sử dụng; nên chọn chi tiết giao diện ít thay đổi, không chọn vùng thử thách ngẫu nhiên (mảnh ghép/ảnh xoay). Đừng tải ảnh chứa thông tin cá nhân.
-3. Upload một hoặc nhiều mẫu trong CAPTCHA Monitor. Mỗi ảnh được lưu vào `backend/data/verification_monitor/templates/` và được quét cùng các ảnh khác. Sau đó bấm **Bật Monitor**.
-4. Khi xuất hiện một vùng màn hình đủ giống mẫu qua 2 lượt quét liên tiếp, Monitor ghi sự kiện `captcha_detected` và ảnh snapshot trong `backend/data/verification_monitor`.
-5. Khi không còn khớp trong 2 lượt quét, Monitor ghi `captcha_cleared`. Trạng thái này **không có nghĩa CAPTCHA đã giải thành công**.
+Thư mục built-in `agent-core/src/sarae_agent/monitoring/resources/` có **8 template**, mỗi giao diện một template riêng, crop từ ảnh gốc chủ dự án cung cấp (ảnh gốc giữ nguyên, không commit). `templates.json` ghi nguồn, SHA-256, vùng crop, vùng bỏ qua (đồng hồ đếm ngược, hình trong canvas, mã audio…), loại sự kiện và mục đích; README cùng thư mục giải thích lý do chọn từng vùng.
 
-Bộ thư viện cho phép thêm/xóa nhiều mẫu và có thể tự đặt các file PNG được phép sử dụng vào `backend/data/verification_monitor/templates/` trước khi bật Monitor. Repo tham khảo `gbiz123/tiktok-live-studio-captcha-solver` chưa công bố LICENSE tại thời điểm đối chiếu; vì vậy **ảnh thuộc repo đó chưa được sao chép hoặc đóng gói vào Sarae**. Cần xác minh quyền sử dụng trước khi đưa ảnh của họ vào sản phẩm.
+| Loại sự kiện | Template |
+| --- | --- |
+| `INACTIVITY_WARNING` | `inactivity_modal_top.png` — đầu popup "LIVE will end in": tiêu đề, ô đếm ngược, đoạn văn inactivity |
+| `CAPTCHA_CHALLENGE` / SHAPES | `shapes_challenge_popup.png`, `shapes_challenge_popup_wrapped.png` (prompt xuống dòng + spinner), `shapes_challenge_component.png` (canvas + Confirm) |
+| `CAPTCHA_CHALLENGE` / PUZZLE | `puzzle_challenge_popup.png`, `puzzle_challenge_component.png` (khung ảnh + thanh kéo), `puzzle_challenge_large.png`, `puzzle_verify_box_edges.png` (hộp "Verify to continue") |
 
-Đây là phép **template matching** đơn giản, không phải nhận diện CAPTCHA tổng quát. Nếu cửa sổ đổi kích thước, DPI hoặc giao diện, cần thay ảnh mẫu. Monitor không hỗ trợ cửa sổ bị che, chạy ẩn, minimization, nhiều màn hình, cũng không thể bảo đảm phát hiện mọi thử thách.
+Phân loại: có popup inactivity → `INACTIVITY_WARNING` (kèm dạng CAPTCHA nếu thấy trong cùng khung); không có popup đó nhưng có giao diện thử thách → `CAPTCHA_CHALLENGE`; điểm nằm giữa 0,70 và ngưỡng, shapes/puzzle không phân định được, hoặc ảnh Cloud chưa phân loại → `UNKNOWN_VERIFICATION`. Ảnh mảnh rời (chỉ hình puzzle, canvas trống, một nút) không được coi là xác minh. Ảnh custom cùng kích thước với template built-in dùng lại vùng bỏ qua của template đó; có thể upload mask riêng tên `<template>_mask.png`.
 
-## Telegram
+Kiểm thử offline với ảnh gốc: `SARAE_CAPTCHA_FIXTURES=<thư mục images> pytest agent-core/tests/test_monitor.py -s` in PASS/FAIL cho từng ảnh.
 
-Tạo Telegram bot và lấy bot token, xác định `chat_id` hợp lệ, sau đó đặt trong `backend/.env`:
+Nếu cần mở rộng bộ built-in, hãy chụp/cắt chi tiết UI trên máy vận hành, cho người vận hành xem và xác nhận vùng cắt cùng quyền sử dụng, rồi đặt PNG đã duyệt vào thư mục resources và build lại sidecar. Không dùng vùng chứa dữ liệu cá nhân hay nội dung thử thách ngẫu nhiên.
 
-```env
-SARAE_TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-```
+## Telegram cho OWNER
 
-Khởi động lại Backend; trên giao diện bật **Thông báo Telegram**, nhập chat ID và bấm **Lưu cấu hình**. Token không được nhập trong UI hoặc trả về từ API.
+Trên web, chọn Agent rồi mở CAPTCHA Monitor. Trong phần Telegram, nhập **Bot Token** và **Chat ID**, bật công tắc, bấm **Lưu Telegram**, sau đó bấm **Gửi thông báo thử**. Mỗi Agent có một cặp cấu hình riêng thuộc OWNER của Agent đó. Token được mã hóa trên Cloud bằng cơ chế credential hiện có; API chỉ trả `token_configured`, không trả token. Để trống Bot Token khi lưu sẽ giữ token đã có. Agent không lưu hoặc nhận token/Chat ID.
 
-V1 chỉ gửi tin nhắn sự kiện; ảnh snapshot lưu cục bộ trên Backend. Không gửi ảnh hoặc cookie đến Telegram.
+Cloud nhận trạng thái monitor qua heartbeat và gửi tin nhắn khi chuyển sang `inactivity_warning`, `captcha_challenge`, `unknown_verification` hoặc trở lại `watching`. Tin nhắn có tên máy, thời gian, loại sự kiện, trạng thái và độ tin cậy nếu có. Khi phát hiện, Agent upload ảnh chụp **toàn bộ cửa sổ TikTok LIVE Studio** (JPEG, không crop, cạnh dài tối đa 2560 px) lên `POST /api/agents/verification-capture?agent_id=&at=`; Cloud gửi cảnh báo bằng `sendPhoto` với caption là nội dung tin nhắn để OWNER tự kiểm tra detector báo đúng hay sai. Cloud chờ ảnh của đúng lần phát hiện (khớp theo thời điểm sự kiện) tối đa 20 giây; không có ảnh hoặc gửi ảnh lỗi thì vẫn gửi tin chữ kèm ghi chú. Cloud chỉ giữ ảnh mới nhất của mỗi Agent và xóa ngay sau khi gửi. Tin "đã hết giao diện xác minh" không kèm ảnh. Lỗi Telegram được báo trong kết quả gửi thử hoặc ghi log đã che token; hoạt động LIVE vẫn tiếp tục.
 
-## API
+## API OWNER
 
-- `GET /api/verification-monitor/status`
-- `PUT /api/verification-monitor/config`
-- `POST /api/verification-monitor/template` (thêm mẫu, không ghi đè)
-- `GET /api/verification-monitor/templates`
-- `DELETE /api/verification-monitor/templates/{name}`
-- `POST /api/verification-monitor/start`
-- `POST /api/verification-monitor/stop`
+- `GET /api/verification-monitor/status?agent_id=...`
+- `PUT /api/verification-monitor/config?agent_id=...` — chu kỳ và ngưỡng nhận diện
+- `PUT /api/verification-monitor/telegram/config?agent_id=...` — bật/tắt, Chat ID, Bot Token ghi một chiều
+- `POST /api/verification-monitor/telegram/test?agent_id=...` — gửi bằng cặp đã lưu
+- `POST /api/verification-monitor/start?agent_id=...`
+- `POST /api/verification-monitor/stop?agent_id=...`
 
-Giới hạn: Bộ nhớ sự kiện chỉ tồn tại trong tiến trình Backend, ảnh snapshot được lưu vào đĩa. Chạy **một Backend worker** trên Windows Desktop. Không dùng trong máy chủ headless hoặc nhiều Uvicorn workers.
+API upload template cũ trong `backend/app/verification_monitor.py` chỉ phục vụ chế độ single-PC legacy; SaaS dùng Windows Agent.

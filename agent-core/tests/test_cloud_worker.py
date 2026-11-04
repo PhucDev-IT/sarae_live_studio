@@ -335,7 +335,7 @@ def test_router_reaches_engine(router):
     r.execute("tts_clear", {})
     assert voice.clear.call_count == 2  # playback stop and explicit tts_clear
     voice.clear.assert_called_with()
-    r.execute("monitor_config", {"interval_seconds": 3, "threshold": 0.9})
+    r.execute("monitor_config", {"interval_seconds": 180, "threshold": 0.9})
     assert monitor.configure.call_args.args[0]["threshold"] == 0.9
 
 
@@ -506,3 +506,58 @@ def test_chat_lane_never_waits_for_background_tts(events, journal):
         assert wait_until(lambda: cloud.acks_for("tts"))
     finally:
         worker.stop(timeout=5)
+
+
+def test_detection_screenshot_is_uploaded_as_bounded_jpeg(events, journal, tmp_path):
+    import cv2
+    import numpy as np
+    cloud, router, states = FakeCloud(), CountingRouter(), []
+    uploads, failures = [], [CloudError("CLOUD_UNREACHABLE", "offline", retryable=True)]
+
+    def upload(key, agent_id, at, jpeg):
+        if failures:
+            raise failures.pop()  # one transient failure is retried
+        uploads.append((key, agent_id, at, jpeg))
+        return {"ok": True}
+
+    cloud.upload_verification_capture = upload
+    shot = tmp_path / "detected_1.png"
+    cv2.imwrite(str(shot), np.full((1600, 3200, 4), 90, np.uint8))  # full Studio window, BGRA like mss
+    worker = make_worker(cloud, router, events, states, journal)
+    worker.start()
+    try:
+        worker.upload_capture("2026-11-04T01:00:00+00:00", str(shot))
+        assert wait_until(lambda: uploads, timeout=10)
+    finally:
+        worker.stop(timeout=5)
+    key, agent_id, at, jpeg = uploads[0]
+    assert (key, agent_id, at) == ("cred", "agt_1", "2026-11-04T01:00:00+00:00")
+    assert jpeg[:3] == b"\xff\xd8\xff"
+    decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert decoded.shape[:2] == (1280, 2560)  # whole window kept, only downscaled
+
+
+def test_client_uploads_verification_capture():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    assert http_client(handler).upload_verification_capture("key", "agt_1", "t1", b"\xff\xd8\xffjpeg") == {"ok": True}
+    request = seen[0]
+    assert request.method == "POST" and request.url.path == "/api/agents/verification-capture"
+    assert dict(request.url.params) == {"agent_id": "agt_1", "at": "t1"}
+    assert request.headers["Content-Type"] == "image/jpeg" and request.headers["X-Sarae-Agent-Key"] == "key"
+    assert request.content == b"\xff\xd8\xffjpeg"
+
+
+def test_runtime_forwards_detection_screenshot_to_cloud():
+    from sarae_agent.runtime import AgentRuntime
+    worker = mock.Mock()
+    host = SimpleNamespace(worker=worker, _emit_raw=lambda *_: None)
+    AgentRuntime.emit(host, "monitor.verification_detected", {"at": "t1", "kind": "INACTIVITY_WARNING",
+                                                               "image_path": "C:/captures/detected_1.png"})
+    worker.upload_capture.assert_called_once_with("t1", "C:/captures/detected_1.png")
+    AgentRuntime.emit(host, "monitor.verification_cleared", {"at": "t2"})
+    assert worker.upload_capture.call_count == 1

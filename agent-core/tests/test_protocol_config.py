@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from sarae_agent.config import ConfigError, ConfigStore, normalize_cloud_url, paths, write_json
+from sarae_agent.config import ConfigError, ConfigStore, normalize_cloud_url, paths, read_json, write_json
 from sarae_agent.ipc import protocol
 
 
@@ -60,6 +60,7 @@ def test_normalize_cloud_url_rejects(raw):
 
 def test_config_defaults_persist_and_validate(home):
     store = ConfigStore()
+    assert store.get().monitor.interval_seconds == 240
     assert paths.config_file.is_file()
     assert str(paths.root).startswith(str(home))
     updated = store.update({"obs": {"port": 4460}, "cloud": {"api_url": "https://cloud.example/api/"}})
@@ -69,6 +70,19 @@ def test_config_defaults_persist_and_validate(home):
     with pytest.raises(ConfigError):
         store.update({"unknown": {}})
     assert ConfigStore().get().obs.port == 4460  # reloaded from disk, invalid write not persisted
+
+
+def test_monitor_interval_migrates_and_rejects_out_of_range(home):
+    write_json(paths.config_file, {"version": 2, "monitor": {"interval_seconds": 2.0,
+                                                        "telegram_chat_id": "-100777"}})
+    store = ConfigStore()
+    assert store.get().monitor.interval_seconds == 240
+    assert "telegram_chat_id" not in store.get().monitor.model_dump()
+    assert read_json(paths.config_file)["monitor"]["interval_seconds"] == 240
+    with pytest.raises(ConfigError):
+        store.update({"monitor": {"interval_seconds": 179}})
+    with pytest.raises(ConfigError):
+        store.update({"monitor": {"interval_seconds": 241}})
 
 
 def test_config_migrates_legacy_agent_files(home):
