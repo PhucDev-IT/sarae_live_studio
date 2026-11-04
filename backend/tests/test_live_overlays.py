@@ -1,11 +1,14 @@
 """Overlay events of Single Video Timeline versions: building blocks instead of fixed types, normalized canvas,
 DRAFT-only editing with the pin markers' lifecycle, owner isolation of products and images, and the snapshot a
 renderer syncs."""
+import json
 import struct
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.live_overlays import busiest, image_size
+from app.live_timeline import pin_spans
 from support import SaasTestCase
 
 
@@ -35,6 +38,19 @@ class ImageHeaderTests(unittest.TestCase):
         e = lambda start, duration: SimpleNamespace(start_ms=start, duration_ms=duration)
         self.assertEqual(busiest([e(0, 1000), e(1000, 1000), e(2000, 1000)]), (1, 0))
         self.assertEqual(busiest([e(0, 5000), e(1000, 1000), e(1500, 3000)]), (3, 1500))
+
+
+class PinSpanTests(unittest.TestCase):
+    def test_pin_spans_match_the_shared_vectors(self):
+        """Same vectors as web/src/overlay/overlaySchedule.ts pinSpans and the Agent's port."""
+        path = Path(__file__).resolve().parents[2] / "agent-core" / "tests" / "fixtures" / "overlay_schedule_vectors.json"
+        vectors = json.loads(path.read_text(encoding="utf-8"))["pins"]
+        self.assertTrue(vectors)
+        for case in vectors:
+            with self.subTest(case["name"]):
+                self.assertEqual(pin_spans(case["markers"], case["duration_ms"]), case["spans"])
+                rows = [SimpleNamespace(**{"seq": 0, "id": None, **m}) for m in case["markers"]]  # database rows
+                self.assertEqual(pin_spans(rows, case["duration_ms"]), case["spans"])
 
 
 class OverlayApiTests(SaasTestCase):
@@ -359,7 +375,7 @@ class OverlayApiTests(SaasTestCase):
         foreign = self.client.get("/api/agent-media/overlay-snapshot", params={"agent_id": self.agent["agent_id"], "session_id": other, "timeline_id": tid}, headers=key)
         self.assertEqual(foreign.status_code, 404)
 
-    # ----- random schedule -----
+    # ----- window / random schedules -----
     def put_schedule(self, tid, overlays, status=200, **schedule):
         saved = self.client.put(f"{self.base}/{tid}/overlays", json={"overlays": overlays, "schedule": schedule})
         self.assertEqual(saved.status_code, status, saved.text)
@@ -373,8 +389,8 @@ class OverlayApiTests(SaasTestCase):
         default = {"mode": "fixed", "every_ms": 120_000, "min_gap_ms": 20_000}
         self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"], default)
         self.assertEqual(self.put(tid, [self.overlay()])["overlays"][0]["show_ms"], 6000)
-        saved = self.put_schedule(tid, [self.overlay(start=0, duration=12_000, show_ms=4000)], mode="random", every_ms=10_000, min_gap_ms=0)
-        random = {"mode": "random", "every_ms": 10_000, "min_gap_ms": 0}
+        saved = self.put_schedule(tid, [self.overlay(start=0, duration=12_000, show_ms=4000)], mode="window", every_ms=10_000, min_gap_ms=0)
+        random = {"mode": "window", "every_ms": 10_000, "min_gap_ms": 0}
         self.assertEqual((saved["schedule"], saved["overlays"][0]["show_ms"]), (random, 4000))
         self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"], random)
         self.assertEqual(self.put(tid, [self.overlay(start=0, duration=12_000)])["schedule"], random,
@@ -395,10 +411,10 @@ class OverlayApiTests(SaasTestCase):
     def test_deleting_versions_and_sessions_leaves_no_schedule(self):
         from app.live_overlays import OverlaySchedule
         tid = self.new()
-        self.put_schedule(tid, [], mode="random")
+        self.put_schedule(tid, [], mode="window")
         self.assertEqual(self.client.delete(f"{self.base}/{tid}").status_code, 204)
         other = self.new()
-        self.put_schedule(other, [], mode="random")
+        self.put_schedule(other, [], mode="window")
         self.assertEqual(self.client.delete(f"/api/live/sessions/{self.sid}").status_code, 204)
         with self.Session() as db:
             self.assertEqual(db.query(OverlaySchedule).count(), 0)
@@ -408,43 +424,147 @@ class OverlayApiTests(SaasTestCase):
         self.put(tid, [self.overlay(show_ms=2000)])
         snap = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
         self.assertEqual((snap["schedule"]["mode"], snap["overlays"][0]["show_ms"]), ("fixed", 2000))
-        self.put_schedule(tid, [self.overlay(show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.put_schedule(tid, [self.overlay(show_ms=2000)], mode="window", every_ms=10_000, min_gap_ms=0)
         changed = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
-        self.assertEqual(changed["schedule"], {"mode": "random", "every_ms": 10_000, "min_gap_ms": 0})
+        self.assertEqual(changed["schedule"], {"mode": "window", "every_ms": 10_000, "min_gap_ms": 0})
         self.assertNotEqual(changed["revision"], snap["revision"], "the schedule is part of the revision")
 
-    def test_random_issues(self):
+    def test_window_issues(self):
         tid = self.new()
         window = dict(start=0, duration=12_000)
-        fine = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        fine = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertEqual(fine["issues"], [])
         crowded = [self.overlay(start=1000 * i, duration=6000, show_ms=2000) for i in range(5)]
-        self.assertNotIn("TOO_MANY_AT_ONCE", self.codes(self.put_schedule(tid, crowded, mode="random", every_ms=10_000, min_gap_ms=0)),
-                         "one overlay at a time in random mode")
-        found = self.put_schedule(tid, [self.overlay(start=0, duration=3000, show_ms=4000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertNotIn("TOO_MANY_AT_ONCE", self.codes(self.put_schedule(tid, crowded, mode="window", every_ms=10_000, min_gap_ms=0)),
+                         "one overlay at a time in window mode")
+        found = self.put_schedule(tid, [self.overlay(start=0, duration=3000, show_ms=4000)], mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertIn("SHOW_LONGER_THAN_WINDOW", self.codes(found))
-        found = self.put_schedule(tid, [self.overlay(**window, show_ms=11_000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        found = self.put_schedule(tid, [self.overlay(**window, show_ms=11_000)], mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertIn("SHOW_LONGER_THAN_SLOT", self.codes(found))
         self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 409, "errors block approval")
         slow = self.overlay(**window, show_ms=1000, animation_in={"name": "fade", "duration_ms": 600},
                             animation_out={"name": "fade", "duration_ms": 600})
-        self.assertIn("ANIMATION_LONGER_THAN_SHOW", self.codes(self.put_schedule(tid, [slow], mode="random", every_ms=10_000, min_gap_ms=0)))
-        dense = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=9000)
+        self.assertIn("ANIMATION_LONGER_THAN_SHOW", self.codes(self.put_schedule(tid, [slow], mode="window", every_ms=10_000, min_gap_ms=0)))
+        dense = self.put_schedule(tid, [self.overlay(**window, show_ms=2000)], mode="window", every_ms=10_000, min_gap_ms=9000)
         self.assertEqual([(i["code"], i["level"]) for i in dense["issues"]], [("DENSITY_TOO_HIGH", "warning")])
         # Slots of 10 s: 0–10 s and 10–20 s (up to the last window end of the video).
         first = self.overlay(start=0, duration=5000, show_ms=2000)
         fits = self.put_schedule(tid, [first, self.overlay(start=11_000, duration=1500, show_ms=1000)],
-                                 mode="random", every_ms=10_000, min_gap_ms=0)
+                                 mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertEqual(fits["issues"], [])
         disabled = self.put_schedule(tid, [first, self.overlay(start=9_000, duration=2500, show_ms=2000, enabled=False)],
-                                     mode="random", every_ms=10_000, min_gap_ms=0)
+                                     mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertEqual(disabled["issues"], [], "a disabled overlay does not extend the slots")
         holes = self.put_schedule(tid, [first, self.overlay(start=9_000, duration=2500, show_ms=2000)],
-                                  mode="random", every_ms=10_000, min_gap_ms=0)
+                                  mode="window", every_ms=10_000, min_gap_ms=0)
         self.assertEqual([(i["code"], i["media_id"], i["slots"], i["level"]) for i in holes["issues"]],
                          [("NO_OVERLAY_IN_SLOTS", self.main, 1, "warning")],
                          "9–11.5 s straddles the slot edge: neither 9–10 s nor 10–11.5 s holds a 2 s appearance")
         self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 200, "warnings do not block approval")
+
+    def put_markers(self, tid, markers):
+        saved = self.client.put(f"{self.base}/{tid}/markers", json={"markers": markers})
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+    def pin_markers(self, unpin_at=8000):
+        """Main video: Áo pinned 2–`unpin_at` ms; other video: Quần pinned from 0 to its end."""
+        return [{"at_ms": 2000, "action": "PIN_PRODUCT", "product_id": self.ao}, {"at_ms": unpin_at, "action": "UNPIN_PRODUCT"},
+                {"media_id": self.other, "at_ms": 0, "action": "PIN_PRODUCT", "product_id": self.quan}]
+
+    def generic(self, **extra):
+        return self.overlay(product_id=None, elements=[{"kind": "text", "text": "Freeship"}], **extra)
+
+    def test_the_three_modes_are_saved_and_read_back(self):
+        tid = self.new()
+        for mode in ("fixed", "window", "random", "fixed"):
+            saved = self.put_schedule(tid, [self.overlay()], mode=mode, every_ms=10_000, min_gap_ms=0)
+            self.assertEqual((saved["schedule"]["mode"], self.client.get(f"{self.base}/{tid}/overlays").json()["schedule"]["mode"]),
+                             (mode, mode))
+        self.put_schedule(tid, [], status=422, mode="shuffle")
+
+    def test_the_snapshot_carries_pin_spans_and_durations(self):
+        tid = self.new()
+        self.put_markers(tid, self.pin_markers() + [{"media_id": self.other, "at_ms": 5000, "action": "PIN_PRODUCT",
+                                                     "product_id": self.ao, "review_status": "NEEDS_REVIEW"}])
+        self.put_schedule(tid, [self.overlay()], mode="random", every_ms=10_000, min_gap_ms=0)
+        snap = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
+        pins = {self.main: [{"start_ms": 2000, "end_ms": 8000, "product_id": self.ao}],
+                self.other: [{"start_ms": 0, "end_ms": 12_500, "product_id": self.quan}]}
+        self.assertEqual((snap["pins"], snap["durations"]), (pins, {self.main: 12_500, self.other: 12_500}),
+                         "approved markers only; a pin lasts to the end of the video")
+        view = self.client.get(f"{self.base}/{tid}/overlays").json()
+        self.assertEqual((view["pins"], view["durations"]), (snap["pins"], snap["durations"]), "the editor view says the same")
+        self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()["revision"], snap["revision"])
+        self.put_markers(tid, self.pin_markers(unpin_at=9000))
+        moved = self.client.get(f"{self.base}/{tid}/overlays/snapshot").json()
+        self.assertEqual(moved["pins"][self.main][0]["end_ms"], 9000)
+        self.assertNotEqual(moved["revision"], snap["revision"], "a moved marker changes what a random plan shows")
+
+    def test_random_issues(self):
+        tid = self.new()
+        self.put_markers(tid, self.pin_markers())  # Áo pinned 2–8 s of the 12.5 s main video
+        plan = dict(mode="random", every_ms=10_000, min_gap_ms=0)
+        self.assertEqual(self.put_schedule(tid, [self.overlay(start=0, duration=1000, show_ms=2000)], **plan)["issues"], [],
+                         "times are ignored: the product's pin span is the window")
+        self.assertEqual(self.put_schedule(tid, [self.generic(show_ms=2000)], **plan)["issues"], [],
+                         "an overlay without a product covers the whole video (slots 0–10 s and 10–12.5 s)")
+        late = self.put_schedule(tid, [self.generic(show_ms=3000)], **plan)
+        self.assertEqual([(i["code"], i["media_id"], i["slots"]) for i in late["issues"]], [("NO_OVERLAY_IN_SLOTS", self.main, 1)],
+                         "10–12.5 s cannot hold 3 s")
+        never = self.put_schedule(tid, [self.overlay(product_id=self.quan, show_ms=2000)], **plan)
+        self.assertEqual([(i["code"], i["level"], i["overlay"]) for i in never["issues"]], [("PRODUCT_NEVER_PINNED", "warning", 0)],
+                         "Quần is pinned in the other video only")
+        short = self.put_schedule(tid, [self.overlay(show_ms=7000)], **plan)
+        self.assertEqual([(i["code"], i["level"]) for i in short["issues"]],
+                         [("PIN_TOO_SHORT", "warning"), ("NO_OVERLAY_IN_SLOTS", "warning")])
+        self.assertIn("SHOW_LONGER_THAN_SLOT", self.codes(self.put_schedule(tid, [self.generic(show_ms=11_000)], **plan)))
+        slow = self.overlay(show_ms=1000, animation_in={"name": "fade", "duration_ms": 600}, animation_out={"name": "fade", "duration_ms": 600})
+        self.assertIn("ANIMATION_LONGER_THAN_SHOW", self.codes(self.put_schedule(tid, [slow], **plan)))
+        dense = self.put_schedule(tid, [self.overlay(show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=9000)
+        self.assertEqual(self.codes(dense), ["DENSITY_TOO_HIGH"])
+        crowded = [self.overlay(start=1000 * i, duration=6000, show_ms=2000) for i in range(5)]
+        self.assertEqual(self.put_schedule(tid, crowded, **plan)["issues"], [], "one overlay at a time: no TOO_MANY_AT_ONCE")
+        self.assertEqual(self.client.post(f"{self.base}/{tid}/approve").status_code, 200, "warnings do not block approval")
+
+    def test_random_mode_ignores_the_stored_times(self):
+        from app.live_overlays import OverlayEvent, OverlaySchedule
+        tid = self.new()
+        self.put_markers(tid, self.pin_markers())
+        self.put_schedule(tid, [self.overlay(start=10_000, duration=2_500, show_ms=2000)], mode="random", every_ms=10_000, min_gap_ms=0)
+        self.put(tid, [self.overlay(start=10_000, duration=3_000, show_ms=2000)], status=422)  # still refused when saved
+        with self.Session() as db:  # a time past the end (e.g. the video was replaced by a shorter one)
+            db.query(OverlayEvent).update({"duration_ms": 3000})
+            db.commit()
+        self.assertEqual(self.client.get(f"{self.base}/{tid}/overlays").json()["issues"], [])
+        with self.Session() as db:
+            db.query(OverlaySchedule).update({"mode": "fixed"})
+            db.commit()
+        self.assertEqual(self.codes(self.client.get(f"{self.base}/{tid}/overlays").json()), ["AFTER_END"])
+
+    def test_ensure_schema_turns_stored_random_schedules_into_window_once(self):
+        from sqlalchemy import create_engine, inspect, text
+        from app.live_overlays import ensure_schema
+        from app.live_timeline import ensure_schema as timeline_schema
+        engine = create_engine("sqlite://")
+        timeline_schema(engine)
+        with engine.begin() as conn:  # a database of 20261104_0022: "random" meant the window mode
+            conn.execute(text("CREATE TABLE live_overlay_schedules (timeline_id INTEGER PRIMARY KEY, owner_id VARCHAR(64), "
+                              "mode VARCHAR(10), every_ms INTEGER, min_gap_ms INTEGER, updated_at DATETIME)"))
+            conn.execute(text("INSERT INTO live_overlay_schedules VALUES (1, 'o', 'random', 10000, 0, '2026-11-04'), "
+                              "(2, 'o', 'fixed', 10000, 0, '2026-11-04')"))
+        ensure_schema(engine)
+
+        def modes():
+            with engine.connect() as conn:
+                return dict(conn.execute(text("SELECT timeline_id, mode FROM live_overlay_schedules")).all())
+        self.assertEqual(modes(), {1: "window", 2: "fixed"})
+        self.assertIn("mode_version", {c["name"] for c in inspect(engine).get_columns("live_overlay_schedules")})
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO live_overlay_schedules (timeline_id, owner_id, mode, every_ms, min_gap_ms, updated_at) "
+                              "VALUES (3, 'o', 'random', 10000, 0, '2026-11-05')"))
+        ensure_schema(engine)
+        self.assertEqual(modes(), {1: "window", 2: "fixed", 3: "random"}, "the new random mode is never converted")
+        engine.dispose()
 
     def test_the_preview_sends_the_iteration(self):
         tid = self.new()

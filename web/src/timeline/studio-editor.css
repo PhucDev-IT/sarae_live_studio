@@ -20,6 +20,7 @@
 .ts-loop .ts-loop-dice{font-size:14px}
 .ove-shows{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:0;font-size:12.5px;font-variant-numeric:tabular-nums}
 .ove-shows .ove-link{margin:0}
+.ove-list-note{display:block;margin:2px 0 4px;padding:6px 8px;border-radius:8px;background:color-mix(in srgb,var(--ui-primary) 10%,transparent);color:var(--ui-text);font-size:12px}
 
 /* video chips + draft actions */
 .ts-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}

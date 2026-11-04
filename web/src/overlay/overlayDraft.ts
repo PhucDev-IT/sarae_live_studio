@@ -3,14 +3,17 @@ import {
   MAX_DURATION_MS, MIN_DURATION_MS, busiest, coveredBy, endOf, normalizeOverlay, productOf,
   type Overlay, type OverlayIssue, type OverlayPreset,
 } from './overlayModel'
-import { DEFAULT_SCHEDULE, MAX_GAP_MS, MAX_EVERY_MS, MAX_SHOW_MS, MIN_EVERY_MS, MIN_SHOW_MS, showMsOf, type OverlaySchedule } from './overlaySchedule'
+import {
+  DEFAULT_SCHEDULE, MAX_GAP_MS, MAX_EVERY_MS, MAX_SHOW_MS, MIN_EVERY_MS, MIN_SHOW_MS, isPlanned, showMsOf, windowsOf,
+  type OverlaySchedule, type PinSpan, type VideoContext,
+} from './overlaySchedule'
 
 const HISTORY = 100
 let gestures = 0
 /** A key for one undo step that later edits never merge into (a click, a drag, a list change). */
 export const newStep = (prefix:string) => `${prefix}#${++gestures}`
 
-/** What one undo step holds: the overlays and the version's schedule (switching to random is undone like any edit). */
+/** What one undo step holds: the overlays and the version's schedule (switching the mode is undone like any edit). */
 type Draft = {overlays:Overlay[]; schedule:OverlaySchedule}
 
 /**
@@ -90,25 +93,40 @@ export function localIssues(overlays:Overlay[], ctx:{
   durationOf:(mediaId:string)=>number|null; hasProduct:(id:number)=>boolean; hasAsset:(id:string)=>boolean|null; maxConcurrent:number
   /** The version's schedule (absent = fixed). */
   schedule?:OverlaySchedule
+  /** Random (list) mode: where each product is pinned in a video (the draft's markers, `pinSpans`). */
+  pinsOf?:(mediaId:string)=>PinSpan[]
 }):OverlayIssue[]{
   const found:OverlayIssue[] = []
-  const random = ctx.schedule?.mode === 'random' ? ctx.schedule : null
+  const mode = ctx.schedule?.mode ?? 'fixed'
+  // Planned modes (overlaySchedule.ts): `window` = the bar is the window it may show in; `random` = a list, no times (pins decide).
+  const planned = ctx.schedule && isPlanned(mode) ? ctx.schedule : null
+  const list = mode === 'random'
+  const videoOf = (mediaId:string):VideoContext => ({pins:ctx.pinsOf?.(mediaId) ?? [], duration_ms:ctx.durationOf(mediaId)})
   overlays.forEach((o, index)=>{
     const add = (level:'error'|'warning', code:string, message:string) => found.push({level, code, overlay:index, message})
     if (!o.elements.length) add('error', 'NO_BLOCKS', 'Overlay chưa có khối nào')
-    if (o.duration_ms < MIN_DURATION_MS || o.duration_ms > MAX_DURATION_MS) add('error', 'DURATION', random ? 'Khoảng cho phép phải từ 0,5 giây tới 1 giờ' : 'Thời lượng phải từ 0,5 giây tới 1 giờ')
-    const video = ctx.durationOf(o.media_id)
-    if (video != null && endOf(o) > video) add('error', 'AFTER_END', random ? 'Khoảng cho phép kéo dài quá cuối video' : 'Overlay kéo dài quá cuối video')
     const animations = o.animation_in.duration_ms + o.animation_out.duration_ms
     const show = showMsOf(o)
-    if (random) {
-      // Random schedule: the bar is the window, each appearance lasts show_ms (overlaySchedule.ts).
+    // Random (list) mode ignores start_ms / duration_ms, but they are kept (for switching back) and the Backend still
+    // refuses to save times past the video end: say how to fix them, since random mode does not show them.
+    const kept = list ? ' (giờ cũ giữ lại khi đổi chế độ: chuyển sang “Chính xác” để sửa)' : ''
+    if (o.duration_ms < MIN_DURATION_MS || o.duration_ms > MAX_DURATION_MS) add('error', 'DURATION', (planned && !list ? 'Khoảng cho phép phải từ 0,5 giây tới 1 giờ' : 'Thời lượng phải từ 0,5 giây tới 1 giờ') + kept)
+    const video = ctx.durationOf(o.media_id)
+    if (video != null && endOf(o) > video) add('error', 'AFTER_END', (planned && !list ? 'Khoảng cho phép kéo dài quá cuối video' : 'Overlay kéo dài quá cuối video') + kept)
+    if (planned) {
+      // Each appearance lasts show_ms (overlaySchedule.ts).
       if (show < MIN_SHOW_MS || show > MAX_SHOW_MS) add('error', 'SHOW_MS', 'Thời lượng mỗi lần hiện phải từ 1 giây tới 10 phút')
-      if (show > o.duration_ms) add('error', 'SHOW_LONGER_THAN_WINDOW', `Mỗi lần hiện (${secondsText(show)}) dài hơn khoảng cho phép (${secondsText(o.duration_ms)}): không bao giờ hiện`)
-      if (show > random.every_ms) add('error', 'SHOW_LONGER_THAN_SLOT', `Mỗi lần hiện (${secondsText(show)}) dài hơn “1 lần mỗi ${secondsText(random.every_ms)}”: không bao giờ hiện`)
+      if (!list && show > o.duration_ms) add('error', 'SHOW_LONGER_THAN_WINDOW', `Mỗi lần hiện (${secondsText(show)}) dài hơn khoảng cho phép (${secondsText(o.duration_ms)}): không bao giờ hiện`)
+      if (show > planned.every_ms) add('error', 'SHOW_LONGER_THAN_SLOT', `Mỗi lần hiện (${secondsText(show)}) dài hơn “1 lần mỗi ${secondsText(planned.every_ms)}”: không bao giờ hiện`)
     }
-    if (animations > o.duration_ms) add('error', 'ANIMATION_TOO_LONG', random ? 'Hiệu ứng vào + ra dài hơn khoảng cho phép' : 'Hiệu ứng vào + ra dài hơn thời lượng overlay')
-    else if (random && animations > show) add('error', 'ANIMATION_LONGER_THAN_SHOW', 'Hiệu ứng vào + ra dài hơn thời lượng mỗi lần hiện')
+    if (!list && animations > o.duration_ms) add('error', 'ANIMATION_TOO_LONG', planned ? 'Hiệu ứng vào + ra dài hơn khoảng cho phép' : 'Hiệu ứng vào + ra dài hơn thời lượng overlay')
+    else if (planned && animations > show) add('error', 'ANIMATION_LONGER_THAN_SHOW', 'Hiệu ứng vào + ra dài hơn thời lượng mỗi lần hiện')
+    if (list && o.product_id != null && ctx.durationOf(o.media_id) != null) {
+      // Random: a product overlay only shows while its product is pinned in this video (pins need the video's length).
+      const spans = (ctx.pinsOf?.(o.media_id) ?? []).filter(p=>p.product_id === o.product_id)
+      if (!spans.length) add('warning', 'PRODUCT_NEVER_PINNED', 'Sản phẩm của overlay không được ghim lúc nào trong video này: overlay sẽ không hiện')
+      else if (spans.every(p=>p.end_ms - p.start_ms < show)) add('warning', 'PIN_TOO_SHORT', `Mọi đoạn ghim sản phẩm này đều ngắn hơn mỗi lần hiện (${secondsText(show)}): overlay sẽ không hiện`)
+    }
     o.elements.forEach((e, n)=>{
       const block = `Khối #${n + 1}`
       if (e.kind === 'text' && !e.text.trim()) add('error', 'TEXT_EMPTY', `${block}: chữ đang trống`)
@@ -124,23 +142,25 @@ export function localIssues(overlays:Overlay[], ctx:{
     if (zones.length) add('warning', 'MAYBE_COVERED', `Có thể bị che trên TikTok (ước lượng): ${zones.map(z=>z.label).join(', ')}`)
   })
   const enabled = overlays.filter(o=>o.enabled !== false)
-  if (random && enabled.length) {
+  if (planned && enabled.length) {
     const longest = Math.max(...enabled.map(showMsOf))
-    if (random.every_ms < longest + random.min_gap_ms) found.push({level:'warning', code:'DENSITY_TOO_HIGH',
-      message:`“1 lần mỗi ${secondsText(random.every_ms)}” ngắn hơn lần hiện dài nhất (${secondsText(longest)}) + nghỉ tối thiểu (${secondsText(random.min_gap_ms)}): một số khoảng sẽ trống`})
+    if (planned.every_ms < longest + planned.min_gap_ms) found.push({level:'warning', code:'DENSITY_TOO_HIGH',
+      message:`“1 lần mỗi ${secondsText(planned.every_ms)}” ngắn hơn lần hiện dài nhất (${secondsText(longest)}) + nghỉ tối thiểu (${secondsText(planned.min_gap_ms)}): một số khoảng sẽ trống`})
   }
   for (const mediaId of new Set(overlays.map(o=>o.media_id))) {
     const own = enabled.filter(o=>o.media_id === mediaId)
-    if (random) {
+    if (planned) {
       // One at a time: no "too many at once"; instead, can the slots be filled at all?
-      if (!own.length) continue
-      const end = Math.max(...own.map(endOf)), empty:number[] = []
-      for (let slot = 0; slot < end; slot += random.every_ms) {
-        const fits = own.some(o=>Math.max(slot, o.start_ms) + showMsOf(o) <= Math.min(slot + random.every_ms, endOf(o)))
+      const video = videoOf(mediaId)
+      const fitting = own.map(o=>({show:showMsOf(o), windows:windowsOf(o, mode, video)})).filter(x=>x.windows.length)
+      if (!fitting.length) continue
+      const end = Math.max(...fitting.flatMap(x=>x.windows.map(w=>w[1]))), empty:number[] = []
+      for (let slot = 0; slot < end; slot += planned.every_ms) {
+        const fits = fitting.some(x=>x.windows.some(([w0, w1])=>Math.max(slot, w0) + x.show <= Math.min(slot + planned.every_ms, w1)))
         if (!fits) empty.push(slot)
       }
       if (empty.length) found.push({level:'warning', code:'NO_OVERLAY_IN_SLOTS', media_id:mediaId, at_ms:empty[0],
-        message:`${empty.length} khoảng “1 lần mỗi ${secondsText(random.every_ms)}” không có overlay nào hiện được (khoảng cho phép không phủ tới), từ ${Math.floor(empty[0] / 1000)}s`})
+        message:`${empty.length} khoảng “1 lần mỗi ${secondsText(planned.every_ms)}” không có overlay nào hiện được (${list ? 'không có overlay chung, sản phẩm đang ghim không có overlay' : 'khoảng cho phép không phủ tới'}), từ ${Math.floor(empty[0] / 1000)}s`})
       continue
     }
     const {peak, at} = busiest(own)
@@ -149,7 +169,7 @@ export function localIssues(overlays:Overlay[], ctx:{
   }
   return found
 }
-/** Errors that only block approval (saving a draft is allowed): too many at once, and the random-schedule checks. */
+/** Errors that only block approval (saving a draft is allowed): too many at once, and the planned-schedule checks. */
 const APPROVAL_ONLY = new Set(['TOO_MANY_AT_ONCE', 'SHOW_LONGER_THAN_WINDOW', 'SHOW_LONGER_THAN_SLOT', 'ANIMATION_LONGER_THAN_SHOW'])
 /** Errors that make the Backend refuse the save (422). */
 export const blocksSave = (i:OverlayIssue) => i.level === 'error' && !APPROVAL_ONLY.has(i.code)

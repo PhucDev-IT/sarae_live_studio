@@ -9,7 +9,7 @@ import {
   type AnimationName, type BlockKind, type Frame, type Overlay, type OverlayElement, type OverlayIssue, type OverlayPreset, type TextStyle,
 } from './overlayModel'
 import { newStep, overlayName, secondsText, trackName } from './overlayDraft'
-import { MAX_SHOW_MS, MIN_SHOW_MS, showMsOf, type Appearance } from './overlaySchedule'
+import { MAX_SHOW_MS, MIN_SHOW_MS, showMsOf, type Appearance, type PinSpan, type ScheduleMode } from './overlaySchedule'
 import { hms } from '../liveSessionsApi'
 import type { LiveProduct } from '../liveSessionsApi'
 import { errorText } from '../mediaApi'
@@ -42,8 +42,10 @@ type Props = {
   onTemplatesChanged:()=>void
   /** Turn an overlay on / off (kept in the version, not shown). */
   onToggle:(index:number)=>void
-  /** Random schedule: the appearances of the loop shown for this video (indexes into `overlays`); null = fixed. */
+  /** Planned schedule (window / random): the appearances of the loop shown for this video (indexes into `overlays`); null = fixed. */
   plan:Appearance[]|null; iteration:number
+  /** The version's schedule mode, and (random) where each product is pinned in this video. */
+  mode:ScheduleMode; pins:PinSpan[]
 }
 
 const durationText = (ms:number) => {const s = Math.round(ms / 1000);return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`}
@@ -58,6 +60,20 @@ export default function OverlayPanel(p:Props){
   const current = p.selected != null ? p.overlays[p.selected] : undefined
   const [presetOpen,setPresetOpen] = useState(false)
   const general = p.issues.filter(i=>i.overlay == null && (i.media_id == null || i.media_id === p.mediaId))
+  const list = p.mode === 'random'
+  /** Where a click on an overlay seeks: its start, or (random) its first appearance in the loop shown. */
+  const seekTo = (o:Overlay, i:number) => {
+    if (!list) {p.onSeek(o.start_ms);return}
+    const first = p.plan?.find(a=>a.index === i)
+    if (first) p.onSeek(first.start_ms)
+  }
+  /** One line of timing on a card. */
+  const timing = (o:Overlay, i:number, product?:LiveProduct) => {
+    const count = `mỗi lần ${secondsText(showMsOf(o))} · lượt ${p.iteration + 1}: ${(p.plan ?? []).filter(a=>a.index === i).length} lần`
+    if (list) return `${o.product_id != null ? `Theo ghim: ${product?.name ?? `sản phẩm #${o.product_id}`}` : 'Chung'} · ${count}`
+    if (p.plan) return `🎲 ${hms(o.start_ms)} – ${hms(endOf(o))} · ${count}`
+    return `${hms(o.start_ms)} – ${hms(endOf(o))} (${durationText(o.duration_ms)})`
+  }
   return <div className="ove-panel">
     <Card className="ove-list" padding={false} title={<span className="te-card-title"><Layers size={17}/>Danh sách overlay ({shown.length}{p.overlays.length !== shown.length ? ` / ${p.overlays.length} cả phiên` : ''})</span>}
       description={p.editable ? undefined : 'Phiên bản đã duyệt / đang dùng chỉ xem; muốn sửa hãy tạo bản nháp mới (không đổi phiên bản đang dùng).'}
@@ -76,15 +92,14 @@ export default function OverlayPanel(p:Props){
           const on = o.enabled !== false
           const product = o.product_id != null ? p.products.find(x=>x.id === o.product_id) : undefined
           return <li key={i} className={'ove-card' + (i === p.selected ? ' is-selected' : '') + (on ? '' : ' is-off')}>
-            <button type="button" className="ove-card-main" onClick={()=>{p.onSelect(i);p.onSeek(o.start_ms)}}>
+            <button type="button" className="ove-card-main" onClick={()=>{p.onSelect(i);seekTo(o, i)}}>
               <span className="ove-radio" aria-hidden/>
               <CardThumb src={overlayThumb(o, id=>p.products.find(x=>x.id === id), id=>{const a = p.assets.find(x=>x.id === id);return a ? assetUrl(a.url) ?? undefined : undefined})}/>
               <span className="ove-card-text">
                 <span className="ove-card-title"><strong>{overlayName(o, p.presets)}</strong><span className={'st-chip' + (on ? ' is-on' : '')}>{on ? 'Đang bật' : 'Tạm ẩn'}</span>
                   {errors.some(x=>x.level === 'error') ? <Badge tone="danger">Lỗi</Badge> : errors.length ? <Badge tone="warning">Chú ý</Badge> : null}</span>
-                <small>{p.plan ? `🎲 ${hms(o.start_ms)} – ${hms(endOf(o))} · mỗi lần ${secondsText(showMsOf(o))} · lượt ${p.iteration + 1}: ${p.plan.filter(a=>a.index === i).length} lần`
-                  : `${hms(o.start_ms)} – ${hms(endOf(o))} (${durationText(o.duration_ms)})`} · {trackName(o.template, p.presets)}</small>
-                {product && <span className="ove-card-product">{product.name}</span>}
+                <small>{timing(o, i, product)} · {trackName(o.template, p.presets)}</small>
+                {product && !list && <span className="ove-card-product">{product.name}</span>}
               </span>
             </button>
             <ItemMenu editable={p.editable} on={on} onDuplicate={()=>p.onDuplicate(i)} onCopy={()=>p.onCopy(i)} onToggle={()=>p.onToggle(i)} onRemove={()=>p.onRemove(i)}/>
@@ -98,7 +113,7 @@ export default function OverlayPanel(p:Props){
     {current && p.selected != null ? <Inspector key={p.selected} {...p} index={p.selected} overlay={current}/>
       : <Card className="ove-inspector"><EmptyState icon={<Layers size={26}/>} title="Chọn một overlay" description="Bấm vào overlay trên khung xem trước, trên track hoặc trong danh sách để sửa."/></Card>}
 
-    <Modal open={presetOpen} onClose={()=>setPresetOpen(false)} title={`Thêm overlay tại ${hms(p.now)}`} size="lg">
+    <Modal open={presetOpen} onClose={()=>setPresetOpen(false)} title={list ? 'Thêm overlay vào danh sách của video' : `Thêm overlay tại ${hms(p.now)}`} size="lg">
       <TemplateLibrary presets={p.presets} onPick={preset=>{setPresetOpen(false);p.onAdd(preset)}} onChanged={p.onTemplatesChanged}/>
     </Modal>
   </div>
@@ -250,7 +265,8 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         </div>
       </div>
 
-      {p.plan ? <RandomTiming {...p} index={index} overlay={o} change={change}/> : <>
+      {p.mode === 'random' ? <ListTiming {...p} index={index} overlay={o} change={change} productName={product?.name}/>
+        : p.plan ? <RandomTiming {...p} index={index} overlay={o} change={change}/> : <>
       <h4 className="ove-col-title">Thời gian hiển thị</h4>
       <div className="ove-row ove-3">
         <Input label="Bắt đầu (giây)" type="number" min={0} step={0.1} value={String(o.start_ms / 1000)} onChange={e=>change({start_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'start')}/>
@@ -290,6 +306,7 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
         <span className="ove-product-name" title={product.name}>{product.name}</span>
         {editable && <button type="button" className="te-icon-btn" aria-label="Bỏ sản phẩm" title="Bỏ sản phẩm của overlay" onClick={()=>change({product_id:null}, newStep('product'))}><X size={15}/></button>}
       </div> : <Select aria-label="Sản phẩm của overlay" value="" onChange={v=>change({product_id:v ? Number(v) : null}, newStep('product'))} options={productOptions}/>}
+      {p.mode === 'random' && <small className="ove-list-note">Gắn sản phẩm: chỉ hiện khi sản phẩm đang được ghim. Không gắn: overlay chung, hiện bất kỳ lúc nào trong video.</small>}
       <small className="te-muted">Các khối thông tin / ảnh sản phẩm không chọn sản phẩm riêng sẽ đọc sản phẩm này.</small>
 
       <h4>Các khối ({o.elements.length}/{MAX_ELEMENTS}) <small className="te-muted">vẽ theo thứ tự, khối sau đè lên khối trước</small></h4>
@@ -309,16 +326,43 @@ function Inspector(p:Props & {index:number; overlay:Overlay}){
   </Card>
 }
 
+/** The appearances of loop N of the selected overlay (clickable: seeks there). */
+function Shows(p:Props & {index:number}){
+  const shows = (p.plan ?? []).filter(a=>a.index === p.index)
+  return <p className="ove-shows"><span className="te-muted">Lượt {p.iteration + 1}:</span>{!shows.length ? <span>không hiện lần nào</span>
+    : shows.map(a=><button key={a.start_ms} type="button" className="ove-link" onClick={()=>p.onSeek(a.start_ms)} title="Tua tới lần hiện này">{hms(a.start_ms)}</button>)}</p>
+}
+
 /**
- * Timing of an overlay in random mode: the window it may show in (its bar on the timeline, from … to …), how long one
+ * Timing of an overlay in random (list) mode: no times, only how long one appearance lasts; where it may show comes
+ * from its product (while pinned) or is the whole video; then where it shows in the loop chosen above.
+ */
+function ListTiming(p:Props & {index:number; overlay:Overlay; change:(patch:Partial<Overlay>, field:string)=>void; productName?:string}){
+  const {overlay:o, change} = p
+  const spans = o.product_id != null ? p.pins.filter(s=>s.product_id === o.product_id) : null
+  const pinned = spans?.reduce((sum, s)=>sum + s.end_ms - s.start_ms, 0) ?? 0
+  return <>
+    <h4 className="ove-col-title">Thời lượng hiện <small className="te-muted">(ngẫu nhiên, không cần giờ)</small></h4>
+    <div className="ove-row ove-2">
+      <Input label="Thời lượng mỗi lần hiện (giây)" type="number" min={MIN_SHOW_MS / 1000} max={MAX_SHOW_MS / 1000} step={0.5} value={String(showMsOf(o) / 1000)}
+        onChange={e=>change({show_ms:Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000))}, 'show')}/>
+      <div className="ove-field-note"><span className="te-muted">Được hiện</span>
+        <strong>{spans == null ? 'Bất kỳ lúc nào trong video' : `Khi ghim ${p.productName ?? `sản phẩm #${o.product_id}`}`}</strong>
+        {spans != null && <span className="te-muted">{spans.length ? `${spans.length} đoạn ghim · tổng ${secondsText(pinned)}` : 'Không được ghim trong video này'}</span>}</div>
+    </div>
+    <Shows {...p}/>
+  </>
+}
+
+/**
+ * Timing of an overlay in window mode: the window it may show in (its bar on the timeline, from … to …), how long one
  * appearance lasts, and where it shows in the loop chosen above.
  */
 function RandomTiming(p:Props & {index:number; overlay:Overlay; change:(patch:Partial<Overlay>, field:string)=>void}){
   const {overlay:o, editable, change} = p
-  const shows = (p.plan ?? []).filter(a=>a.index === p.index)
   const from = Math.round(p.now / 100) * 100
   return <>
-    <h4 className="ove-col-title">Khoảng cho phép & thời lượng hiện <small className="te-muted">(ngẫu nhiên)</small></h4>
+    <h4 className="ove-col-title">Khoảng cho phép & thời lượng hiện <small className="te-muted">(theo khoảng)</small></h4>
     <div className="ove-row ove-3">
       <Input label="Khoảng cho phép: từ (giây)" type="number" min={0} step={0.1} value={String(o.start_ms / 1000)}
         onChange={e=>{const start = Math.max(0, Math.round(numberOr(e.target.value, 0) * 1000));change({start_ms:start, duration_ms:Math.max(0, endOf(o) - start)}, 'start')}}/>
@@ -330,8 +374,7 @@ function RandomTiming(p:Props & {index:number; overlay:Overlay; change:(patch:Pa
         {editable && <button type="button" className="ove-link" onClick={()=>change({start_ms:from, duration_ms:Math.max(0, endOf(o) - from)}, newStep('start-now'))}><Crosshair size={13}/>Từ {hms(p.now)}</button>}
         {editable && <button type="button" className="ove-link" onClick={()=>change({duration_ms:Math.max(0, from - o.start_ms)}, newStep('end-now'))}><Crosshair size={13}/>Đến {hms(p.now)}</button>}</div>
     </div>
-    <p className="ove-shows"><span className="te-muted">Lượt {p.iteration + 1}:</span>{!shows.length ? <span>không hiện lần nào</span>
-      : shows.map(a=><button key={a.start_ms} type="button" className="ove-link" onClick={()=>p.onSeek(a.start_ms)} title="Tua tới lần hiện này">{hms(a.start_ms)}</button>)}</p>
+    <Shows {...p}/>
   </>
 }
 
