@@ -28,6 +28,152 @@
    ]
   }
  ],
+ "pins": [
+  {
+   "name": "pin then switch then unpin",
+   "duration_ms": 1200000,
+   "markers": [
+    {
+     "at_ms": 5000,
+     "action": "PIN_PRODUCT",
+     "product_id": 1,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 600000,
+     "action": "PIN_PRODUCT",
+     "product_id": 2,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 1080000,
+     "action": "UNPIN_PRODUCT",
+     "product_id": null,
+     "review_status": "APPROVED"
+    }
+   ],
+   "spans": [
+    {
+     "start_ms": 5000,
+     "end_ms": 600000,
+     "product_id": 1
+    },
+    {
+     "start_ms": 600000,
+     "end_ms": 1080000,
+     "product_id": 2
+    }
+   ]
+  },
+  {
+   "name": "same product twice merges, review ignored",
+   "duration_ms": 900000,
+   "markers": [
+    {
+     "at_ms": 0,
+     "action": "PIN_PRODUCT",
+     "product_id": 3,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 100000,
+     "action": "PIN_PRODUCT",
+     "product_id": 3,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 200000,
+     "action": "PIN_PRODUCT",
+     "product_id": 4,
+     "review_status": "NEEDS_REVIEW"
+    },
+    {
+     "at_ms": 300000,
+     "action": "NO_ACTION",
+     "product_id": null,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 400000,
+     "action": "UNPIN_PRODUCT",
+     "product_id": null,
+     "review_status": "APPROVED"
+    },
+    {
+     "at_ms": 500000,
+     "action": "PIN_PRODUCT",
+     "product_id": 3,
+     "review_status": "APPROVED"
+    }
+   ],
+   "spans": [
+    {
+     "start_ms": 0,
+     "end_ms": 400000,
+     "product_id": 3
+    },
+    {
+     "start_ms": 500000,
+     "end_ms": 900000,
+     "product_id": 3
+    }
+   ]
+  },
+  {
+   "name": "same position seq order, marker past end",
+   "duration_ms": 300000,
+   "markers": [
+    {
+     "at_ms": 60000,
+     "action": "PIN_PRODUCT",
+     "product_id": 5,
+     "review_status": "APPROVED",
+     "seq": 2
+    },
+    {
+     "at_ms": 60000,
+     "action": "PIN_PRODUCT",
+     "product_id": 6,
+     "review_status": "APPROVED",
+     "seq": 1
+    },
+    {
+     "at_ms": 120000,
+     "action": "UNPIN_PRODUCT",
+     "product_id": null,
+     "review_status": "APPROVED",
+     "seq": 0,
+     "id": 9
+    },
+    {
+     "at_ms": 120000,
+     "action": "PIN_PRODUCT",
+     "product_id": 7,
+     "review_status": "APPROVED",
+     "seq": 0,
+     "id": 10
+    },
+    {
+     "at_ms": 400000,
+     "action": "PIN_PRODUCT",
+     "product_id": 8,
+     "review_status": "APPROVED"
+    }
+   ],
+   "spans": [
+    {
+     "start_ms": 60000,
+     "end_ms": 120000,
+     "product_id": 5
+    },
+    {
+     "start_ms": 120000,
+     "end_ms": 300000,
+     "product_id": 7
+    }
+   ]
+  }
+ ],
  "cases": [
   {
    "name": "two products",
@@ -63,11 +209,12 @@
    ],
    "media": "a",
    "schedule": {
-    "mode": "random",
+    "mode": "window",
     "every_ms": 120000,
     "min_gap_ms": 20000
    },
    "timeline_id": 7,
+   "video": {},
    "plans": [
     {
      "iteration": 0,
@@ -278,11 +425,12 @@
    ],
    "media": "a",
    "schedule": {
-    "mode": "random",
+    "mode": "window",
     "every_ms": 15000,
     "min_gap_ms": 12000
    },
    "timeline_id": 3,
+   "video": {},
    "plans": [
     {
      "iteration": 0,
@@ -418,11 +566,12 @@
    ],
    "media": "m",
    "schedule": {
-    "mode": "random",
+    "mode": "window",
     "every_ms": 30000,
     "min_gap_ms": 0
    },
    "timeline_id": 12,
+   "video": {},
    "plans": [
     {
      "iteration": 0,
@@ -613,11 +762,12 @@
    ],
    "media": "d",
    "schedule": {
-    "mode": "random",
+    "mode": "window",
     "every_ms": 120000,
     "min_gap_ms": 20000
    },
    "timeline_id": 1,
+   "video": {},
    "plans": [
     {
      "iteration": 0,
@@ -734,11 +884,12 @@
    ],
    "media": "x",
    "schedule": {
-    "mode": "random",
+    "mode": "window",
     "every_ms": 10000,
     "min_gap_ms": 5000
    },
    "timeline_id": 1,
+   "video": {},
    "plans": [
     {
      "iteration": 0,
@@ -837,6 +988,908 @@
        "index": 0,
        "start_ms": 54000,
        "end_ms": 60000
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "random list with pins",
+   "overlays": [
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": null
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 8000,
+     "enabled": true,
+     "product_id": 1
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": 2
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 10000,
+     "enabled": true,
+     "product_id": 1
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": false,
+     "product_id": null
+    },
+    {
+     "media_id": "w",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": null
+    }
+   ],
+   "media": "v",
+   "schedule": {
+    "mode": "random",
+    "every_ms": 90000,
+    "min_gap_ms": 20000
+   },
+   "timeline_id": 42,
+   "video": {
+    "pins": [
+     {
+      "start_ms": 5000,
+      "end_ms": 600000,
+      "product_id": 1
+     },
+     {
+      "start_ms": 600000,
+      "end_ms": 1080000,
+      "product_id": 2
+     }
+    ],
+    "duration_ms": 1200000
+   },
+   "plans": [
+    {
+     "iteration": 0,
+     "plan": [
+      {
+       "index": 3,
+       "start_ms": 27100,
+       "end_ms": 37100
+      },
+      {
+       "index": 1,
+       "start_ms": 163100,
+       "end_ms": 171100
+      },
+      {
+       "index": 0,
+       "start_ms": 241200,
+       "end_ms": 247200
+      },
+      {
+       "index": 3,
+       "start_ms": 282000,
+       "end_ms": 292000
+      },
+      {
+       "index": 0,
+       "start_ms": 389600,
+       "end_ms": 395600
+      },
+      {
+       "index": 1,
+       "start_ms": 480500,
+       "end_ms": 488500
+      },
+      {
+       "index": 2,
+       "start_ms": 621200,
+       "end_ms": 627200
+      },
+      {
+       "index": 2,
+       "start_ms": 668300,
+       "end_ms": 674300
+      },
+      {
+       "index": 0,
+       "start_ms": 770400,
+       "end_ms": 776400
+      },
+      {
+       "index": 2,
+       "start_ms": 843200,
+       "end_ms": 849200
+      },
+      {
+       "index": 0,
+       "start_ms": 943600,
+       "end_ms": 949600
+      },
+      {
+       "index": 2,
+       "start_ms": 1051400,
+       "end_ms": 1057400
+      },
+      {
+       "index": 0,
+       "start_ms": 1087600,
+       "end_ms": 1093600
+      },
+      {
+       "index": 0,
+       "start_ms": 1187400,
+       "end_ms": 1193400
+      }
+     ]
+    },
+    {
+     "iteration": 1,
+     "plan": [
+      {
+       "index": 1,
+       "start_ms": 11600,
+       "end_ms": 19600
+      },
+      {
+       "index": 3,
+       "start_ms": 150200,
+       "end_ms": 160200
+      },
+      {
+       "index": 0,
+       "start_ms": 254800,
+       "end_ms": 260800
+      },
+      {
+       "index": 3,
+       "start_ms": 329800,
+       "end_ms": 339800
+      },
+      {
+       "index": 0,
+       "start_ms": 369000,
+       "end_ms": 375000
+      },
+      {
+       "index": 1,
+       "start_ms": 502100,
+       "end_ms": 510100
+      },
+      {
+       "index": 2,
+       "start_ms": 617200,
+       "end_ms": 623200
+      },
+      {
+       "index": 2,
+       "start_ms": 691700,
+       "end_ms": 697700
+      },
+      {
+       "index": 0,
+       "start_ms": 760300,
+       "end_ms": 766300
+      },
+      {
+       "index": 2,
+       "start_ms": 833700,
+       "end_ms": 839700
+      },
+      {
+       "index": 0,
+       "start_ms": 911400,
+       "end_ms": 917400
+      },
+      {
+       "index": 2,
+       "start_ms": 1024000,
+       "end_ms": 1030000
+      },
+      {
+       "index": 0,
+       "start_ms": 1159400,
+       "end_ms": 1165400
+      },
+      {
+       "index": 0,
+       "start_ms": 1191500,
+       "end_ms": 1197500
+      }
+     ]
+    },
+    {
+     "iteration": 2,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 43500,
+       "end_ms": 49500
+      },
+      {
+       "index": 1,
+       "start_ms": 118600,
+       "end_ms": 126600
+      },
+      {
+       "index": 3,
+       "start_ms": 200300,
+       "end_ms": 210300
+      },
+      {
+       "index": 1,
+       "start_ms": 307100,
+       "end_ms": 315100
+      },
+      {
+       "index": 0,
+       "start_ms": 401600,
+       "end_ms": 407600
+      },
+      {
+       "index": 3,
+       "start_ms": 475500,
+       "end_ms": 485500
+      },
+      {
+       "index": 2,
+       "start_ms": 623500,
+       "end_ms": 629500
+      },
+      {
+       "index": 2,
+       "start_ms": 709400,
+       "end_ms": 715400
+      },
+      {
+       "index": 0,
+       "start_ms": 777800,
+       "end_ms": 783800
+      },
+      {
+       "index": 2,
+       "start_ms": 875600,
+       "end_ms": 881600
+      },
+      {
+       "index": 0,
+       "start_ms": 938000,
+       "end_ms": 944000
+      },
+      {
+       "index": 2,
+       "start_ms": 1017200,
+       "end_ms": 1023200
+      },
+      {
+       "index": 0,
+       "start_ms": 1087100,
+       "end_ms": 1093100
+      },
+      {
+       "index": 0,
+       "start_ms": 1180200,
+       "end_ms": 1186200
+      }
+     ]
+    },
+    {
+     "iteration": 5,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 8600,
+       "end_ms": 14600
+      },
+      {
+       "index": 1,
+       "start_ms": 144600,
+       "end_ms": 152600
+      },
+      {
+       "index": 3,
+       "start_ms": 192000,
+       "end_ms": 202000
+      },
+      {
+       "index": 0,
+       "start_ms": 303500,
+       "end_ms": 309500
+      },
+      {
+       "index": 1,
+       "start_ms": 381700,
+       "end_ms": 389700
+      },
+      {
+       "index": 3,
+       "start_ms": 518400,
+       "end_ms": 528400
+      },
+      {
+       "index": 2,
+       "start_ms": 605400,
+       "end_ms": 611400
+      },
+      {
+       "index": 2,
+       "start_ms": 667600,
+       "end_ms": 673600
+      },
+      {
+       "index": 0,
+       "start_ms": 725800,
+       "end_ms": 731800
+      },
+      {
+       "index": 2,
+       "start_ms": 840100,
+       "end_ms": 846100
+      },
+      {
+       "index": 0,
+       "start_ms": 902500,
+       "end_ms": 908500
+      },
+      {
+       "index": 2,
+       "start_ms": 1055900,
+       "end_ms": 1061900
+      },
+      {
+       "index": 0,
+       "start_ms": 1149300,
+       "end_ms": 1155300
+      },
+      {
+       "index": 0,
+       "start_ms": 1180400,
+       "end_ms": 1186400
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "random product never pinned, unknown duration",
+   "overlays": [
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": 9
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 5000,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": null
+    }
+   ],
+   "media": "v",
+   "schedule": {
+    "mode": "random",
+    "every_ms": 60000,
+    "min_gap_ms": 10000
+   },
+   "timeline_id": 5,
+   "video": {
+    "pins": [
+     {
+      "start_ms": 0,
+      "end_ms": 400000,
+      "product_id": 3
+     },
+     {
+      "start_ms": 500000,
+      "end_ms": 900000,
+      "product_id": 3
+     }
+    ],
+    "duration_ms": null
+   },
+   "plans": [
+    {
+     "iteration": 0,
+     "plan": [
+      {
+       "index": 1,
+       "start_ms": 28700,
+       "end_ms": 34700
+      },
+      {
+       "index": 1,
+       "start_ms": 77400,
+       "end_ms": 83400
+      },
+      {
+       "index": 1,
+       "start_ms": 154300,
+       "end_ms": 160300
+      },
+      {
+       "index": 1,
+       "start_ms": 180300,
+       "end_ms": 186300
+      },
+      {
+       "index": 1,
+       "start_ms": 274200,
+       "end_ms": 280200
+      },
+      {
+       "index": 1,
+       "start_ms": 347100,
+       "end_ms": 353100
+      },
+      {
+       "index": 1,
+       "start_ms": 413900,
+       "end_ms": 419900
+      },
+      {
+       "index": 1,
+       "start_ms": 467600,
+       "end_ms": 473600
+      },
+      {
+       "index": 1,
+       "start_ms": 484400,
+       "end_ms": 490400
+      },
+      {
+       "index": 1,
+       "start_ms": 584900,
+       "end_ms": 590900
+      },
+      {
+       "index": 1,
+       "start_ms": 621500,
+       "end_ms": 627500
+      },
+      {
+       "index": 1,
+       "start_ms": 701600,
+       "end_ms": 707600
+      },
+      {
+       "index": 1,
+       "start_ms": 757900,
+       "end_ms": 763900
+      },
+      {
+       "index": 1,
+       "start_ms": 808700,
+       "end_ms": 814700
+      },
+      {
+       "index": 1,
+       "start_ms": 869000,
+       "end_ms": 875000
+      }
+     ]
+    },
+    {
+     "iteration": 1,
+     "plan": [
+      {
+       "index": 1,
+       "start_ms": 52500,
+       "end_ms": 58500
+      },
+      {
+       "index": 1,
+       "start_ms": 96500,
+       "end_ms": 102500
+      },
+      {
+       "index": 1,
+       "start_ms": 163800,
+       "end_ms": 169800
+      },
+      {
+       "index": 1,
+       "start_ms": 221800,
+       "end_ms": 227800
+      },
+      {
+       "index": 1,
+       "start_ms": 291800,
+       "end_ms": 297800
+      },
+      {
+       "index": 1,
+       "start_ms": 326000,
+       "end_ms": 332000
+      },
+      {
+       "index": 1,
+       "start_ms": 395700,
+       "end_ms": 401700
+      },
+      {
+       "index": 1,
+       "start_ms": 453300,
+       "end_ms": 459300
+      },
+      {
+       "index": 1,
+       "start_ms": 484700,
+       "end_ms": 490700
+      },
+      {
+       "index": 1,
+       "start_ms": 553800,
+       "end_ms": 559800
+      },
+      {
+       "index": 1,
+       "start_ms": 626800,
+       "end_ms": 632800
+      },
+      {
+       "index": 1,
+       "start_ms": 673100,
+       "end_ms": 679100
+      },
+      {
+       "index": 1,
+       "start_ms": 762200,
+       "end_ms": 768200
+      },
+      {
+       "index": 1,
+       "start_ms": 831200,
+       "end_ms": 837200
+      },
+      {
+       "index": 1,
+       "start_ms": 853900,
+       "end_ms": 859900
+      }
+     ]
+    },
+    {
+     "iteration": 2,
+     "plan": [
+      {
+       "index": 1,
+       "start_ms": 39400,
+       "end_ms": 45400
+      },
+      {
+       "index": 1,
+       "start_ms": 105200,
+       "end_ms": 111200
+      },
+      {
+       "index": 1,
+       "start_ms": 162700,
+       "end_ms": 168700
+      },
+      {
+       "index": 1,
+       "start_ms": 201900,
+       "end_ms": 207900
+      },
+      {
+       "index": 1,
+       "start_ms": 293700,
+       "end_ms": 299700
+      },
+      {
+       "index": 1,
+       "start_ms": 332200,
+       "end_ms": 338200
+      },
+      {
+       "index": 1,
+       "start_ms": 386800,
+       "end_ms": 392800
+      },
+      {
+       "index": 1,
+       "start_ms": 428800,
+       "end_ms": 434800
+      },
+      {
+       "index": 1,
+       "start_ms": 518900,
+       "end_ms": 524900
+      },
+      {
+       "index": 1,
+       "start_ms": 547800,
+       "end_ms": 553800
+      },
+      {
+       "index": 1,
+       "start_ms": 636400,
+       "end_ms": 642400
+      },
+      {
+       "index": 1,
+       "start_ms": 711000,
+       "end_ms": 717000
+      },
+      {
+       "index": 1,
+       "start_ms": 730700,
+       "end_ms": 736700
+      },
+      {
+       "index": 1,
+       "start_ms": 825500,
+       "end_ms": 831500
+      },
+      {
+       "index": 1,
+       "start_ms": 885400,
+       "end_ms": 891400
+      }
+     ]
+    },
+    {
+     "iteration": 5,
+     "plan": [
+      {
+       "index": 1,
+       "start_ms": 40800,
+       "end_ms": 46800
+      },
+      {
+       "index": 1,
+       "start_ms": 60700,
+       "end_ms": 66700
+      },
+      {
+       "index": 1,
+       "start_ms": 126000,
+       "end_ms": 132000
+      },
+      {
+       "index": 1,
+       "start_ms": 205700,
+       "end_ms": 211700
+      },
+      {
+       "index": 1,
+       "start_ms": 288100,
+       "end_ms": 294100
+      },
+      {
+       "index": 1,
+       "start_ms": 352300,
+       "end_ms": 358300
+      },
+      {
+       "index": 1,
+       "start_ms": 374600,
+       "end_ms": 380600
+      },
+      {
+       "index": 1,
+       "start_ms": 442200,
+       "end_ms": 448200
+      },
+      {
+       "index": 1,
+       "start_ms": 529000,
+       "end_ms": 535000
+      },
+      {
+       "index": 1,
+       "start_ms": 575300,
+       "end_ms": 581300
+      },
+      {
+       "index": 1,
+       "start_ms": 648400,
+       "end_ms": 654400
+      },
+      {
+       "index": 1,
+       "start_ms": 666800,
+       "end_ms": 672800
+      },
+      {
+       "index": 1,
+       "start_ms": 755400,
+       "end_ms": 761400
+      },
+      {
+       "index": 1,
+       "start_ms": 800400,
+       "end_ms": 806400
+      },
+      {
+       "index": 1,
+       "start_ms": 855200,
+       "end_ms": 861200
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "random short pin last chance",
+   "overlays": [
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 1,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": null
+    },
+    {
+     "media_id": "v",
+     "start_ms": 0,
+     "duration_ms": 1,
+     "show_ms": 6000,
+     "enabled": true,
+     "product_id": 11
+    }
+   ],
+   "media": "v",
+   "schedule": {
+    "mode": "random",
+    "every_ms": 120000,
+    "min_gap_ms": 20000
+   },
+   "timeline_id": 8,
+   "video": {
+    "pins": [
+     {
+      "start_ms": 130000,
+      "end_ms": 200000,
+      "product_id": 11
+     }
+    ],
+    "duration_ms": 600000
+   },
+   "plans": [
+    {
+     "iteration": 0,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 86500,
+       "end_ms": 92500
+      },
+      {
+       "index": 1,
+       "start_ms": 165500,
+       "end_ms": 171500
+      },
+      {
+       "index": 0,
+       "start_ms": 265800,
+       "end_ms": 271800
+      },
+      {
+       "index": 0,
+       "start_ms": 441700,
+       "end_ms": 447700
+      },
+      {
+       "index": 0,
+       "start_ms": 545200,
+       "end_ms": 551200
+      }
+     ]
+    },
+    {
+     "iteration": 1,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 53000,
+       "end_ms": 59000
+      },
+      {
+       "index": 1,
+       "start_ms": 169700,
+       "end_ms": 175700
+      },
+      {
+       "index": 0,
+       "start_ms": 303800,
+       "end_ms": 309800
+      },
+      {
+       "index": 0,
+       "start_ms": 437400,
+       "end_ms": 443400
+      },
+      {
+       "index": 0,
+       "start_ms": 539500,
+       "end_ms": 545500
+      }
+     ]
+    },
+    {
+     "iteration": 2,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 6100,
+       "end_ms": 12100
+      },
+      {
+       "index": 1,
+       "start_ms": 143500,
+       "end_ms": 149500
+      },
+      {
+       "index": 0,
+       "start_ms": 245000,
+       "end_ms": 251000
+      },
+      {
+       "index": 0,
+       "start_ms": 376600,
+       "end_ms": 382600
+      },
+      {
+       "index": 0,
+       "start_ms": 504200,
+       "end_ms": 510200
+      }
+     ]
+    },
+    {
+     "iteration": 5,
+     "plan": [
+      {
+       "index": 0,
+       "start_ms": 6200,
+       "end_ms": 12200
+      },
+      {
+       "index": 1,
+       "start_ms": 164600,
+       "end_ms": 170600
+      },
+      {
+       "index": 0,
+       "start_ms": 344100,
+       "end_ms": 350100
+      },
+      {
+       "index": 0,
+       "start_ms": 472300,
+       "end_ms": 478300
+      },
+      {
+       "index": 0,
+       "start_ms": 553200,
+       "end_ms": 559200
       }
      ]
     }

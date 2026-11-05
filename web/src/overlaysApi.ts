@@ -5,7 +5,7 @@ import { normalizeOverlay, type AnimationName, type Overlay, type OverlayIssue, 
 import { DEFAULT_SCHEDULE, DEFAULT_SHOW_MS, type OverlaySchedule } from './overlay/overlaySchedule'
 
 export type OverlaysView = { timeline_id:number; version:number; status:TimelineStatus; canvas:{width:number;height:number}; overlays:Overlay[]; issues:OverlayIssue[]
-  /** How the version's overlays are scheduled (docs/LIVE_OVERLAYS.md §13); missing from an older Backend = fixed. */
+  /** How the version's overlays are scheduled (docs/LIVE_OVERLAYS.md §13–14: fixed | window | random); missing from an older Backend = fixed. */
   schedule:OverlaySchedule }
 export type OverlayTemplates = {
   canvas:{width:number;height:number}; blocks:string[]; product_fields:ProductField[]; animations:AnimationName[]; max_concurrent:number; templates:OverlayPreset[]
@@ -49,7 +49,7 @@ export const overlaysApi = {
     {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({agent_id:agentId ?? null})}),
   /**
    * "Xem thử trên OBS": show this version (saved content, a draft included) at a position, without LIVE; `stop` hides it.
-   * `iteration`: the loop of the video shown (a random schedule draws its plan per loop), the one chosen in the editor.
+   * `iteration`: the loop of the video shown (window / random schedules draw their plan per loop), the one chosen in the editor.
    */
   preview:(sessionId:number, timelineId:number, body:{agent_id:string|null; media_id?:string|null; position_ms?:number; playing?:boolean; seconds?:number; stop?:boolean; iteration?:number}) =>
     apiRequest<{agent_id:string; command_id:string}>(`/live/sessions/${sessionId}/timelines/${timelineId}/overlay-preview`,

@@ -20,11 +20,14 @@ owner uploaded here: MIME type and content checked, size limited, served only th
 to a product of the owner's catalog.
 
 Each version also has an overlay schedule (`live_overlay_schedules`, no row = defaults). `fixed` is the model above.
-In `random` mode an overlay's `start_ms`..`start_ms + duration_ms` is the window it MAY show in, `show_ms` at a time:
-the video is cut into slots of `every_ms`, each slot holds at most one appearance, appearances are at least
-`min_gap_ms` apart and only one overlay is on screen. Every loop of the video draws a new plan seeded by
-`timeline_id:media_id:iteration`; the renderers compute it (web/src/overlay/overlaySchedule.ts is the spec), the
-Backend only stores, validates and snapshots the schedule.
+In `window` mode an overlay's `start_ms`..`start_ms + duration_ms` is the window it MAY show in, `show_ms` at a time.
+In `random` mode the overlays of a video are a list and their times are ignored: an overlay with a product may show
+while that product is pinned (the version's approved pin markers of that video, `pin_spans`), one without a product
+anywhere in the video. In both, the video is cut into slots of `every_ms`, each slot holds at most one appearance,
+appearances are at least `min_gap_ms` apart and only one overlay is on screen. Every loop of the video draws a new plan
+seeded by `timeline_id:media_id:iteration`; the renderers compute it (web/src/overlay/overlaySchedule.ts is the spec),
+the Backend only stores, validates and snapshots the schedule (with the pin spans and durations the plan needs).
+Stored times stay validated in every mode, so switching back to `fixed` keeps a valid version.
 """
 import hashlib
 import json
@@ -43,8 +46,8 @@ from app import media_access
 from app.catalog import Product
 from app.database import Base, SessionLocal
 from app.identity import current_owner
-from app.live_timeline import (MEDIA_ID_PATTERN, LiveTimeline, now, session_of, session_videos, timeline_of,
-                               video_durations)
+from app.live_timeline import (MEDIA_ID_PATTERN, LiveTimeline, markers_of, now, pin_spans, session_of, session_videos,
+                               timeline_of, video_durations)
 from app.ownership import Owner
 
 CANVAS_WIDTH, CANVAS_HEIGHT = 1080, 1920
@@ -66,8 +69,13 @@ MAX_VERSION_ASSET_BYTES = 60 * 1024 * 1024
 ASSET_TYPES = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "image/webp": b"RIFF"}
 SIGN_KIND = "overlay_asset"
 EPSILON = 1e-6
-# Random schedule (see the module docstring).
-SCHEDULE_MODES = ("fixed", "random")
+# Window / random schedules (see the module docstring).
+SCHEDULE_MODES = ("fixed", "window", "random")
+# What `live_overlay_schedules.mode_version` records: 2 = fixed|window|random. Format 1 (Alembic 20261104_0022) stored
+# the window mode as "random"; ensure_schema / 20261105_0023 convert those rows once.
+SCHEDULE_MODE_VERSION = 2
+# Pin spans of a video whose duration is unknown run up to this position (the longest stored time).
+UNKNOWN_DURATION_MS = 86_400_000
 DEFAULT_SCHEDULE = {"mode": "fixed", "every_ms": 120_000, "min_gap_ms": 20_000}
 DEFAULT_SHOW_MS = 6000
 MIN_SHOW_MS, MAX_SHOW_MS = 1000, 600_000
@@ -87,7 +95,7 @@ class OverlayEvent(Base):
     label: Mapped[str] = mapped_column(String(200), default="")
     start_ms: Mapped[int] = mapped_column(Integer)
     duration_ms: Mapped[int] = mapped_column(Integer)
-    # Random schedule only: how long one appearance lasts (the start..start+duration window is where it may show).
+    # Window / random schedules only: how long one appearance lasts.
     show_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SHOW_MS, server_default=str(DEFAULT_SHOW_MS))
     # The product the overlay is about (product fields / images without their own product use it).
     product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -135,12 +143,24 @@ class OverlaySchedule(Base):
     mode: Mapped[str] = mapped_column(String(10), default="fixed")
     every_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SCHEDULE["every_ms"])
     min_gap_ms: Mapped[int] = mapped_column(Integer, default=DEFAULT_SCHEDULE["min_gap_ms"])
+    # Format of `mode` (SCHEDULE_MODE_VERSION); its presence also marks the "random" → "window" conversion as done.
+    mode_version: Mapped[int] = mapped_column(Integer, default=SCHEDULE_MODE_VERSION, server_default=str(SCHEDULE_MODE_VERSION))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
+def upgrade_schedule_modes(conn) -> None:
+    """Format 1 → 2, once: rows stored as "random" meant the window mode. The rows are converted before the marker
+    column is added (SQLite commits an ALTER on its own), so an interrupted run converts again and nothing is left in
+    format 1; the column then marks it done and later "random" rows (the new mode) are never touched."""
+    from sqlalchemy import text
+    conn.execute(text("UPDATE live_overlay_schedules SET mode = 'window' WHERE mode = 'random'"))
+    conn.execute(text(f"ALTER TABLE live_overlay_schedules ADD COLUMN mode_version INTEGER NOT NULL "
+                      f"DEFAULT {SCHEDULE_MODE_VERSION}"))
+
+
 def ensure_schema(bind) -> None:
-    """Create the overlay tables and columns if missing (startup; Alembic 20261031_0019, 20261101_0020 and
-    20261104_0022 do the same)."""
+    """Create the overlay tables and columns if missing (startup; Alembic 20261031_0019, 20261101_0020,
+    20261104_0022 and 20261105_0023 do the same)."""
     from sqlalchemy import inspect, text
     OverlayAsset.__table__.create(bind=bind, checkfirst=True)
     OverlayEvent.__table__.create(bind=bind, checkfirst=True)
@@ -149,6 +169,9 @@ def ensure_schema(bind) -> None:
     if "show_ms" not in {c["name"] for c in inspect(bind).get_columns("live_overlay_events")}:
         with bind.begin() as conn:
             conn.execute(text(f"ALTER TABLE live_overlay_events ADD COLUMN show_ms INTEGER NOT NULL DEFAULT {DEFAULT_SHOW_MS}"))
+    if "mode_version" not in {c["name"] for c in inspect(bind).get_columns("live_overlay_schedules")}:
+        with bind.begin() as conn:
+            upgrade_schedule_modes(conn)
 
 
 # ----- building blocks -------------------------------------------------------------------------------------------
@@ -342,47 +365,87 @@ def schedule_of(db, timeline_id: int | None) -> dict:
     return {"mode": row.mode, "every_ms": row.every_ms, "min_gap_ms": row.min_gap_ms} if row else dict(DEFAULT_SCHEDULE)
 
 
-def empty_slots(events, every_ms: int) -> int:
+def windows_of(e, mode: str, pins: list[dict], duration: int | None) -> list[tuple[int, int]]:
+    """The windows an overlay may show in (windowsOf of overlaySchedule.ts): its own times, or in random mode the
+    whole video (no product) or the spans where its product is pinned."""
+    if mode != "random":
+        return [(e.start_ms, e.start_ms + e.duration_ms)]
+    end = duration if duration is not None else max([0] + [p["end_ms"] for p in pins])
+    if e.product_id is None:
+        return [(0, end)] if end > 0 else []
+    return [(p["start_ms"], p["end_ms"]) for p in pins if p["product_id"] == e.product_id]
+
+
+def empty_slots(entries, every_ms: int) -> int:
     """Slots [k·every, (k+1)·every) of one video, up to its last window end, where no overlay can fit a whole
-    appearance inside slot ∩ window (they stay empty on every loop)."""
-    end = max(e.start_ms + e.duration_ms for e in events)
+    appearance inside slot ∩ one of its windows (they stay empty on every loop). `entries`: (show_ms, windows)."""
+    end = max([0] + [w1 for _, windows in entries for _, w1 in windows])
     empty = 0
     for slot in range(0, end, every_ms):
-        if not any(max(slot, e.start_ms) + e.show_ms <= min(slot + every_ms, e.start_ms + e.duration_ms) for e in events):
+        if not any(max(slot, w0) + show <= min(slot + every_ms, w1) for show, windows in entries for w0, w1 in windows):
             empty += 1
     return empty
 
 
-def random_issues(events, schedule: dict) -> list[dict]:
-    """What the random schedule adds: an appearance must fit its window, a slot and its own animations."""
+def appearance_issues(e, index: int, every: int) -> list[dict]:
+    """An appearance must fit a slot and its own animations (window and random modes)."""
     found = []
-    every, gap = schedule["every_ms"], schedule["min_gap_ms"]
+    if e.show_ms > every:
+        found.append({"level": "error", "code": "SHOW_LONGER_THAN_SLOT", "overlay": index,
+                      "message": f"Thời lượng mỗi lần hiện dài hơn mật độ (1 lần mỗi {every // 1000} giây): "
+                                 "overlay không bao giờ hiện"})
+    if e.animation_in_ms + e.animation_out_ms > e.show_ms:
+        found.append({"level": "error", "code": "ANIMATION_LONGER_THAN_SHOW", "overlay": index,
+                      "message": "Thời gian hiệu ứng vào + ra dài hơn thời lượng mỗi lần hiện"})
+    return found
+
+
+def planned_issues(events, schedule: dict, pins: dict, durations: dict, videos) -> list[dict]:
+    """What the window and random schedules add. Window: an appearance must fit its window. Random: an overlay with a
+    product needs a pin span of that product in its video long enough for one appearance."""
+    found = []
+    mode, every, gap = schedule["mode"], schedule["every_ms"], schedule["min_gap_ms"]
     for index, e in enumerate(events):
-        if e.show_ms > e.duration_ms:
+        if mode == "window" and e.show_ms > e.duration_ms:
             found.append({"level": "error", "code": "SHOW_LONGER_THAN_WINDOW", "overlay": index,
                           "message": "Thời lượng mỗi lần hiện dài hơn khoảng cho phép của overlay"})
-        if e.show_ms > every:
-            found.append({"level": "error", "code": "SHOW_LONGER_THAN_SLOT", "overlay": index,
-                          "message": f"Thời lượng mỗi lần hiện dài hơn mật độ (1 lần mỗi {every // 1000} giây): "
-                                     "overlay không bao giờ hiện"})
-        if e.animation_in_ms + e.animation_out_ms > e.show_ms:
-            found.append({"level": "error", "code": "ANIMATION_LONGER_THAN_SHOW", "overlay": index,
-                          "message": "Thời gian hiệu ứng vào + ra dài hơn thời lượng mỗi lần hiện"})
+        found += appearance_issues(e, index, every)
+        if mode == "random" and e.product_id is not None and e.media_id in videos:
+            spans = [p for p in pins.get(e.media_id, []) if p["product_id"] == e.product_id]
+            if not spans:
+                found.append({"level": "warning", "code": "PRODUCT_NEVER_PINNED", "overlay": index,
+                              "message": "Sản phẩm của overlay này không được ghim trong video: overlay sẽ không bao giờ hiện"})
+            elif all(p["end_ms"] - p["start_ms"] < e.show_ms for p in spans):
+                found.append({"level": "warning", "code": "PIN_TOO_SHORT", "overlay": index,
+                              "message": "Sản phẩm của overlay này chỉ được ghim trong khoảng ngắn hơn thời lượng mỗi lần "
+                                         "hiện: overlay sẽ không bao giờ hiện"})
     enabled = [e for e in events if e.enabled]
     if enabled and every < max(e.show_ms for e in enabled) + gap:
         found.append({"level": "warning", "code": "DENSITY_TOO_HIGH",
                       "message": "Mật độ dày hơn thời lượng hiện + khoảng nghỉ: một số ô sẽ trống"})
     for media_id in dict.fromkeys(e.media_id for e in enabled):
-        empty = empty_slots([e for e in enabled if e.media_id == media_id], every)
+        # Random mode: only the session's videos of known duration (the windows of a generic overlay need it).
+        if mode == "random" and (media_id not in videos or durations.get(media_id) is None):
+            continue
+        empty = empty_slots([(e.show_ms, windows_of(e, mode, pins.get(media_id, []), durations.get(media_id)))
+                             for e in enabled if e.media_id == media_id], every)
         if empty:
             found.append({"level": "warning", "code": "NO_OVERLAY_IN_SLOTS", "media_id": media_id, "slots": empty,
                           "message": f"{empty} ô không có overlay nào hiện được"})
     return found
 
 
+def video_pins(db, timeline_id: int | None, media_ids, durations: dict) -> dict[str, list[dict]]:
+    """Pin spans of each video from the version's markers (unknown duration: up to UNKNOWN_DURATION_MS)."""
+    markers = markers_of(db, timeline_id) if timeline_id is not None else []
+    return {m: pin_spans([k for k in markers if k.media_id == m], durations.get(m) or UNKNOWN_DURATION_MS)
+            for m in dict.fromkeys(media_ids)}
+
+
 def overlay_issues(db, owner_id: str, item, events, schedule: dict | None = None) -> list[dict]:
     """What blocks approval (`level: error`) or deserves a look (`warning`), per overlay index where it applies.
-    `schedule` defaults to the stored schedule of the events' version."""
+    `schedule` defaults to the stored schedule of the events' version. Random mode ignores the stored times (no
+    AFTER_END / DURATION_UNKNOWN / TOO_MANY_AT_ONCE); saving still refuses times past the video end."""
     if schedule is None:
         schedule = schedule_of(db, events[0].timeline_id if events else None)
     random = schedule["mode"] == "random"
@@ -397,9 +460,9 @@ def overlay_issues(db, owner_id: str, item, events, schedule: dict | None = None
             found.append({"level": "warning", "code": "VIDEO_NOT_IN_SESSION", "overlay": index,
                           "message": "Video của overlay này không còn trong phiên; overlay bị bỏ qua khi LIVE"})
         duration = durations.get(e.media_id)
-        if duration is not None and e.start_ms + e.duration_ms > duration:
+        if not random and duration is not None and e.start_ms + e.duration_ms > duration:
             found.append({"level": "error", "code": "AFTER_END", "overlay": index, "message": "Overlay kéo dài quá cuối video"})
-        elif duration is None and e.media_id in videos:
+        elif not random and duration is None and e.media_id in videos:
             found.append({"level": "warning", "code": "DURATION_UNKNOWN", "overlay": index,
                           "message": "Chưa biết thời lượng video; chưa kiểm tra được overlay vượt quá cuối video"})
         missing = sorted(product_refs(e.product_id, els) - set(products))
@@ -412,8 +475,9 @@ def overlay_issues(db, owner_id: str, item, events, schedule: dict | None = None
     if total > MAX_VERSION_ASSET_BYTES:
         found.append({"level": "error", "code": "ASSETS_TOO_LARGE",
                       "message": f"Tổng ảnh overlay {total // (1024 * 1024)} MB (tối đa {MAX_VERSION_ASSET_BYTES // (1024 * 1024)} MB)"})
-    if random:  # one overlay on screen at a time: TOO_MANY_AT_ONCE cannot happen
-        return found + random_issues(events, schedule)
+    if schedule["mode"] in ("window", "random"):  # one overlay on screen at a time: TOO_MANY_AT_ONCE cannot happen
+        pins = video_pins(db, events[0].timeline_id, videos, durations) if random and events else {}
+        return found + planned_issues(events, schedule, pins, durations, videos)
     for media_id in dict.fromkeys(e.media_id for e in events):
         peak, at = busiest([e for e in events if e.media_id == media_id and e.enabled])
         if peak > MAX_CONCURRENT:
@@ -443,12 +507,23 @@ def event_view(e: OverlayEvent) -> dict:
             "elements": element_list(e), "enabled": e.enabled, "created_at": e.created_at, "updated_at": e.updated_at}
 
 
+def video_context(db, item, timeline_id: int) -> dict:
+    """What a random plan needs about the session's videos: `pins` (pin spans of each video, from the version's
+    markers) and `durations` (ms, known durations only). Given in every mode, so a renderer never depends on the mode
+    to read them."""
+    videos = session_videos(item)
+    durations = video_durations(db, videos)
+    return {"pins": video_pins(db, timeline_id, videos, durations),
+            "durations": {m: d for m, d in durations.items() if d is not None}}
+
+
 def overlays_view(db, owner_id: str, item, timeline: LiveTimeline) -> dict:
     events = events_of(db, timeline.id)
     schedule = schedule_of(db, timeline.id)
     return {"timeline_id": timeline.id, "version": timeline.version, "status": timeline.status,
             "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "schedule": schedule,
-            "overlays": [event_view(e) for e in events], "issues": overlay_issues(db, owner_id, item, events, schedule)}
+            "overlays": [event_view(e) for e in events], **video_context(db, item, timeline.id),
+            "issues": overlay_issues(db, owner_id, item, events, schedule)}
 
 
 def save_schedule(db, owner_id: str, timeline_id: int, schedule: "ScheduleInput") -> None:
@@ -503,7 +578,7 @@ def asset_url(asset: OverlayAsset) -> str:
 
 def snapshot(db, item, timeline: LiveTimeline) -> dict:
     """The overlays of one version as a renderer runs them: enabled overlays of the session's videos, with the
-    products and assets they read. `revision` is a hash of the content (signed URLs excluded): it changes exactly when
+    products and assets they read, the pin spans and durations of the videos (video_context). `revision` is a hash of the content (signed URLs excluded): it changes exactly when
     what is shown changes, so a renderer re-syncs only then."""
     videos = set(session_videos(item))
     events = [e for e in events_of(db, timeline.id) if e.enabled and e.media_id in videos]
@@ -518,7 +593,7 @@ def snapshot(db, item, timeline: LiveTimeline) -> dict:
     assets = owned_assets(db, item.owner_id, set().union(*[asset_refs(els) for els in elements]))
     content = {"session_id": item.id, "timeline_id": timeline.id, "version": timeline.version,
                "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}, "schedule": schedule_of(db, timeline.id),
-               "overlays": views,
+               "overlays": views, **video_context(db, item, timeline.id),
                "products": {str(p.id): {"name": p.name, "sku": p.sku, "price": p.price, "origin_price": p.origin_price}
                             for p in products.values()},
                "assets": {a.id: {"mime_type": a.mime_type, "sha256": a.sha256, "width": a.width, "height": a.height,
@@ -548,8 +623,9 @@ def list_overlays(session_id: int, timeline_id: int, owner: Owner):
 def save_overlays(session_id: int, timeline_id: int, body: OverlaysInput, owner: Owner):
     """Replace every overlay of a DRAFT, of every video (the editor saves the whole draft). Each overlay belongs to one
     of the session's videos and ends before that video does; products and images must be the owner's. `schedule`
-    (fixed / random) is replaced when given, kept when omitted. What only blocks approval (too many overlays at once,
-    an appearance that cannot fit its window or slot) is reported in `issues`."""
+    (fixed / window / random) is replaced when given, kept when omitted. Times past the video end are refused in
+    every mode (random ignores them, but switching back must stay valid). What only blocks approval (too many overlays
+    at once, an appearance that cannot fit its window or slot) is reported in `issues`."""
     with SessionLocal() as db:
         item = session_of(db, session_id, owner)
         timeline = timeline_of(db, item, timeline_id)
@@ -692,7 +768,7 @@ class OverlayPreviewInput(BaseModel):
     position_ms: int = Field(default=0, ge=0, le=86_400_000)
     playing: bool = False
     seconds: int = Field(default=120, ge=10, le=600)
-    # Random schedule: the loop whose plan is shown (seed `timeline_id:media_id:iteration`).
+    # Window / random schedules: the loop whose plan is shown (seed `timeline_id:media_id:iteration`).
     iteration: int = Field(default=0, ge=0, le=100_000)
     stop: bool = False
 

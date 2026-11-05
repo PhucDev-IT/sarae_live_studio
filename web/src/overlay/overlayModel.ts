@@ -7,7 +7,7 @@
  * (text, product_field, image, shape). `template` is only a free label naming the arrangement.
  */
 
-import type { OverlaySchedule } from './overlaySchedule'
+import type { OverlaySchedule, PinSpan } from './overlaySchedule'
 
 export const CANVAS = {width:1080, height:1920} as const
 export const MIN_DURATION_MS = 500
@@ -50,6 +50,9 @@ export type OverlayScene = {
   canvas?:{width:number; height:number}; overlays:Overlay[]
   /** The version (seed of the random plan) and how its overlays are scheduled (absent = fixed). */
   timeline_id?:number; schedule?:OverlaySchedule
+  /** Random mode: where each product is pinned, and how long each video is (by media id). */
+  pins?:Record<string, PinSpan[]>; durations?:Record<string, number>
+
   products:Record<string, SceneProduct>; assets:Record<string, SceneAsset>
 }
 /** A preset of GET /api/live/overlay-templates: a starting point, never a type. */

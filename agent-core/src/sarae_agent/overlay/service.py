@@ -11,8 +11,8 @@
 Time: there is no overlay clock. The state is reconciled from what the PlaybackEngine reports (`observe`): session,
 media id, position, media state, loop iteration (the engine reports on every watchdog tick, and at once when a video
 starts, on a seek, a pause and a resume). An overlay is active when `start_ms <= position < start_ms + duration_ms` on
-that media (`shown_at`, the rule of the web preview); in random mode, when the loop's plan (overlay/schedule.py, seeded
-by the loop iteration) has an appearance there (`shown_in`). The renderer polls this state (no queue of show/hide commands:
+that media (`shown_at`, the rule of the web preview); in window and random modes, when the loop's plan (overlay/schedule.py,
+seeded by the loop iteration; random mode from the snapshot's pin spans) has an appearance there (`shown_in`). The renderer polls this state (no queue of show/hide commands:
 a reconnecting renderer simply reads the current state, nothing past is replayed); between two reports it may advance
 by the elapsed time only while the media state is PLAYING, at most 1.5 s. A paused video holds its position: the
 engine does not report while paused, so the pause flag of the engine keeps that position valid.
@@ -59,12 +59,13 @@ def shown_at(overlays: list[dict], media_id: str | None, position_ms: int) -> li
 
 def shown_in(scene: dict, media_id: str | None, position_ms: int, iteration: int = 0, plan: list[dict] | None = None) -> list[dict]:
     """Overlays of `scene` on screen at `position_ms` of loop `iteration` (web: overlaySchedule.sceneAt + isShown).
-    Fixed mode: `shown_at`. Random mode: the one appearance of the loop's plan covering that position, if any."""
+    Fixed mode (and unknown modes): `shown_at`. Window and random modes: the one appearance of the loop's plan covering
+    that position, if any (random mode: windows from the snapshot's `pins` / `durations` of that media)."""
     overlays = scene.get("overlays") or []
-    if not schedule.is_random(scene):
+    if not schedule.is_planned_scene(scene):
         return shown_at(overlays, media_id, position_ms)
     if plan is None:
-        plan = schedule.random_plan(overlays, media_id, schedule.schedule_of(scene), scene.get("timeline_id") or 0, iteration)
+        plan = schedule.plan_of(scene, media_id, iteration)
     now = next((a for a in plan if a["start_ms"] <= position_ms < a["end_ms"]), None)
     return [] if now is None else [overlays[now["index"]]]
 
@@ -79,7 +80,7 @@ def snapshot_problem(snapshot: dict) -> str | None:
             return f"hiệu ứng dài hơn {MAX_ANIMATION_MS} ms"
         if not (isinstance(o.get("start_ms"), int) and isinstance(o.get("duration_ms"), int) and o["duration_ms"] > 0):
             return "thời gian overlay không hợp lệ"
-    if schedule.is_random(snapshot):
+    if schedule.is_planned_scene(snapshot):
         return None  # windows may overlap: one appearance at a time by construction
     for media_id in {o.get("media_id") for o in overlays}:
         edges = sorted([(o["start_ms"], 1) for o in overlays if o.get("media_id") == media_id and o.get("enabled", True) is not False]
@@ -144,7 +145,7 @@ class OverlayService:
         self._refused: str | None = None
         # {session_id, timeline_id, media_id, position_ms, playing, at, until} while the editor previews on OBS.
         self.preview: dict | None = None
-        self._plan: tuple | None = None  # ((revision, media_id, iteration), random plan) of active_ids
+        self._plan: tuple | None = None  # ((revision, media_id, iteration), plan) of active_ids
         self._state = "idle"
 
     # ----- setup -----
@@ -255,11 +256,10 @@ class OverlayService:
                 return []
             scene, media_id, iteration = self.active["scene"], self.clock.get("media_id"), self.clock.get("iteration", 0)
             plan = None
-            if schedule.is_random(scene):  # one plan per (revision, video, loop): status asks often
-                key = (self.active["revision"], media_id, iteration)
+            if schedule.is_planned_scene(scene):  # one plan per (revision, video, loop): status asks often
+                key = (self.active["revision"], media_id, iteration)  # the revision covers schedule, pins, durations
                 if self._plan is None or self._plan[0] != key:
-                    self._plan = (key, schedule.random_plan(scene.get("overlays") or [], media_id, schedule.schedule_of(scene),
-                                                            scene.get("timeline_id") or 0, iteration))
+                    self._plan = (key, schedule.plan_of(scene, media_id, iteration))
                 plan = self._plan[1]
             return [o.get("id") for o in shown_in(scene, media_id, self.clock.get("position_ms", 0), iteration, plan)]
 
@@ -497,7 +497,7 @@ class OverlayService:
                        playing: bool = False, seconds: int = 120, stop: bool = False, iteration: int = 0) -> dict:
         """The editor's "Xem thử trên OBS": show this version (a draft included) at the editor's position, without
         activating it or going LIVE; or stop. Repeated calls move the position (seek / play / pause) and renew it.
-        `iteration`: the editor's loop of the video (random mode draws a plan per loop)."""
+        `iteration`: the editor's loop of the video (window and random modes draw a plan per loop)."""
         if stop:
             with self._lock:
                 if self.preview is not None:

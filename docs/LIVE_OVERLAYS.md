@@ -347,15 +347,15 @@ trên video (new, text with shadow). They are still only starting points.
 The OBS test scripts use their own Browser Source "Sarae Overlay (test)" and port 17895, so they never touch the
 "Sarae Overlay" source of an Agent running on the same PC.
 
-## 13. Random overlays (Ngẫu nhiên)
+## 13. Overlays inside a window (Theo khoảng, mode `window`)
 
-A version has one switch for all its videos: **Cố định** (as above: an overlay shows from `start_ms` for
-`duration_ms`) or **Ngẫu nhiên**. In random mode the overlays are added exactly as before, but an overlay's bar is the
+A version has one switch for all its videos: **Chính xác** (`fixed`, as above: an overlay shows from `start_ms` for
+`duration_ms`), **Theo khoảng** (`window`, this section) or **Ngẫu nhiên** (`random`, §14). In window mode the overlays are added exactly as before, but an overlay's bar is the
 **window it may show in** (e.g. product A is live 0:00–10:00, so its overlays never appear over product B) and it shows
 `show_ms` at a time. One overlay is on screen at a time, and every loop of the video draws a new plan.
 
 ```
-schedule = {mode: "random", every_ms: 120000, min_gap_ms: 20000}      (per version; absent row = fixed)
+schedule = {mode: "window", every_ms: 120000, min_gap_ms: 20000}      (per version; absent row = fixed)
 overlay  = {start_ms, duration_ms (= window), show_ms: 6000, …}
 
 video   |  slot 1  |  slot 2  |  slot 3  |  slot 4  |  slot 5  |      slots of every_ms from 0
@@ -378,3 +378,27 @@ and in the preview; "Xem thử trên OBS" sends that loop (`iteration`) so OBS s
 Checks (random mode): errors `SHOW_LONGER_THAN_WINDOW`, `SHOW_LONGER_THAN_SLOT`, `ANIMATION_LONGER_THAN_SHOW`;
 warnings `DENSITY_TOO_HIGH` (every_ms < longest show_ms + min_gap_ms) and `NO_OVERLAY_IN_SLOTS` (slots of a video where
 no overlay fits). `TOO_MANY_AT_ONCE` does not apply (one at a time).
+
+## 14. Random overlays from a list (Ngẫu nhiên, mode `random`)
+
+The overlays of a video are a **list**: no times to set. The same slot rules as §13 pick when each one shows; only the
+windows differ, and they come from the version's pin markers:
+
+```
+pin markers:      0:00 ──[pin A]──────────── 10:00 ──[pin B]──────── 18:00 [unpin] ── 20:00 (end)
+no product        ├──────────────── may show anywhere in the video ─────────────────────────┤
+product A               ├──── while A is pinned ────┤
+product B                                             ├─ while B is pinned ┤
+loop 1:           [Freeship]  [Price A]  [Size A]   [Price B]  [Freeship]        [Order now]
+```
+
+| Rule | Behaviour |
+|---|---|
+| Pin spans | `pinSpans`: approved PIN/UNPIN markers of the video by position, seq, id; a pin lasts until the next PIN of another product, an UNPIN or the end of the video; nothing counts as pinned before the first marker |
+| Windows | overlay without `product_id`: `[0, duration]`; with one: the spans of that product (several windows possible); `start_ms`/`duration_ms` are kept but ignored, so switching modes loses nothing |
+| Snapshot | `pins` (`{media_id: [{start_ms, end_ms, product_id}]}`) and `durations` (`{media_id: ms}`), part of the revision; the editor computes pins from its draft markers |
+| Same everywhere | TS `overlaySchedule.ts`, Agent `schedule.py` and the Backend's pin spans are checked against the same vectors (`pins` and `cases` of the fixture); the window-mode cases equal the plans of §13 exactly |
+
+Checks (random mode): errors `SHOW_LONGER_THAN_SLOT`, `ANIMATION_LONGER_THAN_SHOW`; warnings `PRODUCT_NEVER_PINNED`
+(the overlay's product is never pinned in its video: it never shows), `PIN_TOO_SHORT`, `DENSITY_TOO_HIGH`,
+`NO_OVERLAY_IN_SLOTS`. Stored as `"random"` before this change, the window mode is migrated to `"window"`.

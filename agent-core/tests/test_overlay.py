@@ -609,10 +609,10 @@ class ServiceTests(unittest.TestCase):
         clock = self.service.renderer_state()["clock"]
         self.assertEqual((clock["iteration"], clock["seq"]), (4, seq + 1), "a new loop at the same position is a new clock")
 
-    def test_active_overlays_follow_the_random_plan_of_the_loop(self):
+    def test_active_overlays_follow_the_window_plan_of_the_loop(self):
         media = "m" * 32
         snap = self.snap(overlays=3)
-        snap["schedule"] = {"mode": "random", "every_ms": 60_000, "min_gap_ms": 10_000}
+        snap["schedule"] = {"mode": "window", "every_ms": 60_000, "min_gap_ms": 10_000}
         for o in snap["overlays"]:
             o["show_ms"] = 5000
         self.snapshots[5] = snap
@@ -628,6 +628,35 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(self.service.status()["active_overlays"], [], "end is exclusive; min gap after it")
         self.assertNotEqual(random_plan(snap["overlays"], media, snap["schedule"], 1, 0),
                             random_plan(snap["overlays"], media, snap["schedule"], 1, 1), "each loop draws its own plan")
+
+    def test_active_overlays_follow_the_pins_in_random_mode(self):
+        media = "m" * 32
+        snap = self.snap(overlays=3)
+        snap["schedule"] = {"mode": "random", "every_ms": 60_000, "min_gap_ms": 10_000}
+        snap["overlays"][0]["product_id"] = 7
+        snap["overlays"][1]["product_id"] = 8
+        snap["pins"] = {media: [{"start_ms": 60_000, "end_ms": 180_000, "product_id": 7},
+                                {"start_ms": 300_000, "end_ms": 420_000, "product_id": 8}]}
+        snap["durations"] = {media: 600_000}
+        for o in snap["overlays"]:
+            o["show_ms"] = 5000
+        self.snapshots[5] = snap
+        self.step()
+        self.service.renderer_ready({"revision": "r1", "ok": True})
+        windows = {0: (60_000, 180_000), 1: (300_000, 420_000), 2: (0, 600_000)}
+        for iteration in (0, 1):
+            plan = random_plan(snap["overlays"], media, snap["schedule"], snap["timeline_id"], iteration,
+                               {"pins": snap["pins"][media], "duration_ms": 600_000})
+            self.assertEqual({a["index"] for a in plan}, {0, 1, 2})
+            for a in plan:
+                lo, hi = windows[a["index"]]
+                self.assertTrue(lo <= a["start_ms"] and a["end_ms"] <= hi, "a product's overlay only while it is pinned")
+                self.service.observe(5, media, a["start_ms"], "OBS_MEDIA_STATE_PLAYING", iteration)
+                self.assertEqual(self.service.status()["active_overlays"], [snap["overlays"][a["index"]]["id"]])
+                self.service.observe(5, media, a["end_ms"], "OBS_MEDIA_STATE_PLAYING", iteration)
+                self.assertEqual(self.service.status()["active_overlays"], [])
+        self.service.observe(5, media, 1000, "OBS_MEDIA_STATE_PLAYING", 0)
+        self.assertNotIn(snap["overlays"][0]["id"], self.service.status()["active_overlays"], "not pinned yet at 0:01")
 
     def test_the_active_version_never_replaces_the_previewed_draft(self):
         self.snapshots[5] = self.snap("active-r", 2)

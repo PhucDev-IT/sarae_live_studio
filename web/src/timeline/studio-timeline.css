@@ -88,6 +88,20 @@
   box-shadow:0 0 0 1px color-mix(in srgb,#000 35%,transparent);pointer-events:none}
 .st-appear.is-now{background:#fff;box-shadow:0 0 0 2px var(--ui-primary)}
 .st-clip.is-off ~ .st-appear{display:none}
+/* random (list) schedule: no clip; where the overlay may show (whole video, or hatched while its product is pinned) and
+   the loop's appearances (solid, clickable) */
+.st-area{position:absolute;top:5px;bottom:5px;z-index:1;box-sizing:border-box;border:1px solid color-mix(in srgb,var(--ui-primary) 28%,transparent);border-radius:7px;
+  background:color-mix(in srgb,var(--ui-primary) 7%,var(--ui-surface));overflow:hidden;cursor:pointer}
+.st-area.is-product{border-style:dashed;border-color:color-mix(in srgb,var(--ui-primary) 50%,transparent);
+  background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--ui-primary) 16%,var(--ui-surface)) 0 6px,color-mix(in srgb,var(--ui-primary) 5%,var(--ui-surface)) 6px 12px)}
+.st-row.st-ov.is-selected .st-area{border-color:var(--ui-primary)}
+.st-area.is-off{opacity:.45}
+.st-area.is-warn{border-color:var(--ui-warning)}
+.st-area.is-error{border-color:var(--ui-danger)}
+.st-area-label{position:absolute;left:6px;right:6px;top:1px;line-height:16px;font-size:11px;font-weight:600;color:var(--ui-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.st-area-none{position:absolute;left:206px;top:0;bottom:0;display:flex;align-items:center;font-size:11.5px;color:var(--ui-warning);white-space:nowrap;pointer-events:none}
+.st-appear.is-click{top:19px;bottom:8px;height:auto;border-radius:4px;pointer-events:auto;cursor:pointer}
+.st-appear.is-click:hover{background:color-mix(in srgb,var(--ui-primary) 70%,#fff)}
 .st-add-row{display:flex;align-items:center;height:52px;border-bottom:0}
 /* Sticky: always the visible width of the time area, whatever the zoom. */
 .st-add{position:sticky;left:206px;flex:none;height:36px;margin-left:10px;display:flex;align-items:center;justify-content:center;gap:6px;

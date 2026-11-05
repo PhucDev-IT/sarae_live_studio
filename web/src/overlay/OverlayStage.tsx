@@ -5,7 +5,7 @@ import {
   type Frame, type OverlayLayout, type OverlayScene,
 } from './overlayModel'
 import { newStep } from './overlayDraft'
-import { planOf, sceneAt } from './overlaySchedule'
+import { isPlanned, planOf, sceneAt } from './overlaySchedule'
 import { hms } from '../liveSessionsApi'
 
 export type PreviewMode = 'obs' | 'tiktok'
@@ -20,7 +20,7 @@ const pct = (v:number) => `${v * 100}%`
  */
 export function OverlayPreview({scene, mediaId, now, iteration = 0, animate, apiBase, mode, showZones, selected, editable, onSelect, onLayout, onGestureEnd, children}:{
   scene:OverlayScene; mediaId:string; now:number; animate:boolean; apiBase:string; mode:PreviewMode; showZones:boolean
-  /** Loop of the video previewed (a random schedule shows that loop's plan, like OBS at that loop). */
+  /** Loop of the video previewed (a planned schedule — window / random — shows that loop's plan, like OBS at that loop). */
   iteration?:number
   selected:number|null; editable:boolean; onSelect:(index:number|null)=>void
   onLayout:(index:number, layout:OverlayLayout, gesture:string)=>void; onGestureEnd:()=>void
@@ -29,18 +29,18 @@ export function OverlayPreview({scene, mediaId, now, iteration = 0, animate, api
 }){
   const frame = useRef<HTMLDivElement>(null)
   const drag = useRef<{index:number; handle:Handle; x:number; y:number; start:OverlayLayout; key:string}|null>(null)
-  // What the renderer draws now (random schedule: only the appearance covering `now`), same indexes as `scene`.
+  // What the renderer draws now (planned schedule: only the appearance covering `now`), same indexes as `scene`.
   const drawn = sceneAt(scene, mediaId, now, iteration)
-  const random = scene.schedule?.mode === 'random'
+  const planned = isPlanned(scene.schedule?.mode)
   const visible = drawn.overlays.map((o, index)=>({o, index})).filter(x=>isShown(x.o, mediaId, now))
   const current = selected != null ? scene.overlays[selected] : undefined
   const selectedHere = current && current.media_id === mediaId ? current : undefined
   const selectedShown = selected != null && !!drawn.overlays[selected] && isShown(drawn.overlays[selected], mediaId, now)
-  /** Where the selected overlay is when it is not on screen: its times, or (random) its next appearance in this loop. */
+  /** Where the selected overlay is when it is not on screen: its times, or (planned) its next appearance in this loop. */
   const hiddenNote = () => {
     if (!selectedHere || selected == null) return ''
     if (selectedHere.enabled === false) return 'Đang tắt'
-    if (!random) return `Hiện ${hms(selectedHere.start_ms)}–${hms(endOf(selectedHere))}`
+    if (!planned) return `Hiện ${hms(selectedHere.start_ms)}–${hms(endOf(selectedHere))}`
     const own = planOf(scene, mediaId, iteration).filter(a=>a.index === selected)
     const next = own.find(a=>a.start_ms >= now) ?? own[0]
     return next ? `Lượt ${iteration + 1}: hiện ${hms(next.start_ms)}–${hms(next.end_ms)}${own.length > 1 ? ` (${own.length} lần)` : ''}` : `Lượt ${iteration + 1}: không hiện`

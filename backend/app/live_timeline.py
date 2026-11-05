@@ -176,6 +176,42 @@ def pin_at(markers, position_ms: int, carried: int | None = None) -> int | None:
     return pinned
 
 
+def pin_spans(markers, duration_ms: int) -> list[dict]:
+    """Where each product is pinned in one video: `[{start_ms, end_ms, product_id}]`, a port of pinSpans in
+    web/src/overlay/overlaySchedule.ts (checked against agent-core/tests/fixtures/overlay_schedule_vectors.json).
+    Approved PIN/UNPIN markers by position, seq, id; a pin lasts until the next PIN of another product, an UNPIN or
+    the end of the video; markers at or after the end are ignored; before the first marker nothing is pinned
+    (`carried` of pin_at does not count); adjacent spans of the same product are merged. Markers are rows or dicts."""
+    def get(m, key, default=None):
+        value = m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+        return default if value is None else value
+    found = sorted((m for m in markers if get(m, "review_status", "APPROVED") == "APPROVED"
+                    and get(m, "action") in ("PIN_PRODUCT", "UNPIN_PRODUCT")),
+                   key=lambda m: (get(m, "at_ms"), get(m, "seq", 0), get(m, "id", 0)))
+    spans: list[dict] = []
+    product, start = None, 0
+
+    def close(at: int) -> None:
+        end = min(at, duration_ms)
+        if product is None or end <= start:
+            return
+        if spans and spans[-1]["product_id"] == product and spans[-1]["end_ms"] == start:
+            spans[-1]["end_ms"] = end
+        else:
+            spans.append({"start_ms": start, "end_ms": end, "product_id": product})
+
+    for m in found:
+        if get(m, "at_ms") >= duration_ms:
+            break
+        following = get(m, "product_id") if get(m, "action") == "PIN_PRODUCT" else None
+        if following == product:
+            continue
+        close(get(m, "at_ms"))
+        product, start = following, get(m, "at_ms")
+    close(duration_ms)
+    return spans
+
+
 # ----- web API: versioned timelines of a session ------------------------------------------------------------------
 
 router = APIRouter(prefix="/api/live/sessions", tags=["LIVE Timeline"], dependencies=[Depends(current_owner)])
