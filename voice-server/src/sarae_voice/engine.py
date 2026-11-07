@@ -34,6 +34,11 @@ PRESETS: dict[str, dict] = {
     # add a new name instead, so "demo_default" keeps meaning "same as the official demo".
     "demo_default": {"num_step": 32, "guidance_scale": 2.0, "denoise": True, "preprocess_prompt": True,
                      "postprocess_output": True},
+    # LIVE replies, where the wait is heard: half the decoding steps, everything else as demo_default. Time falls with the
+    # step count (RTX 3060, 2026-11-07: a 25-character line 2.63 s -> 1.33 s, a 146-character line 3.53 s -> 1.80 s), and
+    # Whisper read 16 steps back as well as 32; 8 steps began to misread words. Chosen by ear in sarae-ai-live-studio.
+    "live_fast": {"num_step": 16, "guidance_scale": 2.0, "denoise": True, "preprocess_prompt": True,
+                  "postprocess_output": True},
 }
 PROMPT_FORMAT = 1   # VoiceClonePrompt.save format_version in omnivoice 0.2.1
 
