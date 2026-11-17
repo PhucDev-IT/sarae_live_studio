@@ -39,6 +39,11 @@ PRESETS: dict[str, dict] = {
     # Whisper read 16 steps back as well as 32; 8 steps began to misread words. Chosen by ear in sarae-ai-live-studio.
     "live_fast": {"num_step": 16, "guidance_scale": 2.0, "denoise": True, "preprocess_prompt": True,
                   "postprocess_output": True},
+    # LIVE, less flat: live_fast plus sampling (class_temperature 0 = always the most likely token = an even read).
+    # Same speed as live_fast. Picked by ear in sarae-ai-live-studio, 2026-11-17: across 4 voices, lines at 0.3 / 0.7
+    # were chosen 55% / 50% of the time against 30% for live_fast; 0.5 was then used for round 2 with lively clips.
+    "live_expressive": {"num_step": 16, "guidance_scale": 2.0, "class_temperature": 0.5, "denoise": True,
+                        "preprocess_prompt": True, "postprocess_output": True},
 }
 PROMPT_FORMAT = 1   # VoiceClonePrompt.save format_version in omnivoice 0.2.1
 
