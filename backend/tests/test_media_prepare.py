@@ -56,6 +56,12 @@ class MediaPrepareTests(SaasTestCase):
         self.assertEqual({p["product_id"]: (p["ready"], p["total"]) for p in status["products"]}, {1: (1, 2), 2: (0, 1)})
         self.assertEqual(self.start().status_code, 409, "random playback may pick any video: all of them are required")
 
+        rendering = self.cache_report(self.owner_a, self.sid, state="PREPARING")
+        rendering["phase"] = "RENDERING"
+        self.heartbeat(self.agent, media_cache=rendering)
+        self.assertEqual(self.readiness()["state"], "DOWNLOADING")
+        self.assertEqual(self.start().status_code, 409, "downloaded videos still need their OBS copies")
+
         self.heartbeat(self.agent, media_cache=self.cache_report(self.owner_a, self.sid))
         self.assertEqual(self.readiness()["state"], "READY")
         self.assertEqual(self.start().status_code, 202)

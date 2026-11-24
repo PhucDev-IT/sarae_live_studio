@@ -5,7 +5,7 @@ import { apiRequest, errorText, sizeLabel } from './mediaApi'
 
 export type MediaReadiness = {
   session_id:number; agent_id:string; state:'NO_VIDEO'|'NOT_STARTED'|'QUEUED'|'DOWNLOADING'|'FAILED'|'INCOMPLETE'|'READY'
-  ready:boolean; total:number; ready_count:number; bytes_total:number; bytes_done:number; missing:string[]
+  ready:boolean; phase?:string|null; total:number; ready_count:number; bytes_total:number; bytes_done:number; missing:string[]
   failed:{media_id:string; filename:string|null; error:string|null}[]; products:{product_id:number; total:number; ready:number}[]
   products_without_video:number[]; reported_at:string|null; agent_online?:boolean; hostname?:string
 }
@@ -69,7 +69,7 @@ export default function MediaPrepare({sessionId, agentId, hostname, onReady}:{se
   const failed = status.state === 'FAILED'
   return <div className={'ls-media' + (failed ? ' is-failed' : '')}>
     <div className="ls-media-head"><Download size={16}/>
-      <strong>{failed ? 'Tải video bị lỗi' : status.state === 'QUEUED' ? 'Đang chờ Agent nhận lệnh…' : `Đang tải video về máy ${hostname}`}</strong>
+      <strong>{failed ? 'Chuẩn bị video bị lỗi' : status.phase === 'RENDERING' ? 'Đang chuẩn bị video cho OBS…' : status.state === 'QUEUED' ? 'Đang chờ Agent nhận lệnh…' : `Đang tải video về máy ${hostname}`}</strong>
       <span>{status.ready_count}/{status.total} video · {sizeLabel(status.bytes_done)} / {sizeLabel(status.bytes_total)}</span>
     </div>
     <div className="ls-media-bar" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><span style={{width:`${percent}%`}}/></div>

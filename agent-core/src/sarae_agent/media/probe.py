@@ -33,6 +33,7 @@ class MediaInfo:
     audio: bool
     sample_rate: int | None
     channels: int | None
+    duration: float = 0.0
 
 
 def probe_media(path: Path) -> MediaInfo:
@@ -40,10 +41,11 @@ def probe_media(path: Path) -> MediaInfo:
         raise FileNotFoundError("Thiếu ffprobe.exe trong PATH của Windows Agent")
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "stream=codec_type,width,height,avg_frame_rate,sample_rate,channels:stream_tags=rotate:stream_side_data=rotation",
+         "stream=codec_type,width,height,avg_frame_rate,sample_rate,channels:stream_tags=rotate:stream_side_data=rotation:format=duration",
          "-of", "json", str(path)], capture_output=True, text=True, timeout=15, check=True,
     )
-    streams = json.loads(result.stdout).get("streams", [])
+    payload = json.loads(result.stdout)
+    streams = payload.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     if not video:
         raise ValueError("File không có video stream")
@@ -56,7 +58,8 @@ def probe_media(path: Path) -> MediaInfo:
     info = MediaInfo(int(video["width"]), int(video["height"]),
                      video.get("avg_frame_rate") or "0/0", rotation, bool(audio),
                      int(audio["sample_rate"]) if audio and audio.get("sample_rate") else None,
-                     int(audio["channels"]) if audio and audio.get("channels") else None)
+                     int(audio["channels"]) if audio and audio.get("channels") else None,
+                     float(payload.get("format", {}).get("duration") or 0))
     log.info("Media %s: %sx%s fps=%s rotation=%s audio=%s sample_rate=%s channels=%s",
              path.name, info.width, info.height, info.fps, info.rotation, info.audio,
              info.sample_rate, info.channels)

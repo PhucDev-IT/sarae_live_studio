@@ -478,7 +478,7 @@ class AgentRuntime:
     def media_cache_report(self) -> dict:
         """Cache job for the Cloud: ids, revisions and progress only (never local file paths)."""
         job = self._cloud_cache_job
-        return {"session_id": job.get("session_id"), "state": job.get("state", "IDLE"), "total": job.get("total"),
+        return {"session_id": job.get("session_id"), "state": job.get("state", "IDLE"), "phase": job.get("phase"), "total": job.get("total"),
                 "bytes_total": job.get("bytes_total"), "bytes_done": job.get("bytes_done"), "current": job.get("current"),
                 "ready": [{"media_id": r.get("media_id"), "revision": r.get("revision")} for r in job.get("ready") or []][:300],
                 "failed": [{"media_id": f.get("media_id"), "error": str(f.get("error") or "")[:200]} for f in job.get("failed") or []][:50],
@@ -509,7 +509,11 @@ class AgentRuntime:
                     cache = CloudMediaCache(client, identity.agent_id, identity.credential)
                     result = cache.prepare(session_id, on_progress=self._cache_progress)
                 # Rotated or other-aspect videos get their OBS copy now, while the job still reads PREPARING.
-                self.engine.prewarm([item["media_id"] for item in result.get("ready") or []])
+                self._cache_progress({**result, "state": "PREPARING", "phase": "RENDERING"})
+                warmed = self.engine.prewarm([item["media_id"] for item in result.get("ready") or []])
+                if warmed["failed"]:
+                    result = {**result, "state": "FAILED", "failed": [*(result.get("failed") or []),
+                              {"error": f"Không chuẩn bị được {warmed['failed']} video cho OBS"}]}
                 self._cache_progress(result)
             except Exception as exc:
                 log.exception("Cloud media cache failed")

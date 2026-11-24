@@ -81,9 +81,16 @@ class PlaybackService:
 
     def engine_status(self) -> dict:
         """PlaybackEngine.status() (asks OBS); also refreshes the snapshot used by status(live=False)."""
-        st = self.engine.status()
-        self._last = st
-        return st
+        # Rendering a large OBS copy can hold the playback lock for minutes. Heartbeats must
+        # continue reporting the last stable state while a playback command is in progress.
+        if not self.engine.lock.acquire(blocking=False):
+            return {**self._last, "playback_busy": True}
+        try:
+            st = self.engine.status()
+            self._last = st
+            return st
+        finally:
+            self.engine.lock.release()
 
     def _snapshot(self) -> dict:
         engine = self.engine

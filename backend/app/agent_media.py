@@ -128,7 +128,7 @@ def media_readiness(db: Session, owner_id: str, agent_id: str, session_id: int) 
     failed = [f for f in report.get("failed") or [] if isinstance(f, dict)]
     if not required:
         state = "NO_VIDEO"
-    elif len(ok) == len(required):
+    elif report.get("state") == "READY" and len(ok) == len(required):
         state = "READY"
     elif report.get("state") == "PREPARING":
         state = "DOWNLOADING"
@@ -143,7 +143,7 @@ def media_readiness(db: Session, owner_id: str, agent_id: str, session_id: int) 
     for pid in manifest["product_ids"]:
         ids = [mid for mid, item in required.items() if pid in item["product_ids"]]
         products.append({"product_id": pid, "total": len(ids), "ready": sum(1 for mid in ids if mid in ok)})
-    return {"session_id": session_id, "agent_id": agent_id, "state": state, "ready": state == "READY",
+    return {"session_id": session_id, "agent_id": agent_id, "state": state, "phase": report.get("phase"), "ready": state == "READY",
             "total": len(required), "ready_count": len(ok),
             "bytes_total": manifest["total_bytes"],
             "bytes_done": manifest["total_bytes"] if state == "READY" else min(int(report.get("bytes_done") or 0), manifest["total_bytes"]),
