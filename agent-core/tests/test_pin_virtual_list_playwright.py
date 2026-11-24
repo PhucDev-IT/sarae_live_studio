@@ -90,3 +90,24 @@ def test_unpin_finds_the_pinned_card_out_of_view(console):
     result = service._unpin_on_worker()
     assert result["status"] == "SUCCESS"
     assert page.evaluate("window.CLICKS") == [7] and scroll_top(page) == 0
+
+
+def test_pin_confirmed_when_tiktok_moves_the_pinned_card_out_of_view(console):
+    # 20 Nov, real LIVE: TikTok pinned the product but the check, waiting for the very element it clicked, never saw it.
+    # Here the pinned product jumps to the top and the list re-renders while it is scrolled down to that card.
+    service, page = console("#reorder-on-pin")
+    result = service._pin_on_worker(FAR, None)
+    assert result["status"] == "SUCCESS" and " ".join(result["card_name"].split()) == FAR["name"]
+    assert page.evaluate("window.CLICKS") == [5] and page.evaluate("window.DOUBLE_CLICKS") == 0
+
+
+def test_not_confirmed_keeps_what_the_console_showed(console, monkeypatch):
+    monkeypatch.setattr(auto_pin, "PIN_CONFIRM_MS", 500)
+    service, page = console()
+    page.evaluate("window.PIN_DELAY_MS = 30000")
+    with pytest.raises(RuntimeError, match="chưa xác nhận"):
+        service._pin_on_worker(FAR, None)
+    kept = list((service.profile_dir.parent / "pin_evidence").glob("*.json"))
+    assert len(kept) == 1
+    record = __import__("json").loads(kept[0].read_text(encoding="utf-8"))
+    assert record["page"]["controls"] >= 1 and "pc_pin_product_pin" in record["page"]["card_html"]

@@ -15,6 +15,7 @@ stealth tricks. DOM selectors may need updates when the console UI changes.
 """
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import nullcontext
 import os
@@ -52,6 +53,21 @@ SCROLL_SETTLE_MS = 300  # the virtual list renders the cards of a new scroll pos
 MAX_SCROLL_STEPS = 40
 CARD_NOT_FOUND = "Không thấy product card của sản phẩm trên LIVE Console (đã cuộn hết danh sách sản phẩm)"
 PIN_NOT_CONFIRMED = f"Đã bấm Ghim nhưng TikTok chưa xác nhận sau {PIN_CONFIRM_MS // 1000} giây; không bấm lại"
+# When a click is not confirmed: the page's pin-like controls and the clicked card, to see how TikTok shows a pinned card
+# (seen 20 Nov: TikTok pinned, the check never saw it). Classes, texts and attributes only; read only.
+PIN_EVIDENCE_JS = r"""
+(token) => {
+  const cls = (el) => String(el.className?.baseVal ?? el.className ?? '');
+  const brief = (el) => ({tag: el.tagName.toLowerCase(), cls: cls(el).slice(0, 300),
+    text: (el.innerText || '').trim().slice(0, 120), disabled: !!el.disabled,
+    attrs: [...el.attributes].filter(a => !['class', 'style'].includes(a.name)).map(a => [a.name, a.value.slice(0, 120)]).slice(0, 12)});
+  const pinLike = [...document.querySelectorAll('[class*="pin" i], button')]
+    .filter(el => /pin|ghim/i.test(cls(el) + ' ' + (el.innerText || '').slice(0, 40))).slice(0, 80).map(brief);
+  const card = token ? document.querySelector(`[data-sarae-card-token="${token}"]`) : null;
+  return {pin_like: pinLike, card_html: card ? card.outerHTML.slice(0, 20000) : null,
+          controls: document.querySelectorAll('button.pc_pin_product_pin, button.pc_pin_product_unpin').length};
+}
+"""
 UNPIN_NOT_CONFIRMED = f"Đã bấm Bỏ ghim nhưng TikTok chưa xác nhận sau {PIN_CONFIRM_MS // 1000} giây; không bấm lại"
 
 # The Console's product list is virtual: only the cards near its visible part are in the page. This finds the list's
@@ -580,10 +596,21 @@ class AutoPinService:
                         page.evaluate(PIN_CARD_JS, card["token"])
                         page.locator("[data-sarae-pin-target='1']").click(timeout=5000)
                         clicked = True
-                # Outside the engine lock: TikTok may take a few seconds to show "Bỏ ghim".
-                state, confirmed = self._wait_confirmed(
-                    page, lambda s: (s.get("pinned_card") or {}).get("token") == card.get("token"), target)
-                pinned = state.get("pinned_card")
+                # Outside the engine lock: TikTok may take a few seconds to show "Bỏ ghim". The product decides, not the
+                # element clicked: after a pin TikTok re-renders and reorders its list (20 Nov: TikTok pinned, the old
+                # token check never saw it).
+                state, confirmed = self._wait_confirmed(page, lambda s: bool(self._pinned_target(s, card)), target)
+                pinned = self._pinned_target(state, card)
+                seen = None
+                if not confirmed and clicked:
+                    seen = self._console_evidence(page, card)  # before the search scrolls the clicked card away
+                    # the pinned card may have moved out of the rendered part of the list: one look through all of it
+                    _, found, origin = self._scroll_search(
+                        page, lambda cards: [c for c in self._matching_cards(cards, target) if c.get("pinned")])
+                    if origin is not None and not scrolled:
+                        scrolled[:] = [page, origin]
+                    if len(found) == 1:
+                        pinned, confirmed = found[0], True
                 if confirmed:
                     result = {"status": "SUCCESS", "product_id": product_id, "card_name": pinned.get("name"), "card": pinned,
                               "action": "PIN_PRODUCT", "error": None}
@@ -592,10 +619,39 @@ class AutoPinService:
                     log.info("TikTok pin product=%s card=%s result=SUCCESS at=%s", product_id, card["index"], time.time())
                     return result
                 if clicked:
+                    self._keep_pin_evidence(page, target, card, seen)
                     raise RuntimeError(PIN_NOT_CONFIRMED)  # never a second click: it would unpin again
             if attempt < 2:
                 page.wait_for_timeout(500)
         raise RuntimeError(CARD_NOT_FOUND)
+
+    @staticmethod
+    def _pinned_target(state: dict, card: dict) -> dict | None:
+        """The pinned card that is the target: the clicked element itself, or one card matching the target product."""
+        pinned = state.get("pinned_card")
+        if pinned and pinned.get("token") == card.get("token"):
+            return pinned
+        matches = [c for c in state.get("candidates") or [] if c.get("pinned")]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _console_evidence(page, card: dict) -> dict | None:
+        try:
+            return page.evaluate(PIN_EVIDENCE_JS, card.get("token"))
+        except Exception:  # noqa: BLE001 - evidence is extra
+            return None
+
+    def _keep_pin_evidence(self, page, target: dict, card: dict, seen: dict | None) -> None:
+        """Saves what the Console showed when a click was not confirmed, next to the profile (no cookie or token)."""
+        try:
+            folder = self.profile_dir.parent / "pin_evidence"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / time.strftime("%Y%m%d-%H%M%S.json")
+            path.write_text(json.dumps({"url": str(page.url).split("?")[0], "target": target, "card_before_click": card,
+                                        "page": seen}, ensure_ascii=False, indent=1), encoding="utf-8")
+            log.warning("TikTok pin not confirmed: the Console is kept in %s", path)
+        except Exception as exc:  # noqa: BLE001 - evidence is extra, the failure is reported anyway
+            log.warning("Could not keep the pin evidence: %s", exc)
 
     def _unpin_on_worker(self, expected_user_id: str | None = None,
                          current: Callable[[], bool] | None = None, guard=None) -> dict:

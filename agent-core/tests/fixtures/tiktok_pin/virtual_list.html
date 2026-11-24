@@ -17,13 +17,13 @@
     "Áo Sơ Mi Nữ Chiết Eo Màu Trắng ngà - SKU 33", "Áo Thun Nữ Trễ Vai Tay Dài - SKU 5",
     "Áo sơ mi Phiên bản dài tay đai eo tiểu thư,sơ mi back to school  - ST Design - SKU 10 somi hot sơ  minu Nữ Women",
     "Set đồ ngủ nữ 2 dây cao cấp - SKU 8", "Áo Mesh Hở Vai Nữ In Sao Pastel - SKU 6"];
-  const products = names.map((name, i) => ({name, price: (219 + i) + ".000₫", pinned: location.hash === "#pinned-last" && i === 7}));
+  const products = names.map((name, i) => ({name, img: `p${i}.jpg`, price: (219 + i) + ".000₫", pinned: location.hash === "#pinned-last" && i === 7}));
   let pending = false;
   const ROW = 190, list = document.getElementById("list"), spacer = document.getElementById("spacer");
   spacer.style.height = (products.length * ROW) + "px";
   function card(p, i) {
     return `<div style="position:absolute;left:0;top:${i * ROW}px;height:${ROW}px;width:100%"><div><div class="rounded-4 mb-8">`
-      + `<div class="flex"><div class="flex flex-1 overflow-hidden"><div class="relative mr-8 w-70 h-70"><img src="https://img.example/p${i}.jpg" width="70" height="70"></div>`
+      + `<div class="flex"><div class="flex flex-1 overflow-hidden"><div class="relative mr-8 w-70 h-70"><img src="https://img.example/${p.img}" width="70" height="70"></div>`
       + `<div class="flex-1 overflow-hidden"><div class="text-body-m-regular mb-4"><span></span></div>`
       + `<div class="mb-4 flex items-center"><div class="inline-flex items-center"><span class="text-body-l-medium"> ${p.price}</span>`
       + `<div class="flex items-center"><span class="ml-4">359.000₫</span></div></div></div>`
@@ -62,6 +62,10 @@
       products.forEach((p) => { p.pinned = false; });
       products[i].pinned = pin;
       pending = false;
+      if (location.hash === "#reorder-on-pin" && pin) {  // like TikTok numbering the cart again: the pinned one first
+        products.unshift(products.splice(i, 1)[0]);
+        for (const [k, el] of rows) { el.remove(); rows.delete(k); }
+      }
       render();
     }, window.PIN_DELAY_MS);
   });
