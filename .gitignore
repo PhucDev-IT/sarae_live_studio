@@ -8,7 +8,10 @@ desktop/src-tauri/gen/
 desktop/release/
 agent-core/build/dist/
 agent-core/build/work/
+agent-core/build/lib/
+agent-core/build/check-wheel/
 agent-core/src/*.egg-info/
+.tmp/
 .pytest_cache/
 *.tsbuildinfo
 .venv/

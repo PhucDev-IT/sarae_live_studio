@@ -8,7 +8,7 @@
 | # | Quyết định |
 |---|---|
 | D1 | **Phương án A**: Sarae Backend điều phối tập trung và gọi TTS Backend; Windows Agent chỉ tải audio (ưu tiên direct, relay qua Backend khi cần) và phát qua pipeline OBS sẵn có. |
-| D2 | TTS Backend là service độc lập trong `voice-server/` (monorepo), Python env và lifecycle riêng, không import `backend/` hay `agent-core/`. |
+| D2 | TTS Backend là project độc lập tại `../sarae-voice-server/`, Python env và lifecycle riêng, không import `backend/` hay `agent-core/`. |
 | D3 | Voice profile gốc (WAV + transcript) do Sarae Backend quản lý; TTS Backend chỉ giữ dữ liệu dẫn xuất (bản sao WAV theo rev, `VoiceClonePrompt` trong RAM và `.pt`). |
 | D4 | Fallback mặc định `none` ở mọi ngữ cảnh; chỉ đổi provider khi owner đã cấu hình. |
 | D5 | Baseline chất lượng = `omnivoice-demo` chính thức, checkpoint `g-group-ai-lab/g-omnivoice`, tại `127.0.0.1:7862`. Không fine-tune, không thêm hậu xử lý. |
@@ -298,7 +298,7 @@ Không thay đổi: Edge/ElevenLabs provider, playback OBS, ducking, timeline, g
 
 ## 13. Phase 0 — cách chạy
 
-Xem `voice-server/README.md`.
+Xem `../sarae-voice-server/README.md`.
 
 ## 14. Kết quả Phase 0 (run `p0_20261102_2251`, RTX 3060 12 GB)
 

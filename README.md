@@ -79,3 +79,8 @@ Chrome đang đăng nhập, không gửi request đến API nội bộ TikTok.
 loại lệnh auto-pin cũ bằng mock DOM; build Web. Người vận hành báo đã dùng được ghim/bỏ ghim trên Console.
 **Cần xác minh thêm trên LIVE Console thực tế:** auto-pin khi chuyển video liên tiếp, card trùng thông tin,
 và các biến thể DOM/ảnh/giá của TikTok. Không tự động thao tác trên một phiên LIVE thật khi chưa được phép.
+
+
+## Voice server
+
+The GPU TTS service is a separate project at `..\sarae-voice-server`. Install and run it from that directory with its own `.venv`, `.env`, and `data`. Set `SARAE_TTS_SERVER_URL` and the matching token in the Backend configuration; see [TTS server integration](docs/TTS_SERVER.md).

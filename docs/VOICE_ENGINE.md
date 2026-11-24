@@ -4,7 +4,7 @@ Sarae Web → AI Assistant → Voice Settings supports **Microsoft Edge TTS** an
 
 ## G-OmniVoice
 
-The standalone `voice-server/` loads the pinned model on the GPU. Backend owns reference WAV profiles, Auto Whisper/manual transcript and revisions, creates jobs, and sends job references to a capable Windows Agent. The Agent downloads WAV directly with a scoped read token or through Backend relay, then plays the existing OBS `Sarae Voice` Media Source. It does not load Torch/CUDA or create GPU jobs.
+The standalone sibling project `../sarae-voice-server/` loads the pinned model on the GPU. Backend owns reference WAV profiles, Auto Whisper/manual transcript and revisions, creates jobs, and sends job references to a capable Windows Agent. The Agent downloads WAV directly with a scoped read token or through Backend relay, then plays the existing OBS `Sarae Voice` Media Source. It does not load Torch/CUDA or create GPU jobs.
 
 Create/sync a profile, choose and save the default voice, select a Windows Agent and run active readiness/warmup. **Nghe thử** uses a profile-specific preview without changing the saved default, including while a session is RUNNING. **Phát qua OBS (giọng đã lưu)** sends a manual command and shows the utterance monitor. SENT is not PLAYED; OBS PLAYING does not prove viewer audibility.
 

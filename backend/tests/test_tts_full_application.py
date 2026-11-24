@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
+VOICE_SERVER_ROOT=Path(os.environ.get('SARAE_VOICE_PROJECT_DIR', ROOT.parent/'sarae-voice-server'))
 sys.path[:0]=[str(ROOT/'agent-core/src'),str(ROOT/'backend'),str(ROOT/'backend/tests')]
 sys.path.append(str(ROOT/'agent-core/.venv/Lib/site-packages'))
 from support import SaasTestCase
@@ -187,7 +188,7 @@ class FullApplicationTests(SaasTestCase):
                             env={**os.environ,'SARAE_VOICE_ORCHESTRATOR_TOKENS':'phase6-local-test-only',
                                 'SARAE_VOICE_PORT':'8783','SARAE_VOICE_DATA_DIR':str(out/'voice'),'HF_HUB_OFFLINE':'1'}
                             output=(out/'voice-restart.log').open('w',encoding='utf-8')
-                            replacement=subprocess.Popen([str(ROOT/'voice-server/.venv/Scripts/python.exe'),'-m','sarae_voice'],cwd=ROOT/'voice-server',env=env,stdout=output,stderr=output,creationflags=subprocess.CREATE_NO_WINDOW)
+                            replacement=subprocess.Popen([str(VOICE_SERVER_ROOT/'.venv/Scripts/python.exe'),'-m','sarae_voice'],cwd=VOICE_SERVER_ROOT,env=env,stdout=output,stderr=output,creationflags=subprocess.CREATE_NO_WINDOW)
                             try:
                                 for _ in range(240):
                                     try:
