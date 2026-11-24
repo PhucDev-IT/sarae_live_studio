@@ -54,25 +54,18 @@ def test_probe_and_prepare(tmp_path, monkeypatch, suffix, size, fps, audio, rota
     assert obs_file(source, info) == ready
 
 
-@pytest.mark.parametrize("size,rotation,filled", [
-    ("192x108", 0, True),    # landscape on a portrait canvas: blurred fill
-    ("72x128", 0, False),    # 9:16 at another size: OBS scales the original
-    ("192x108", 90, False),  # 16:9 rotated to portrait: rotation only
-    ("108x108", 0, True),    # square: blurred fill
+@pytest.mark.parametrize("size,rotation", [
+    ("192x108", 0),    # landscape: OBS covers the canvas with the original
+    ("54x108", 0),     # 1:2 on a 9:16 canvas: original, no blurred copy
+    ("192x108", 90),   # rotated: display-oriented copy only, still 16:9 -> 9:16 sized
 ])
-def test_other_aspect_gets_canvas_sized_blurred_fill(tmp_path, monkeypatch, size, rotation, filled):
+def test_other_aspect_keeps_original_frame(tmp_path, monkeypatch, size, rotation):
     monkeypatch.setenv("SARAE_AGENT_HOME", str(tmp_path / "agent"))
     source = make_video(tmp_path / "source.mp4", size=size, rotation=rotation)
     info = probe_media(source)
-    ready = obs_file(source, info, (90, 160))
-    rendered = probe_media(ready)
-    assert rendered.rotation == 0 and rendered.audio is True
-    if filled:
-        assert ready != source and (rendered.width, rendered.height) == (90, 160)
-    elif rotation:
-        assert (rendered.width, rendered.height) == (info.height, info.width)
+    ready = obs_file(source, info)
+    if rotation:
+        assert probe_media(ready).rotation == 0
+        assert (probe_media(ready).width, probe_media(ready).height) == (info.height, info.width)
     else:
         assert ready == source
-    # Another canvas is another cached copy.
-    if filled:
-        assert obs_file(source, info, (160, 90)) != ready

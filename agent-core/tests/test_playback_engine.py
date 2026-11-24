@@ -129,7 +129,7 @@ class EngineTestBase(unittest.TestCase):
         media_probe = mock.patch.object(playback_engine, "probe_media", return_value=SimpleNamespace(rotation=0))
         media_probe.start()
         self.addCleanup(media_probe.stop)
-        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path)
+        media_file = mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info: path)
         media_file.start()
         self.addCleanup(media_file.stop)
 
@@ -153,7 +153,21 @@ class EngineTestBase(unittest.TestCase):
         self.engine.tick()
 
 
+# Fit to screen on the 1080x1920 FakeObs canvas: cover (aspect kept, overflow cut), centred.
+COVER = {"positionX": 540, "positionY": 960, "alignment": 0, "rotation": 0, "scaleX": 1, "scaleY": 1,
+         "cropLeft": 0, "cropRight": 0, "cropTop": 0, "cropBottom": 0,
+         "boundsType": "OBS_BOUNDS_SCALE_OUTER", "boundsAlignment": 0, "boundsWidth": 1080, "boundsHeight": 1920}
+
+
 class SingleSourceTests(EngineTestBase):
+    def test_every_video_covers_canvas_again(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"))
+        self.assertEqual(self.obs.transforms[1], COVER)
+        self.obs.transforms[1] = {"positionX": 7}  # dragged by hand in OBS
+        self.end_current()
+        self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("pl2"))
+        self.assertEqual(self.obs.transforms[1], COVER)
+
     def test_camera_fallback_and_return_keep_session(self):
         self.obs.scene_items["Camera"] = 2
         self.obs.settings["Camera"] = {"video_device_id": "device-1"}
@@ -215,8 +229,7 @@ class SingleSourceTests(EngineTestBase):
         self.assertEqual((status["session_mode"], status["session_id"], status["product_id"]), ("product", 7, 11))
         self.assertEqual(status["queue_ids"], self.ids("p1a", "p1b"))
         self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("p1a"))
-        self.assertEqual(self.obs.transforms[1]["boundsType"], "OBS_BOUNDS_SCALE_INNER")
-        self.assertEqual(self.obs.transforms[1]["rotation"], 0)
+        self.assertEqual(self.obs.transforms[1], COVER)
         self.engine.product_play(7, 12, self.ids("p2a"), "immediate")
         self.assertEqual(self.engine.product_id, 12)
         self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("p2a"))
@@ -350,11 +363,10 @@ class SingleSourceTests(EngineTestBase):
         with self.assertRaises(PlaybackError):
             self.engine.configure(dual_mode=True, source_a="X", source_b="X")
 
-    def test_videos_are_prepared_for_the_obs_canvas_and_prewarmed(self):
-        with mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info, canvas=None: path) as render:
+    def test_videos_are_prepared_and_prewarmed(self):
+        with mock.patch.object(playback_engine, "obs_file", side_effect=lambda path, info: path) as render:
             result = self.engine.prewarm(self.ids("pl1", "pl2") + ["0" * 32])
             self.assertEqual(result, {"ready": 2, "failed": 1})
-            self.assertEqual({c.args[2] for c in render.call_args_list}, {(1080, 1920)})
             self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
             # Prewarmed copies are reused at play time.
             self.assertEqual(render.call_count, 2)
@@ -368,6 +380,15 @@ class SingleSourceTests(EngineTestBase):
 
 class DualModeTests(EngineTestBase):
     dual = True
+
+    def test_every_dual_switch_covers_canvas_again(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        self.assertEqual(self.obs.transforms, {1: COVER, 2: COVER})
+        for _ in range(3):
+            # The stand-by source was dragged by hand in OBS; the switch to it puts it back.
+            self.obs.transforms[3 - self.obs.scene_items[self.engine.active_source()]] = {"positionX": 7}
+            self.engine.next()
+            self.assertEqual(self.obs.transforms[self.obs.scene_items[self.engine.active_source()]], COVER)
 
     def test_rapid_switches_never_unmute_both_video_sources(self):
         self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)

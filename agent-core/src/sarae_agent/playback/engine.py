@@ -201,7 +201,6 @@ class PlaybackEngine:
         self.camera_scene_item_id: int | None = None
         self._prepared: dict[str, tuple[int, int, str]] = {}
         # OBS canvas (width, height) the prepared copies are rendered for; re-read when a session starts.
-        self._canvas: tuple[int, int] | None = None
         self.loop = False
         self.retry_count = 0
         self.next_retry_at = 0.0
@@ -510,38 +509,20 @@ class PlaybackEngine:
             raise PlaybackError(409, f"Video {media_id[:12]} chưa tải về cache của Agent")
         path = path.resolve()
         stat = path.stat()
-        canvas = self._canvas_size()
-        key = f"{path}|{canvas}"
+        key = str(path)
         cached = self._prepared.get(key)
         if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns) and Path(cached[2]).is_file():
             return cached[2], path.name
         try:
             info = probe_media(path)
-            playable = obs_file(path, info, canvas)
+            playable = obs_file(path, info)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise PlaybackError(409, f"Không kiểm tra/chuẩn hóa được {path.name}: {exc}") from exc
         self._prepared[key] = (stat.st_size, stat.st_mtime_ns, str(playable))
         return str(playable), path.name
 
-    def _canvas_size(self) -> tuple[int, int] | None:
-        """OBS canvas (base) size, read once per session; None when OBS cannot tell (OBS then letterboxes)."""
-        if self._canvas is None:
-            client = None
-            try:
-                client = self.client()
-                settings = client.get_video_settings()
-                width, height = settings.base_width, settings.base_height
-                if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
-                    self._canvas = (width, height)
-            except Exception as exc:
-                log.warning("Không đọc được canvas OBS, video khác tỉ lệ sẽ có viền đen: %s", exc)
-            finally:
-                if client is not None:
-                    _close(client)
-        return self._canvas
-
     def prewarm(self, media_ids: list[str]) -> dict:
-        """Render the OBS copies (rotation, blurred fill) of cached videos ahead of LIVE, outside the engine lock,
+        """Render the OBS copies (rotation) of cached videos ahead of LIVE, outside the engine lock,
         so starting or switching a video never waits for FFmpeg."""
         ready, failed = 0, 0
         for media_id in media_ids:
@@ -592,7 +573,9 @@ class PlaybackEngine:
         return scene, item_id
 
     def _fit_video(self, client, scene: str, item_id: int):
-        """Use OBS fit-inside bounds, with no scene crop, rotation or mirror."""
+        """Cover the OBS canvas: bounds = canvas, centred, scale-outer (aspect kept, overflow cut).
+        Applied before every video, so a source dragged by hand comes back; OBS re-fits by itself
+        when the file's size changes because the bounds stay."""
         canvas = client.get_video_settings()
         width, height = canvas.base_width, canvas.base_height
         if not isinstance(width, int) or not isinstance(height, int) or width < 1 or height < 1:
@@ -601,7 +584,7 @@ class PlaybackEngine:
             "positionX": width / 2, "positionY": height / 2, "alignment": 0,
             "rotation": 0, "scaleX": 1, "scaleY": 1,
             "cropLeft": 0, "cropRight": 0, "cropTop": 0, "cropBottom": 0,
-            "boundsType": "OBS_BOUNDS_SCALE_INNER", "boundsAlignment": 0,
+            "boundsType": "OBS_BOUNDS_SCALE_OUTER", "boundsAlignment": 0,
             "boundsWidth": width, "boundsHeight": height,
         })
 
@@ -718,6 +701,8 @@ class PlaybackEngine:
             actual_settings = client.get_input_settings(self.slots[incoming]).input_settings
             if actual_settings.get("local_file") != expected_path:
                 self._stage(client, incoming, index)
+            # A source dragged by hand during the previous video goes back to covering the canvas.
+            self._fit_video(client, self.scene_name, self.scene_item_ids[incoming])
             # Show the next video first: no empty frame between sources. It waits paused on its first frame.
             client.set_scene_item_enabled(self.scene_name, self.scene_item_ids[incoming], True)
             client.trigger_media_input_action(self.slots[incoming], "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")
@@ -812,8 +797,6 @@ class PlaybackEngine:
                 raise PlaybackError(409, "Playlist rỗng")
             if not 0 <= index < len(self.ids):
                 raise PlaybackError(422, "Vị trí video không hợp lệ")
-            if not self.active:
-                self._canvas = None  # the OBS canvas may have changed between sessions
             path, name = self._media(index)
             fresh = self._product_starting
             count = 1 if fresh else self.videos_in_product + 1
