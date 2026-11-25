@@ -575,14 +575,21 @@ class PlaybackEngine:
     def _fit_video(self, client, scene: str, item_id: int):
         """Cover the OBS canvas: bounds = canvas, centred, scale-outer (aspect kept, overflow cut).
         Applied before every video, so a source dragged by hand comes back; OBS re-fits by itself
-        when the file's size changes because the bounds stay."""
+        when the file's size changes because the bounds stay. A flip set in OBS (negative scale) is kept."""
         canvas = client.get_video_settings()
         width, height = canvas.base_width, canvas.base_height
         if not isinstance(width, int) or not isinstance(height, int) or width < 1 or height < 1:
             raise PlaybackError(503, "Không đọc được kích thước canvas OBS")
+        flip_x = flip_y = 1
+        try:
+            current = client.get_scene_item_transform(scene, item_id).scene_item_transform or {}
+            flip_x = -1 if (current.get("scaleX") or 1) < 0 else 1
+            flip_y = -1 if (current.get("scaleY") or 1) < 0 else 1
+        except Exception as exc:  # noqa: BLE001 - fitting still works, only the mirror is lost
+            log.warning("Không đọc được transform của nguồn video, bỏ đảo gương: %s", exc)
         client.set_scene_item_transform(scene, item_id, {
             "positionX": width / 2, "positionY": height / 2, "alignment": 0,
-            "rotation": 0, "scaleX": 1, "scaleY": 1,
+            "rotation": 0, "scaleX": flip_x, "scaleY": flip_y,
             "cropLeft": 0, "cropRight": 0, "cropTop": 0, "cropBottom": 0,
             "boundsType": "OBS_BOUNDS_SCALE_OUTER", "boundsAlignment": 0,
             "boundsWidth": width, "boundsHeight": height,

@@ -58,6 +58,9 @@ class FakeObs:
     def get_video_settings(self):
         return SimpleNamespace(base_width=1080, base_height=1920)
 
+    def get_scene_item_transform(self, scene, item_id):
+        return SimpleNamespace(scene_item_transform=dict(self.transforms.get(item_id, {})))
+
     def set_scene_item_transform(self, scene, item_id, transform):
         self.transforms[item_id] = transform
 
@@ -167,6 +170,16 @@ class SingleSourceTests(EngineTestBase):
         self.end_current()
         self.assertEqual(self.obs.settings["Sarae Video"]["local_file"], self.path("pl2"))
         self.assertEqual(self.obs.transforms[1], COVER)
+
+    def test_flip_set_in_obs_is_kept_when_fitting(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        # Flip Horizontal in OBS, plus a drag; the next video fits again but stays mirrored.
+        self.obs.transforms[1] = {**COVER, "scaleX": -0.5, "scaleY": 0.5, "positionX": 7}
+        self.end_current()
+        self.assertEqual(self.obs.transforms[1], {**COVER, "scaleX": -1})
+        self.obs.transforms[1] = {**COVER, "scaleX": 1, "scaleY": -1, "positionX": 7}  # Flip Vertical only
+        self.end_current()
+        self.assertEqual(self.obs.transforms[1], {**COVER, "scaleY": -1})
 
     def test_camera_fallback_and_return_keep_session(self):
         self.obs.scene_items["Camera"] = 2
@@ -389,6 +402,14 @@ class DualModeTests(EngineTestBase):
             self.obs.transforms[3 - self.obs.scene_items[self.engine.active_source()]] = {"positionX": 7}
             self.engine.next()
             self.assertEqual(self.obs.transforms[self.obs.scene_items[self.engine.active_source()]], COVER)
+
+    def test_dual_flip_follows_each_source(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        self.obs.transforms[2] = {**COVER, "scaleX": -1}  # only source B mirrored in OBS
+        self.engine.next()
+        self.assertEqual(self.obs.transforms[2]["scaleX"], -1)
+        self.engine.next()
+        self.assertEqual(self.obs.transforms[1]["scaleX"], 1)
 
     def test_rapid_switches_never_unmute_both_video_sources(self):
         self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)

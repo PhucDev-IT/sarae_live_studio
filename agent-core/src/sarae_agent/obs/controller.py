@@ -294,6 +294,10 @@ class ObsRequests:
         data = self._send("GetVideoSettings")
         return _ns(base_width=data.get("baseWidth"), base_height=data.get("baseHeight"))
 
+    def get_scene_item_transform(self, scene: str, item_id: int):
+        data = self._send("GetSceneItemTransform", {"sceneName": scene, "sceneItemId": item_id})
+        return _ns(scene_item_transform=data.get("sceneItemTransform") or {})
+
     def set_scene_item_transform(self, scene: str, item_id: int, transform: dict):
         self._send("SetSceneItemTransform", {"sceneName": scene, "sceneItemId": item_id,
                                               "sceneItemTransform": transform})
