@@ -79,3 +79,61 @@ def identifier_list(value: object, field: str, *, limit: int = 200) -> list[str]
         raise StudioError("VALIDATION_ERROR", f"{field} must be a list of at most {limit} UUID strings.",
                           {"field": field})
     return sorted({identifier(item, field) for item in value})
+
+
+TIKTOK_ID_MAX = 40
+
+
+def tiktok_id(value: object, field: str) -> str:
+    text = str(value).strip() if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    if not text.isascii() or not text.isdigit() or len(text) > TIKTOK_ID_MAX or int(text) <= 0:
+        raise StudioError("TIKTOK_SNAPSHOT_INVALID", f"TikTok {field} is missing or invalid.", {"field": field})
+    return text
+
+
+def tiktok_price(value: object) -> float | None:
+    """TikTok sends formatted VND prices ("389.000₫", "₫1,234"); keep the digits."""
+    if value is None:
+        return None
+    digits = "".join(char for char in str(value)[:100] if char.isascii() and char.isdigit())
+    return float(digits) if digits else None
+
+
+def tiktok_text(value: object, limit: int) -> str:
+    return " ".join(str(value).split())[:limit] if isinstance(value, str) else ""
+
+
+def tiktok_snapshot(account: object, rows: object) -> tuple[dict, list[dict]]:
+    """Validate the whole snapshot first, so a bad row never leaves a partial import."""
+    if not isinstance(account, dict):
+        raise StudioError("TIKTOK_ACCOUNT_UNVERIFIED", "The TikTok account could not be verified.")
+    profile = {
+        "user_id": tiktok_id(account.get("user_id"), "user_id"),
+        "nick_name": tiktok_text(account.get("nick_name"), 200),
+        "user_name": tiktok_text(account.get("user_name"), 200),
+        "avatar_url": tiktok_text(account.get("avatar_url"), 2000),
+    }
+    if not isinstance(rows, list) or len(rows) > 1000:
+        raise StudioError("TIKTOK_SNAPSHOT_INVALID", "The TikTok product list must contain at most 1000 rows.")
+    products, seen = [], set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise StudioError("TIKTOK_SNAPSHOT_INVALID", "A TikTok product row is invalid.")
+        key = (tiktok_id(row.get("seller_id"), "seller_id"), tiktok_id(row.get("product_id"), "product_id"))
+        if key in seen:
+            raise StudioError("TIKTOK_SNAPSHOT_INVALID", "The TikTok product list contains duplicate products.",
+                              {"product_id": key[1]})
+        seen.add(key)
+        name = tiktok_text(row.get("name"), 200)
+        if not name:
+            raise StudioError("TIKTOK_SNAPSHOT_INVALID", "A TikTok product has no name.", {"product_id": key[1]})
+        stock = row.get("stock_num")
+        image = tiktok_text(row.get("image_url"), 2000)
+        products.append({
+            "tiktok_seller_id": key[0], "tiktok_product_id": key[1], "name": name,
+            "price": tiktok_price(row.get("price_text")), "origin_price": tiktok_price(row.get("origin_price_text")),
+            "stock_num": stock if isinstance(stock, int) and not isinstance(stock, bool) and 0 <= stock < 2**31 else None,
+            "category": tiktok_text(row.get("category_name"), 250),
+            "image_url": image if image.startswith("https://") else "",
+        })
+    return profile, products

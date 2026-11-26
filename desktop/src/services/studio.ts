@@ -7,9 +7,38 @@ export interface Product {
   name: string
   description: string
   price: number | null
+  origin_price: number | null
+  stock_num: number | null
+  category: string
+  image_url: string
+  thumbnail_url: string | null
+  source: 'tiktok' | 'manual'
+  tiktok_seller_id: string | null
+  tiktok_product_id: string | null
+  last_synced_at: string | null
   created_at: string
   updated_at: string
 }
+
+export interface TikTokAccount {
+  user_id: string
+  nick_name: string
+  user_name: string
+  avatar_url: string
+  product_count: number
+  last_synced_at: string
+}
+
+export interface TikTokStatus {
+  state: 'idle' | 'login' | 'logged_in' | 'login_required' | 'ready' | string
+  browser_open: boolean
+  login_open: boolean
+  last_error: string
+  syncing: boolean
+  account: TikTokAccount | null
+}
+
+export interface TikTokSyncResult { created: number; updated: number; missing: number; total: number; account: TikTokAccount }
 
 export interface Presenter {
   id: string
@@ -46,7 +75,6 @@ export interface StudioStatus {
 }
 
 export interface StudioEvent { event: string; data: unknown }
-export interface ProductInput { name: string; description?: string; price?: number | null }
 export interface PresenterInput { name: string; description?: string; active?: boolean }
 export interface MediaLinks { product_id?: string | null; presenter_ids?: string[] }
 interface ErrorInfo { code: string; message: string; details?: Record<string, unknown> }
@@ -85,17 +113,23 @@ function unwrap<T>(envelope: Envelope<T>): T {
   return envelope.result
 }
 
+// A TikTok sync reloads the LIVE Console and waits for its product list.
+const slowMethods: Record<string, number> = {
+  'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
+}
+
 async function request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  const timeoutMs = slowMethods[method] ?? 30_000
   try {
     if (isTauri()) {
-      return await invoke<T>('core_request', { method, params, timeoutMs: method === 'studio.media.import' ? 120_000 : 30_000 })
+      return await invoke<T>('core_request', { method, params, timeoutMs })
     }
     const connection = await session()
     const response = await fetch('/studio/rpc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${connection.token}` },
       body: JSON.stringify({ method, params }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (response.status === 401) sessionPromise = undefined
     return unwrap(await response.json() as Envelope<T>)
@@ -166,8 +200,11 @@ export const studioClient = {
   request,
   getStatus: () => request<StudioStatus>('studio.status'),
   listProducts: async () => (await request<{ products: Product[] }>('studio.products.list')).products,
-  createProduct: async (input: ProductInput) => (await request<{ product: Product }>('studio.products.create', { ...input })).product,
-  updateProduct: async (id: string, input: Partial<ProductInput>) => (await request<{ product: Product }>('studio.products.update', { id, ...input })).product,
+  updateProductDescription: async (id: string, description: string) => (await request<{ product: Product }>('studio.products.update', { id, description })).product,
+  tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
+  tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),
+  tiktokConnect: () => request<TikTokStatus>('studio.tiktok.connect'),
+  tiktokSync: () => request<TikTokSyncResult>('studio.tiktok.sync'),
   deleteProduct: (id: string) => request<{ deleted: boolean }>('studio.products.delete', { id }),
   listPresenters: async () => (await request<{ presenters: Presenter[] }>('studio.presenters.list')).presenters,
   createPresenter: async (input: PresenterInput) => (await request<{ presenter: Presenter }>('studio.presenters.create', { ...input })).presenter,

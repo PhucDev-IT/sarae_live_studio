@@ -16,6 +16,7 @@ from sarae_agent.studio import service as service_module
 from sarae_agent.studio.__main__ import RuntimeLock
 from sarae_agent.studio.service import StudioError, StudioService
 from sarae_agent.studio.transport import StudioHTTPServer, StudioTransport
+from studio_helpers import create_product
 
 
 @pytest.fixture
@@ -69,13 +70,14 @@ def test_loopback_session_and_mutations_require_token_and_allowed_origin(local_h
 
 def test_http_and_service_share_persistence_and_validation(local_http):
     service, transport, call = local_http
-    status, body = rpc(call, transport, "studio.products.create", {"name": "Áo mùa đông", "price": 179000})
-    assert status == 200
-    product = body["result"]["product"]
-    assert service.dispatch("studio.products.list", {})["products"] == [product]
-    status, body = rpc(call, transport, "studio.products.update", {"id": product["id"], "name": "Áo mới"})
-    assert status == 200 and body["result"]["product"]["name"] == "Áo mới"
-    assert rpc(call, transport, "studio.products.create", {"name": ""})[0] == 422
+    product = create_product(service, "Áo mùa đông")
+    status, body = rpc(call, transport, "studio.products.list")
+    assert status == 200 and [item["id"] for item in body["result"]["products"]] == [product["id"]]
+    assert body["result"]["products"][0]["thumbnail_url"] is None
+    status, body = rpc(call, transport, "studio.products.update", {"id": product["id"], "description": "Ấm áp"})
+    assert status == 200 and body["result"]["product"]["description"] == "Ấm áp"
+    assert rpc(call, transport, "studio.products.update", {"id": product["id"], "name": "Đổi tên"})[0] == 422
+    assert rpc(call, transport, "studio.products.create", {"name": "Tạo tay"})[1]["error"]["code"] == "METHOD_NOT_FOUND"
     assert rpc(call, transport, "studio.media.import", {"source_path": "C:/private.mp4"})[1]["error"]["code"] == "NATIVE_ONLY"
     assert rpc(call, transport, "activation.activate", {})[1]["error"]["code"] == "METHOD_NOT_FOUND"
 
@@ -157,7 +159,7 @@ def test_studio_ipc_persists_and_exits_on_shutdown(tmp_path):
     environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
     data_dir = tmp_path / "dữ liệu"
     commands = [
-        {"v": 1, "type": "request", "request_id": "create", "method": "studio.products.create", "params": {"name": "Sản phẩm local"}},
+        {"v": 1, "type": "request", "request_id": "create", "method": "studio.presenters.create", "params": {"name": "Người dẫn local"}},
         {"v": 1, "type": "request", "request_id": "stop", "method": "system.shutdown", "params": {}},
     ]
     process = subprocess.run([sys.executable, "-m", "sarae_agent", "--studio", "--ipc", "--data-dir", str(data_dir)],
@@ -171,7 +173,7 @@ def test_studio_ipc_persists_and_exits_on_shutdown(tmp_path):
     assert any(frame.get("event") == "core.stopped" for frame in frames)
     service = StudioService(data_dir)
     try:
-        assert service.dispatch("studio.products.list", {})["products"][0]["name"] == "Sản phẩm local"
+        assert service.dispatch("studio.presenters.list", {})["presenters"][0]["name"] == "Người dẫn local"
     finally:
         service.close()
 

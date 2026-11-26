@@ -21,8 +21,8 @@ from sarae_agent.ipc import protocol
 from sarae_agent.studio.service import StudioError, StudioService
 
 METHODS = (
-    "studio.status", "studio.products.list", "studio.products.create",
-    "studio.products.update", "studio.products.delete",
+    "studio.status", "studio.products.list", "studio.products.update", "studio.products.delete",
+    "studio.tiktok.status", "studio.tiktok.login", "studio.tiktok.connect", "studio.tiktok.sync",
     "studio.presenters.list", "studio.presenters.create", "studio.presenters.update", "studio.presenters.delete",
     "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url",
 )
@@ -46,10 +46,25 @@ class StudioTransport:
         self._lock = threading.Lock()
         self.stopped = threading.Event()
         self.ipc_emit = None
+        self.tiktok = None  # TikTokConnector, attached by the runtime
+
+    def _thumbnail_url(self, product: dict) -> dict:
+        has_thumbnail = product.pop("has_thumbnail", False)
+        url = f"{self.base_url}/studio/thumbnails/{quote(product['id'], safe='')}?token={self.token}"
+        return {**product, "thumbnail_url": url if has_thumbnail and self.base_url else None}
 
     def dispatch(self, method: str, params: dict) -> dict:
         if method not in METHODS:
             raise StudioError("METHOD_NOT_FOUND", "Phương thức studio không được hỗ trợ.")
+        if method.startswith("studio.tiktok."):
+            if params:
+                raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, params))})
+            if self.tiktok is None:
+                raise StudioError("TIKTOK_UNAVAILABLE", "Kết nối TikTok chưa sẵn sàng trong Studio Core.")
+            result = getattr(self.tiktok, method.rsplit(".", 1)[-1])()
+            if method == "studio.tiktok.sync":
+                self.emit("studio.changed", {"method": method})
+            return result
         if method == "studio.media.url":
             if set(params) != {"id"} or not isinstance(params["id"], str):
                 raise StudioError("INVALID_PARAMS", "Cần mã video hợp lệ.")
@@ -60,7 +75,12 @@ class StudioTransport:
             result = {**result, "capabilities": {
                 **result.get("capabilities", {}), "native_dialog": self.native,
                 "local_file_reference": False, "obs": False, "ai": False,
+                "tiktok_sync": self.tiktok is not None,
             }}
+        if method == "studio.products.list":
+            result = {"products": [self._thumbnail_url(product) for product in result["products"]]}
+        elif method == "studio.products.update":
+            result = {"product": self._thumbnail_url(result["product"])}
         if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"}:
             self.emit("studio.changed", {"method": method})
         return result
@@ -189,6 +209,10 @@ class StudioHandler(BaseHTTPRequestHandler):
             if self._authorize(query_token=True):
                 self._media(path.removeprefix("/studio/media/"))
             return
+        if path.startswith("/studio/thumbnails/"):
+            if self._authorize(query_token=True):
+                self._thumbnail(path.removeprefix("/studio/thumbnails/"))
+            return
         if path == "/studio/events" and not self.transport.native:
             if self._authorize(query_token=True):
                 self._events()
@@ -197,6 +221,14 @@ class StudioHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.transport.native:
+            # Drain a small unread body first: closing a socket with pending
+            # input makes Windows reset it before the client reads the 404.
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if 0 < length <= 64 * 1024:
+                    self.rfile.read(length)
+            except (ValueError, OSError):
+                pass
             self._error(404, "NOT_FOUND", "Bản native dùng IPC cho nghiệp vụ.")
             return
         if not self._authorize():
@@ -274,6 +306,18 @@ class StudioHandler(BaseHTTPRequestHandler):
                 # Repeated query key: ?presenter_id=a&presenter_id=b
                 args["presenter_ids"] = params["presenter_id"]
             return self.transport.dispatch("studio.media.import", args)
+
+    def _thumbnail(self, product_id: str):
+        try:
+            data = self.transport.service.resolve_thumbnail(product_id).read_bytes()
+        except (StudioError, OSError, ValueError):
+            self._error(404, "NOT_FOUND", "Sản phẩm chưa có ảnh trên máy.")
+            return
+        content_type = {b"\xff\xd8": "image/jpeg", b"\x89P": "image/png"}.get(data[:2], "image/webp")
+        self._headers(200, len(data), content_type)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _media(self, media_id: str):
         try:

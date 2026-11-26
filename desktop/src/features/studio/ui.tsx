@@ -18,6 +18,12 @@ export function errorMessage(error: unknown): string {
       REQUEST_TIMEOUT: 'Studio Core phản hồi quá lâu. Kiểm tra thư viện trước khi thử lại để tránh nhập trùng.',
       IMPORT_TIMEOUT: 'Core có thể vẫn đang nhập video. Đang kiểm tra lại thư viện; hãy đợi kết quả trước khi nhập lại.',
       UPLOAD_INTERRUPTED: 'Video chưa được gửi đầy đủ. Hãy chọn file và nhập lại.',
+      TIKTOK_LOGIN_REQUIRED: 'Phiên TikTok đã hết hạn. Hãy đăng nhập lại trong Chrome của Studio.',
+      TIKTOK_NOT_CONNECTED: 'Chưa kết nối TikTok LIVE Console. Hãy bấm Kết nối trước khi đồng bộ.',
+      TIKTOK_TIMEOUT: 'TikTok LIVE Console phản hồi quá lâu. Kiểm tra mạng rồi thử lại.',
+      TIKTOK_SNAPSHOT_INVALID: 'Danh sách sản phẩm TikTok không hợp lệ nên chưa có gì thay đổi. Hãy tải lại LIVE Console rồi đồng bộ lại.',
+      TIKTOK_ACCOUNT_UNVERIFIED: 'Chưa xác minh được tài khoản TikTok đang đăng nhập. Hãy mở lại LIVE Console rồi thử lại.',
+      CORE_TIMEOUT: 'Studio Core phản hồi quá lâu. Hãy làm mới để xem kết quả trước khi thử lại.',
     }
     if (code === 'STORAGE_ERROR' && 'message' in error && String(error.message).includes('newer version')) return 'Dữ liệu này cần phiên bản Studio mới hơn. Hãy cập nhật ứng dụng.'
     if (messages[code]) return messages[code]

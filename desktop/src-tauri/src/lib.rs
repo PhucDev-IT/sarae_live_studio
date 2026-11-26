@@ -13,7 +13,7 @@ type Core<'a> = State<'a, Arc<CoreManager>>;
 /// Single entry point from React to Studio Core. The Core validates method + params.
 #[tauri::command]
 async fn core_request(core: Core<'_>, method: String, params: Option<Value>, timeout_ms: Option<u64>) -> Result<Value, Value> {
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 180_000));
     core.request(&method, params.unwrap_or_else(|| Value::Object(Default::default())), timeout).await
 }
 

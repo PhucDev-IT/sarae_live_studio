@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from sarae_agent.studio.service import StudioError, StudioService
+from studio_helpers import create_product
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +122,7 @@ def test_import_with_unknown_presenter_publishes_nothing(studio, video):
 
 
 def test_update_media_relinks_product_and_presenters(studio, video):
-    product = call(studio, "studio.products.create", name="Áo linen")["product"]
+    product = create_product(studio, "Áo linen")
     lan, minh = create(studio), create(studio, name="Anh Minh")
     item = call(studio, "studio.media.import", source_path=str(video), presenter_ids=[lan["id"]])["media"]
     updated = call(studio, "studio.media.update", id=item["id"], product_id=product["id"],
@@ -135,7 +136,7 @@ def test_update_media_relinks_product_and_presenters(studio, video):
 
 
 def test_failed_media_update_rolls_back_every_link(studio, video):
-    product = call(studio, "studio.products.create", name="Áo linen")["product"]
+    product = create_product(studio, "Áo linen")
     lan = create(studio)
     item = call(studio, "studio.media.import", source_path=str(video), presenter_ids=[lan["id"]])["media"]
     code = error_code(lambda: call(studio, "studio.media.update", id=item["id"], product_id=product["id"],

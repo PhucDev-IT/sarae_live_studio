@@ -18,6 +18,7 @@ import pytest
 
 from sarae_agent.studio import service as studio_module
 from sarae_agent.studio.service import StudioError, StudioService
+from studio_helpers import create_product
 
 
 @pytest.fixture(autouse=True)
@@ -60,12 +61,6 @@ def call(studio, method, **params):
     result = studio.dispatch(method, params)
     assert isinstance(result, dict)
     return result
-
-
-def create_product(studio, **overrides):
-    params = {"name": "Áo thun Việt Nam", "description": "Màu xanh", "price": 125000.5}
-    params.update(overrides)
-    return call(studio, "studio.products.create", **params)["product"]
 
 
 def products(studio):
@@ -146,67 +141,11 @@ def test_explicit_directory_takes_precedence_over_environment(tmp_path, monkeypa
         instance.close()
 
 
-def test_product_crud_preserves_identity_and_partial_updates(studio):
-    product = create_product(studio)
-    assert_uuid(product["id"])
-    assert product["name"] == "Áo thun Việt Nam"
-    assert product["description"] == "Màu xanh"
-    assert product["price"] == 125000.5
-    assert_timestamp(product["created_at"])
-    assert_timestamp(product["updated_at"])
-    assert products(studio) == [product]
-
-    changed = call(studio, "studio.products.update", id=product["id"], name="Tên mới")["product"]
-    assert changed["id"] == product["id"]
-    assert changed["created_at"] == product["created_at"]
-    assert changed["name"] == "Tên mới"
-    assert changed["description"] == product["description"]
-    assert changed["price"] == product["price"]
-    assert assert_timestamp(changed["updated_at"]) >= assert_timestamp(product["updated_at"])
-
-    cleared = call(studio, "studio.products.update", id=product["id"], description="", price=None)["product"]
-    assert cleared["description"] == ""
-    assert cleared["price"] is None
-    assert cleared["name"] == "Tên mới"
-    assert products(studio) == [cleared]
-    call(studio, "studio.products.delete", id=product["id"])
-    assert products(studio) == []
-
-
-def test_product_optional_fields_and_zero_price(studio):
-    minimal = call(studio, "studio.products.create", name="Minimal")["product"]
-    assert minimal["description"] == ""
-    assert minimal["price"] is None
-    free = create_product(studio, price=0)
-    assert free["price"] == 0
-    assert free["id"] != minimal["id"]
-
-
-@pytest.mark.parametrize("field,value", [
-    ("name", ""), ("name", " \t\n"), ("name", None), ("name", 123),
-    ("description", 123), ("price", "not a number"), ("price", True),
-    ("price", -1), ("price", float("nan")), ("price", float("inf")),
-])
-@pytest.mark.parametrize("method", ["studio.products.create", "studio.products.update"])
-def test_invalid_product_writes_leave_existing_data_unchanged(studio, method, field, value):
-    original = create_product(studio)
-    params = {"name": "Valid", field: value}
-    if method.endswith("update"):
-        params["id"] = original["id"]
-    assert_error("VALIDATION_ERROR", lambda: call(studio, method, **params))
-    assert products(studio) == [original]
-
-
-def test_create_requires_product_name(studio):
-    assert_error("VALIDATION_ERROR", lambda: call(studio, "studio.products.create"))
-    assert products(studio) == []
-
-
 @pytest.mark.parametrize("method", ["studio.products.update", "studio.products.delete", "studio.media.delete"])
 def test_missing_records_return_not_found(studio, method):
     params = {"id": str(uuid4())}
     if method.endswith("update"):
-        params["name"] = "Missing"
+        params["description"] = "Missing"
     assert_error("NOT_FOUND", lambda: call(studio, method, **params))
 
 

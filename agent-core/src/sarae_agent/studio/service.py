@@ -17,7 +17,8 @@ from uuid import uuid4
 
 from sarae_agent import __version__
 
-from .models import StudioError, identifier, identifier_list, presenter_fields, product_fields, timestamp
+from .models import (StudioError, identifier, identifier_list, presenter_fields, product_fields, tiktok_snapshot,
+                     timestamp)
 from .storage import StudioStorage, data_root
 
 
@@ -42,6 +43,7 @@ VIDEO_FORMATS = {
     ".ogv": ({"ogg"}, "video/ogg"),
 }
 COPY_CHUNK_BYTES = 1024 * 1024
+THUMBNAIL_SUFFIXES = {".jpg", ".png", ".webp"}
 log = logging.getLogger(__name__)
 
 
@@ -131,8 +133,7 @@ class StudioService:
             handlers = {
                 "studio.status": (self._status, set()),
                 "studio.products.list": (self._list_products, set()),
-                "studio.products.create": (self._create_product, {"name", "description", "price"}),
-                "studio.products.update": (self._update_product, {"id", "name", "description", "price"}),
+                "studio.products.update": (self._update_product, {"id", "description"}),
                 "studio.products.delete": (self._delete_product, {"id"}),
                 "studio.presenters.list": (self._list_presenters, set()),
                 "studio.presenters.create": (self._create_presenter, {"name", "description", "active"}),
@@ -167,12 +168,20 @@ class StudioService:
 
     def _status(self, params: dict) -> dict:
         return {"version": __version__, "data_dir": str(self.data_dir), "database_path": str(self.database_path),
-                "capabilities": {"products": True, "presenters": True, "managed_media": True,
+                "capabilities": {"products": True, "tiktok_sync": True, "presenters": True, "managed_media": True,
                                  "native_dialog": False, "local_file_reference": False, "obs": False, "ai": False}}
 
+    @staticmethod
+    def _serialize_product(row) -> dict:
+        product = {key: row[key] for key in row.keys() if key != "thumbnail"}
+        product["source"] = "tiktok" if row["tiktok_product_id"] else "manual"
+        product["has_thumbnail"] = bool(row["thumbnail"])
+        return product
+
     def _list_products(self, params: dict) -> dict:
-        rows = self._storage.connection.execute("SELECT * FROM products ORDER BY created_at DESC, id").fetchall()
-        return {"products": [dict(row) for row in rows]}
+        rows = self._storage.connection.execute(
+            "SELECT * FROM products ORDER BY tiktok_product_id IS NULL, name COLLATE NOCASE, id").fetchall()
+        return {"products": [self._serialize_product(row) for row in rows]}
 
     def _product(self, product_id: str):
         row = self._storage.connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -180,36 +189,154 @@ class StudioService:
             raise StudioError("NOT_FOUND", "Product not found.", {"id": product_id})
         return row
 
-    def _create_product(self, params: dict) -> dict:
-        fields = product_fields(params)
-        product_id, now = str(uuid4()), timestamp()
-        with self._storage.transaction() as connection:
-            connection.execute("""INSERT INTO products(id, name, description, price, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                               (product_id, fields["name"], fields["description"], fields["price"], now, now))
-            product = dict(self._product(product_id))
-        return {"product": product}
-
     def _update_product(self, params: dict) -> dict:
+        # Name, price, stock and image belong to TikTok; Studio owns the description.
         product_id = identifier(params.get("id"))
-        fields = product_fields(params, partial=True)
-        if not fields:
-            raise StudioError("VALIDATION_ERROR", "Provide at least one product field to update.")
-        fields["updated_at"] = timestamp()
+        if "description" not in params:
+            raise StudioError("VALIDATION_ERROR", "Provide the product description to update.")
+        description = product_fields({"name": "-", "description": params["description"]}, partial=True)["description"]
         with self._storage.transaction() as connection:
             self._product(product_id)
-            connection.execute("UPDATE products SET " + ", ".join(f"{key} = ?" for key in fields) + " WHERE id = ?",
-                               (*fields.values(), product_id))
-            product = dict(self._product(product_id))
+            connection.execute("UPDATE products SET description = ?, updated_at = ? WHERE id = ?",
+                               (description, timestamp(), product_id))
+            product = self._serialize_product(self._product(product_id))
         return {"product": product}
 
     def _delete_product(self, params: dict) -> dict:
         product_id = identifier(params.get("id"))
         with self._storage.transaction() as connection:
-            self._product(product_id)
+            thumbnail = self._product(product_id)["thumbnail"]
             # Media remains usable in the library when its product is deleted.
             connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        if thumbnail:
+            self._remove_thumbnail(thumbnail)
         return {"deleted": True}
+
+    # --- TikTok catalog -------------------------------------------------------------------
+    def import_tiktok_snapshot(self, account: object, rows: object) -> dict:
+        """Upsert a complete LIVE Console snapshot by (seller_id, product_id).
+
+        TikTok fields are refreshed; description, video and presenter links are
+        kept. Products missing from this snapshot are reported, never deleted.
+        """
+        profile, products = tiktok_snapshot(account, rows)
+        with self._lock:
+            self._ensure_open()
+            try:
+                now, created, updated, stale = timestamp(), 0, 0, []
+                with self._storage.transaction() as connection:
+                    for item in products:
+                        row = connection.execute(
+                            """SELECT id, image_url, thumbnail FROM products
+                               WHERE tiktok_seller_id = ? AND tiktok_product_id = ?""",
+                            (item["tiktok_seller_id"], item["tiktok_product_id"])).fetchone()
+                        values = (item["name"], item["price"], item["origin_price"], item["stock_num"],
+                                  item["category"], item["image_url"], now)
+                        if row is None:
+                            connection.execute(
+                                """INSERT INTO products(id, name, description, price, origin_price, stock_num, category,
+                                   image_url, last_synced_at, tiktok_seller_id, tiktok_product_id, created_at, updated_at)
+                                   VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (str(uuid4()), *values, item["tiktok_seller_id"], item["tiktok_product_id"], now, now))
+                            created += 1
+                        else:
+                            if row["thumbnail"] and row["image_url"] != item["image_url"]:
+                                # A new cover is downloaded again; the old file goes after commit.
+                                stale.append(row["thumbnail"])
+                                connection.execute("UPDATE products SET thumbnail = NULL WHERE id = ?", (row["id"],))
+                            connection.execute(
+                                """UPDATE products SET name = ?, price = ?, origin_price = ?, stock_num = ?, category = ?,
+                                   image_url = ?, last_synced_at = ?, updated_at = ? WHERE id = ?""",
+                                (*values, now, row["id"]))
+                            updated += 1
+                    sellers = sorted({item["tiktok_seller_id"] for item in products})
+                    seen = {(item["tiktok_seller_id"], item["tiktok_product_id"]) for item in products}
+                    missing = 0
+                    if sellers:
+                        for row in connection.execute(
+                                "SELECT tiktok_seller_id, tiktok_product_id FROM products WHERE tiktok_seller_id IN ("
+                                + ", ".join("?" for _ in sellers) + ")", sellers):
+                            missing += (row[0], row[1]) not in seen
+                    connection.execute(
+                        """INSERT INTO tiktok_accounts(user_id, nick_name, user_name, avatar_url, product_count, last_synced_at)
+                           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET nick_name = excluded.nick_name,
+                           user_name = excluded.user_name, avatar_url = excluded.avatar_url,
+                           product_count = excluded.product_count, last_synced_at = excluded.last_synced_at""",
+                        (profile["user_id"], profile["nick_name"], profile["user_name"], profile["avatar_url"],
+                         len(products), now))
+            except sqlite3.Error as exc:
+                raise StudioError("STORAGE_ERROR", "Could not save the TikTok product list.") from exc
+            for name in stale:
+                self._remove_thumbnail(name)
+        return {"created": created, "updated": updated, "missing": missing, "total": len(products),
+                "account": {**profile, "product_count": len(products), "last_synced_at": now}}
+
+    def tiktok_account(self) -> dict | None:
+        with self._lock:
+            self._ensure_open()
+            row = self._storage.connection.execute(
+                "SELECT * FROM tiktok_accounts ORDER BY last_synced_at DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+
+    def thumbnail_jobs(self) -> list[dict]:
+        """TikTok products whose cover image has not been cached yet."""
+        with self._lock:
+            self._ensure_open()
+            rows = self._storage.connection.execute(
+                "SELECT id, image_url FROM products WHERE image_url != '' AND thumbnail IS NULL").fetchall()
+            return [dict(row) for row in rows]
+
+    def _thumbnail_dir(self) -> Path:
+        folder = self.data_dir / "thumbnails"
+        folder.mkdir(exist_ok=True)
+        if folder.is_symlink() or folder.resolve() != folder:
+            raise StudioError("UNSAFE_PATH", "The thumbnail directory points outside the studio data directory.")
+        return folder
+
+    def store_thumbnail(self, product_id: str, image_url: str, data: bytes, suffix: str) -> bool:
+        """Publish a downloaded cover unless the product or its image changed meanwhile."""
+        if suffix not in THUMBNAIL_SUFFIXES or not data:
+            return False
+        name = identifier(product_id) + suffix
+        with self._lock:
+            self._ensure_open()
+            folder = self._thumbnail_dir()
+            temporary = folder / (".partial-" + name)
+            temporary.write_bytes(data)
+            try:
+                with self._storage.transaction() as connection:
+                    row = connection.execute("SELECT image_url, thumbnail FROM products WHERE id = ?",
+                                             (product_id,)).fetchone()
+                    if row is None or row["image_url"] != image_url:
+                        return False
+                    os.replace(temporary, folder / name)
+                    connection.execute("UPDATE products SET thumbnail = ? WHERE id = ?", (name, product_id))
+                if row["thumbnail"] and row["thumbnail"] != name:
+                    self._remove_thumbnail(row["thumbnail"])
+                return True
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def resolve_thumbnail(self, product_id: str) -> Path:
+        with self._lock:
+            self._ensure_open()
+            try:
+                row = self._product(identifier(product_id))
+                name = row["thumbnail"]
+                if not name or name != row["id"] + Path(name).suffix or Path(name).suffix not in THUMBNAIL_SUFFIXES:
+                    raise StudioError("NOT_FOUND", "This product has no cached image.")
+                target = self._thumbnail_dir() / name
+                if target.is_symlink() or not target.is_file():
+                    raise StudioError("NOT_FOUND", "This product has no cached image.")
+                return target
+            except (OSError, sqlite3.Error) as exc:
+                raise StudioError("NOT_FOUND", "This product has no cached image.") from exc
+
+    def _remove_thumbnail(self, name: str) -> None:
+        try:
+            (self._thumbnail_dir() / Path(name).name).unlink(missing_ok=True)
+        except (OSError, StudioError):
+            log.warning("Could not remove a product thumbnail: %s", name)
 
     @staticmethod
     def _serialize_presenter(row) -> dict:

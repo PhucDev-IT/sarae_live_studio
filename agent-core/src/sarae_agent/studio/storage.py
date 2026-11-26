@@ -48,6 +48,28 @@ MIGRATIONS = (
         ) WITHOUT ROWID""",
         "CREATE INDEX media_presenters_presenter_id ON media_presenters(presenter_id)",
     )),
+    # Products come from TikTok. Rows created by hand before this version keep
+    # NULL TikTok IDs; they stay usable and are never matched by name.
+    (3, (
+        "ALTER TABLE products ADD COLUMN tiktok_seller_id TEXT",
+        "ALTER TABLE products ADD COLUMN tiktok_product_id TEXT",
+        "ALTER TABLE products ADD COLUMN origin_price REAL CHECK(origin_price IS NULL OR origin_price >= 0)",
+        "ALTER TABLE products ADD COLUMN stock_num INTEGER CHECK(stock_num IS NULL OR stock_num >= 0)",
+        "ALTER TABLE products ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE products ADD COLUMN image_url TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE products ADD COLUMN thumbnail TEXT",
+        "ALTER TABLE products ADD COLUMN last_synced_at TEXT",
+        """CREATE UNIQUE INDEX products_tiktok_identity ON products(tiktok_seller_id, tiktok_product_id)
+            WHERE tiktok_product_id IS NOT NULL""",
+        """CREATE TABLE tiktok_accounts (
+            user_id TEXT PRIMARY KEY,
+            nick_name TEXT NOT NULL DEFAULT '',
+            user_name TEXT NOT NULL DEFAULT '',
+            avatar_url TEXT NOT NULL DEFAULT '',
+            product_count INTEGER NOT NULL DEFAULT 0,
+            last_synced_at TEXT NOT NULL
+        )""",
+    )),
 )
 
 

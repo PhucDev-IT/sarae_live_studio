@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { coreProcess, onCoreState } from '../../services/core'
-import { studioClient, type Media, type Presenter, type Product, type StudioStatus } from '../../services/studio'
+import { studioClient, type Media, type Presenter, type Product, type StudioStatus, type TikTokStatus } from '../../services/studio'
 import { errorMessage } from './ui'
 
 export function useStudio() {
   const [status, setStatus] = useState<StudioStatus | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [presenters, setPresenters] = useState<Presenter[]>([])
+  const [tiktok, setTiktok] = useState<TikTokStatus | null>(null)
   const [media, setMedia] = useState<Media[]>([])
   const [connected, setConnected] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -20,14 +21,16 @@ export function useStudio() {
   const refresh = useCallback(async () => {
     const generation = ++sequence.current
     try {
-      const [nextStatus, productResult, presenterResult, mediaResult] = await Promise.all([
+      const [nextStatus, productResult, presenterResult, mediaResult, tiktokResult] = await Promise.all([
         studioClient.getStatus(),
         studioClient.listProducts(),
         studioClient.listPresenters(),
         studioClient.listMedia(),
+        studioClient.tiktokStatus(),
       ])
       if (!mounted.current || generation !== sequence.current) return
       setStatus(nextStatus)
+      setTiktok(tiktokResult)
       setProducts(productResult)
       setPresenters(presenterResult)
       setMedia(mediaResult)
@@ -134,5 +137,5 @@ export function useStudio() {
     }
   }, [refresh])
 
-  return { status, products, presenters, media, connected, loading, retrying, error, refresh, retry }
+  return { status, tiktok, setTiktok, products, presenters, media, connected, loading, retrying, error, refresh, retry }
 }
