@@ -8,6 +8,13 @@ Monorepo for an internal live-commerce production workspace.
 - `desktop/` — Windows Agent desktop app (Tauri 2 + React) hosting `agent-core` as a sidecar.
 - `docs/` — development documents. Windows Agent: `WINDOWS_AGENT_ARCHITECTURE.md`, `WINDOWS_AGENT_IPC.md`, `WINDOWS_AGENT_BUILD.md`.
 
+## Hướng chuyển đổi sang studio local
+
+Nhánh `feat/local-tauri-studio` chuẩn bị chuyển sang một ứng dụng Windows Tauri dùng chung frontend để chạy thử trên web, bỏ đăng nhập/license/activation Sarae và lưu video cùng dữ liệu trên máy. AI được phép dùng API bên ngoài. Nhánh hiện chỉ bổ sung thiết kế và hướng dẫn bàn giao, chưa thay đổi mã chạy:
+
+- [Tổng quan kiến trúc và kế hoạch chuyển đổi](docs/LOCAL_TAURI_STUDIO_OVERVIEW.md).
+- [Bàn giao và cách tiếp tục trên máy khác](docs/LOCAL_TAURI_STUDIO_HANDOFF.md).
+
 ## Local prerequisites
 
 Node.js (compatible with Vite 8) and Python 3.12. The Windows Agent build also needs Rust (MSVC) — see `docs/WINDOWS_AGENT_BUILD.md`.
