@@ -65,7 +65,7 @@ export function StudioShell() {
         <div hidden={page !== 'live'}><LivePanel products={studio.products} media={studio.media} disabled={!studio.connected} visible={page === 'live'} onNotice={setNotice} /></div>
         <div hidden={page !== 'scripts'}><ScriptsPanel products={studio.products} disabled={!studio.connected} visible={page === 'scripts'} onOpenAI={() => setPage('ai')} onNotice={setNotice} /></div>
         <div hidden={page !== 'ai'}><AIPanel products={studio.products} disabled={!studio.connected} visible={page === 'ai'} onNotice={setNotice} /></div>
-        <footer className="studio-footer"><span><Database size={14} />SQLite · Thư viện trên máy</span><span><CircleHelp size={14} />Trả lời khách bằng giọng đọc và comment sẽ được bổ sung ở mốc tiếp theo.</span></footer>
+        <footer className="studio-footer"><span><Database size={14} />SQLite · Thư viện trên máy</span><span><CircleHelp size={14} />Studio chỉ điều khiển OBS và chat; bạn tự bật/tắt LIVE trên TikTok.</span></footer>
       </main>
     </div>
     {notice && <div className="studio-toast" role="status"><Check size={18} /><span>{notice}</span><button className="studio-button ghost icon-only" aria-label="Đóng thông báo" onClick={() => setNotice('')}><X size={16} /></button></div>}

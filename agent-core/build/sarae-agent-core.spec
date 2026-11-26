@@ -14,6 +14,8 @@ if not FFPROBE or not os.path.isfile(FFPROBE):
     raise RuntimeError("FFprobe is required: install it on PATH or set SARAE_FFPROBE to ffprobe.exe")
 
 hidden = collect_submodules("sarae_agent") + collect_submodules("obsws_python") + collect_submodules("edge_tts")
+# Studio reply desk: public LIVE chat reader (generated protobuf modules are imported dynamically).
+hidden += collect_submodules("TikTokLive") + collect_submodules("TikTokLiveProto")
 # Keep Studio's CLI/service and SQLite (including its native extension/DLL hook) in the
 # frozen sidecar even when package discovery misses the separately selected entrypoint.
 hidden += ["sarae_agent.studio.__main__", "sarae_agent.studio.service", "sqlite3", "_sqlite3"]

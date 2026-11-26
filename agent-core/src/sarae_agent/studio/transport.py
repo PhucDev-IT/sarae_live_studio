@@ -34,7 +34,11 @@ METHODS = (
     "studio.live.sessions.delete", "studio.live.status", "studio.live.start", "studio.live.switch",
     "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous",
     "studio.live.cancel_pending", "studio.live.stop",
+    "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
+    "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
+    "studio.replies.dismiss", "studio.replies.stop_voice",
 )
+REPLY_METHODS = {name: name.rsplit(".", 1)[-1] for name in METHODS if name.startswith("studio.replies.")}
 LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_configure",
                 "studio.obs.connect": "obs_connect", "studio.obs.disconnect": "obs_disconnect",
                 "studio.live.sessions.list": "sessions_list", "studio.live.sessions.create": "sessions_create",
@@ -71,6 +75,7 @@ class StudioTransport:
         self.tiktok = None  # TikTokConnector, attached by the runtime
         self.ai = None  # StudioAI, attached by the runtime
         self.live = None  # StudioLive, attached by the runtime
+        self.replies = None  # ReplyDesk, attached by the runtime
 
     def _thumbnail_url(self, product: dict) -> dict:
         has_thumbnail = product.pop("has_thumbnail", False)
@@ -96,6 +101,10 @@ class StudioTransport:
             if method in {"studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.scripts.generate"}:
                 self.emit("studio.changed", {"method": method})
             return result
+        if method in REPLY_METHODS:
+            if self.replies is None:
+                raise StudioError("REPLIES_UNAVAILABLE", "Bàn trả lời chưa sẵn sàng trong Studio Core.")
+            return getattr(self.replies, REPLY_METHODS[method])(params)
         if method in LIVE_METHODS:
             if self.live is None:
                 raise StudioError("LIVE_UNAVAILABLE", "Bộ phát LIVE chưa sẵn sàng trong Studio Core.")

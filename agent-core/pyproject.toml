@@ -19,6 +19,8 @@ dependencies = [
     "opencv-python-headless>=4.9,<5",
     "edge-tts>=6.1,<8",
     "playwright>=1.55,<2",
+    # Read-only public LIVE chat for the local studio's reply desk (same pin as backend/).
+    "TikTokLive==7.0.1",
 ]
 
 [project.optional-dependencies]

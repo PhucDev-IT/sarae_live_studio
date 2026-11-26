@@ -108,6 +108,31 @@ export interface ObsStatus {
 }
 export interface ObsSettingsInput { host?: string; port?: number; password?: string; clear_password?: boolean; media_input?: string; dual_mode?: boolean; source_a?: string; source_b?: string }
 
+export interface ReplySettings {
+  auto_voice: boolean; auto_comment: boolean; confirm_seconds: number; voice: string; rate: number
+  call_name: boolean; duck_video: boolean; answer_all: boolean; max_age_seconds: number
+  comment_min_interval_seconds: number; comment_max_per_minute: number; ignored_usernames: string[]
+}
+export type ReplyStage = 'ignored' | 'skipped' | 'queued' | 'thinking' | 'ready' | 'review' | 'done' | 'expired' | 'failed' | 'dismissed'
+export interface ReplyEntry {
+  id: number; msg_id: string; username: string; nickname: string; user_id: string; comment: string; simulated: boolean
+  created_at: string; stage: ReplyStage; reason: string; product_id: string | null; intent: string | null; reply: string
+  needs_review: boolean; voice: { status: string; detail: string } | null
+  comment_delivery: { status: string; mode?: string | null; error: string | null } | null
+  auto: ('voice' | 'comment')[]; auto_in: number | null; age_seconds: number
+}
+export interface ReplyDeskStatus {
+  settings: ReplySettings
+  chat: { username: string; status: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'stopping' | 'error'; error: string }
+  entries: ReplyEntry[]
+  stats: Record<string, number>
+  queued: number
+  voice: Record<string, unknown> | null
+  voices: string[]
+  account_username: string | null
+  product_id: string | null
+}
+
 export interface TikTokStatus {
   state: 'idle' | 'login' | 'logged_in' | 'login_required' | 'ready' | string
   browser_open: boolean
@@ -197,6 +222,7 @@ const slowMethods: Record<string, number> = {
   'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
   'studio.ai.reply': 100_000, 'studio.ai.test': 100_000, 'studio.scripts.generate': 120_000,
   // Starting or switching may render an OBS copy of a rotated video first.
+  'studio.replies.send_comment': 130_000,
   'studio.live.start': 120_000, 'studio.live.switch': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
 }
 
@@ -306,6 +332,11 @@ export const studioClient = {
   liveStatus: () => request<LiveStatus>('studio.live.status'),
   liveStart: (sessionId: string, productId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(productId ? { product_id: productId } : {}) }),
   liveSwitch: (productId: string, mode: 'immediate' | 'after_current') => request<LiveStatus>('studio.live.switch', { product_id: productId, mode }),
+  replies: (method: 'status' | 'chat_stop' | 'stop_voice') => request<ReplyDeskStatus>(`studio.replies.${method}`),
+  repliesConfigure: (input: Partial<ReplySettings>) => request<ReplyDeskStatus>('studio.replies.configure', { ...input }),
+  repliesChatStart: (username?: string) => request<ReplyDeskStatus>('studio.replies.chat_start', username ? { username } : {}),
+  repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),
+  replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
   liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),

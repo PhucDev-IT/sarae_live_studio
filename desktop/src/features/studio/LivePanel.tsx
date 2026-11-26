@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ArrowDown, ArrowUp, CircleStop, Clock3, Film, ListVideo, MonitorPlay, Package, Pause, Pencil, Play, Plus, Radio, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
 import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type PlaybackPolicy, type Product } from '../../services/studio'
+import { ReplyDesk } from './ReplyDesk'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
 type Props = { products: Product[]; media: Media[]; disabled: boolean; visible: boolean; onNotice: (message: string) => void }
@@ -80,6 +81,7 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
     {live && live.session && <ControlRoom status={live} session={live.session} productById={productById} videoCount={videoCount} mediaNames={mediaNames} busy={busy} disabled={disabled}
       onSwitch={(productId, mode) => act('switch:' + productId + mode, () => studioClient.liveSwitch(productId, mode), mode === 'immediate' ? 'Đã chuyển sản phẩm.' : 'Sẽ chuyển sau video hiện tại.')}
       onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)} />}
+    <ReplyDesk products={products} disabled={disabled} visible={visible} onNotice={onNotice} />
     <section className="studio-card">
       <header className="studio-card-heading"><ListVideo size={19} /><div><h2>Danh sách phiên</h2><p>Mỗi phiên là một danh sách sản phẩm theo thứ tự cùng cách phát video.</p></div></header>
       {!sessions.length ? <EmptyState icon={<Radio size={30} />} title="Chưa có phiên LIVE nào" description="Tạo phiên, chọn các sản phẩm đã có video, rồi bấm Phát khi OBS đã sẵn sàng." action={<button className="studio-button primary" disabled={disabled} onClick={() => setEditing('new')}><Plus size={16} />Tạo phiên đầu tiên</button>} />

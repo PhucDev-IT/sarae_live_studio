@@ -140,6 +140,14 @@ class TikTokConnector:
         self._start_thumbnails()
         return result
 
+    def chat_send(self, payload: dict) -> dict:
+        """Post one reply in the open LIVE Console chat (never opens or navigates a browser)."""
+        browser = self._browser
+        if browser is None or not browser.status().get("browser_open"):
+            return {"status": "FAILED", "mode": None,
+                    "error": "Chưa kết nối TikTok LIVE Console trong Studio; bình luận chưa được gửi."}
+        return self._call(lambda: browser.chat_send(payload))
+
     def _start_thumbnails(self) -> None:
         if self._thumbnails is not None and self._thumbnails.is_alive():
             return
