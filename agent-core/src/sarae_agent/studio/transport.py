@@ -22,8 +22,9 @@ from sarae_agent.studio.service import StudioError, StudioService
 
 METHODS = (
     "studio.status", "studio.products.list", "studio.products.create",
-    "studio.products.update", "studio.products.delete", "studio.media.list",
-    "studio.media.import", "studio.media.delete", "studio.media.url",
+    "studio.products.update", "studio.products.delete",
+    "studio.presenters.list", "studio.presenters.create", "studio.presenters.update", "studio.presenters.delete",
+    "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url",
 )
 MAX_UPLOAD = 20 * 1024**3
 DEFAULT_ORIGINS = frozenset({"http://127.0.0.1:1420", "http://localhost:1420"})
@@ -269,6 +270,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             args = {"source_path": str(source)}
             if "product_id" in params:
                 args["product_id"] = params["product_id"][0]
+            if "presenter_id" in params:
+                # Repeated query key: ?presenter_id=a&presenter_id=b
+                args["presenter_ids"] = params["presenter_id"]
             return self.transport.dispatch("studio.media.import", args)
 
     def _media(self, media_id: str):

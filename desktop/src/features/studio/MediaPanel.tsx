@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { AlertTriangle, Film, Play, Search, Trash2, Upload } from 'lucide-react'
-import { studioClient, type Media, type Product } from '../../services/studio'
-import { EmptyState, ErrorNotice, Modal, errorMessage, formatBytes } from './ui'
+import { AlertTriangle, Check, Film, Link2, Play, Search, Trash2, Upload } from 'lucide-react'
+import { studioClient, type Media, type Presenter, type Product } from '../../services/studio'
+import { EmptyState, ErrorNotice, Modal, PresenterAvatar, errorMessage, formatBytes } from './ui'
 
 type Props = {
-  products: Product[]; media: Media[]; loading: boolean; disabled: boolean; nativeDialog: boolean
+  products: Product[]; presenters: Presenter[]; media: Media[]; loading: boolean; disabled: boolean; nativeDialog: boolean
   productFilter: string; onProductFilter: (id: string) => void
+  presenterFilter: string; onPresenterFilter: (id: string) => void
   onRefresh: () => Promise<void>; onNotice: (message: string) => void
   onBusyChange: (busy: boolean) => void
 }
 const extensions = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'mpg', 'mpeg', 'ogv']
 
-export function MediaPanel({ products, media, loading, disabled, nativeDialog, productFilter, onProductFilter, onRefresh, onNotice, onBusyChange }: Props) {
+export function MediaPanel({ products, presenters, media, loading, disabled, nativeDialog, productFilter, onProductFilter, presenterFilter, onPresenterFilter, onRefresh, onNotice, onBusyChange }: Props) {
+  const [linking, setLinking] = useState<Media | null>(null)
   const [query, setQuery] = useState('')
   const [importProduct, setImportProduct] = useState('')
   const [busy, setBusy] = useState(false)
@@ -29,7 +31,10 @@ export function MediaPanel({ products, media, loading, disabled, nativeDialog, p
   useEffect(() => { setImportProduct(productFilter === '__unlinked' ? '' : productFilter) }, [productFilter])
   useEffect(() => { if (importProduct && !products.some(product => product.id === importProduct)) setImportProduct('') }, [products, importProduct])
   const productNames = useMemo(() => new Map(products.map(product => [product.id, product.name])), [products])
-  const visible = useMemo(() => media.filter(item => (!productFilter || (productFilter === '__unlinked' ? !item.product_id : item.product_id === productFilter)) && item.original_name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi'))), [media, productFilter, query])
+  const presenterById = useMemo(() => new Map(presenters.map(presenter => [presenter.id, presenter])), [presenters])
+  const visible = useMemo(() => media.filter(item => (!productFilter || (productFilter === '__unlinked' ? !item.product_id : item.product_id === productFilter))
+    && (!presenterFilter || (presenterFilter === '__none' ? !item.presenter_ids.length : item.presenter_ids.includes(presenterFilter)))
+    && item.original_name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi'))), [media, productFilter, presenterFilter, query])
   const preview = media.find(item => item.id === previewId)
   const importDisabled = disabled || busy || (isTauri() && !nativeDialog)
 
@@ -90,15 +95,60 @@ export function MediaPanel({ products, media, loading, disabled, nativeDialog, p
     {busy && importName && <div className="studio-import-progress" role="status" aria-live="polite"><div><strong>Đang nhập {importName}</strong><span>{progress === null ? 'Đang sao chép và kiểm tra…' : `${progress}%`}</span></div><progress max={100} {...(progress === null ? {} : { value: progress })} aria-label="Tiến trình nhập video" /><small>Giữ ứng dụng mở cho đến khi nhập hoàn tất.</small></div>}
     {error && !deleting && <ErrorNotice message={error} />}
     <section className="studio-card">
-      <div className="studio-toolbar"><label className="studio-search"><Search size={17} /><input aria-label="Tìm video" placeholder="Tìm theo tên video…" value={query} onChange={event => setQuery(event.target.value)} /></label><select className="studio-filter" aria-label="Lọc video theo sản phẩm" value={productFilter} onChange={event => onProductFilter(event.target.value)}><option value="">Tất cả sản phẩm</option><option value="__unlinked">Chưa gắn sản phẩm</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select><span className="studio-muted">{visible.length} video</span></div>
-      {loading ? <div className="studio-empty" role="status">Đang tải thư viện…</div> : !visible.length ? <EmptyState icon={<Film size={30} />} title={query || productFilter ? 'Chưa có video phù hợp' : 'Thư viện đang chờ video đầu tiên'} description={query ? 'Thử tìm bằng tên file khác.' : 'Chọn video từ máy để thêm vào thư viện. Bạn có thể gắn video với một sản phẩm khi nhập.'} action={importButton} /> : <div className="studio-media-grid">{visible.map(item => <article className="studio-media-card" key={item.id}>
+      <div className="studio-toolbar"><label className="studio-search"><Search size={17} /><input aria-label="Tìm video" placeholder="Tìm theo tên video…" value={query} onChange={event => setQuery(event.target.value)} /></label><select className="studio-filter" aria-label="Lọc video theo sản phẩm" value={productFilter} onChange={event => onProductFilter(event.target.value)}><option value="">Tất cả sản phẩm</option><option value="__unlinked">Chưa gắn sản phẩm</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select><select className="studio-filter" aria-label="Lọc video theo người giới thiệu" value={presenterFilter} onChange={event => onPresenterFilter(event.target.value)}><option value="">Mọi người giới thiệu</option><option value="__none">Chưa gắn người giới thiệu</option>{presenters.map(presenter => <option key={presenter.id} value={presenter.id}>{presenter.name}{presenter.active ? '' : ' (tạm nghỉ)'}</option>)}</select><span className="studio-muted">{visible.length} video</span></div>
+      {loading ? <div className="studio-empty" role="status">Đang tải thư viện…</div> : !visible.length ? <EmptyState icon={<Film size={30} />} title={query || productFilter || presenterFilter ? 'Chưa có video phù hợp' : 'Thư viện đang chờ video đầu tiên'} description={query ? 'Thử tìm bằng tên file khác.' : 'Chọn video từ máy để thêm vào thư viện. Bạn có thể gắn video với một sản phẩm khi nhập.'} action={importButton} /> : <div className="studio-media-grid">{visible.map(item => <article className="studio-media-card" key={item.id}>
         <button className={`studio-media-poster${item.status === 'missing' ? ' missing' : ''}`} disabled={disabled || item.status === 'missing'} onClick={() => setPreviewId(item.id)} aria-label={`Xem trước ${item.original_name}`}><Film size={38} strokeWidth={1.2} /><span className="studio-play-badge">{item.status === 'missing' ? <AlertTriangle size={17} /> : <Play size={18} fill="currentColor" />}</span><span className="studio-file-extension">{item.original_name.split('.').pop()?.toUpperCase()}</span></button>
-        <div className="studio-media-body"><h3 title={item.original_name}>{item.original_name}</h3><p className="studio-muted">{formatBytes(item.size_bytes)} · {new Date(item.created_at).toLocaleDateString('vi-VN')}</p><p className="studio-media-product" title={item.product_id ? productNames.get(item.product_id) : undefined}>{item.product_id ? productNames.get(item.product_id) || 'Sản phẩm không còn tồn tại' : 'Chưa gắn sản phẩm'}</p><div className="studio-media-footer"><span className={`studio-tag ${item.status === 'missing' ? 'warning' : 'success'}`}>{item.status === 'missing' ? 'Thiếu file' : 'Đã lưu local'}</span><button className="studio-button ghost icon-only danger" disabled={disabled || busy} aria-label={`Xóa ${item.original_name}`} title="Xóa video" onClick={() => { setError(''); setDeleting(item) }}><Trash2 size={16} /></button></div></div>
+        <div className="studio-media-body"><h3 title={item.original_name}>{item.original_name}</h3><p className="studio-muted">{formatBytes(item.size_bytes)} · {new Date(item.created_at).toLocaleDateString('vi-VN')}</p><p className="studio-media-product" title={item.product_id ? productNames.get(item.product_id) : undefined}>{item.product_id ? productNames.get(item.product_id) || 'Sản phẩm không còn tồn tại' : 'Chưa gắn sản phẩm'}</p><PresenterStack ids={item.presenter_ids} presenters={presenterById} /><div className="studio-media-footer"><span className={`studio-tag ${item.status === 'missing' ? 'warning' : 'success'}`}>{item.status === 'missing' ? 'Thiếu file' : 'Đã lưu local'}</span><button className="studio-button ghost icon-only studio-push" disabled={disabled || busy} aria-label={`Gắn sản phẩm và người giới thiệu cho ${item.original_name}`} title="Gắn sản phẩm & người giới thiệu" onClick={() => { setError(''); setLinking(item) }}><Link2 size={16} /></button><button className="studio-button ghost icon-only danger" disabled={disabled || busy} aria-label={`Xóa ${item.original_name}`} title="Xóa video" onClick={() => { setError(''); setDeleting(item) }}><Trash2 size={16} /></button></div></div>
       </article>)}</div>}
     </section>
     {preview && <VideoPreview key={preview.id} media={preview} onClose={() => setPreviewId(null)} />}
+    {linking && <LinkMedia key={linking.id} media={linking} products={products} presenters={presenters} disabled={disabled} onClose={() => setLinking(null)} onSaved={async () => { setLinking(null); onNotice('Đã cập nhật liên kết video.'); await onRefresh() }} />}
     {deleting && <Modal title="Xóa video khỏi thư viện?" onClose={() => { if (!busy) setDeleting(null) }}><div className="studio-form"><p>Bản sao được quản lý của <strong>{deleting.original_name}</strong> sẽ bị xóa khỏi thư viện. File gốc trên máy vẫn được giữ nguyên.</p><p className="studio-muted">Thao tác này không thể hoàn tác. Bạn có thể nhập lại từ file gốc.</p>{error && <ErrorNotice message={error} />}<div className="studio-form-actions"><button className="studio-button" disabled={busy} onClick={() => setDeleting(null)}>Giữ lại</button><button className="studio-button danger-solid" disabled={disabled || busy} onClick={() => void remove()}>{busy ? 'Đang xóa…' : 'Xóa video'}</button></div></div></Modal>}
   </>
+}
+
+function PresenterStack({ ids, presenters }: { ids: string[]; presenters: Map<string, Presenter> }) {
+  const known = ids.map(id => presenters.get(id)).filter((presenter): presenter is Presenter => Boolean(presenter))
+  if (!known.length) return <p className="studio-media-presenters empty">Chưa gắn người giới thiệu</p>
+  const names = known.map(presenter => presenter.name).join(', ')
+  return <div className="studio-media-presenters" title={names}><span className="studio-avatar-stack">{known.slice(0, 3).map(presenter => <PresenterAvatar key={presenter.id} presenter={presenter} />)}</span><span>{known.length > 3 ? `${known[0].name} và ${known.length - 1} người khác` : names}</span></div>
+}
+
+function LinkMedia({ media, products, presenters, disabled, onClose, onSaved }: { media: Media; products: Product[]; presenters: Presenter[]; disabled: boolean; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [productId, setProductId] = useState(media.product_id ?? '')
+  const [selected, setSelected] = useState(() => new Set(media.presenter_ids))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  // Inactive presenters stay visible only when already linked, so a save never silently drops them.
+  const choices = presenters.filter(presenter => presenter.active || media.presenter_ids.includes(presenter.id))
+  const flip = (id: string) => setSelected(current => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
+  const save = async () => {
+    if (busy || disabled) return
+    setBusy(true)
+    setError('')
+    try {
+      await studioClient.updateMedia(media.id, { product_id: productId || null, presenter_ids: [...selected] })
+      await onSaved()
+    } catch (cause) { setError(errorMessage(cause)); setBusy(false) }
+  }
+  return <Modal title="Gắn sản phẩm & người giới thiệu" onClose={() => { if (!busy) onClose() }}><div className="studio-form">
+    <p className="studio-link-file"><Film size={16} /><span title={media.original_name}>{media.original_name}</span></p>
+    <label className="studio-field">Sản phẩm<select value={productId} disabled={busy} onChange={event => setProductId(event.target.value)}><option value="">Không gắn sản phẩm</option>{products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label>
+    <fieldset className="studio-field studio-chip-field"><legend>Người giới thiệu xuất hiện trong video</legend>
+      {choices.length ? <div className="studio-chip-list">{choices.map(presenter => {
+        const checked = selected.has(presenter.id)
+        return <label key={presenter.id} className={`studio-chip${checked ? ' selected' : ''}`}><input type="checkbox" className="sr-only" checked={checked} disabled={busy} onChange={() => flip(presenter.id)} /><PresenterAvatar presenter={presenter} /><span>{presenter.name}{presenter.active ? '' : ' · tạm nghỉ'}</span>{checked && <Check size={14} />}</label>
+      })}</div> : <p className="studio-muted">Chưa có người giới thiệu đang hoạt động. Thêm ở mục Người giới thiệu.</p>}
+    </fieldset>
+    {error && <ErrorNotice message={error} />}
+    {disabled && <ErrorNotice message="Studio Core đang mất kết nối. Kết nối lại trước khi lưu." />}
+    <div className="studio-form-actions"><button className="studio-button" disabled={busy} onClick={onClose}>Hủy</button><button className="studio-button primary" disabled={busy || disabled} onClick={() => void save()}>{busy ? 'Đang lưu…' : 'Lưu liên kết'}</button></div>
+  </div></Modal>
 }
 
 function VideoPreview({ media, onClose }: { media: Media; onClose: () => void }) {

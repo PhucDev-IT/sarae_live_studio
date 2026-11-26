@@ -10,8 +10,8 @@ export function errorMessage(error: unknown): string {
       MEDIA_MISSING: 'Không tìm thấy video trong thư viện hoặc file đã thay đổi. Hãy nhập lại từ file gốc.',
       INVALID_MEDIA: 'Không nhập được video. File có thể bị hỏng, đã thay đổi hoặc có định dạng không được hỗ trợ.',
       PROBE_UNAVAILABLE: 'Chưa có FFprobe để kiểm tra video. Hãy cài FFmpeg hoặc dùng bản Studio đã đóng gói đầy đủ.',
-      NOT_FOUND: 'Sản phẩm hoặc video này không còn tồn tại. Hãy làm mới danh sách.',
-      VALIDATION_ERROR: 'Thông tin chưa hợp lệ. Kiểm tra tên sản phẩm (tối đa 200 ký tự), mô tả và giá bán.',
+      NOT_FOUND: 'Sản phẩm, người giới thiệu hoặc video này không còn tồn tại. Hãy làm mới danh sách.',
+      VALIDATION_ERROR: 'Thông tin chưa hợp lệ. Kiểm tra tên (tối đa 200 ký tự), mô tả và giá bán.',
       CORE_NOT_READY: 'Studio Core đang khởi động. Ứng dụng sẽ tự kết nối khi sẵn sàng.',
       CORE_UNAVAILABLE: 'Chưa kết nối được Studio Core. Hãy thử kết nối lại; với chế độ trình duyệt, chạy npm run studio.',
       CORE_ALREADY_RUNNING: 'Thư mục dữ liệu này đang được một Studio khác sử dụng. Hãy đóng cửa sổ còn lại rồi thử lại.',
@@ -33,6 +33,22 @@ export function formatBytes(bytes: number): string {
   return `${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 1 }).format(bytes / 1024 ** unit)} ${['B', 'KB', 'MB', 'GB'][unit]}`
 }
 
+const avatarTones = ['terracotta', 'jade', 'honey', 'plum', 'sky'] as const
+
+export function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return '?'
+  const letters = words.length === 1 ? [words[0]] : [words[0], words[words.length - 1]]
+  return letters.map(word => Array.from(word)[0] ?? '').join('').toLocaleUpperCase('vi')
+}
+
+export function PresenterAvatar({ presenter, size = 'sm' }: { presenter: { id: string; name: string; active?: boolean }; size?: 'sm' | 'lg' }) {
+  let hash = 0
+  for (const char of presenter.id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  const tone = avatarTones[hash % avatarTones.length]
+  return <span className={`studio-avatar ${tone} ${size}${presenter.active === false ? ' inactive' : ''}`} aria-hidden="true">{initials(presenter.name)}</span>
+}
+
 export function ErrorNotice({ message }: { message: string }) {
   return <div className="studio-error" role="alert"><AlertCircle size={18} /><span>{message}</span></div>
 }
@@ -50,6 +66,8 @@ export function Modal({ title, onClose, children, wide = false }: { title: strin
     const previouslyFocused = document.activeElement as HTMLElement | null
     const dialog = ref.current
     dialog?.showModal()
+    // showModal() moves focus after React's autoFocus ran; restore it on the intended field.
+    dialog?.querySelector<HTMLElement>('[data-autofocus]')?.focus()
     return () => { dialog?.close(); previouslyFocused?.focus() }
   }, [])
   return <dialog ref={ref} aria-labelledby={titleId} className={`studio-modal${wide ? ' wide' : ''}`} onCancel={event => { event.preventDefault(); close.current() }}>

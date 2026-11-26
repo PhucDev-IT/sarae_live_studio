@@ -33,18 +33,8 @@ def identifier(value: object, field: str = "id") -> str:
 
 
 def product_fields(params: dict, *, partial: bool = False) -> dict:
-    result = {}
-    if not partial or "name" in params:
-        name = params.get("name")
-        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or "\x00" in name:
-            raise StudioError("VALIDATION_ERROR", "name must contain 1 to 200 characters.", {"field": "name"})
-        result["name"] = name.strip()
-    if not partial or "description" in params:
-        description = params.get("description", "")
-        if not isinstance(description, str) or len(description) > 10000 or "\x00" in description:
-            raise StudioError("VALIDATION_ERROR", "description must be text of at most 10000 characters.",
-                              {"field": "description"})
-        result["description"] = description
+    result: dict = {}
+    _name_and_description(params, result, partial)
     if not partial or "price" in params:
         price = params.get("price")
         try:
@@ -57,3 +47,35 @@ def product_fields(params: dict, *, partial: bool = False) -> dict:
                               {"field": "price"})
         result["price"] = float(price) if price is not None else None
     return result
+
+
+def _name_and_description(params: dict, result: dict, partial: bool) -> None:
+    if not partial or "name" in params:
+        name = params.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or "\x00" in name:
+            raise StudioError("VALIDATION_ERROR", "name must contain 1 to 200 characters.", {"field": "name"})
+        result["name"] = name.strip()
+    if not partial or "description" in params:
+        description = params.get("description", "")
+        if not isinstance(description, str) or len(description) > 10000 or "\x00" in description:
+            raise StudioError("VALIDATION_ERROR", "description must be text of at most 10000 characters.",
+                              {"field": "description"})
+        result["description"] = description
+
+
+def presenter_fields(params: dict, *, partial: bool = False) -> dict:
+    result: dict = {}
+    _name_and_description(params, result, partial)
+    if not partial or "active" in params:
+        active = params.get("active", True)
+        if not isinstance(active, bool):
+            raise StudioError("VALIDATION_ERROR", "active must be true or false.", {"field": "active"})
+        result["active"] = int(active)
+    return result
+
+
+def identifier_list(value: object, field: str, *, limit: int = 200) -> list[str]:
+    if not isinstance(value, list) or len(value) > limit:
+        raise StudioError("VALIDATION_ERROR", f"{field} must be a list of at most {limit} UUID strings.",
+                          {"field": field})
+    return sorted({identifier(item, field) for item in value})

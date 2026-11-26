@@ -104,6 +104,20 @@ def test_streamed_upload_media_id_range_and_missing_file(local_http):
     assert call("GET", path)[0] == 404
 
 
+def test_upload_links_presenters_and_rpc_updates_links(local_http):
+    service, transport, call = local_http
+    lan = rpc(call, transport, "studio.presenters.create", {"name": "Chị Lan"})[1]["result"]["presenter"]
+    minh = rpc(call, transport, "studio.presenters.create", {"name": "Anh Minh"})[1]["result"]["presenter"]
+    query = urlencode([("filename", "clip.mp4"), ("presenter_id", lan["id"]), ("presenter_id", minh["id"])])
+    status, _, body = call("POST", "/studio/upload?" + query, b"video-bytes", auth(transport))
+    assert status == 200
+    media = json.loads(body)["result"]["media"]
+    assert media["presenter_ids"] == sorted([lan["id"], minh["id"]])
+    status, body = rpc(call, transport, "studio.media.update", {"id": media["id"], "presenter_ids": [lan["id"]]})
+    assert status == 200 and body["result"]["media"]["presenter_ids"] == [lan["id"]]
+    assert service.dispatch("studio.media.list", {"presenter_id": minh["id"]}) == {"media": []}
+
+
 def test_failed_upload_leaves_no_staging_files_or_database_rows(local_http):
     service, transport, call = local_http
     response = call("POST", "/studio/upload?filename=..%5Cprivate.mp4", b"video", auth(transport))

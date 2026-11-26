@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from sarae_agent import __version__
 
-from .models import StudioError, identifier, product_fields, timestamp
+from .models import StudioError, identifier, identifier_list, presenter_fields, product_fields, timestamp
 from .storage import StudioStorage, data_root
 
 
@@ -134,8 +134,13 @@ class StudioService:
                 "studio.products.create": (self._create_product, {"name", "description", "price"}),
                 "studio.products.update": (self._update_product, {"id", "name", "description", "price"}),
                 "studio.products.delete": (self._delete_product, {"id"}),
-                "studio.media.list": (self._list_media, {"product_id"}),
-                "studio.media.import": (self._import_media, {"source_path", "product_id"}),
+                "studio.presenters.list": (self._list_presenters, set()),
+                "studio.presenters.create": (self._create_presenter, {"name", "description", "active"}),
+                "studio.presenters.update": (self._update_presenter, {"id", "name", "description", "active"}),
+                "studio.presenters.delete": (self._delete_presenter, {"id"}),
+                "studio.media.list": (self._list_media, {"product_id", "presenter_id"}),
+                "studio.media.import": (self._import_media, {"source_path", "product_id", "presenter_ids"}),
+                "studio.media.update": (self._update_media, {"id", "product_id", "presenter_ids"}),
                 "studio.media.delete": (self._delete_media, {"id"}),
             }
             if method not in handlers:
@@ -162,7 +167,7 @@ class StudioService:
 
     def _status(self, params: dict) -> dict:
         return {"version": __version__, "data_dir": str(self.data_dir), "database_path": str(self.database_path),
-                "capabilities": {"products": True, "managed_media": True,
+                "capabilities": {"products": True, "presenters": True, "managed_media": True,
                                  "native_dialog": False, "local_file_reference": False, "obs": False, "ai": False}}
 
     def _list_products(self, params: dict) -> dict:
@@ -205,6 +210,98 @@ class StudioService:
             # Media remains usable in the library when its product is deleted.
             connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
         return {"deleted": True}
+
+    @staticmethod
+    def _serialize_presenter(row) -> dict:
+        presenter = dict(row)
+        presenter["active"] = bool(presenter["active"])
+        return presenter
+
+    def _list_presenters(self, params: dict) -> dict:
+        rows = self._storage.connection.execute(
+            "SELECT * FROM presenters ORDER BY active DESC, name COLLATE NOCASE, id").fetchall()
+        return {"presenters": [self._serialize_presenter(row) for row in rows]}
+
+    def _presenter(self, presenter_id: str):
+        row = self._storage.connection.execute("SELECT * FROM presenters WHERE id = ?", (presenter_id,)).fetchone()
+        if row is None:
+            raise StudioError("NOT_FOUND", "Presenter not found.", {"id": presenter_id})
+        return row
+
+    def _create_presenter(self, params: dict) -> dict:
+        fields = presenter_fields(params)
+        presenter_id, now = str(uuid4()), timestamp()
+        with self._storage.transaction() as connection:
+            connection.execute("""INSERT INTO presenters(id, name, description, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                               (presenter_id, fields["name"], fields["description"], fields["active"], now, now))
+            presenter = self._serialize_presenter(self._presenter(presenter_id))
+        return {"presenter": presenter}
+
+    def _update_presenter(self, params: dict) -> dict:
+        presenter_id = identifier(params.get("id"))
+        fields = presenter_fields(params, partial=True)
+        if not fields:
+            raise StudioError("VALIDATION_ERROR", "Provide at least one presenter field to update.")
+        fields["updated_at"] = timestamp()
+        with self._storage.transaction() as connection:
+            self._presenter(presenter_id)
+            connection.execute("UPDATE presenters SET " + ", ".join(f"{key} = ?" for key in fields) + " WHERE id = ?",
+                               (*fields.values(), presenter_id))
+            presenter = self._serialize_presenter(self._presenter(presenter_id))
+        return {"presenter": presenter}
+
+    def _delete_presenter(self, params: dict) -> dict:
+        presenter_id = identifier(params.get("id"))
+        with self._storage.transaction() as connection:
+            self._presenter(presenter_id)
+            # Links cascade; the videos themselves stay in the library.
+            connection.execute("DELETE FROM presenters WHERE id = ?", (presenter_id,))
+        return {"deleted": True}
+
+    def _presenter_ids(self, params: dict) -> list[str] | None:
+        if "presenter_ids" not in params:
+            return None
+        ids = identifier_list(params["presenter_ids"], "presenter_ids")
+        for presenter_id in ids:
+            self._presenter(presenter_id)
+        return ids
+
+    def _link_presenters(self, connection, media_id: str, presenter_ids: list[str]) -> None:
+        connection.execute("DELETE FROM media_presenters WHERE media_id = ?", (media_id,))
+        connection.executemany("INSERT INTO media_presenters(media_id, presenter_id) VALUES (?, ?)",
+                               [(media_id, presenter_id) for presenter_id in presenter_ids])
+
+    def _presenter_links(self, media_ids: list[str] | None = None) -> dict[str, list[str]]:
+        query = "SELECT media_id, presenter_id FROM media_presenters"
+        args: tuple = ()
+        if media_ids is not None:
+            if not media_ids:
+                return {}
+            query += " WHERE media_id IN (" + ", ".join("?" for _ in media_ids) + ")"
+            args = tuple(media_ids)
+        links: dict[str, list[str]] = {}
+        for media_id, presenter_id in self._storage.connection.execute(query + " ORDER BY presenter_id", args):
+            links.setdefault(media_id, []).append(presenter_id)
+        return links
+
+    def _update_media(self, params: dict) -> dict:
+        media_id = identifier(params.get("id"))
+        if not {"product_id", "presenter_ids"} & params.keys():
+            raise StudioError("VALIDATION_ERROR", "Provide product_id or presenter_ids to update.")
+        with self._storage.transaction() as connection:
+            self._media(media_id)
+            if "product_id" in params:
+                product_id = params["product_id"]
+                if product_id is not None:
+                    product_id = identifier(product_id, "product_id")
+                    self._product(product_id)
+                connection.execute("UPDATE media SET product_id = ? WHERE id = ?", (product_id, media_id))
+            presenter_ids = self._presenter_ids(params)
+            if presenter_ids is not None:
+                self._link_presenters(connection, media_id, presenter_ids)
+            media = self._serialize_media(self._media(media_id))
+        return {"media": media}
 
     def _media(self, media_id: str):
         row = self._storage.connection.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone()
@@ -256,9 +353,12 @@ class StudioService:
             except (OSError, sqlite3.Error) as exc:
                 raise StudioError("STORAGE_ERROR", "Cannot resolve the managed video file.") from exc
 
-    def _serialize_media(self, row) -> dict:
+    def _serialize_media(self, row, links: dict[str, list[str]] | None = None) -> dict:
         media = {key: row[key] for key in ("id", "product_id", "original_name", "size_bytes", "sha256",
                                           "storage_mode", "mime_type", "created_at")}
+        if links is None:
+            links = self._presenter_links([row["id"]])
+        media["presenter_ids"] = links.get(row["id"], [])
         try:
             self.resolve_media(row["id"])
             media["status"] = "ready"
@@ -269,15 +369,22 @@ class StudioService:
         return media
 
     def _list_media(self, params: dict) -> dict:
-        product_id = params.get("product_id")
-        if product_id is None:
-            rows = self._storage.connection.execute("SELECT * FROM media ORDER BY created_at DESC, id").fetchall()
-        else:
-            product_id = identifier(product_id, "product_id")
+        conditions, args = [], []
+        if params.get("product_id") is not None:
+            product_id = identifier(params["product_id"], "product_id")
             self._product(product_id)
-            rows = self._storage.connection.execute("SELECT * FROM media WHERE product_id = ? ORDER BY created_at DESC, id",
-                                                    (product_id,)).fetchall()
-        return {"media": [self._serialize_media(row) for row in rows]}
+            conditions.append("product_id = ?")
+            args.append(product_id)
+        if params.get("presenter_id") is not None:
+            presenter_id = identifier(params["presenter_id"], "presenter_id")
+            self._presenter(presenter_id)
+            conditions.append("id IN (SELECT media_id FROM media_presenters WHERE presenter_id = ?)")
+            args.append(presenter_id)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = self._storage.connection.execute(
+            f"SELECT * FROM media{where} ORDER BY created_at DESC, id", args).fetchall()
+        links = self._presenter_links()
+        return {"media": [self._serialize_media(row, links) for row in rows]}
 
     def _import_media(self, params: dict) -> dict:
         raw_source = params.get("source_path")
@@ -299,6 +406,7 @@ class StudioService:
             with self._storage.transaction() as connection:
                 if product_id is not None:
                     self._product(product_id)
+                presenter_ids = self._presenter_ids(params) or []
                 folder = self._managed_dir()
                 target = folder / (media_id + suffix)
                 digest, size = hashlib.sha256(), 0
@@ -331,6 +439,7 @@ class StudioService:
                     size_bytes, sha256, storage_mode, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                    (media_id, product_id, source.name, target.name, size, digest.hexdigest(),
                                     "managed", VIDEO_FORMATS[suffix][1], timestamp()))
+                self._link_presenters(connection, media_id, presenter_ids)
                 media = self._serialize_media(self._media(media_id))
                 if media["status"] != "ready":
                     raise StudioError("STORAGE_ERROR", "The imported video became unavailable before publication.")

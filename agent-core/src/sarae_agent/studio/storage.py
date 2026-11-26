@@ -32,6 +32,22 @@ MIGRATIONS = (
         )""",
         "CREATE INDEX media_product_id ON media(product_id)",
     )),
+    (2, (
+        """CREATE TABLE presenters (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200),
+            description TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE media_presenters (
+            media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+            presenter_id TEXT NOT NULL REFERENCES presenters(id) ON DELETE CASCADE,
+            PRIMARY KEY (media_id, presenter_id)
+        ) WITHOUT ROWID""",
+        "CREATE INDEX media_presenters_presenter_id ON media_presenters(presenter_id)",
+    )),
 )
 
 

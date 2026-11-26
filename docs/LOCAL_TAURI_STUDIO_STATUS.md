@@ -62,6 +62,12 @@ Mặc định `%LOCALAPPDATA%\SaraeLiveStudio\studio.sqlite3`, video trong `medi
 - Browser gửi file theo luồng qua core local, giới hạn 20 GB, tiến trình gửi và kiểm tra được hiển thị. Native dùng dialog chọn đường dẫn rồi copy trong core; quá trình copy hiển thị trạng thái chờ. Native request hiện có timeout 120 giây; với video lớn nên kiểm tra thư viện sau timeout trước khi nhập lại.
 - Browser API chỉ bind loopback, kiểm tra Host/Origin và token ngẫu nhiên. Token kết nối không phải tài khoản hay license. Web dev chỉ cho origin `127.0.0.1:1420` và `localhost:1420`.
 
+### Người giới thiệu
+
+Migration số 2 thêm bảng `presenters` (tên, ghi chú, trạng thái hoạt động/tạm nghỉ) và bảng liên kết nhiều–nhiều `media_presenters`. Một video có thể gắn với nhiều người giới thiệu. Xóa người giới thiệu hoặc video chỉ xóa liên kết, không xóa video. Người đang tạm nghỉ vẫn giữ các liên kết cũ, nhưng không hiện trong danh sách chọn khi gắn video mới. Ứng dụng chưa có ảnh đại diện; avatar hiển thị chữ cái đầu của tên.
+
+Trong thư viện video có nút gắn để đổi sản phẩm và người giới thiệu của video đã nhập, qua `studio.media.update`. Thư viện có thêm bộ lọc theo người giới thiệu. Trên trang người giới thiệu, bấm số video sẽ mở thư viện đã lọc sẵn theo người đó.
+
 Đây là schema local mới; không tự đọc/ghi đè database SaaS hoặc dữ liệu Sarae Agent cũ. Chưa có giao diện migration dữ liệu cũ hoặc backup/restore; không xóa hay di chuyển dữ liệu thật để thử nghiệm.
 
 ## Hợp đồng và mã nguồn
@@ -76,7 +82,7 @@ Mặc định `%LOCALAPPDATA%\SaraeLiveStudio\studio.sqlite3`, video trong `medi
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/create/update/delete`, `studio.media.list/import/delete/url`. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/create/update/delete`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 
@@ -85,15 +91,15 @@ Các lệnh kiểm tra:
 ```powershell
 npm --prefix desktop run build
 Set-Location agent-core
-.venv/Scripts/python.exe -m pytest tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py -q
+.venv/Scripts/python.exe -m pytest tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py -q
 ```
 
-Kết quả bộ test trên: **101 passed**. Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
+Kết quả bộ test trên: **123 passed** (26/11/2026, sau khi thêm người giới thiệu). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
 
 `cargo check --locked` và production build frontend đã qua. Sidecar PyInstaller được build và kiểm tra `--self-check`, IPC local, persistence, single-instance, graceful shutdown và dọn core sau khi bootloader bị đóng cưỡng bức; nhập video vẫn chạy khi FFprobe không có trên PATH nhờ binary trong bundle. Đây là kiểm tra trên máy phát triển, chưa phải chứng nhận bộ cài trên Windows sạch.
 
 Đã mở cửa sổ Tauri debug thật với thư mục dữ liệu thử riêng: core tự kết nối, tạo sản phẩm qua IPC, chọn MP4 bằng dialog Windows, nhập video và preview trong WebView2 hiển thị hình/độ dài 3 giây, tắt tiếng mặc định. Đóng cửa sổ native trả mã thoát 0. Chưa chạy toàn bộ các tổ hợp đóng/mở đồng thời hoặc thử bộ cài trên máy Windows sạch.
 
-Chưa hoàn tất toàn bộ giai đoạn 2 trong thiết kế: người giới thiệu, backup/restore, migration dữ liệu cũ và relink file tham chiếu. Các giai đoạn tiếp theo vẫn là phiên LIVE/playback/OBS, facts/QA và AI reply, TTS, timeline/overlay, ghim/chat và công cụ monitor. Các module cũ trong `backend/`, `web/`, `agent-core/` được giữ để chuyển tiếp; UI mới đánh dấu OBS/AI chưa triển khai. Không coi thành công của local CRUD/preview là đã kiểm chứng phát LIVE hoặc tích hợp OBS/TikTok.
+Giai đoạn 2 còn thiếu backup/restore và relink file tham chiếu. Không làm migration dữ liệu cũ: studio local là app mới với dữ liệu sạch. Các giai đoạn tiếp theo vẫn là phiên LIVE/playback/OBS, facts/QA và AI reply, TTS, timeline/overlay, ghim/chat và công cụ monitor. Các module cũ trong `backend/`, `web/`, `agent-core/` được giữ để chuyển tiếp; UI mới đánh dấu OBS/AI chưa triển khai. Không coi thành công của local CRUD/preview là đã kiểm chứng phát LIVE hoặc tích hợp OBS/TikTok.
 
 Repo `F:\Coder\sarae-ai-live-studio` chỉ được đọc tham khảo cách tổ chức app/lifecycle; không copy runtime avatar, weights, database, account hoặc secrets sang repo này. Bộ não trả lời và stream sẽ được đối chiếu sâu ở mốc tương ứng trong [thiết kế tổng thể](LOCAL_TAURI_STUDIO_OVERVIEW.md).

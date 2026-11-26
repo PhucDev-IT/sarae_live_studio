@@ -74,7 +74,7 @@ export function ProductsPanel({ products, media, loading, disabled, onRefresh, o
       </tr>)}</tbody></table></div>}
     </section>
     {editing && <Modal title={editing === 'new' ? 'Thêm sản phẩm' : 'Chỉnh sửa sản phẩm'} onClose={() => { if (!busy) setEditing(null) }}><form className="studio-form" onSubmit={event => void save(event)}>
-      <label className="studio-field">Tên sản phẩm <span className="studio-required">*</span><input autoFocus required maxLength={200} value={name} disabled={busy} placeholder="Ví dụ: Áo sơ mi linen" onChange={event => setName(event.target.value)} /></label>
+      <label className="studio-field">Tên sản phẩm <span className="studio-required">*</span><input autoFocus data-autofocus required maxLength={200} value={name} disabled={busy} placeholder="Ví dụ: Áo sơ mi linen" onChange={event => setName(event.target.value)} /></label>
       <label className="studio-field">Giá bán (VNĐ)<input inputMode="decimal" value={price} disabled={busy} placeholder="Để trống nếu chưa có giá" onChange={event => setPrice(event.target.value)} /></label>
       <label className="studio-field">Mô tả<textarea rows={5} maxLength={10000} value={description} disabled={busy} placeholder="Chất liệu, màu sắc, kích thước, ghi chú…" onChange={event => setDescription(event.target.value)} /></label>
       {error && <ErrorNotice message={error} />}

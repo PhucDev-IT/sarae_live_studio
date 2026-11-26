@@ -11,9 +11,19 @@ export interface Product {
   updated_at: string
 }
 
+export interface Presenter {
+  id: string
+  name: string
+  description: string
+  active: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface Media {
   id: string
   product_id: string | null
+  presenter_ids: string[]
   original_name: string
   size_bytes: number
   sha256: string
@@ -37,6 +47,8 @@ export interface StudioStatus {
 
 export interface StudioEvent { event: string; data: unknown }
 export interface ProductInput { name: string; description?: string; price?: number | null }
+export interface PresenterInput { name: string; description?: string; active?: boolean }
+export interface MediaLinks { product_id?: string | null; presenter_ids?: string[] }
 interface ErrorInfo { code: string; message: string; details?: Record<string, unknown> }
 interface Envelope<T> { ok: boolean; result: T; error: ErrorInfo | null }
 interface Session { token: string; base_url: string }
@@ -157,7 +169,12 @@ export const studioClient = {
   createProduct: async (input: ProductInput) => (await request<{ product: Product }>('studio.products.create', { ...input })).product,
   updateProduct: async (id: string, input: Partial<ProductInput>) => (await request<{ product: Product }>('studio.products.update', { id, ...input })).product,
   deleteProduct: (id: string) => request<{ deleted: boolean }>('studio.products.delete', { id }),
+  listPresenters: async () => (await request<{ presenters: Presenter[] }>('studio.presenters.list')).presenters,
+  createPresenter: async (input: PresenterInput) => (await request<{ presenter: Presenter }>('studio.presenters.create', { ...input })).presenter,
+  updatePresenter: async (id: string, input: Partial<PresenterInput>) => (await request<{ presenter: Presenter }>('studio.presenters.update', { id, ...input })).presenter,
+  deletePresenter: (id: string) => request<{ deleted: boolean }>('studio.presenters.delete', { id }),
   listMedia: async (productId?: string) => (await request<{ media: Media[] }>('studio.media.list', productId ? { product_id: productId } : {})).media,
+  updateMedia: async (id: string, links: MediaLinks) => (await request<{ media: Media }>('studio.media.update', { id, ...links })).media,
   importMedia,
   deleteMedia: (id: string) => request<{ deleted: boolean }>('studio.media.delete', { id }),
   mediaUrl: async (id: string) => (await request<{ url: string }>('studio.media.url', { id })).url,
