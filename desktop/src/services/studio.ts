@@ -88,6 +88,8 @@ export interface LiveStatus {
   errors: number
   recoveries: number
   events: LiveEvent[]
+  automation: { auto_pin: boolean }
+  pin: { browser_open: boolean; status: string; action: string | null; tiktok_product_id: string | null; card_name: string | null; error: string | null; auto_enabled: boolean }
 }
 export interface ObsStatus {
   connected: boolean
@@ -112,6 +114,7 @@ export interface ReplySettings {
   auto_voice: boolean; auto_comment: boolean; confirm_seconds: number; voice: string; rate: number
   call_name: boolean; duck_video: boolean; answer_all: boolean; max_age_seconds: number
   comment_min_interval_seconds: number; comment_max_per_minute: number; ignored_usernames: string[]
+  follow_session: boolean
 }
 export type ReplyStage = 'ignored' | 'skipped' | 'queued' | 'thinking' | 'ready' | 'review' | 'done' | 'expired' | 'failed' | 'dismissed'
 export interface ReplyEntry {
@@ -337,6 +340,7 @@ export const studioClient = {
   repliesChatStart: (username?: string) => request<ReplyDeskStatus>('studio.replies.chat_start', username ? { username } : {}),
   repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),
   replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
+  liveAutomation: (autoPin: boolean) => request<LiveStatus>('studio.live.automation', { auto_pin: autoPin }),
   liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),

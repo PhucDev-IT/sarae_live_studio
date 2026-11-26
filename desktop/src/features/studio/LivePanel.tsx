@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, CircleStop, Clock3, Film, ListVideo, MonitorPlay, Package, Pause, Pencil, Play, Plus, Radio, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, CircleStop, Clock3, Film, ListVideo, MonitorPlay, Package, Pause, Pencil, Pin, Play, Plus, Radio, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
 import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type PlaybackPolicy, type Product } from '../../services/studio'
 import { ReplyDesk } from './ReplyDesk'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
@@ -80,7 +80,8 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
     {error && <ErrorNotice message={error} />}
     {live && live.session && <ControlRoom status={live} session={live.session} productById={productById} videoCount={videoCount} mediaNames={mediaNames} busy={busy} disabled={disabled}
       onSwitch={(productId, mode) => act('switch:' + productId + mode, () => studioClient.liveSwitch(productId, mode), mode === 'immediate' ? 'Đã chuyển sản phẩm.' : 'Sẽ chuyển sau video hiện tại.')}
-      onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)} />}
+      onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)}
+      onAutoPin={enabled => act('autopin', () => studioClient.liveAutomation(enabled), enabled ? 'Đã bật tự ghim sản phẩm.' : 'Đã tắt tự ghim sản phẩm.')} />}
     <ReplyDesk products={products} disabled={disabled} visible={visible} onNotice={onNotice} />
     <section className="studio-card">
       <header className="studio-card-heading"><ListVideo size={19} /><div><h2>Danh sách phiên</h2><p>Mỗi phiên là một danh sách sản phẩm theo thứ tự cùng cách phát video.</p></div></header>
@@ -109,9 +110,10 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
   </>
 }
 
-function ControlRoom({ status, session, productById, videoCount, mediaNames, busy, disabled, onSwitch, onControl }: {
+function ControlRoom({ status, session, productById, videoCount, mediaNames, busy, disabled, onSwitch, onControl, onAutoPin }: {
   status: LiveStatus; session: LiveSession; productById: Map<string, Product>; videoCount: Map<string, number>; mediaNames: Map<string, string>; busy: string; disabled: boolean
   onSwitch: (productId: string, mode: 'immediate' | 'after_current') => void; onControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => void
+  onAutoPin: (enabled: boolean) => void
 }) {
   const [confirmStop, setConfirmStop] = useState(false)
   const current = status.product_id ? productById.get(status.product_id) : undefined
@@ -137,6 +139,10 @@ function ControlRoom({ status, session, productById, videoCount, mediaNames, bus
         <button className="studio-button danger-solid studio-stop" disabled={locked} onClick={() => setConfirmStop(true)}><CircleStop size={16} />Dừng phiên</button>
       </div>
     </div>
+    <div className="studio-automation">
+      <label className="studio-switch dark"><input type="checkbox" role="switch" checked={status.automation.auto_pin} disabled={locked} onChange={event => onAutoPin(event.target.checked)} /><span aria-hidden="true" /><small><Pin size={13} />Tự ghim sản phẩm đang phát</small></label>
+      <PinState status={status} productName={current?.name} />
+    </div>
     <div className="studio-lineup">{session.product_ids.map(id => {
       const product = productById.get(id)
       const count = videoCount.get(id) ?? 0
@@ -151,6 +157,16 @@ function ControlRoom({ status, session, productById, videoCount, mediaNames, bus
     {status.events.length > 0 && <details className="studio-live-log"><summary>Nhật ký phiên ({status.events.length})</summary><ul>{status.events.map(event => <li key={event.id}><time>{new Date(event.created_at).toLocaleTimeString('vi-VN')}</time><span>{eventLabels[event.kind] ?? event.kind}</span>{event.product_id && <em>{productById.get(event.product_id)?.name}</em>}</li>)}</ul></details>}
     {confirmStop && <Modal title="Dừng phiên LIVE?" onClose={() => setConfirmStop(false)}><div className="studio-form"><p>Video trong OBS sẽ dừng ngay. TikTok LIVE và OBS stream không bị tắt; bạn tự kết thúc LIVE trên TikTok nếu cần.</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setConfirmStop(false)}>Tiếp tục phát</button><button className="studio-button danger-solid" onClick={() => { setConfirmStop(false); onControl('stop') }}>Dừng phiên</button></div></div></Modal>}
   </section>
+}
+
+function PinState({ status, productName }: { status: LiveStatus; productName?: string }) {
+  const pin = status.pin
+  if (!status.automation.auto_pin) return <span className="studio-pin-state off">Không ghim tự động</span>
+  if (!pin.browser_open) return <span className="studio-pin-state warn">Chưa kết nối Chrome TikTok: vào Sản phẩm → Kết nối để ghim được</span>
+  if (pin.status === 'PENDING') return <span className="studio-pin-state busy"><span className="studio-typing"><i /><i /><i /></span>Đang ghim {productName ?? 'sản phẩm'}…</span>
+  if (pin.status === 'SUCCESS') return <span className="studio-pin-state ok"><Check size={13} />Đã ghim {pin.card_name || productName || 'sản phẩm'}</span>
+  if (pin.status === 'FAILED') return <span className="studio-pin-state warn" title={pin.error ?? undefined}>Ghim chưa được: {pin.error ?? 'không xác nhận được trên TikTok'}</span>
+  return <span className="studio-pin-state">Sẽ ghim khi chuyển sản phẩm</span>
 }
 
 function SessionEditor({ session, products, videoCount, onClose, onSaved }: { session: LiveSession | null; products: Product[]; videoCount: Map<string, number>; onClose: () => void; onSaved: (message: string) => Promise<void> }) {

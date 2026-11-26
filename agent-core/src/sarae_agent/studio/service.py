@@ -446,6 +446,23 @@ class StudioService:
                 lineup.append({"product_id": product_id, "media_ids": ready})
             return lineup
 
+    def pin_targets(self, product_ids: list[str], expected_user_id: str) -> dict[str, dict]:
+        """What the TikTok pinner needs per Studio product; products not from TikTok cannot be pinned."""
+        with self._lock:
+            self._ensure_open()
+            targets = {}
+            for product_id in product_ids:
+                row = self._storage.connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+                if row is None or not row["tiktok_product_id"]:
+                    continue
+                price = row["price"]
+                targets[product_id] = {
+                    "tiktok_product_id": row["tiktok_product_id"], "name": row["name"][:200],
+                    "image_url": (row["image_url"] or "")[:1000],
+                    "price_text": (f"{int(price):,}".replace(",", ".") + "₫") if price is not None else "",
+                    "expected_user_id": expected_user_id}
+            return targets
+
     def record_live_event(self, session_id: str, kind: str, product_id: str | None = None,
                           detail: dict | None = None) -> None:
         with self._lock:

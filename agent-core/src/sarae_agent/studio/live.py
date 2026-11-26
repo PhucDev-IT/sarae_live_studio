@@ -54,7 +54,80 @@ class StudioLive:
                                      client_factory=self.obs.requests_for,
                                      store=ObsSettingsStore(self.config, self.obs))
         self._lock = threading.RLock()
+        # Auto pin: the TikTok Console browser is owned by the TikTok connector (attached by the runtime).
+        self.tiktok = None
+        self._pin_guard = threading.Lock()
+        self._pin_marker: tuple | None = None
+        # Called with (session, started: bool) when a session starts or ends (reply desk follows the chat).
+        self.session_listeners: list[Callable[[dict, bool], None]] = []
         service.interrupt_live_sessions("core_restart")
+
+    # --- automation --------------------------------------------------------------------------
+    def automation(self) -> dict:
+        stored = self.service.get_setting("live_automation", {"auto_pin": False})
+        return {"auto_pin": bool(stored.get("auto_pin"))}
+
+    def configure_automation(self, params: dict) -> dict:
+        if set(params) - {"auto_pin"} or not isinstance(params.get("auto_pin"), bool):
+            raise StudioError("VALIDATION_ERROR", "auto_pin must be true or false.", {"field": "auto_pin"})
+        self.service.set_setting("live_automation", {"auto_pin": params["auto_pin"]})
+        session = self._live_session()
+        if session is not None and self.engine.active:
+            self._arm_pin(session)
+            self._maybe_pin()
+        return self.status()
+
+    def _browser(self):
+        return getattr(self.tiktok, "_browser", None) if self.tiktok is not None else None
+
+    def _arm_pin(self, session: dict | None) -> None:
+        """Give the pinner this session's TikTok products, or disarm it."""
+        browser = self._browser()
+        if browser is None:
+            return
+        account = self.service.tiktok_account()
+        if session is None or not self.automation()["auto_pin"] or not account:
+            browser.set_video_auto(False, {}, None)
+            with self._pin_guard:
+                self._pin_marker = None
+            return
+        browser.set_video_auto(True, self.service.pin_targets(session["product_ids"], account["user_id"]),
+                               session["id"])
+
+    def _maybe_pin(self) -> None:
+        """Queue a pin for the product on air, once per (session, product, transition)."""
+        browser = self._browser()
+        if browser is None:
+            return
+        engine = self.engine
+        with engine.lock:
+            running, product_id = engine.active, engine.product_id
+            marker = (engine.session_id, product_id, engine.transition_count)
+        if running and product_id and self.automation()["auto_pin"] and not browser.video_product(product_id, marker[0]):
+            # Chrome was connected (or the toggle turned on) after the session started.
+            session = self._live_session()
+            if session is not None and session["id"] == marker[0]:
+                self._arm_pin(session)
+        with self._pin_guard:
+            if not running or not product_id or not browser.video_product(product_id, marker[0]):
+                self._pin_marker = None
+                return
+            if marker == self._pin_marker:
+                return
+            self._pin_marker = marker
+
+        def still_current() -> bool:
+            with engine.lock:
+                return bool(engine.active and (engine.session_id, engine.product_id, engine.transition_count) == marker
+                            and browser.video_product(product_id, marker[0]))
+        browser.queue_video_pin(product_id, still_current, engine.lock, marker[0])
+
+    def _session_changed(self, session: dict, started: bool) -> None:
+        for listener in list(self.session_listeners):
+            try:
+                listener(session, started)
+            except Exception:  # noqa: BLE001 - a listener never breaks playback
+                log.warning("A LIVE session listener failed")
 
     # --- helpers ---------------------------------------------------------------------------
     def _resolve(self, media_id: str) -> Path | None:
@@ -93,10 +166,14 @@ class StudioLive:
             if isinstance(session_id, str):
                 self.service.record_live_event(session_id, kind, event.get("product_id"), event.get("detail"))
                 if kind == "PLAYBACK_ENDED":
-                    self.service.set_live_status(session_id, "ended", str((event.get("detail") or {}).get("reason")
-                                                                          or "playback_ended")[:60])
+                    session = self.service.set_live_status(session_id, "ended", str(
+                        (event.get("detail") or {}).get("reason") or "playback_ended")[:60])
+                    self._arm_pin(None)
+                    self._session_changed(session, False)
         except StudioError:
             log.warning("Could not record a LIVE event: %s", kind)
+        if kind in ("PRODUCT_SWITCHED", "PLAYBACK_ENDED"):
+            self._maybe_pin()
         self.emit("studio.live.changed", {"reason": kind})
 
     def _policy(self, raw: object) -> dict:
@@ -183,6 +260,7 @@ class StudioLive:
                 policy=self._policy(params["policy"]) if "policy" in params else None)
             if session["status"] == "live" and self.engine.active:
                 self._push_lineup(session)
+                self._arm_pin(session)
             return {"session": session}
 
     def sessions_delete(self, params: dict) -> dict:
@@ -214,8 +292,11 @@ class StudioLive:
                                   "Hãy gắn video vào sản phẩm trong Thư viện video.")
             self._push_lineup(session)
             self._agent(lambda: self.engine.product_play(session["id"], product_id, lineup[product_id], "immediate"))
-            self.service.set_live_status(session["id"], "live")
+            session = self.service.set_live_status(session["id"], "live")
             self.service.record_live_event(session["id"], "STARTED", product_id)
+            self._arm_pin(session)
+            self._maybe_pin()
+            self._session_changed(session, True)
             self.emit("studio.live.changed", {"reason": "started"})
             return self.status()
 
@@ -236,6 +317,7 @@ class StudioLive:
                 raise StudioError("NO_PLAYABLE_VIDEO", "Sản phẩm này chưa có video sẵn sàng.")
             self._agent(lambda: self.engine.product_play(session["id"], product_id, media_ids, mode))
             self.service.record_live_event(session["id"], "SWITCH_REQUESTED", product_id, {"mode": mode})
+            self._maybe_pin()
             self.emit("studio.live.changed", {"reason": "switch"})
             return self.status()
 
@@ -272,9 +354,11 @@ class StudioLive:
                     self.engine.stop()
                 except AgentError as exc:
                     error = exc  # the engine is stopped either way; OBS may still show the last frame
+            self._arm_pin(None)
             if session is not None:
-                self.service.set_live_status(session["id"], "ended", reason)
+                session = self.service.set_live_status(session["id"], "ended", reason)
                 self.service.record_live_event(session["id"], "STOPPED", None, {"reason": reason})
+                self._session_changed(session, False)
             self.emit("studio.live.changed", {"reason": "stopped"})
             if error is not None:
                 raise StudioError(error.code, "Đã dừng phiên nhưng OBS chưa nhận lệnh dừng: " + error.message)
@@ -294,6 +378,11 @@ class StudioLive:
     def status(self, params: dict | None = None) -> dict:
         engine = self.engine
         session = self._live_session()
+        if engine.active:
+            try:
+                self._maybe_pin()
+            except Exception:  # noqa: BLE001 - status must answer even if the pinner is unavailable
+                log.warning("Could not queue the automatic pin")
         # Rendering an OBS copy can hold the engine lock; report the last known state meanwhile.
         if engine.lock.acquire(timeout=0.5):
             try:
@@ -317,7 +406,16 @@ class StudioLive:
             "rotation": metrics.get("rotation"), "session_seconds": metrics.get("session_seconds", 0),
             "errors": metrics.get("error_count", 0), "recoveries": metrics.get("recovery_count", 0),
             "events": self.service.live_events(session["id"], 15) if session else [],
+            "automation": self.automation(), "pin": self._pin_status(),
         }
+
+    def _pin_status(self) -> dict:
+        browser = self._browser()
+        connected = bool(browser is not None and browser.status().get("browser_open"))
+        state = browser.pin_status() if browser is not None else {}
+        return {"browser_open": connected, "status": state.get("status", "IDLE"), "action": state.get("action"),
+                "tiktok_product_id": state.get("product_id"), "card_name": state.get("card_name"),
+                "error": state.get("error"), "auto_enabled": bool(state.get("auto_enabled"))}
 
     # --- lifecycle -------------------------------------------------------------------------
     def start_watchdog(self) -> None:

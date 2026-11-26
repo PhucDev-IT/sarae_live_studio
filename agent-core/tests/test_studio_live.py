@@ -10,7 +10,7 @@ import pytest
 from fake_obs import FakeWs
 from sarae_agent.studio.live import StudioLive
 from sarae_agent.studio.service import StudioError, StudioService
-from studio_helpers import create_product
+from studio_helpers import ACCOUNT, create_product
 
 
 @pytest.fixture(autouse=True)
@@ -184,3 +184,86 @@ def test_obs_errors_become_studio_errors(rig, clip):
     assert code.startswith("OBS_") or code.startswith("PLAYBACK")
     assert rig.service.live_session(session["id"])["status"] == "draft"
     assert error_code(lambda: rig.live.obs_configure({"port": 99999})) == "VALIDATION_ERROR"
+
+
+class FakePinner:
+    """Stands in for AutoPinService's auto-pin API (no Chrome)."""
+
+    def __init__(self):
+        self.enabled, self.products, self.session_id = False, {}, None
+        self.armed, self.queued = [], []
+
+    def status(self):
+        return {"browser_open": True}
+
+    def set_video_auto(self, enabled, products, session_id=None):
+        self.enabled, self.products, self.session_id = enabled, dict(products), session_id
+        self.armed.append((enabled, sorted(products), session_id))
+
+    def video_product(self, product_id, session_id=None):
+        if not self.enabled or (session_id is not None and session_id != self.session_id):
+            return None
+        return self.products.get(product_id)
+
+    def queue_video_pin(self, product_id, current, guard=None, session_id=None):
+        self.queued.append((product_id, current()))
+
+    def pin_status(self):
+        return {"status": "CONFIRMED" if self.queued else "IDLE", "product_id": None, "auto_enabled": self.enabled}
+
+
+def attach_pinner(rig, pinner=None):
+    pinner = pinner or FakePinner()
+    rig.live.tiktok = type("Connector", (), {"_browser": pinner})()
+    return pinner
+
+
+def test_auto_pin_follows_the_product_on_air(rig, clip):
+    shirt = product_with_videos(rig, clip, "Áo")
+    dress = product_with_videos(rig, clip, "Váy")
+    pinner = attach_pinner(rig)
+    rig.live.configure_automation({"auto_pin": True})
+    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"], dress["id"]]})["session"]
+    status = rig.live.start({"session_id": session["id"]})
+    assert status["automation"] == {"auto_pin": True} and status["pin"]["browser_open"] is True
+    assert pinner.armed[-1] == (True, sorted([shirt["id"], dress["id"]]), session["id"])
+    target = pinner.products[shirt["id"]]
+    assert target["expected_user_id"] == ACCOUNT["user_id"] and target["tiktok_product_id"] == shirt["tiktok_product_id"]
+    assert pinner.queued == [(shirt["id"], True)]
+    rig.live.status()  # polling never pins the same product twice
+    assert len(pinner.queued) == 1
+    rig.live.switch({"product_id": dress["id"], "mode": "immediate"})
+    assert pinner.queued[-1] == (dress["id"], True)
+    rig.live.stop()
+    assert pinner.armed[-1] == (False, [], None)
+
+
+def test_auto_pin_is_off_by_default_and_can_be_turned_on_while_live(rig, clip):
+    shirt = product_with_videos(rig, clip, "Áo")
+    pinner = attach_pinner(rig)
+    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    assert pinner.queued == [] and rig.live.status()["automation"] == {"auto_pin": False}
+    rig.live.configure_automation({"auto_pin": True})
+    assert pinner.queued == [(shirt["id"], True)]
+    assert error_code(lambda: rig.live.configure_automation({"auto_pin": "yes"})) == "VALIDATION_ERROR"
+
+
+def test_auto_pin_starts_when_chrome_connects_after_the_session(rig, clip):
+    shirt = product_with_videos(rig, clip, "Áo")
+    rig.live.configure_automation({"auto_pin": True})
+    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    assert rig.live.start({"session_id": session["id"]})["pin"]["browser_open"] is False
+    pinner = attach_pinner(rig)
+    rig.live.status()
+    assert pinner.queued == [(shirt["id"], True)]
+
+
+def test_session_listeners_hear_start_and_stop(rig, clip):
+    heard = []
+    rig.live.session_listeners.append(lambda session, started: heard.append((session["status"], started)))
+    shirt = product_with_videos(rig, clip, "Áo")
+    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    rig.live.stop()
+    assert heard == [("live", True), ("ended", False)]

@@ -32,7 +32,8 @@ SETTING_KEY = "reply"
 VOICES = ("vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural")
 DEFAULTS = {"auto_voice": False, "auto_comment": False, "confirm_seconds": 4, "voice": VOICES[0], "rate": 0,
             "call_name": True, "duck_video": True, "answer_all": False, "max_age_seconds": 60,
-            "comment_min_interval_seconds": 8, "comment_max_per_minute": 5, "ignored_usernames": []}
+            "comment_min_interval_seconds": 8, "comment_max_per_minute": 5, "ignored_usernames": [],
+            "follow_session": True}
 QUESTION_TERMS = ("giá", "gia ", "bao nhiêu", "bao nhieu", "bn", "nhiêu", "size", "sz", "kg", "ký", "cân", "cao",
                   "màu", "mau ", "còn", "con hang", "hết", "ship", "giao", "freeship", "cod", "vải", "chất", "chat lieu",
                   "đổi", "trả", "bảo hành", "mua", "đặt", "chốt", "link", "giỏ", "gio hang", "mã", "voucher", "giảm",
@@ -55,7 +56,7 @@ def validate_settings(params: dict, current: dict) -> dict:
     if unknown:
         raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, unknown))})
     value = {**DEFAULTS, **current, **params}
-    for key in ("auto_voice", "auto_comment", "call_name", "duck_video", "answer_all"):
+    for key in ("auto_voice", "auto_comment", "call_name", "duck_video", "answer_all", "follow_session"):
         if not isinstance(value[key], bool):
             raise StudioError("VALIDATION_ERROR", f"{key} must be true or false.", {"field": key})
     limits = {"confirm_seconds": (0, 30), "rate": (-30, 50), "max_age_seconds": (10, 300),
@@ -208,6 +209,11 @@ class ReplyDesk:
         self.stats = {"received": 0, "ignored": 0, "skipped": 0, "answered": 0, "spoken": 0, "commented": 0,
                       "failed": 0, "expired": 0}
         self.reader = ChatReader(self._on_chat, self._changed, reader_client_type)
+        # Chat started by a LIVE session (not by the operator) stops with that session.
+        self._chat_by_session = False
+        listeners = getattr(live, "session_listeners", None)
+        if isinstance(listeners, list):
+            listeners.append(self._on_session)
         self._threads = []
         if start_threads:
             for target, name in ((self._ai_worker, "studio-reply-ai"), (self._scheduler, "studio-reply-send")):
@@ -246,6 +252,21 @@ class ReplyDesk:
         result["age_seconds"] = round(now - entry["at"])
         result["auto_in"] = max(0, round(entry["auto_at"] - now, 1)) if entry.get("auto_at") else None
         return result
+
+    def _on_session(self, session: dict, started: bool) -> None:
+        """Follow the LIVE session: read its chat while it plays (docs/AI_AUTO_REPLY.md, dev behaviour)."""
+        if started:
+            if not self.settings()["follow_session"] or self.reader.snapshot()["status"] in ("connecting", "connected"):
+                return
+            account = self.service.tiktok_account() or {}
+            username = (account.get("user_name") or "").strip().lstrip("@")
+            if not re.fullmatch(r"[A-Za-z0-9._]{2,24}", username):
+                return
+            self.reader.start(username)
+            self._chat_by_session = True
+        elif self._chat_by_session:
+            self._chat_by_session = False
+            self.reader.stop()
 
     # --- intake ----------------------------------------------------------------------------
     def _on_chat(self, message: dict) -> None:
@@ -484,9 +505,11 @@ class ReplyDesk:
         if not re.fullmatch(r"[A-Za-z0-9._]{2,24}", username):
             raise StudioError("VALIDATION_ERROR", "Nhập username TikTok hợp lệ, ví dụ @tenkenh.", {"field": "username"})
         self.reader.start(username)
+        self._chat_by_session = False
         return self.status()
 
     def chat_stop(self, params: dict | None = None) -> dict:
+        self._chat_by_session = False
         self.reader.stop()
         return self.status()
 

@@ -72,6 +72,7 @@ def run(args: argparse.Namespace) -> int:
         tiktok = transport.tiktok = TikTokConnector(service, emit=transport.emit)
         ai = transport.ai = StudioAI(service)
         live = transport.live = StudioLive(service, emit=transport.emit)
+        live.tiktok = tiktok
         live.start_watchdog()
         replies = transport.replies = ReplyDesk(service, ai, live, tiktok, emit=transport.emit)
         http = StudioHTTPServer(transport, 0 if args.ipc else args.port)

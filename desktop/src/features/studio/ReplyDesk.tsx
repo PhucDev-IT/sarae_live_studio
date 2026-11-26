@@ -144,6 +144,7 @@ function ReplySettingsModal({ settings, voices, onClose, onSaved }: { settings: 
     <label className="studio-switch studio-switch-field"><input type="checkbox" role="switch" checked={draft.call_name} onChange={event => setDraft({ ...draft, call_name: event.target.checked })} /><span aria-hidden="true" /><small>Gọi tên khách trước câu trả lời (“Lan ơi, …”)</small></label>
     <label className="studio-switch studio-switch-field"><input type="checkbox" role="switch" checked={draft.duck_video} onChange={event => setDraft({ ...draft, duck_video: event.target.checked })} /><span aria-hidden="true" /><small>Giảm âm lượng video khi đang đọc</small></label>
     <h3 className="studio-subhead">Tự động & nhịp gửi</h3>
+    <label className="studio-switch studio-switch-field"><input type="checkbox" role="switch" checked={draft.follow_session} onChange={event => setDraft({ ...draft, follow_session: event.target.checked })} /><span aria-hidden="true" /><small>Tự đọc chat khi phiên LIVE bắt đầu và dừng khi phiên kết thúc</small></label>
     <div className="studio-form-row">
       {number('confirm_seconds', 'Chờ trước khi tự gửi', 0, 30, 'giây')}
       {number('max_age_seconds', 'Bỏ câu hỏi cũ hơn', 10, 300, 'giây')}

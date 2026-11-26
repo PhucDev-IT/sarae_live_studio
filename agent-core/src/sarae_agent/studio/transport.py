@@ -33,7 +33,7 @@ METHODS = (
     "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
     "studio.live.sessions.delete", "studio.live.status", "studio.live.start", "studio.live.switch",
     "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous",
-    "studio.live.cancel_pending", "studio.live.stop",
+    "studio.live.cancel_pending", "studio.live.stop", "studio.live.automation",
     "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
     "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
     "studio.replies.dismiss", "studio.replies.stop_voice",
@@ -46,7 +46,7 @@ LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_
                 "studio.live.status": "status", "studio.live.start": "start", "studio.live.switch": "switch",
                 "studio.live.pause": "pause", "studio.live.resume": "resume", "studio.live.next": "next",
                 "studio.live.previous": "previous", "studio.live.cancel_pending": "cancel_pending",
-                "studio.live.stop": "stop"}
+                "studio.live.stop": "stop", "studio.live.automation": "configure_automation"}
 READ_ONLY_LIVE = {"studio.obs.status", "studio.live.sessions.list", "studio.live.status"}
 # Provider calls run outside the service lock, on the transport's worker thread.
 AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",

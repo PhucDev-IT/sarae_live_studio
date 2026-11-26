@@ -84,6 +84,13 @@ Luồng: **Mở Chrome đăng nhập** mở Chrome thường trên hồ sơ `tik
 
 Người dùng chỉ sửa được mô tả sản phẩm (dữ liệu cho AI). Chưa kiểm tra với tài khoản TikTok thật trong phiên phát triển này: test dùng trình duyệt giả và snapshot giả.
 
+### Tự ghim sản phẩm và tự đọc chat theo phiên
+
+- **Tự ghim** (công tắc "Tự ghim sản phẩm đang phát" trong phòng điều khiển, mặc định tắt): dùng nguyên cơ chế ghim theo video của `AutoPinService` trên Chrome của Studio. Khi phiên bắt đầu hoặc chuyển sản phẩm (kể cả tự đổi theo chính sách), sản phẩm TikTok tương ứng được ghim một lần cho mỗi lần chuyển; trước khi bấm, nó kiểm tra lại sản phẩm vẫn đang phát và tài khoản Console đúng tài khoản đã xác minh. Sản phẩm tạo tay không có mã TikTok nên không ghim. Nếu Chrome TikTok kết nối sau khi phiên đã chạy, việc ghim bắt đầu từ lần cập nhật trạng thái kế tiếp. Dừng phiên sẽ tắt danh sách ghim.
+- **Tự đọc chat** (tùy chọn của bàn trả lời, mặc định bật): phiên bắt đầu thì đọc chat công khai của tài khoản đã xác minh; phiên kết thúc thì dừng — chỉ khi chính phiên đã bật nó, chat bạn tự bấm "Đọc chat" được giữ nguyên.
+
+Đã kiểm thử bằng bộ ghim giả và trình đọc chat giả; **chưa ghim thật trên TikTok**.
+
 ### Trả lời khách bằng giọng đọc và bình luận
 
 Theo mô hình `AI_AUTO_REPLY` của nhánh dev, gói trong `studio/replies.py` và hiển thị là "Bàn trả lời khách" trên trang Phiên LIVE.
@@ -147,7 +154,7 @@ Trong thư viện video có nút gắn để đổi sản phẩm và người gi
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/switch/pause/resume/next/previous/cancel_pending/stop`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/switch/pause/resume/next/previous/cancel_pending/stop/automation`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 

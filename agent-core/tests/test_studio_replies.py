@@ -274,3 +274,45 @@ def test_chat_reader_delivers_comments_with_stable_ids():
     assert received == [{"msg_id": "777", "username": "lan.nguyen", "nickname": "Lan", "user_id": "42",
                          "comment": "giá nhiêu?"}]
     assert reader.snapshot()["status"] == "disconnected"
+
+
+class FakeReader:
+    def __init__(self):
+        self.state, self.started = "idle", []
+
+    def snapshot(self):
+        return {"username": "", "status": self.state, "error": ""}
+
+    def start(self, username):
+        self.started.append(username)
+        self.state = "connected"
+
+    def stop(self):
+        self.state = "idle"
+
+
+def test_chat_follows_the_live_session(studio):
+    studio.import_tiktok_snapshot({**ACCOUNT, "user_name": "shopviet"}, [])
+    live = make_live()
+    live.session_listeners = []
+    desk = desk_for(studio, live=live)
+    desk.reader = FakeReader()
+    assert live.session_listeners == [desk._on_session]
+    desk._on_session({"id": "s"}, True)
+    assert desk.reader.started == ["shopviet"] and desk.reader.state == "connected"
+    desk._on_session({"id": "s"}, False)
+    assert desk.reader.state == "idle"
+
+
+def test_chat_started_by_hand_or_disabled_follow_is_left_alone(studio):
+    studio.import_tiktok_snapshot({**ACCOUNT, "user_name": "shopviet"}, [])
+    live = make_live()
+    live.session_listeners = []
+    desk = desk_for(studio, live=live, follow_session=False)
+    desk.reader = FakeReader()
+    desk._on_session({"id": "s"}, True)
+    assert desk.reader.started == []
+    desk.configure({"follow_session": True})
+    desk.chat_start({})
+    desk._on_session({"id": "s"}, False)
+    assert desk.reader.state == "connected"  # the operator started it, so it keeps reading
