@@ -46,6 +46,68 @@ export interface TikTokAccount {
   last_synced_at: string
 }
 
+export interface PlaybackPolicy {
+  video_order: 'sequential' | 'random' | 'shuffle'
+  product_rotation: 'off' | 'sequential' | 'random' | 'shuffle'
+  rotate_after_videos: number | null
+  rotate_after_minutes: number | null
+  switch_mode: 'after_current' | 'immediate'
+  auto: boolean
+}
+export interface LiveSession {
+  id: string
+  title: string
+  status: 'draft' | 'live' | 'ended'
+  policy: PlaybackPolicy
+  product_ids: string[]
+  end_reason: string | null
+  started_at: string | null
+  ended_at: string | null
+  created_at: string
+  updated_at: string
+}
+export interface LiveEvent { id: number; kind: string; product_id: string | null; detail: Record<string, unknown>; created_at: string }
+export interface LiveStatus {
+  active: boolean
+  busy: boolean
+  paused: boolean
+  session: LiveSession | null
+  product_id: string | null
+  pending_product_id: string | null
+  media_id: string | null
+  queue: string[]
+  index: number
+  media_state: string | null
+  cursor_ms: number | null
+  duration_ms: number | null
+  obs_connected: boolean
+  obs_error: string | null
+  last_status: string
+  rotation: { auto: boolean; videos_in_product: number; product_seconds: number; next_product_id: string | null } | null
+  session_seconds: number
+  errors: number
+  recoveries: number
+  events: LiveEvent[]
+}
+export interface ObsStatus {
+  connected: boolean
+  state: string
+  error: { code: string; message: string } | null
+  obs_version: string | null
+  host: string
+  port: number
+  media_input: string
+  voice_input: string
+  password_set: boolean
+  auto_connect: boolean
+  media_input_ok?: boolean | null
+  dual_mode: boolean
+  source_a: string
+  source_b: string
+  dual_sources: string[]
+}
+export interface ObsSettingsInput { host?: string; port?: number; password?: string; clear_password?: boolean; media_input?: string; dual_mode?: boolean; source_a?: string; source_b?: string }
+
 export interface TikTokStatus {
   state: 'idle' | 'login' | 'logged_in' | 'login_required' | 'ready' | string
   browser_open: boolean
@@ -134,6 +196,8 @@ function unwrap<T>(envelope: Envelope<T>): T {
 const slowMethods: Record<string, number> = {
   'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
   'studio.ai.reply': 100_000, 'studio.ai.test': 100_000, 'studio.scripts.generate': 120_000,
+  // Starting or switching may render an OBS copy of a rotated video first.
+  'studio.live.start': 120_000, 'studio.live.switch': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
 }
 
 async function request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -231,6 +295,18 @@ export const studioClient = {
   createScript: async (input: { product_id: string; title: string; body: string }) => (await request<{ script: SalesScript }>('studio.scripts.create', { ...input })).script,
   updateScript: async (id: string, input: { title?: string; body?: string }) => (await request<{ script: SalesScript }>('studio.scripts.update', { id, ...input })).script,
   deleteScript: (id: string) => request<{ deleted: boolean }>('studio.scripts.delete', { id }),
+  obsStatus: () => request<ObsStatus>('studio.obs.status'),
+  obsConfigure: (input: ObsSettingsInput) => request<ObsStatus>('studio.obs.configure', { ...input }),
+  obsConnect: () => request<ObsStatus>('studio.obs.connect'),
+  obsDisconnect: () => request<ObsStatus>('studio.obs.disconnect'),
+  listLiveSessions: async () => (await request<{ sessions: LiveSession[] }>('studio.live.sessions.list')).sessions,
+  createLiveSession: async (input: { title: string; product_ids: string[]; policy: PlaybackPolicy }) => (await request<{ session: LiveSession }>('studio.live.sessions.create', { ...input })).session,
+  updateLiveSession: async (id: string, input: { title?: string; product_ids?: string[]; policy?: PlaybackPolicy }) => (await request<{ session: LiveSession }>('studio.live.sessions.update', { id, ...input })).session,
+  deleteLiveSession: (id: string) => request<{ deleted: boolean }>('studio.live.sessions.delete', { id }),
+  liveStatus: () => request<LiveStatus>('studio.live.status'),
+  liveStart: (sessionId: string, productId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(productId ? { product_id: productId } : {}) }),
+  liveSwitch: (productId: string, mode: 'immediate' | 'after_current') => request<LiveStatus>('studio.live.switch', { product_id: productId, mode }),
+  liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),
   tiktokConnect: () => request<TikTokStatus>('studio.tiktok.connect'),

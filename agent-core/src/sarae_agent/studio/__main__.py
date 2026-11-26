@@ -17,6 +17,7 @@ from sarae_agent.ipc.server import IpcServer
 from sarae_agent.studio.service import StudioError, StudioService
 from sarae_agent.studio.storage import data_root
 from sarae_agent.studio.ai import StudioAI
+from sarae_agent.studio.live import StudioLive
 from sarae_agent.studio.tiktok import TikTokConnector
 from sarae_agent.studio.transport import METHODS, StudioHTTPServer, StudioTransport
 
@@ -60,6 +61,7 @@ def run(args: argparse.Namespace) -> int:
     http = None
     ipc = None
     tiktok = None
+    live = None
     try:
         root = data_root(Path(args.data_dir) if args.data_dir else None)
         lock = RuntimeLock(root)
@@ -67,6 +69,8 @@ def run(args: argparse.Namespace) -> int:
         transport = StudioTransport(service, native=args.ipc)
         tiktok = transport.tiktok = TikTokConnector(service, emit=transport.emit)
         transport.ai = StudioAI(service)
+        live = transport.live = StudioLive(service, emit=transport.emit)
+        live.start_watchdog()
         http = StudioHTTPServer(transport, 0 if args.ipc else args.port)
         http_thread = threading.Thread(target=http.serve_forever, name="studio-http", daemon=True)
         http_thread.start()
@@ -133,6 +137,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"Studio: {exc}", file=sys.stderr)
         return 3 if getattr(exc, "code", "") == "CORE_ALREADY_RUNNING" else 2
     finally:
+        if live:
+            live.close()
         if tiktok:
             tiktok.close()
         if ipc:

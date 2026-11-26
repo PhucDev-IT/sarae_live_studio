@@ -72,6 +72,17 @@ Luồng: **Mở Chrome đăng nhập** mở Chrome thường trên hồ sơ `tik
 
 Người dùng chỉ sửa được mô tả sản phẩm (dữ liệu cho AI). Chưa kiểm tra với tài khoản TikTok thật trong phiên phát triển này: test dùng trình duyệt giả và snapshot giả.
 
+### Phiên LIVE và phát video qua OBS
+
+Studio không tự livestream bằng avatar: nó phát lại video sản phẩm đã quay sẵn vào Media Source của OBS; người vận hành tự bật stream TikTok/OBS. Migration 5 thêm `live_sessions` (tên, trạng thái draft/live/ended, chính sách phát, lý do kết thúc), `live_session_products` (thứ tự sản phẩm) và `live_events` (nhật ký, tối đa 500 dòng mỗi phiên).
+
+- Dùng lại nguyên runtime phát của Windows Agent: `ObsController` (một kết nối obs-websocket, mật khẩu DPAPI), `PlaybackEngine` (nguồn A/B, hàng đợi theo sản phẩm, chuyển ngay / sau video hiện tại, chính sách thứ tự video và tự đổi sản phẩm, watchdog tự phục hồi) và `ObsSettingsStore`. Studio đặt `SARAE_AGENT_HOME=<dữ liệu studio>/engine`, nên cấu hình OBS, bản sao video đã xoay chiều và mật khẩu nằm trong dữ liệu Studio, không đụng thư mục Agent cũ. Model chính sách của engine được mở rộng để nhận UUID của Studio, vẫn giữ ID số/hex của bản cloud.
+- Một thời điểm chỉ một phiên được phát. Bắt đầu phát chọn sản phẩm đầu tiên có video sẵn sàng; sản phẩm chưa có video bị bỏ qua. Thêm/gỡ video hay sửa phiên khi đang phát được đẩy ngay vào engine.
+- Core khởi động lại không bao giờ tự phát tiếp: phiên đang "live" được đánh dấu kết thúc với lý do `core_restart`. Đóng Studio sẽ dừng video và kết thúc phiên (`core_stopped`).
+- Giao diện: danh sách phiên, trình soạn phiên (chọn/xếp sản phẩm, thứ tự video, tự đổi sản phẩm sau N video hoặc M phút), phòng điều khiển (sản phẩm đang phát, tiến độ video, tạm dừng/tiếp/trước/sau, chuyển ngay hoặc sau video này, hủy chuyển, nhật ký) và hộp thoại kết nối OBS.
+
+Đã kiểm thử tự động với obs-websocket giả và MP4 thật; giao diện được chạy với core thật nhưng OBS giả lập. **Chưa thử với OBS thật** — trên máy đang LIVE, chỉ thử khi không có phiên phát thật.
+
 ### Trợ lý AI, thông tin sản phẩm và kịch bản
 
 Migration 4 thêm `products.facts` (JSON), bảng `settings` không chứa bí mật và bảng `sales_scripts`.
@@ -101,13 +112,14 @@ Trong thư viện video có nút gắn để đổi sản phẩm và người gi
 | `desktop/src/features/studio/` | Shell, sản phẩm, thư viện video và preview; xử lý mất kết nối. |
 | `agent-core/src/sarae_agent/studio/service.py` | Nghiệp vụ local dùng chung, không import Backend/identity/activation. |
 | `agent-core/src/sarae_agent/studio/storage.py` | SQLite, migration và transaction. |
+| `agent-core/src/sarae_agent/studio/live.py` | Phiên LIVE, điều khiển OBS qua PlaybackEngine của Agent. |
 | `agent-core/src/sarae_agent/studio/ai.py` | Provider AI, key DPAPI, trả lời bình luận, soạn kịch bản. |
 | `agent-core/src/sarae_agent/studio/tiktok.py` | Kết nối Chrome TikTok, đồng bộ snapshot, cache ảnh bìa. |
 | `agent-core/src/sarae_agent/studio/transport.py` | HTTP RPC, upload, SSE và media Range. |
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/switch/pause/resume/next/previous/cancel_pending/stop`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 
@@ -116,10 +128,10 @@ Các lệnh kiểm tra:
 ```powershell
 npm --prefix desktop run build
 Set-Location agent-core
-.venv/Scripts/python.exe -m pytest tests/test_studio_ai.py tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py -q
+.venv/Scripts/python.exe -m pytest tests/test_studio_live.py tests/test_studio_ai.py tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py tests/test_playback_engine.py tests/test_playback_policy.py tests/test_media_playback.py tests/test_obs_controller.py -q
 ```
 
-Kết quả bộ test trên: **142 passed** (26/11/2026, sau phần AI). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
+Kết quả bộ test trên: **234 passed** (26/11/2026, sau phiên LIVE; gồm cả test playback/OBS của Agent). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
 
 `cargo check --locked` và production build frontend đã qua. Sidecar PyInstaller được build và kiểm tra `--self-check`, IPC local, persistence, single-instance, graceful shutdown và dọn core sau khi bootloader bị đóng cưỡng bức; nhập video vẫn chạy khi FFprobe không có trên PATH nhờ binary trong bundle. Đây là kiểm tra trên máy phát triển, chưa phải chứng nhận bộ cài trên Windows sạch.
 

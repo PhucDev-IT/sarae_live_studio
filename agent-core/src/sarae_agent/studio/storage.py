@@ -90,6 +90,36 @@ MIGRATIONS = (
         )""",
         "CREATE INDEX sales_scripts_product_id ON sales_scripts(product_id)",
     )),
+    # LIVE sessions: an ordered product lineup played through OBS, with a playback policy.
+    (5, (
+        """CREATE TABLE live_sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+            status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'live', 'ended')),
+            policy TEXT NOT NULL DEFAULT '{}',
+            end_reason TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE live_session_products (
+            session_id TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK(position >= 0),
+            PRIMARY KEY (session_id, product_id)
+        ) WITHOUT ROWID""",
+        "CREATE INDEX live_session_products_product ON live_session_products(product_id)",
+        """CREATE TABLE live_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            product_id TEXT,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX live_events_session ON live_events(session_id, id)",
+    )),
 )
 
 

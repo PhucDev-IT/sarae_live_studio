@@ -29,7 +29,21 @@ METHODS = (
     "studio.ai.reply",
     "studio.scripts.list", "studio.scripts.create", "studio.scripts.update", "studio.scripts.delete",
     "studio.scripts.generate",
+    "studio.obs.status", "studio.obs.configure", "studio.obs.connect", "studio.obs.disconnect",
+    "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
+    "studio.live.sessions.delete", "studio.live.status", "studio.live.start", "studio.live.switch",
+    "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous",
+    "studio.live.cancel_pending", "studio.live.stop",
 )
+LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_configure",
+                "studio.obs.connect": "obs_connect", "studio.obs.disconnect": "obs_disconnect",
+                "studio.live.sessions.list": "sessions_list", "studio.live.sessions.create": "sessions_create",
+                "studio.live.sessions.update": "sessions_update", "studio.live.sessions.delete": "sessions_delete",
+                "studio.live.status": "status", "studio.live.start": "start", "studio.live.switch": "switch",
+                "studio.live.pause": "pause", "studio.live.resume": "resume", "studio.live.next": "next",
+                "studio.live.previous": "previous", "studio.live.cancel_pending": "cancel_pending",
+                "studio.live.stop": "stop"}
+READ_ONLY_LIVE = {"studio.obs.status", "studio.live.sessions.list", "studio.live.status"}
 # Provider calls run outside the service lock, on the transport's worker thread.
 AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",
               "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply",
@@ -56,6 +70,7 @@ class StudioTransport:
         self.ipc_emit = None
         self.tiktok = None  # TikTokConnector, attached by the runtime
         self.ai = None  # StudioAI, attached by the runtime
+        self.live = None  # StudioLive, attached by the runtime
 
     def _thumbnail_url(self, product: dict) -> dict:
         has_thumbnail = product.pop("has_thumbnail", False)
@@ -81,6 +96,13 @@ class StudioTransport:
             if method in {"studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.scripts.generate"}:
                 self.emit("studio.changed", {"method": method})
             return result
+        if method in LIVE_METHODS:
+            if self.live is None:
+                raise StudioError("LIVE_UNAVAILABLE", "Bộ phát LIVE chưa sẵn sàng trong Studio Core.")
+            result = getattr(self.live, LIVE_METHODS[method])(params)
+            if method not in READ_ONLY_LIVE:
+                self.emit("studio.changed", {"method": method})
+            return result
         if method == "studio.media.url":
             if set(params) != {"id"} or not isinstance(params["id"], str):
                 raise StudioError("INVALID_PARAMS", "Cần mã video hợp lệ.")
@@ -90,7 +112,7 @@ class StudioTransport:
         if method == "studio.status":
             result = {**result, "capabilities": {
                 **result.get("capabilities", {}), "native_dialog": self.native,
-                "local_file_reference": False, "obs": False, "ai": self.ai is not None,
+                "local_file_reference": False, "obs": self.live is not None, "ai": self.ai is not None,
                 "tiktok_sync": self.tiktok is not None,
             }}
         if method == "studio.products.list":
@@ -99,6 +121,8 @@ class StudioTransport:
             result = {"product": self._thumbnail_url(result["product"])}
         if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"}:
             self.emit("studio.changed", {"method": method})
+            if self.live is not None and method.split(".")[1] in {"media", "products"}:
+                self.live.refresh()
         return result
 
     def emit(self, name: str, data: dict) -> None:

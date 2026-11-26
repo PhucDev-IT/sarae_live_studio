@@ -27,6 +27,7 @@ PRODUCT_SWITCHED, PLAYBACK_ENDED or ERROR.
 import json
 import logging
 import random
+import re
 import subprocess
 import threading
 import time
@@ -91,16 +92,34 @@ class PlaybackPolicy(BaseModel):
         return self
 
 
+# The Cloud addresses products/sessions by integer and media by 32-hex ids; the local Studio
+# uses canonical UUID strings for all three. Both are accepted, never mixed with free text.
+LOCAL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _local_or_int(value):
+    if isinstance(value, str) and not LOCAL_ID.fullmatch(value):
+        raise ValueError("ID phải là số nguyên dương hoặc UUID")
+    return value
+
+
 class LineupItem(BaseModel):
     model_config = {"extra": "forbid"}
 
-    product_id: int = Field(ge=1)
+    product_id: int | str
     media_ids: list[str] = Field(default_factory=list, max_length=3000)
+
+    @field_validator("product_id")
+    @classmethod
+    def _product(cls, value):
+        if isinstance(value, int) and value < 1:
+            raise ValueError("product_id phải >= 1")
+        return _local_or_int(value)
 
     @field_validator("media_ids")
     @classmethod
     def _ids(cls, value: list[str]) -> list[str]:
-        if any(not (isinstance(m, str) and MEDIA_ID.fullmatch(m)) for m in value):
+        if any(not (isinstance(m, str) and (MEDIA_ID.fullmatch(m) or LOCAL_ID.fullmatch(m))) for m in value):
             raise ValueError("Danh sách media_ids không hợp lệ")
         return value
 
@@ -108,7 +127,15 @@ class LineupItem(BaseModel):
 class PolicyUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
-    session_id: int = Field(ge=1)
+    session_id: int | str
+
+    @field_validator("session_id")
+    @classmethod
+    def _session(cls, value):
+        if isinstance(value, int) and value < 1:
+            raise ValueError("session_id phải >= 1")
+        return _local_or_int(value)
+
     policy: PlaybackPolicy
     lineup: list[LineupItem] = Field(default_factory=list, max_length=300)
 

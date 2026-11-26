@@ -320,6 +320,161 @@ class StudioService:
             self._remove_thumbnail(thumbnail)
         return {"deleted": True}
 
+    # --- LIVE sessions ----------------------------------------------------------------------
+    # Business rules live here; studio/live.py validates the playback policy with the engine's
+    # own model and drives OBS. Only one session can be "live" at a time.
+    def _session_row(self, session_id: str) -> dict:
+        row = self._storage.connection.execute("SELECT * FROM live_sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is None:
+            raise StudioError("NOT_FOUND", "LIVE session not found.", {"id": session_id})
+        session = dict(row)
+        try:
+            session["policy"] = json.loads(session["policy"] or "{}")
+        except ValueError:
+            session["policy"] = {}
+        session["product_ids"] = [r[0] for r in self._storage.connection.execute(
+            "SELECT product_id FROM live_session_products WHERE session_id = ? ORDER BY position", (session_id,))]
+        return session
+
+    def live_session(self, session_id: str) -> dict:
+        with self._lock:
+            self._ensure_open()
+            return self._session_row(identifier(session_id, "session_id"))
+
+    def list_live_sessions(self) -> list[dict]:
+        with self._lock:
+            self._ensure_open()
+            ids = [row[0] for row in self._storage.connection.execute(
+                "SELECT id FROM live_sessions ORDER BY status = 'live' DESC, updated_at DESC, id")]
+            return [self._session_row(session_id) for session_id in ids]
+
+    @staticmethod
+    def _session_title(title: object) -> str:
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200 or "\x00" in title:
+            raise StudioError("VALIDATION_ERROR", "title must contain 1 to 200 characters.", {"field": "title"})
+        return title.strip()
+
+    def _set_session_products(self, connection, session_id: str, product_ids: object) -> None:
+        ids = product_ids if isinstance(product_ids, list) else None
+        if ids is None or not 1 <= len(ids) <= 300:
+            raise StudioError("VALIDATION_ERROR", "Choose 1 to 300 products for the session.", {"field": "product_ids"})
+        ids = [identifier(value, "product_ids") for value in ids]
+        if len(set(ids)) != len(ids):
+            raise StudioError("VALIDATION_ERROR", "A product appears twice in the session.", {"field": "product_ids"})
+        for product_id in ids:
+            self._product(product_id)
+        connection.execute("DELETE FROM live_session_products WHERE session_id = ?", (session_id,))
+        connection.executemany("INSERT INTO live_session_products(session_id, product_id, position) VALUES (?, ?, ?)",
+                               [(session_id, product_id, index) for index, product_id in enumerate(ids)])
+
+    def save_live_session(self, session_id: str | None, *, title=None, product_ids=None, policy: dict | None = None) -> dict:
+        with self._lock:
+            self._ensure_open()
+            now = timestamp()
+            with self._storage.transaction() as connection:
+                if session_id is None:
+                    session_id = str(uuid4())
+                    connection.execute("""INSERT INTO live_sessions(id, title, policy, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)""", (session_id, self._session_title(title),
+                                                    json.dumps(policy or {}), now, now))
+                    self._set_session_products(connection, session_id, product_ids)
+                else:
+                    session_id = identifier(session_id)
+                    self._session_row(session_id)
+                    if title is not None:
+                        connection.execute("UPDATE live_sessions SET title = ? WHERE id = ?",
+                                           (self._session_title(title), session_id))
+                    if policy is not None:
+                        connection.execute("UPDATE live_sessions SET policy = ? WHERE id = ?",
+                                           (json.dumps(policy), session_id))
+                    if product_ids is not None:
+                        self._set_session_products(connection, session_id, product_ids)
+                    connection.execute("UPDATE live_sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+                return self._session_row(session_id)
+
+    def delete_live_session(self, session_id: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            session_id = identifier(session_id)
+            with self._storage.transaction() as connection:
+                if self._session_row(session_id)["status"] == "live":
+                    raise StudioError("SESSION_LIVE", "Dừng phiên LIVE trước khi xóa.")
+                connection.execute("DELETE FROM live_sessions WHERE id = ?", (session_id,))
+
+    def set_live_status(self, session_id: str, status: str, end_reason: str | None = None) -> dict:
+        with self._lock:
+            self._ensure_open()
+            now = timestamp()
+            with self._storage.transaction() as connection:
+                self._session_row(session_id)
+                if status == "live":
+                    other = connection.execute("SELECT id FROM live_sessions WHERE status = 'live' AND id != ?",
+                                               (session_id,)).fetchone()
+                    if other:
+                        raise StudioError("SESSION_CONFLICT", "Một phiên LIVE khác đang phát. Hãy dừng phiên đó trước.")
+                    connection.execute("""UPDATE live_sessions SET status = 'live', started_at = ?, ended_at = NULL,
+                        end_reason = NULL, updated_at = ? WHERE id = ?""", (now, now, session_id))
+                else:
+                    connection.execute("""UPDATE live_sessions SET status = ?, ended_at = ?, end_reason = ?, updated_at = ?
+                        WHERE id = ? AND status = 'live'""", (status, now, end_reason, now, session_id))
+                return self._session_row(session_id)
+
+    def interrupt_live_sessions(self, reason: str) -> None:
+        """At Core start: a session left "live" by a crash never resumes on its own."""
+        with self._lock:
+            self._ensure_open()
+            now = timestamp()
+            with self._storage.transaction() as connection:
+                connection.execute("""UPDATE live_sessions SET status = 'ended', ended_at = ?, end_reason = ?,
+                    updated_at = ? WHERE status = 'live'""", (now, reason, now))
+
+    def product_lineup(self, product_ids: list[str]) -> list[dict]:
+        """Ready library videos per product, oldest first (the order they were added)."""
+        with self._lock:
+            self._ensure_open()
+            lineup = []
+            for product_id in product_ids:
+                rows = self._storage.connection.execute(
+                    "SELECT * FROM media WHERE product_id = ? ORDER BY created_at, id", (product_id,)).fetchall()
+                ready = []
+                for row in rows:
+                    try:
+                        self.resolve_media(row["id"])
+                        ready.append(row["id"])
+                    except StudioError:
+                        continue
+                lineup.append({"product_id": product_id, "media_ids": ready})
+            return lineup
+
+    def record_live_event(self, session_id: str, kind: str, product_id: str | None = None,
+                          detail: dict | None = None) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            with self._storage.transaction() as connection:
+                connection.execute("""INSERT INTO live_events(session_id, kind, product_id, detail, created_at)
+                    VALUES (?, ?, ?, ?, ?)""", (session_id, kind[:40], product_id,
+                                                json.dumps(detail or {}, ensure_ascii=False)[:2000], timestamp()))
+                # Keep the log bounded per session.
+                connection.execute("""DELETE FROM live_events WHERE session_id = ? AND id NOT IN
+                    (SELECT id FROM live_events WHERE session_id = ? ORDER BY id DESC LIMIT 500)""",
+                                   (session_id, session_id))
+
+    def live_events(self, session_id: str, limit: int = 30) -> list[dict]:
+        with self._lock:
+            self._ensure_open()
+            rows = self._storage.connection.execute(
+                "SELECT * FROM live_events WHERE session_id = ? ORDER BY id DESC LIMIT ?", (session_id, limit))
+            events = []
+            for row in rows:
+                event = dict(row)
+                try:
+                    event["detail"] = json.loads(event["detail"])
+                except ValueError:
+                    event["detail"] = {}
+                events.append(event)
+            return events
+
     # --- TikTok catalog -------------------------------------------------------------------
     def import_tiktok_snapshot(self, account: object, rows: object) -> dict:
         """Upsert a complete LIVE Console snapshot by (seller_id, product_id).
