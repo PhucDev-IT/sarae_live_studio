@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { CheckCircle2, Film, LogIn, Package, Pencil, PlugZap, RefreshCw, Search, ShoppingBag, Sparkles, Trash2 } from 'lucide-react'
-import { studioClient, type Media, type Product, type TikTokStatus } from '../../services/studio'
+import { studioClient, type Media, type Product, type ProductFacts, type TikTokStatus } from '../../services/studio'
+import { FactsEditor, factsProblem } from './FactsEditor'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
 type Props = {
@@ -10,9 +11,23 @@ type Props = {
 }
 type Filter = 'all' | 'no_description' | 'no_video'
 const filters: { value: Filter; label: string }[] = [
-  { value: 'all', label: 'Tất cả' }, { value: 'no_description', label: 'Chưa có mô tả' }, { value: 'no_video', label: 'Chưa có video' },
+  { value: 'all', label: 'Tất cả' }, { value: 'no_description', label: 'Chưa có thông tin' }, { value: 'no_video', label: 'Chưa có video' },
 ]
 const money = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 })
+const emptyFacts: ProductFacts = { sizes: [], colors: [], material: '', shipping: '', notes: '', extras: {} }
+
+function factsCount(facts: ProductFacts | undefined): number {
+  if (!facts) return 0
+  return Number(facts.sizes.length > 0) + Number(facts.colors.length > 0) + Number(!!facts.material) + Number(!!facts.shipping)
+    + Number(!!facts.notes) + Object.keys(facts.extras).length
+}
+
+function aiInfo(product: Product): 'full' | 'partial' | 'none' {
+  const described = !!product.description.trim()
+  const detailed = factsCount(product.facts) > 0
+  return described && detailed ? 'full' : described || detailed ? 'partial' : 'none'
+}
+
 const collator = new Intl.Collator('vi', { sensitivity: 'base', numeric: true })
 const dateTime = new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
 
@@ -22,6 +37,8 @@ export function ProductsPanel({ products, media, tiktok, loading, disabled, onRe
   const [editing, setEditing] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [description, setDescription] = useState('')
+  const [facts, setFacts] = useState<ProductFacts>(emptyFacts)
+  const [tab, setTab] = useState<'description' | 'facts'>('description')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const counts = useMemo(() => {
@@ -31,22 +48,31 @@ export function ProductsPanel({ products, media, tiktok, loading, disabled, onRe
   }, [media])
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('vi')
-    return products.filter(product => (filter === 'all' || (filter === 'no_description' ? !product.description.trim() : !counts.get(product.id)))
+    return products.filter(product => (filter === 'all' || (filter === 'no_description' ? aiInfo(product) === 'none' : !counts.get(product.id)))
       && `${product.name} ${product.category} ${product.tiktok_product_id ?? ''}`.toLocaleLowerCase('vi').includes(needle))
       .sort((a, b) => Number(a.source !== 'tiktok') - Number(b.source !== 'tiktok') || collator.compare(a.name, b.name))
   }, [products, query, filter, counts])
-  const describedCount = products.filter(product => product.description.trim()).length
+  const describedCount = products.filter(product => aiInfo(product) !== 'none').length
 
-  const openEditor = (product: Product) => { setDescription(product.description); setError(''); setEditing(product) }
+  const openEditor = (product: Product, startTab: 'description' | 'facts' = 'description') => {
+    setDescription(product.description)
+    setFacts(structuredClone(product.facts ?? emptyFacts))
+    setTab(startTab)
+    setError('')
+    setEditing(product)
+  }
   const save = async (event: FormEvent) => {
     event.preventDefault()
     if (busy || disabled || !editing) return
+    const cleaned = { ...facts, extras: Object.fromEntries(Object.entries(facts.extras).filter(([key, text]) => key && text.trim())) }
+    const problem = factsProblem(cleaned)
+    if (problem) { setTab('facts'); setError(problem); return }
     setBusy(true)
     setError('')
     try {
-      await studioClient.updateProductDescription(editing.id, description.trim())
+      await studioClient.updateProduct(editing.id, { description: description.trim(), facts: cleaned })
       setEditing(null)
-      onNotice('Đã lưu mô tả sản phẩm.')
+      onNotice('Đã lưu thông tin sản phẩm cho AI.')
       await onRefresh()
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
@@ -71,30 +97,42 @@ export function ProductsPanel({ products, media, tiktok, loading, disabled, onRe
       <div className="studio-toolbar">
         <label className="studio-search"><Search size={17} /><input aria-label="Tìm sản phẩm" placeholder="Tìm theo tên, danh mục hoặc mã TikTok…" value={query} onChange={event => setQuery(event.target.value)} /></label>
         <div className="studio-segmented" role="group" aria-label="Lọc sản phẩm">{filters.map(item => <button key={item.value} aria-pressed={filter === item.value} className={filter === item.value ? 'active' : ''} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div>
-        <span className="studio-muted">{describedCount}/{products.length} có mô tả</span>
+        <span className="studio-muted">{describedCount}/{products.length} có thông tin cho AI</span>
       </div>
       {loading ? <div className="studio-empty" role="status">Đang tải sản phẩm…</div>
         : !products.length ? <EmptyState icon={<ShoppingBag size={30} />} title="Chưa có sản phẩm nào" description="Kết nối TikTok LIVE Console ở trên rồi bấm Đồng bộ sản phẩm. Studio lấy tên, ảnh, giá, tồn kho và danh mục từ giỏ hàng LIVE." />
         : !visible.length ? <EmptyState icon={<Package size={30} />} title="Không có sản phẩm phù hợp" description="Thử đổi từ khóa hoặc bộ lọc." action={<button className="studio-button" onClick={() => { setQuery(''); setFilter('all') }}>Xóa bộ lọc</button>} />
-        : <div className="studio-table-wrap"><table className="studio-table studio-product-table"><thead><tr><th>Sản phẩm</th><th>Giá bán</th><th>Tồn kho</th><th>Mô tả cho AI</th><th>Video</th><th><span className="sr-only">Thao tác</span></th></tr></thead><tbody>{visible.map(product => {
+        : <div className="studio-table-wrap"><table className="studio-table studio-product-table"><thead><tr><th>Sản phẩm</th><th>Giá bán</th><th>Tồn kho</th><th>Thông tin cho AI</th><th>Video</th><th><span className="sr-only">Thao tác</span></th></tr></thead><tbody>{visible.map(product => {
           const videoCount = counts.get(product.id) ?? 0
           return <tr key={product.id}>
             <td><div className="studio-product-name"><ProductThumb product={product} /><div><strong className="studio-row-title">{product.name}</strong><p className="studio-row-description">{product.source === 'tiktok' ? <>{product.category || 'TikTok Shop'}<span className="studio-dot-sep">·</span>#{product.tiktok_product_id}</> : <span className="studio-tag warning">Tạo tay trước đây · không đồng bộ</span>}</p></div></div></td>
             <td className="studio-nowrap"><PriceCell product={product} /></td>
             <td className="studio-nowrap"><StockTag stock={product.stock_num} /></td>
-            <td>{product.description.trim() ? <span className="studio-tag success">Đã có mô tả</span> : <button className="studio-button ghost studio-inline-action" disabled={disabled} onClick={() => openEditor(product)}><Sparkles size={14} />Thêm mô tả</button>}</td>
+            <td>{(() => {
+              const info = aiInfo(product)
+              if (info === 'none') return <button className="studio-button ghost studio-inline-action" disabled={disabled} onClick={() => openEditor(product)}><Sparkles size={14} />Thêm thông tin</button>
+              if (info === 'full') return <span className="studio-tag success">Đầy đủ · {factsCount(product.facts)} dữ kiện</span>
+              return <button className="studio-tag honey studio-tag-button" disabled={disabled} title="Bổ sung phần còn thiếu" onClick={() => openEditor(product, product.description.trim() ? 'facts' : 'description')}>{product.description.trim() ? 'Thiếu thông tin chi tiết' : 'Thiếu mô tả'}</button>
+            })()}</td>
             <td><button className="studio-button ghost studio-video-link" onClick={() => onOpenMedia(product.id)}><Film size={15} />{videoCount} video</button></td>
             <td><div className="studio-actions"><button className="studio-button ghost icon-only" disabled={disabled || busy} title={`Sửa mô tả ${product.name}`} aria-label={`Sửa mô tả ${product.name}`} onClick={() => openEditor(product)}><Pencil size={16} /></button><button className="studio-button ghost icon-only danger" disabled={disabled || busy} title={`Xóa ${product.name}`} aria-label={`Xóa ${product.name}`} onClick={() => { setError(''); setDeleting(product) }}><Trash2 size={16} /></button></div></td>
           </tr>
         })}</tbody></table></div>}
     </section>
-    {editing && <Modal title="Mô tả sản phẩm cho AI" onClose={() => { if (!busy) setEditing(null) }} wide><form className="studio-form" onSubmit={event => void save(event)}>
+    {editing && <Modal title="Thông tin sản phẩm cho AI" onClose={() => { if (!busy) setEditing(null) }} wide><form className="studio-form" onSubmit={event => void save(event)}>
       <div className="studio-product-summary"><ProductThumb product={editing} large /><div><strong>{editing.name}</strong><span><PriceCell product={editing} /> · <StockTag stock={editing.stock_num} plain /></span><small>{editing.source === 'tiktok' ? 'Tên, giá, tồn kho và ảnh được cập nhật mỗi lần đồng bộ TikTok.' : 'Sản phẩm tạo tay trước đây, không được đồng bộ.'}</small></div></div>
-      <label className="studio-field">Mô tả & thông tin tư vấn<textarea data-autofocus autoFocus rows={9} maxLength={10000} value={description} disabled={busy} placeholder={'Chất liệu, form dáng, bảng size, màu sắc, cách bảo quản, chính sách đổi trả…\nAI chỉ khẳng định những gì có ở đây và trên TikTok.'} onChange={event => setDescription(event.target.value)} /></label>
-      <p className="studio-field-hint">{description.length.toLocaleString('vi-VN')}/10.000 ký tự</p>
+      <div className="studio-tabs" role="tablist" aria-label="Thông tin sản phẩm">
+        <button type="button" role="tab" aria-selected={tab === 'description'} className={tab === 'description' ? 'active' : ''} onClick={() => setTab('description')}>Mô tả tư vấn</button>
+        <button type="button" role="tab" aria-selected={tab === 'facts'} className={tab === 'facts' ? 'active' : ''} onClick={() => setTab('facts')}>Thông tin chi tiết{factsCount(facts) ? <small>{factsCount(facts)}</small> : null}</button>
+      </div>
+      <div role="tabpanel" hidden={tab !== 'description'}>
+        <label className="studio-field">Mô tả & lời tư vấn<textarea data-autofocus autoFocus rows={9} maxLength={10000} value={description} disabled={busy} placeholder={'Điểm nổi bật, cách phối đồ, đối tượng phù hợp…\nAI chỉ khẳng định những gì có ở đây, trong thông tin chi tiết và trên TikTok.'} onChange={event => setDescription(event.target.value)} /></label>
+        <p className="studio-field-hint">{description.length.toLocaleString('vi-VN')}/10.000 ký tự</p>
+      </div>
+      <div role="tabpanel" hidden={tab !== 'facts'}><FactsEditor value={facts} onChange={setFacts} disabled={busy} /></div>
       {error && <ErrorNotice message={error} />}
       {disabled && <ErrorNotice message="Studio Core đang mất kết nối. Kết nối lại trước khi lưu." />}
-      <div className="studio-form-actions"><button type="button" className="studio-button" disabled={busy} onClick={() => setEditing(null)}>Hủy</button><button className="studio-button primary" disabled={busy || disabled}>{busy ? 'Đang lưu…' : 'Lưu mô tả'}</button></div>
+      <div className="studio-form-actions"><button type="button" className="studio-button" disabled={busy} onClick={() => setEditing(null)}>Hủy</button><button className="studio-button primary" disabled={busy || disabled}>{busy ? 'Đang lưu…' : 'Lưu thông tin'}</button></div>
     </form></Modal>}
     {deleting && <Modal title="Xóa sản phẩm khỏi Studio?" onClose={() => { if (!busy) setDeleting(null) }}><div className="studio-form"><p>Bạn sắp xóa <strong>{deleting.name}</strong> cùng mô tả đã viết. Sản phẩm trên TikTok không bị ảnh hưởng.</p><p className="studio-muted">{deleting.source === 'tiktok' ? 'Nếu sản phẩm vẫn còn trong giỏ LIVE, lần đồng bộ sau sẽ thêm lại với mô tả trống. ' : ''}Video đã nhập vẫn nằm trong thư viện và chỉ bỏ liên kết.</p>{error && <ErrorNotice message={error} />}<div className="studio-form-actions"><button className="studio-button" disabled={busy} onClick={() => setDeleting(null)}>Giữ lại</button><button className="studio-button danger-solid" disabled={busy || disabled} onClick={() => void remove()}>{busy ? 'Đang xóa…' : 'Xóa sản phẩm'}</button></div></div></Modal>}
   </>

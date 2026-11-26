@@ -24,8 +24,28 @@ export function errorMessage(error: unknown): string {
       TIKTOK_SNAPSHOT_INVALID: 'Danh sách sản phẩm TikTok không hợp lệ nên chưa có gì thay đổi. Hãy tải lại LIVE Console rồi đồng bộ lại.',
       TIKTOK_ACCOUNT_UNVERIFIED: 'Chưa xác minh được tài khoản TikTok đang đăng nhập. Hãy mở lại LIVE Console rồi thử lại.',
       CORE_TIMEOUT: 'Studio Core phản hồi quá lâu. Hãy làm mới để xem kết quả trước khi thử lại.',
+      AI_KEY_MISSING: 'Chưa có API key cho nhà cung cấp đã chọn. Dán key trong Trợ lý AI rồi thử lại.',
+      AI_DISABLED: 'AI đang tắt. Bật AI trong trang Trợ lý AI rồi lưu cài đặt.',
     }
     if (code === 'STORAGE_ERROR' && 'message' in error && String(error.message).includes('newer version')) return 'Dữ liệu này cần phiên bản Studio mới hơn. Hãy cập nhật ứng dụng.'
+    if (code === 'VALIDATION_ERROR' && 'details' in error && error.details && typeof error.details === 'object' && 'field' in error.details) {
+      const field = String(error.details.field)
+      const fieldMessages: Record<string, string> = {
+        model: 'Model ID chưa hợp lệ. Chỉ dùng chữ, số và . _ - : (ví dụ gemini-3.5-flash-lite).',
+        base_url: 'Địa chỉ API chưa hợp lệ. Dịch vụ cloud phải dùng https://; Seller Brain phải chạy trên máy này (127.0.0.1).',
+        api_key: 'API key có vẻ chưa đúng. Hãy dán lại key, không kèm khoảng trắng.',
+        max_output_tokens: 'Độ dài trả lời tối đa phải từ 60 đến 3000 token.',
+        temperature: 'Độ sáng tạo phải từ 0 đến 1,5.',
+        sizes: 'Bảng size chưa hợp lệ. Kiểm tra tên size và các khoảng cân nặng/chiều cao.',
+        colors: 'Danh sách màu chưa hợp lệ (tối đa 20 màu, mỗi màu tối đa 30 ký tự).',
+        extras: 'Tên thông tin thêm chỉ gồm chữ thường không dấu, số và _.',
+        comment: 'Bình luận phải có từ 1 đến 1000 ký tự.',
+        title: 'Tên kịch bản phải có từ 1 đến 200 ký tự.',
+        body: 'Nội dung kịch bản không được trống và tối đa 20.000 ký tự.',
+        notes: 'Ghi chú tối đa 1000 ký tự.',
+      }
+      if (fieldMessages[field]) return fieldMessages[field]
+    }
     if (messages[code]) return messages[code]
   }
   if (error instanceof Error) return error.message

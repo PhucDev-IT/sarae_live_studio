@@ -17,8 +17,8 @@ from uuid import uuid4
 
 from sarae_agent import __version__
 
-from .models import (StudioError, identifier, identifier_list, presenter_fields, product_fields, tiktok_snapshot,
-                     timestamp)
+from .models import (EMPTY_FACTS, StudioError, identifier, identifier_list, presenter_fields, product_facts,
+                     product_fields, tiktok_snapshot, timestamp)
 from .storage import StudioStorage, data_root
 
 
@@ -133,7 +133,11 @@ class StudioService:
             handlers = {
                 "studio.status": (self._status, set()),
                 "studio.products.list": (self._list_products, set()),
-                "studio.products.update": (self._update_product, {"id", "description"}),
+                "studio.products.update": (self._update_product, {"id", "description", "facts"}),
+                "studio.scripts.list": (self._list_scripts, {"product_id"}),
+                "studio.scripts.create": (self._create_script, {"product_id", "title", "body"}),
+                "studio.scripts.update": (self._update_script, {"id", "title", "body"}),
+                "studio.scripts.delete": (self._delete_script, {"id"}),
                 "studio.products.delete": (self._delete_product, {"id"}),
                 "studio.presenters.list": (self._list_presenters, set()),
                 "studio.presenters.create": (self._create_presenter, {"name", "description", "active"}),
@@ -176,7 +180,105 @@ class StudioService:
         product = {key: row[key] for key in row.keys() if key != "thumbnail"}
         product["source"] = "tiktok" if row["tiktok_product_id"] else "manual"
         product["has_thumbnail"] = bool(row["thumbnail"])
+        try:
+            product["facts"] = product_facts(json.loads(row["facts"] or "{}"))
+        except (ValueError, StudioError):
+            product["facts"] = json.loads(json.dumps(EMPTY_FACTS))
         return product
+
+    def product_context(self, product_id: str) -> dict:
+        """The product as the AI may see it: TikTok fields, description and facts only."""
+        with self._lock:
+            self._ensure_open()
+            product = self._serialize_product(self._product(identifier(product_id, "product_id")))
+        return {key: product[key] for key in ("id", "name", "description", "price", "origin_price", "stock_num",
+                                              "category", "facts")}
+
+    # --- settings (never secrets) ---------------------------------------------------------
+    def get_setting(self, key: str, default: dict) -> dict:
+        with self._lock:
+            self._ensure_open()
+            row = self._storage.connection.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        try:
+            value = json.loads(row["value"]) if row else None
+        except ValueError:
+            value = None
+        return value if isinstance(value, dict) else dict(default)
+
+    def set_setting(self, key: str, value: dict) -> None:
+        with self._lock:
+            self._ensure_open()
+            with self._storage.transaction() as connection:
+                connection.execute("""INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                                   (key, json.dumps(value, ensure_ascii=False), timestamp()))
+
+    # --- sales scripts ----------------------------------------------------------------------
+    def _script(self, script_id: str):
+        row = self._storage.connection.execute("SELECT * FROM sales_scripts WHERE id = ?", (script_id,)).fetchone()
+        if row is None:
+            raise StudioError("NOT_FOUND", "Script not found.", {"id": script_id})
+        return dict(row)
+
+    @staticmethod
+    def _script_fields(params: dict, *, partial: bool) -> dict:
+        fields = {}
+        if not partial or "title" in params:
+            title = params.get("title")
+            if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200 or "\x00" in title:
+                raise StudioError("VALIDATION_ERROR", "title must contain 1 to 200 characters.", {"field": "title"})
+            fields["title"] = title.strip()
+        if not partial or "body" in params:
+            body = params.get("body")
+            if not isinstance(body, str) or not body.strip() or len(body) > 20000 or "\x00" in body:
+                raise StudioError("VALIDATION_ERROR", "body must contain 1 to 20000 characters.", {"field": "body"})
+            fields["body"] = body.strip()
+        return fields
+
+    def _list_scripts(self, params: dict) -> dict:
+        if params.get("product_id") is not None:
+            product_id = identifier(params["product_id"], "product_id")
+            self._product(product_id)
+            rows = self._storage.connection.execute(
+                "SELECT * FROM sales_scripts WHERE product_id = ? ORDER BY updated_at DESC, id", (product_id,))
+        else:
+            rows = self._storage.connection.execute("SELECT * FROM sales_scripts ORDER BY updated_at DESC, id")
+        return {"scripts": [dict(row) for row in rows]}
+
+    def save_script(self, product_id: str, title: str, body: str, source: str) -> dict:
+        fields = self._script_fields({"title": title, "body": body}, partial=False)
+        with self._lock:
+            self._ensure_open()
+            product_id = identifier(product_id, "product_id")
+            script_id, now = str(uuid4()), timestamp()
+            with self._storage.transaction() as connection:
+                self._product(product_id)
+                connection.execute("""INSERT INTO sales_scripts(id, product_id, title, body, source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""", (script_id, product_id, fields["title"], fields["body"],
+                                                      "ai" if source == "ai" else "manual", now, now))
+                return self._script(script_id)
+
+    def _create_script(self, params: dict) -> dict:
+        return {"script": self.save_script(params.get("product_id"), params.get("title"), params.get("body"), "manual")}
+
+    def _update_script(self, params: dict) -> dict:
+        script_id = identifier(params.get("id"))
+        fields = self._script_fields(params, partial=True)
+        if not fields:
+            raise StudioError("VALIDATION_ERROR", "Provide a title or body to update.")
+        fields["updated_at"] = timestamp()
+        with self._storage.transaction() as connection:
+            self._script(script_id)
+            connection.execute("UPDATE sales_scripts SET " + ", ".join(f"{key} = ?" for key in fields) + " WHERE id = ?",
+                               (*fields.values(), script_id))
+            return {"script": self._script(script_id)}
+
+    def _delete_script(self, params: dict) -> dict:
+        script_id = identifier(params.get("id"))
+        with self._storage.transaction() as connection:
+            self._script(script_id)
+            connection.execute("DELETE FROM sales_scripts WHERE id = ?", (script_id,))
+        return {"deleted": True}
 
     def _list_products(self, params: dict) -> dict:
         rows = self._storage.connection.execute(
@@ -190,15 +292,21 @@ class StudioService:
         return row
 
     def _update_product(self, params: dict) -> dict:
-        # Name, price, stock and image belong to TikTok; Studio owns the description.
+        # Name, price, stock and image belong to TikTok; Studio owns the description and facts.
         product_id = identifier(params.get("id"))
-        if "description" not in params:
-            raise StudioError("VALIDATION_ERROR", "Provide the product description to update.")
-        description = product_fields({"name": "-", "description": params["description"]}, partial=True)["description"]
+        fields = {}
+        if "description" in params:
+            fields["description"] = product_fields({"name": "-", "description": params["description"]},
+                                                   partial=True)["description"]
+        if "facts" in params:
+            fields["facts"] = json.dumps(product_facts(params["facts"]), ensure_ascii=False)
+        if not fields:
+            raise StudioError("VALIDATION_ERROR", "Provide the product description or facts to update.")
+        fields["updated_at"] = timestamp()
         with self._storage.transaction() as connection:
             self._product(product_id)
-            connection.execute("UPDATE products SET description = ?, updated_at = ? WHERE id = ?",
-                               (description, timestamp(), product_id))
+            connection.execute("UPDATE products SET " + ", ".join(f"{key} = ?" for key in fields) + " WHERE id = ?",
+                               (*fields.values(), product_id))
             product = self._serialize_product(self._product(product_id))
         return {"product": product}
 

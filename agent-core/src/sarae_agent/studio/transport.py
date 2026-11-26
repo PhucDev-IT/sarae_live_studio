@@ -25,7 +25,15 @@ METHODS = (
     "studio.tiktok.status", "studio.tiktok.login", "studio.tiktok.connect", "studio.tiktok.sync",
     "studio.presenters.list", "studio.presenters.create", "studio.presenters.update", "studio.presenters.delete",
     "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url",
+    "studio.ai.config", "studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.test",
+    "studio.ai.reply",
+    "studio.scripts.list", "studio.scripts.create", "studio.scripts.update", "studio.scripts.delete",
+    "studio.scripts.generate",
 )
+# Provider calls run outside the service lock, on the transport's worker thread.
+AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",
+              "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply",
+              "studio.scripts.generate": "generate_script"}
 MAX_UPLOAD = 20 * 1024**3
 DEFAULT_ORIGINS = frozenset({"http://127.0.0.1:1420", "http://localhost:1420"})
 
@@ -47,6 +55,7 @@ class StudioTransport:
         self.stopped = threading.Event()
         self.ipc_emit = None
         self.tiktok = None  # TikTokConnector, attached by the runtime
+        self.ai = None  # StudioAI, attached by the runtime
 
     def _thumbnail_url(self, product: dict) -> dict:
         has_thumbnail = product.pop("has_thumbnail", False)
@@ -65,6 +74,13 @@ class StudioTransport:
             if method == "studio.tiktok.sync":
                 self.emit("studio.changed", {"method": method})
             return result
+        if method in AI_METHODS:
+            if self.ai is None:
+                raise StudioError("AI_UNAVAILABLE", "AI chưa sẵn sàng trong Studio Core.")
+            result = getattr(self.ai, AI_METHODS[method])(params)
+            if method in {"studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.scripts.generate"}:
+                self.emit("studio.changed", {"method": method})
+            return result
         if method == "studio.media.url":
             if set(params) != {"id"} or not isinstance(params["id"], str):
                 raise StudioError("INVALID_PARAMS", "Cần mã video hợp lệ.")
@@ -74,7 +90,7 @@ class StudioTransport:
         if method == "studio.status":
             result = {**result, "capabilities": {
                 **result.get("capabilities", {}), "native_dialog": self.native,
-                "local_file_reference": False, "obs": False, "ai": False,
+                "local_file_reference": False, "obs": False, "ai": self.ai is not None,
                 "tiktok_sync": self.tiktok is not None,
             }}
         if method == "studio.products.list":

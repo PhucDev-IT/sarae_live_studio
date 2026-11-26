@@ -70,6 +70,26 @@ MIGRATIONS = (
             last_synced_at TEXT NOT NULL
         )""",
     )),
+    # AI: structured product facts, non-secret settings (API keys live in DPAPI files)
+    # and sales scripts per product.
+    (4, (
+        "ALTER TABLE products ADD COLUMN facts TEXT NOT NULL DEFAULT '{}'",
+        """CREATE TABLE settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE sales_scripts (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 200),
+            body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 20000),
+            source TEXT NOT NULL CHECK(source IN ('ai', 'manual')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX sales_scripts_product_id ON sales_scripts(product_id)",
+    )),
 )
 
 

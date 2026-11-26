@@ -16,6 +16,7 @@ from sarae_agent.errors import AgentError
 from sarae_agent.ipc.server import IpcServer
 from sarae_agent.studio.service import StudioError, StudioService
 from sarae_agent.studio.storage import data_root
+from sarae_agent.studio.ai import StudioAI
 from sarae_agent.studio.tiktok import TikTokConnector
 from sarae_agent.studio.transport import METHODS, StudioHTTPServer, StudioTransport
 
@@ -65,6 +66,7 @@ def run(args: argparse.Namespace) -> int:
         service = StudioService(root)
         transport = StudioTransport(service, native=args.ipc)
         tiktok = transport.tiktok = TikTokConnector(service, emit=transport.emit)
+        transport.ai = StudioAI(service)
         http = StudioHTTPServer(transport, 0 if args.ipc else args.port)
         http_thread = threading.Thread(target=http.serve_forever, name="studio-http", daemon=True)
         http_thread.start()

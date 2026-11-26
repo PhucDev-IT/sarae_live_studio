@@ -72,6 +72,19 @@ Luồng: **Mở Chrome đăng nhập** mở Chrome thường trên hồ sơ `tik
 
 Người dùng chỉ sửa được mô tả sản phẩm (dữ liệu cho AI). Chưa kiểm tra với tài khoản TikTok thật trong phiên phát triển này: test dùng trình duyệt giả và snapshot giả.
 
+### Trợ lý AI, thông tin sản phẩm và kịch bản
+
+Migration 4 thêm `products.facts` (JSON), bảng `settings` không chứa bí mật và bảng `sales_scripts`.
+
+- **Thông tin sản phẩm cho AI**: ngoài mô tả, mỗi sản phẩm có bảng size (cân nặng/chiều cao), màu, chất liệu, giao hàng/đổi trả, lưu ý và các dữ kiện thêm dạng khóa–giá trị. Core kiểm tra và chuẩn hóa; đồng bộ TikTok không ghi đè phần này.
+- **Provider**: `gemini` (cloud, key), `openai_compatible` (cloud HTTPS, key, đổi được `base_url` — OpenAI, OpenRouter…), `seller_brain` (llama.cpp của sarae-ai-live-studio, mặc định `http://127.0.0.1:8830/v1`, chỉ nhận địa chỉ loopback, gửi `json_schema` và `enable_thinking: false`). Seller Brain dùng chung GPU với OBS/TTS; UI cảnh báo trước khi chọn.
+- **API key** chỉ ghi, được mã hóa DPAPI với entropy riêng của Studio trong `secrets/ai-<provider>.dpapi.json`, UI chỉ thấy 4 ký tự cuối. Lỗi của provider được che key trước khi trả về. Key không nằm trong SQLite, settings hay log.
+- **Trả lời bình luận** (`studio.ai.reply`): ngữ cảnh chỉ gồm tên, giá, giá gốc, tồn kho, danh mục, mô tả và facts của sản phẩm được chọn; bình luận được coi là dữ liệu. Kết quả gồm intent, câu trả lời ngắn, `needs_review` và lý do. Trang Trợ lý AI có khung thử với bình luận mẫu; **chưa đọc chat TikTok, chưa gửi chat, chưa đọc TTS** — `action_executed` luôn `false`.
+- **Kịch bản LIVE**: AI soạn theo giọng điệu (thân thiện/sôi động/chuyên gia), thời lượng 1–15 phút và ghi chú; kịch bản được lưu, sửa, sao chép, xóa hoặc tự viết tay. Xóa sản phẩm xóa kịch bản của sản phẩm đó.
+- Gọi provider chạy ngoài khóa của service; bộ đếm lượt gọi/token/lỗi chỉ tồn tại trong phiên Core.
+
+Đã thử giao diện với một server giả lập Seller Brain trên máy (trả lời giá từ ngữ cảnh sản phẩm, đánh dấu cần duyệt, tạo kịch bản); **chưa gọi Gemini/OpenAI hay Seller Brain thật**. Test tự động dùng provider giả, không gọi mạng; một lần kiểm tra thủ công xác nhận DPAPI thật mã hóa và đọc lại được key.
+
 ### Người giới thiệu
 
 Migration số 2 thêm bảng `presenters` (tên, ghi chú, trạng thái hoạt động/tạm nghỉ) và bảng liên kết nhiều–nhiều `media_presenters`. Một video có thể gắn với nhiều người giới thiệu. Xóa người giới thiệu hoặc video chỉ xóa liên kết, không xóa video. Người đang tạm nghỉ vẫn giữ các liên kết cũ, nhưng không hiện trong danh sách chọn khi gắn video mới. Ứng dụng chưa có ảnh đại diện; avatar hiển thị chữ cái đầu của tên.
@@ -88,12 +101,13 @@ Trong thư viện video có nút gắn để đổi sản phẩm và người gi
 | `desktop/src/features/studio/` | Shell, sản phẩm, thư viện video và preview; xử lý mất kết nối. |
 | `agent-core/src/sarae_agent/studio/service.py` | Nghiệp vụ local dùng chung, không import Backend/identity/activation. |
 | `agent-core/src/sarae_agent/studio/storage.py` | SQLite, migration và transaction. |
+| `agent-core/src/sarae_agent/studio/ai.py` | Provider AI, key DPAPI, trả lời bình luận, soạn kịch bản. |
 | `agent-core/src/sarae_agent/studio/tiktok.py` | Kết nối Chrome TikTok, đồng bộ snapshot, cache ảnh bìa. |
 | `agent-core/src/sarae_agent/studio/transport.py` | HTTP RPC, upload, SSE và media Range. |
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description`), `studio.tiktok.status/login/connect/sync`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 
@@ -102,10 +116,10 @@ Các lệnh kiểm tra:
 ```powershell
 npm --prefix desktop run build
 Set-Location agent-core
-.venv/Scripts/python.exe -m pytest tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py -q
+.venv/Scripts/python.exe -m pytest tests/test_studio_ai.py tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py -q
 ```
 
-Kết quả bộ test trên: **118 passed** (26/11/2026, sau đồng bộ TikTok; các test CRUD sản phẩm tay được thay bằng test snapshot). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
+Kết quả bộ test trên: **142 passed** (26/11/2026, sau phần AI). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
 
 `cargo check --locked` và production build frontend đã qua. Sidecar PyInstaller được build và kiểm tra `--self-check`, IPC local, persistence, single-instance, graceful shutdown và dọn core sau khi bootloader bị đóng cưỡng bức; nhập video vẫn chạy khi FFprobe không có trên PATH nhờ binary trong bundle. Đây là kiểm tra trên máy phát triển, chưa phải chứng nhận bộ cài trên Windows sạch.
 

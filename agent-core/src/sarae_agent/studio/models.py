@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -137,3 +138,76 @@ def tiktok_snapshot(account: object, rows: object) -> tuple[dict, list[dict]]:
             "image_url": image if image.startswith("https://") else "",
         })
     return profile, products
+
+
+FACT_KEY = re.compile(r"[a-z][a-z0-9_]{1,30}")
+
+
+def _clean(value: object, field: str, limit: int) -> str:
+    if not isinstance(value, str) or "\x00" in value:
+        raise StudioError("VALIDATION_ERROR", f"{field} must be text.", {"field": field})
+    value = " ".join(value.split())
+    if len(value) > limit:
+        raise StudioError("VALIDATION_ERROR", f"{field} must be at most {limit} characters.", {"field": field})
+    return value
+
+
+def _measure(value: object, field: str, low: float, high: float) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or not low <= value <= high:
+        raise StudioError("VALIDATION_ERROR", f"{field} must be between {low:g} and {high:g}.", {"field": field})
+    return float(value)
+
+
+def product_facts(value: object) -> dict:
+    """Structured facts the AI may state about a product: what is not here is never claimed."""
+    if not isinstance(value, dict):
+        raise StudioError("VALIDATION_ERROR", "facts must be an object.", {"field": "facts"})
+    unknown = set(value) - {"sizes", "colors", "material", "shipping", "notes", "extras"}
+    if unknown:
+        raise StudioError("VALIDATION_ERROR", "Unknown product facts.", {"fields": sorted(map(str, unknown))})
+    sizes = value.get("sizes", [])
+    if not isinstance(sizes, list) or len(sizes) > 12:
+        raise StudioError("VALIDATION_ERROR", "sizes must list at most 12 rows.", {"field": "sizes"})
+    clean_sizes = []
+    for row in sizes:
+        if not isinstance(row, dict) or set(row) - {"size", "weight_min", "weight_max", "height_min", "height_max", "note"}:
+            raise StudioError("VALIDATION_ERROR", "A size row is invalid.", {"field": "sizes"})
+        size = _clean(row.get("size", ""), "size", 10).upper()
+        if not size:
+            raise StudioError("VALIDATION_ERROR", "Each size row needs a size name.", {"field": "sizes"})
+        item = {"size": size, "note": _clean(row.get("note", ""), "note", 80)}
+        for key, low, high in (("weight_min", 20, 200), ("weight_max", 20, 200), ("height_min", 90, 230), ("height_max", 90, 230)):
+            item[key] = _measure(row.get(key), key, low, high)
+        for low, high in (("weight_min", "weight_max"), ("height_min", "height_max")):
+            if item[low] is not None and item[high] is not None and item[low] > item[high]:
+                raise StudioError("VALIDATION_ERROR", f"Size {size}: the range starts after it ends.", {"field": "sizes"})
+        clean_sizes.append(item)
+    colors = value.get("colors", [])
+    if not isinstance(colors, list) or len(colors) > 20:
+        raise StudioError("VALIDATION_ERROR", "colors must list at most 20 colors.", {"field": "colors"})
+    clean_colors: list[str] = []
+    for color in colors:
+        color = _clean(color, "colors", 30)
+        if color and color.casefold() not in {item.casefold() for item in clean_colors}:
+            clean_colors.append(color)
+    extras = value.get("extras", {})
+    if not isinstance(extras, dict) or len(extras) > 30:
+        raise StudioError("VALIDATION_ERROR", "extras must have at most 30 entries.", {"field": "extras"})
+    clean_extras = {}
+    for key, text in extras.items():
+        if not isinstance(key, str) or not FACT_KEY.fullmatch(key):
+            raise StudioError("VALIDATION_ERROR", "Extra fact names use lowercase letters, digits and _.",
+                              {"field": "extras", "key": str(key)[:40]})
+        text = _clean(text, key, 200)
+        if text:
+            clean_extras[key] = text
+    return {"sizes": clean_sizes, "colors": clean_colors,
+            "material": _clean(value.get("material", ""), "material", 200),
+            "shipping": _clean(value.get("shipping", ""), "shipping", 300),
+            "notes": _clean(value.get("notes", ""), "notes", 500), "extras": clean_extras}
+
+
+EMPTY_FACTS = {"sizes": [], "colors": [], "material": "", "shipping": "", "notes": "", "extras": {}}

@@ -16,9 +16,26 @@ export interface Product {
   tiktok_seller_id: string | null
   tiktok_product_id: string | null
   last_synced_at: string | null
+  facts: ProductFacts
   created_at: string
   updated_at: string
 }
+
+export interface SizeRow { size: string; weight_min: number | null; weight_max: number | null; height_min: number | null; height_max: number | null; note: string }
+export interface ProductFacts { sizes: SizeRow[]; colors: string[]; material: string; shipping: string; notes: string; extras: Record<string, string> }
+
+export type AIProvider = 'gemini' | 'openai_compatible' | 'seller_brain'
+export interface AIConfig { provider: AIProvider; model: string; base_url: string; enabled: boolean; max_output_tokens: number; temperature: number }
+export interface AIState {
+  config: AIConfig
+  keys: Partial<Record<AIProvider, { saved: boolean; last4: string | null }>>
+  usage: { requests: number; input_tokens: number; output_tokens: number; errors: number }
+  providers: Record<AIProvider, { needs_key: boolean; default_model: string; default_base_url: string }>
+}
+export interface AIUsage { provider: AIProvider; model: string; input_tokens: number; output_tokens: number; latency_ms: number }
+export interface AIReply { intent: string; reply: string; needs_review: boolean; reason: string; product_id: string | null; usage: AIUsage }
+export interface SalesScript { id: string; product_id: string; title: string; body: string; source: 'ai' | 'manual'; created_at: string; updated_at: string }
+export type ScriptStyle = 'friendly' | 'energetic' | 'expert'
 
 export interface TikTokAccount {
   user_id: string
@@ -116,6 +133,7 @@ function unwrap<T>(envelope: Envelope<T>): T {
 // A TikTok sync reloads the LIVE Console and waits for its product list.
 const slowMethods: Record<string, number> = {
   'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
+  'studio.ai.reply': 100_000, 'studio.ai.test': 100_000, 'studio.scripts.generate': 120_000,
 }
 
 async function request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -201,6 +219,18 @@ export const studioClient = {
   getStatus: () => request<StudioStatus>('studio.status'),
   listProducts: async () => (await request<{ products: Product[] }>('studio.products.list')).products,
   updateProductDescription: async (id: string, description: string) => (await request<{ product: Product }>('studio.products.update', { id, description })).product,
+  updateProduct: async (id: string, input: { description?: string; facts?: ProductFacts }) => (await request<{ product: Product }>('studio.products.update', { id, ...input })).product,
+  aiState: () => request<AIState>('studio.ai.config'),
+  aiConfigure: (input: Partial<AIConfig>) => request<AIState>('studio.ai.configure', { ...input }),
+  aiSetKey: (provider: AIProvider, apiKey: string) => request<AIState>('studio.ai.set_key', { provider, api_key: apiKey }),
+  aiDeleteKey: (provider: AIProvider) => request<AIState>('studio.ai.delete_key', { provider }),
+  aiTest: () => request<{ ok: boolean; usage: AIUsage; sample: string }>('studio.ai.test'),
+  aiReply: (input: { comment: string; product_id?: string; username?: string }) => request<AIReply>('studio.ai.reply', { ...input }),
+  listScripts: async (productId?: string) => (await request<{ scripts: SalesScript[] }>('studio.scripts.list', productId ? { product_id: productId } : {})).scripts,
+  generateScript: async (input: { product_id: string; style: ScriptStyle; duration_minutes: number; notes: string }) => (await request<{ script: SalesScript; usage: AIUsage }>('studio.scripts.generate', { ...input })),
+  createScript: async (input: { product_id: string; title: string; body: string }) => (await request<{ script: SalesScript }>('studio.scripts.create', { ...input })).script,
+  updateScript: async (id: string, input: { title?: string; body?: string }) => (await request<{ script: SalesScript }>('studio.scripts.update', { id, ...input })).script,
+  deleteScript: (id: string) => request<{ deleted: boolean }>('studio.scripts.delete', { id }),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),
   tiktokConnect: () => request<TikTokStatus>('studio.tiktok.connect'),
