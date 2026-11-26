@@ -4,6 +4,18 @@ Ngày triển khai: 26/11/2026. Nhánh `feat/local-tauri-studio`.
 
 Đã triển khai luồng đầu tiên trong tài liệu bàn giao: mở studio không cần tài khoản Sarae, CRUD sản phẩm trên SQLite, nhập video thành bản sao được quản lý, gắn với sản phẩm và xem trước. Tauri và browser dùng chung `StudioService`; không khởi động Backend SaaS, activation, cloud worker hoặc upload R2/Drive.
 
+## Chạy nhanh
+
+Bấm đúp `start-studio.cmd` ở thư mục gốc repo. Lần đầu script tự tạo `agent-core/.venv` và cài dependency Python và npm; các lần sau chỉ cài lại khi `pyproject.toml` hoặc `package-lock.json` đổi. Trình duyệt tự mở khi Studio sẵn sàng (đặt `SARAE_NO_BROWSER=1` để tắt). Nếu Studio đang chạy rồi, script chỉ mở lại trình duyệt.
+
+| Lệnh | Việc làm |
+| --- | --- |
+| `start-studio.cmd` | Studio trong trình duyệt, dữ liệu thật (`%LOCALAPPDATA%\SaraeLiveStudio`). |
+| `start-studio.cmd demo` | Như trên nhưng dữ liệu thử ở `.tmp\studio-demo`. |
+| `start-studio.cmd native` | Cửa sổ Tauri (cần Rust); `native rebuild` build lại sidecar Python. |
+| `start-studio.cmd test` | Chạy test Python của Studio/playback và build giao diện. |
+| `start-studio.cmd setup` | Chỉ cài hoặc cập nhật môi trường. |
+
 ## Chạy thử bằng browser trên Windows
 
 Cần Node tương thích Vite 8, Python 3.11–3.13 (khuyến nghị 3.12) và FFmpeg/FFprobe trên PATH. Dùng chính frontend trong `desktop/`.
