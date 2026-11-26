@@ -145,6 +145,14 @@ class IpcServer:
             self._pool.submit(self._execute, request)
         return "pipe_closed"
 
+    def finish_requests(self) -> None:
+        """Drain accepted work while the response writer is still available.
+
+        Local Studio calls this before core.stopped so a committed import can
+        still deliver its result when shutdown arrived during the copy.
+        """
+        self._pool.shutdown(wait=True)
+
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
         self.flush()

@@ -1,7 +1,7 @@
 [package]
 name = "sarae-agent-desktop"
-version = "0.2.0"
-description = "Sarae Windows Agent desktop shell (Tauri) hosting the Python Agent Core sidecar"
+version = "0.3.0"
+description = "Sarae Live Studio desktop shell (Tauri) hosting the local Python Studio Core sidecar"
 edition = "2021"
 rust-version = "1.77"
 

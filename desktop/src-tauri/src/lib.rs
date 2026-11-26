@@ -10,7 +10,7 @@ use crate::core::{CoreManager, CoreState};
 
 type Core<'a> = State<'a, Arc<CoreManager>>;
 
-/// Single entry point from React to the Agent Core. The Core validates method + params.
+/// Single entry point from React to Studio Core. The Core validates method + params.
 #[tauri::command]
 async fn core_request(core: Core<'_>, method: String, params: Option<Value>, timeout_ms: Option<u64>) -> Result<Value, Value> {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
@@ -65,25 +65,29 @@ pub fn run() {
             let core = app.state::<Arc<CoreManager>>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(message) = core.start(&handle).await {
-                    eprintln!("Agent Core start failed: {message}");
+                    eprintln!("Studio Core start failed: {message}");
                 }
             });
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("không khởi tạo được ứng dụng Sarae Agent");
+        .expect("không khởi tạo được ứng dụng Sarae Live Studio");
 
     app.run(|handle, event| {
         if let RunEvent::ExitRequested { api, .. } = &event {
             let core = handle.state::<Arc<CoreManager>>().inner().clone();
-            if core.is_running() && core.begin_exit() {
+            if core.begin_exit() {
                 // Keep the process alive until the Core has shut down cleanly.
                 api.prevent_exit();
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     core.stop(&handle).await;
+                    core.finish_exit();
                     handle.exit(0);
                 });
+            } else if !core.exit_completed() {
+                // Repeated close/quit requests must wait for the same shutdown task.
+                api.prevent_exit();
             }
         }
     });

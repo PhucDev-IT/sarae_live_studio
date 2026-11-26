@@ -2,6 +2,8 @@
 
 Ngày bàn giao: 26/11/2026. Nhánh: `feat/local-tauri-studio`. Repo: `PhucDev-IT/sarae_live_studio`.
 
+**Cập nhật triển khai 26/11/2026:** mốc nền local `0.3.0` đã có mã chạy cho shell, sản phẩm SQLite, nhập và preview video dùng chung service giữa browser/Tauri. Xem [trạng thái và cách chạy hiện tại](LOCAL_TAURI_STUDIO_STATUS.md). Các phần bên dưới ghi lại trạng thái bàn giao ban đầu trước khi triển khai.
+
 ## 1. Trạng thái bàn giao
 
 Nhánh được tách từ `dev` tại `33a0e35fce3a9989b6de0af4db6e454397e3969d`. Thay đổi chỉ gồm tài liệu tổng quan, tài liệu bàn giao này và liên kết trong README. Chưa thay đổi mã ứng dụng, cấu hình, dependency hoặc phiên bản; chưa có bản build Tauri local mới.

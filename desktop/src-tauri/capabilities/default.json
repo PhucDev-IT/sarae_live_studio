@@ -1,11 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "GUI may pick folders/images and reveal the diagnostics folder. It has NO shell permission: only Rust spawns the bundled Agent Core, and the Core accepts a fixed method list.",
+  "description": "The local studio may select media with the native file dialog. Only Rust spawns the bundled Studio Core; the webview has no shell or arbitrary filesystem permission.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:allow-open",
-    "opener:allow-reveal-item-in-dir"
+    "dialog:allow-open"
   ]
 }

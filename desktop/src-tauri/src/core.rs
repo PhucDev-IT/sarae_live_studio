@@ -1,4 +1,4 @@
-//! CoreManager: owns the Python Agent Core sidecar and its JSON Lines channel.
+//! CoreManager: owns the local Python Studio Core sidecar and its JSON Lines channel.
 //!
 //! * Exactly one Core child per app session (start/stop serialised by `lifecycle`).
 //! * Requests are matched to responses by `request_id`; every request has a timeout and
@@ -39,6 +39,8 @@ pub struct CoreState {
 }
 
 pub struct CoreManager {
+    // Publishing a child and handling termination must update the same generation atomically.
+    ownership: Mutex<()>,
     child: Mutex<Option<CommandChild>>,
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     state: Mutex<CoreState>,
@@ -47,6 +49,7 @@ pub struct CoreManager {
     counter: AtomicU64,
     generation: AtomicU64,
     exiting: AtomicBool,
+    exit_completed: AtomicBool,
     exited: Notify,
     lifecycle: tokio::sync::Mutex<()>,
 }
@@ -65,6 +68,7 @@ fn valid_method(method: &str) -> bool {
 impl CoreManager {
     pub fn new() -> Self {
         Self {
+            ownership: Mutex::new(()),
             child: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             state: Mutex::new(CoreState { phase: "stopped".into(), ..Default::default() }),
@@ -73,6 +77,7 @@ impl CoreManager {
             counter: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             exiting: AtomicBool::new(false),
+            exit_completed: AtomicBool::new(false),
             exited: Notify::new(),
             lifecycle: tokio::sync::Mutex::new(()),
         }
@@ -95,6 +100,14 @@ impl CoreManager {
         !self.exiting.swap(true, Ordering::SeqCst)
     }
 
+    pub fn finish_exit(&self) {
+        self.exit_completed.store(true, Ordering::SeqCst);
+    }
+
+    pub fn exit_completed(&self) -> bool {
+        self.exit_completed.load(Ordering::SeqCst)
+    }
+
     fn update_state(&self, app: &AppHandle, f: impl FnOnce(&mut CoreState)) {
         let snapshot = {
             let mut state = self.state.lock().unwrap();
@@ -110,6 +123,7 @@ impl CoreManager {
     }
 
     fn spawn_locked(self: &Arc<Self>, app: &AppHandle) -> Result<CoreState, String> {
+        let _ownership = self.ownership.lock().unwrap();
         if self.is_running() {
             return Ok(self.state());
         }
@@ -121,7 +135,7 @@ impl CoreManager {
             .shell()
             .sidecar(SIDECAR)
             .map_err(|e| format!("Không tìm thấy Agent Core: {e}"))?
-            .args(["--ipc", "--parent-pid", parent_pid.as_str()]);
+            .args(["--studio", "--ipc", "--parent-pid", parent_pid.as_str()]);
         let (mut rx, child) = command.spawn().map_err(|e| format!("Không khởi chạy được Agent Core: {e}"))?;
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let pid = child.pid();
@@ -200,11 +214,14 @@ impl CoreManager {
             }
             Some("event") => {
                 let name = frame.get("event").and_then(Value::as_str).unwrap_or("");
-                if name == "core.ready" && self.state().generation == generation {
+                if name == "core.ready" {
                     let version = frame.pointer("/data/version").and_then(Value::as_str).map(str::to_string);
                     self.update_state(app, |s| {
-                        s.phase = "ready".into();
-                        s.version = version;
+                        // A delayed ready event must not cancel an intentional shutdown.
+                        if s.generation == generation && s.phase == "starting" {
+                            s.phase = "ready".into();
+                            s.version = version;
+                        }
                     });
                 } else if name == "core.error" {
                     let data = frame.get("data").cloned();
@@ -217,6 +234,7 @@ impl CoreManager {
     }
 
     fn on_terminated(self: &Arc<Self>, app: &AppHandle, generation: u64, code: Option<i32>) {
+        let _ownership = self.ownership.lock().unwrap();
         if self.state().generation != generation {
             return;
         }
@@ -224,7 +242,9 @@ impl CoreManager {
         for (_, sender) in self.pending.lock().unwrap().drain() {
             let _ = sender.send(json!({ "ok": false, "error": error("CORE_EXITED", "Agent Core đã dừng") }));
         }
-        let expected = self.state().phase == "stopping" || self.exiting.load(Ordering::SeqCst);
+        // A forced stop may report Terminated after stop() has already returned.
+        let expected = matches!(self.state().phase.as_str(), "stopping" | "stopped")
+            || self.exiting.load(Ordering::SeqCst);
         self.update_state(app, |s| {
             s.phase = if expected { "stopped".into() } else { "crashed".into() };
             s.pid = None;
@@ -233,7 +253,8 @@ impl CoreManager {
                 s.last_error = Some(error("CORE_CRASHED", format!("Agent Core thoát bất thường (mã {:?})", code)));
             }
         });
-        self.exited.notify_waiters();
+        // stop() has one serialized waiter; retain a permit if it has not started polling yet.
+        self.exited.notify_one();
         if expected {
             return;
         }
@@ -306,14 +327,15 @@ impl CoreManager {
 
     pub async fn stop(&self, app: &AppHandle) -> CoreState {
         let _guard = self.lifecycle.lock().await;
-        if !self.is_running() {
-            self.update_state(app, |s| s.phase = "stopped".into());
-            return self.state();
-        }
-        let was_ready = self.state().phase == "ready";
-        self.update_state(app, |s| s.phase = "stopping".into());
-        if was_ready {
-            // Core stops its Cloud worker, monitor and OBS session, then exits on its own.
+        {
+            let _ownership = self.ownership.lock().unwrap();
+            if !self.is_running() {
+                self.update_state(app, |s| s.phase = "stopped".into());
+                return self.state();
+            }
+            self.update_state(app, |s| s.phase = "stopping".into());
+            // Studio Core closes its local service and media server, then exits on its own.
+            // During startup this small frame waits in stdin until the reader is ready.
             let frame = json!({ "v": 1, "type": "request", "request_id": "shutdown", "method": "system.shutdown", "params": {} });
             if let Some(child) = self.child.lock().unwrap().as_mut() {
                 let mut line = serde_json::to_vec(&frame).unwrap_or_default();
@@ -331,8 +353,15 @@ impl CoreManager {
             }
         };
         if tokio::time::timeout(Duration::from_secs(20), wait).await.is_err() {
+            let _ownership = self.ownership.lock().unwrap();
+            if !self.is_running() {
+                return self.state();
+            }
             if let Some(child) = self.child.lock().unwrap().take() {
                 let _ = child.kill();
+            }
+            for (_, sender) in self.pending.lock().unwrap().drain() {
+                let _ = sender.send(json!({ "ok": false, "error": error("CORE_EXITED", "Studio Core đã dừng") }));
             }
             self.update_state(app, |s| {
                 s.phase = "stopped".into();

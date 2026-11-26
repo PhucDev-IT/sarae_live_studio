@@ -1,5 +1,6 @@
 """Agent Core entrypoint (PyInstaller sidecar `sarae-agent-core`).
 
+    sarae-agent-core --studio [studio options]    local Studio transport (no legacy Agent runtime)
     sarae-agent-core --ipc [--parent-pid PID]   JSON Lines IPC on stdin/stdout (used by the GUI)
     sarae-agent-core --self-check                verify bundled native deps, print JSON, exit
     sarae-agent-core --version
@@ -164,6 +165,13 @@ def run_ipc(parent_pid: int | None) -> int:
 
 
 def main() -> int:
+    # Studio owns its arguments and lifecycle; do not initialize the legacy Agent runtime.
+    if "--studio" in sys.argv[1:]:
+        del sys.argv[sys.argv.index("--studio", 1)]
+        from sarae_agent.studio.__main__ import main as studio_main
+
+        return studio_main()
+
     parser = argparse.ArgumentParser(prog="sarae-agent-core", description="Sarae Windows Agent Core")
     parser.add_argument("--ipc", action="store_true", help="run JSON Lines IPC on stdin/stdout (default)")
     parser.add_argument("--parent-pid", type=int, default=None, help="exit when this process exits")

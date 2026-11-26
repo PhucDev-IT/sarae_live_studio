@@ -2,6 +2,8 @@
 
 Ngày chốt yêu cầu: 26/11/2026. Trạng thái: thiết kế để triển khai tiếp trên máy khác; nhánh bàn giao chỉ bổ sung tài liệu, chưa chuyển đổi ứng dụng.
 
+**Cập nhật 26/11/2026:** luồng nền đầu tiên đã được triển khai ở phiên bản `0.3.0`; xem [trạng thái thực tế và hướng dẫn chạy](LOCAL_TAURI_STUDIO_STATUS.md). Tài liệu này tiếp tục mô tả kiến trúc đích cho toàn bộ các giai đoạn, không phải danh sách tính năng đã hoàn thành.
+
 Sarae Live Studio sẽ trở thành một ứng dụng Windows dùng Tauri 2, mở thẳng vào studio, quản lý dữ liệu và video trên máy. Một bộ giao diện React phục vụ cả cửa sổ Tauri lẫn chế độ chạy thử bằng trình duyệt. Bộ não trả lời khách được tích hợp vào runtime local và được phép gọi API AI bên ngoài.
 
 ## 1. Yêu cầu đã thống nhất

@@ -10,10 +10,11 @@ Monorepo for an internal live-commerce production workspace.
 
 ## Hướng chuyển đổi sang studio local
 
-Nhánh `feat/local-tauri-studio` chuẩn bị chuyển sang một ứng dụng Windows Tauri dùng chung frontend để chạy thử trên web, bỏ đăng nhập/license/activation Sarae và lưu video cùng dữ liệu trên máy. AI được phép dùng API bên ngoài. Nhánh hiện chỉ bổ sung thiết kế và hướng dẫn bàn giao, chưa thay đổi mã chạy:
+Nhánh `feat/local-tauri-studio` đang chuyển sang ứng dụng Windows Tauri dùng chung frontend để chạy thử trên web, bỏ đăng nhập/license/activation Sarae và lưu video cùng dữ liệu trên máy. Mốc `0.3.0` đã có shell local, sản phẩm SQLite, nhập và preview video. AI/OBS và các nghiệp vụ LIVE sẽ chuyển ở các mốc tiếp theo:
 
 - [Tổng quan kiến trúc và kế hoạch chuyển đổi](docs/LOCAL_TAURI_STUDIO_OVERVIEW.md).
 - [Bàn giao và cách tiếp tục trên máy khác](docs/LOCAL_TAURI_STUDIO_HANDOFF.md).
+- [Trạng thái triển khai, kiểm thử và cách chạy studio local](docs/LOCAL_TAURI_STUDIO_STATUS.md). Chạy browser: `npm --prefix desktop run studio` hoặc `start-studio.cmd` sau khi cài dependency theo hướng dẫn.
 
 ## Local prerequisites
 
