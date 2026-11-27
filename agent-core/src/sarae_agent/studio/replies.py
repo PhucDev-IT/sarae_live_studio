@@ -268,6 +268,13 @@ class ReplyDesk:
             self._chat_by_session = False
             self.reader.stop()
 
+    def _product_on_air(self) -> str | None:
+        current = getattr(self.live, "current_product_id", None)
+        try:
+            return current() if callable(current) else None
+        except Exception:  # noqa: BLE001 - no context is better than a failed reply
+            return None
+
     # --- intake ----------------------------------------------------------------------------
     def _on_chat(self, message: dict) -> None:
         self.ingest(message, simulated=False)
@@ -348,8 +355,8 @@ class ReplyDesk:
                 self._changed()
                 return
             entry["stage"] = "thinking"
-            status = self.live.engine
-            entry["product_id"] = status.product_id if status.active and isinstance(status.product_id, str) else None
+            # The product the timeline has pinned for the current position of the video on air.
+            entry["product_id"] = self._product_on_air()
         self._changed()
         try:
             params = {"comment": entry["comment"], "username": entry["nickname"] or entry["username"]}
@@ -490,7 +497,7 @@ class ReplyDesk:
         return {"settings": self.settings(), "chat": self.reader.snapshot(), "entries": entries, "stats": stats,
                 "queued": queued, "voice": voice, "voices": list(VOICES),
                 "account_username": (account or {}).get("user_name") or None,
-                "product_id": self.live.engine.product_id if self.live.engine.active else None}
+                "product_id": self._product_on_air()}
 
     def configure(self, params: dict) -> dict:
         self.service.set_setting(SETTING_KEY, validate_settings(params, self.settings()))

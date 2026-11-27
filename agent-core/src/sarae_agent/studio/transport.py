@@ -24,16 +24,15 @@ METHODS = (
     "studio.status", "studio.products.list", "studio.products.update", "studio.products.delete",
     "studio.tiktok.status", "studio.tiktok.login", "studio.tiktok.connect", "studio.tiktok.sync",
     "studio.presenters.list", "studio.presenters.create", "studio.presenters.update", "studio.presenters.delete",
-    "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url",
+    "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url", "studio.media.inspect", "studio.media.thumbnail",
+    "studio.media.markers.list", "studio.media.markers.set",
     "studio.ai.config", "studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.test",
     "studio.ai.reply",
-    "studio.scripts.list", "studio.scripts.create", "studio.scripts.update", "studio.scripts.delete",
-    "studio.scripts.generate",
     "studio.obs.status", "studio.obs.configure", "studio.obs.connect", "studio.obs.disconnect",
     "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
-    "studio.live.sessions.delete", "studio.live.status", "studio.live.start", "studio.live.switch",
-    "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous",
-    "studio.live.cancel_pending", "studio.live.stop", "studio.live.automation",
+    "studio.live.sessions.delete", "studio.live.status", "studio.live.start",
+    "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous", "studio.live.seek",
+    "studio.live.stop", "studio.live.pins",
     "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
     "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
     "studio.replies.dismiss", "studio.replies.stop_voice",
@@ -43,15 +42,14 @@ LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_
                 "studio.obs.connect": "obs_connect", "studio.obs.disconnect": "obs_disconnect",
                 "studio.live.sessions.list": "sessions_list", "studio.live.sessions.create": "sessions_create",
                 "studio.live.sessions.update": "sessions_update", "studio.live.sessions.delete": "sessions_delete",
-                "studio.live.status": "status", "studio.live.start": "start", "studio.live.switch": "switch",
+                "studio.live.status": "status", "studio.live.start": "start",
                 "studio.live.pause": "pause", "studio.live.resume": "resume", "studio.live.next": "next",
-                "studio.live.previous": "previous", "studio.live.cancel_pending": "cancel_pending",
-                "studio.live.stop": "stop", "studio.live.automation": "configure_automation"}
+                "studio.live.previous": "previous", "studio.live.seek": "seek",
+                "studio.live.stop": "stop", "studio.live.pins": "configure_pins"}
 READ_ONLY_LIVE = {"studio.obs.status", "studio.live.sessions.list", "studio.live.status"}
 # Provider calls run outside the service lock, on the transport's worker thread.
 AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",
-              "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply",
-              "studio.scripts.generate": "generate_script"}
+              "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply"}
 MAX_UPLOAD = 20 * 1024**3
 DEFAULT_ORIGINS = frozenset({"http://127.0.0.1:1420", "http://localhost:1420"})
 
@@ -81,6 +79,10 @@ class StudioTransport:
         has_thumbnail = product.pop("has_thumbnail", False)
         url = f"{self.base_url}/studio/thumbnails/{quote(product['id'], safe='')}?token={self.token}"
         return {**product, "thumbnail_url": url if has_thumbnail and self.base_url else None}
+
+    def _media_thumbnail_url(self, media: dict) -> dict:
+        url = f"{self.base_url}/studio/media-thumbnails/{quote(media['id'], safe='')}?token={self.token}&v={quote(media['sha256'], safe='')}"
+        return {**media, "thumbnail_url": url if media.get("has_thumbnail") and self.base_url else None}
 
     def dispatch(self, method: str, params: dict) -> dict:
         if method not in METHODS:
@@ -118,6 +120,8 @@ class StudioTransport:
             self.service.resolve_media(params["id"])
             return {"url": f"{self.base_url}/studio/media/{quote(params['id'], safe='')}?token={self.token}"}
         result = self.service.dispatch(method, params)
+        if method in {"studio.media.inspect", "studio.media.thumbnail"}:
+            self.emit("studio.changed", {"method": method})
         if method == "studio.status":
             result = {**result, "capabilities": {
                 **result.get("capabilities", {}), "native_dialog": self.native,
@@ -128,9 +132,14 @@ class StudioTransport:
             result = {"products": [self._thumbnail_url(product) for product in result["products"]]}
         elif method == "studio.products.update":
             result = {"product": self._thumbnail_url(result["product"])}
-        if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"}:
+        elif method == "studio.media.list":
+            result = {"media": [self._media_thumbnail_url(media) for media in result["media"]]}
+        elif method.startswith("studio.media.") and "media" in result:
+            result = {"media": self._media_thumbnail_url(result["media"])}
+        if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"} or method == "studio.media.markers.set":
             self.emit("studio.changed", {"method": method})
             if self.live is not None and method.split(".")[1] in {"media", "products"}:
+                # A running session pins by the new markers from its current position.
                 self.live.refresh()
         return result
 
@@ -262,6 +271,10 @@ class StudioHandler(BaseHTTPRequestHandler):
             if self._authorize(query_token=True):
                 self._thumbnail(path.removeprefix("/studio/thumbnails/"))
             return
+        if path.startswith("/studio/media-thumbnails/"):
+            if self._authorize(query_token=True):
+                self._media_thumbnail(path.removeprefix("/studio/media-thumbnails/"))
+            return
         if path == "/studio/events" and not self.transport.native:
             if self._authorize(query_token=True):
                 self._events()
@@ -355,6 +368,20 @@ class StudioHandler(BaseHTTPRequestHandler):
                 # Repeated query key: ?presenter_id=a&presenter_id=b
                 args["presenter_ids"] = params["presenter_id"]
             return self.transport.dispatch("studio.media.import", args)
+
+    def _media_thumbnail(self, media_id: str):
+        try:
+            with self.transport.service.resolve_media_thumbnail(media_id).open("rb") as source:
+                data = source.read(2 * 1024 * 1024 + 1)
+            if len(data) > 2 * 1024 * 1024 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+                raise ValueError("Invalid cached thumbnail")
+        except (StudioError, OSError, ValueError):
+            self._error(404, "THUMBNAIL_MISSING", "Ảnh bìa video chưa được tạo hoặc không còn trong cache.")
+            return
+        self._headers(200, len(data), "image/jpeg")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _thumbnail(self, product_id: str):
         try:

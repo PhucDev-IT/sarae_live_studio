@@ -4,11 +4,12 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -47,6 +48,61 @@ def local_http(tmp_path, monkeypatch):
 
 def auth(transport):
     return {"Authorization": f"Bearer {transport.token}", "Content-Type": "application/json"}
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_real_video_thumbnail_is_local_and_token_protected(local_http, native):
+    service, transport, call = local_http
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("FFmpeg is required for video thumbnail integration")
+    source = service.data_dir / "thumbnail-source.mp4"
+    subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=c=blue:s=96x160:d=0.3", "-an", "-c:v", "mpeg4", str(source)],
+                   capture_output=True, check=True, timeout=15)
+    original = source.read_bytes()
+    media = service.dispatch("studio.media.import", {"source_path": str(source)})["media"]
+    transport.native = native
+    if native:
+        result = transport.dispatch("studio.media.thumbnail", {"id": media["id"]})
+    else:
+        status, body = rpc(call, transport, "studio.media.thumbnail", {"id": media["id"]})
+        assert status == 200
+        result = body["result"]
+    item = result["media"]
+    assert item["has_thumbnail"] is True
+    thumbnail_url = urlsplit(item["thumbnail_url"])
+    path = thumbnail_url.path + "?" + thumbnail_url.query
+    assert call("GET", thumbnail_url.path)[0] == 401
+    assert call("GET", path, headers={"Origin": "https://evil.example"})[0] == 403
+    status, headers, image = call("GET", path)
+    assert status == 200 and headers["Content-Type"] == "image/jpeg"
+    assert image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9")
+    assert call("HEAD", path)[2] == b""
+    assert source.read_bytes() == original
+    assert transport.dispatch("studio.media.list", {})["media"][0]["thumbnail_url"] == item["thumbnail_url"]
+    assert call("GET", "/studio/media-thumbnails/..%2Fprivate?token=" + transport.token)[0] == 404
+
+
+def test_metadata_inspection_uses_shared_service_and_emits_update(local_http, monkeypatch):
+    service, transport, call = local_http
+    source = service.data_dir / "old-video.mp4"
+    source.write_bytes(b"probe-injected-fixture")
+    media = service.dispatch("studio.media.import", {"source_path": str(source)})["media"]
+    with service._storage.transaction() as connection:
+        connection.execute("UPDATE media SET metadata_probed = 0 WHERE id = ?", (media["id"],))
+    monkeypatch.setattr(service_module, "probe_video", lambda _: {"duration_seconds": 12.5, "width": 1080, "height": 1920})
+    listener = transport.add_listener()
+    try:
+        status, body = rpc(call, transport, "studio.media.inspect", {"id": media["id"]})
+        assert status == 200
+        inspected = body["result"]["media"]
+        assert inspected["id"] == media["id"] and inspected["metadata_probed"] is True
+        assert (inspected["duration_seconds"], inspected["width"], inspected["height"]) == (12.5, 1080, 1920)
+        assert listener.get_nowait()["data"]["method"] == "studio.media.inspect"
+        assert service.dispatch("studio.media.list", {})["media"] == [inspected]
+    finally:
+        transport.remove_listener(listener)
 
 
 def rpc(call, transport, method, params=None):

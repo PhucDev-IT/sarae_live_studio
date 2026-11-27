@@ -71,6 +71,19 @@ Mặc định `%LOCALAPPDATA%\SaraeLiveStudio\studio.sqlite3`, video trong `medi
 - File gốc được giữ nguyên. Xóa video chỉ xóa bản sao trong thư viện; xóa sản phẩm giữ video và bỏ liên kết sản phẩm.
 - Resolver chỉ nhận ID, kiểm tra đường dẫn trong thư viện và dung lượng file. File thiếu/thay đổi hiển thị trạng thái thiếu file.
 - Preview hỗ trợ HTTP Range và tắt tiếng mặc định. MOV/MKV/HEVC và một số codec có thể nhập được nhưng browser/WebView không giải mã được; UI báo lỗi preview. Chưa có bước chuyển mã tự động.
+- Thẻ video hiển thị thời lượng, dung lượng, tỷ lệ (9:16, 16:9…) và kích thước như thư viện của nhánh `dev`; cửa sổ xem trước có bảng file gốc, dung lượng, thời lượng, kích thước, tỷ lệ và thời điểm nhập. Migration 6 lưu metadata từ FFprobe, kể cả chiều xoay của video điện thoại. Khi mở thư viện, video cũ được đọc bổ sung từng file; không quét khi migration hoặc tải danh sách. Đọc thông số chạy ngoài khóa dữ liệu, không giữ khóa trong lúc chờ FFprobe. Nếu đọc lỗi, file vẫn được giữ và có thể bấm thử lại; dữ liệu chưa biết hiển thị rõ thay vì giả định bằng 0. Cần khởi động lại core sau cập nhật để áp dụng migration và method `studio.media.inspect`.
+
+Kiểm tra bổ sung cho thông số video: production build đạt; toàn bộ `agent-core/tests/test_studio*.py` đạt **200 test**. Đã thử UI riêng bằng video ngang/dọc thật và video cũ thiếu metadata: thẻ và bảng thông số hiển thị đúng, video cũ tự đọc bổ sung. Bộ test có migration từ schema 5, chiều xoay, thời lượng không xác định, lỗi/thử lại và thao tác đồng thời trong lúc probe. Với native, build lại sidecar bằng `start-studio.cmd native rebuild` để nhận mã đọc metadata mới.
+
+### Ảnh bìa video local (27/11/2026)
+
+Thư viện tự tạo thumbnail JPEG từ khung hình video, ưu tiên khoảng 10% thời lượng và tối đa giây đầu tiên. Ảnh giữ chiều xoay và tỷ lệ, cạnh dài tối đa 640 px, cache ở `thumbnails/media/` theo ID video và SHA-256. Video cũ và video mới được tạo ảnh lần lượt khi mở thư viện; tải danh sách không chạy FFmpeg. Tạo ảnh chạy ngoài khóa dữ liệu, không yêu cầu GPU, không upload lên dịch vụ ngoài và không thay đổi video gốc. Cache còn hợp lệ được dùng lại sau khi mở app; xóa video chỉ xóa ảnh tương ứng. Nếu ảnh lỗi hoặc thiếu FFmpeg, video vẫn xem được và có nút **Tạo lại ảnh bìa**.
+
+`studio.media.thumbnail` tạo ảnh qua cùng service cho IPC và HTTP; endpoint `GET/HEAD /studio/media-thumbnails/<id>` chỉ đọc cache và yêu cầu token local. Bản native đóng gói cả FFmpeg lẫn FFprobe, máy build cần hai executable trên PATH hoặc `SARAE_FFMPEG` / `SARAE_FFPROBE`. Sau cập nhật cần mở lại core; native dùng `start-studio.cmd native rebuild`.
+
+Đã kiểm tra thumbnail thật trên UI với video ngang và dọc (JPEG 640×360 / 360×640), tự tạo cho thư viện cũ và giữ các nhãn thông số. Bộ test riêng thư viện (`test_studio_storage`, `test_studio_media_metadata`, `test_studio_media_thumbnails`, `test_studio_presenters`, `test_studio_transport`) đạt **139 test**; production build frontend đạt. Kiểm tra gồm cache qua lần mở lại, lỗi FFmpeg/thử lại, giữ file gốc, xóa ảnh theo video, thao tác đồng thời và endpoint có token cho web/native. Chưa build lại bộ cài native cho thay đổi thumbnail.
+
+Kiểm tra tích hợp cuối sau cập nhật timeline: toàn bộ `test_studio*.py` đạt **210 test** (hai cảnh báo deprecation của dependency TikTokLive/websockets).
 - Browser gửi file theo luồng qua core local, giới hạn 20 GB, tiến trình gửi và kiểm tra được hiển thị. Native dùng dialog chọn đường dẫn rồi copy trong core; quá trình copy hiển thị trạng thái chờ. Native request hiện có timeout 120 giây; với video lớn nên kiểm tra thư viện sau timeout trước khi nhập lại.
 - Browser API chỉ bind loopback, kiểm tra Host/Origin và token ngẫu nhiên. Token kết nối không phải tài khoản hay license. Web dev chỉ cho origin `127.0.0.1:1420` và `localhost:1420`.
 
@@ -84,12 +97,9 @@ Luồng: **Mở Chrome đăng nhập** mở Chrome thường trên hồ sơ `tik
 
 Người dùng chỉ sửa được mô tả sản phẩm (dữ liệu cho AI). Chưa kiểm tra với tài khoản TikTok thật trong phiên phát triển này: test dùng trình duyệt giả và snapshot giả.
 
-### Tự ghim sản phẩm và tự đọc chat theo phiên
+### Tự đọc chat theo phiên
 
-- **Tự ghim** (công tắc "Tự ghim sản phẩm đang phát" trong phòng điều khiển, mặc định tắt): dùng nguyên cơ chế ghim theo video của `AutoPinService` trên Chrome của Studio. Khi phiên bắt đầu hoặc chuyển sản phẩm (kể cả tự đổi theo chính sách), sản phẩm TikTok tương ứng được ghim một lần cho mỗi lần chuyển; trước khi bấm, nó kiểm tra lại sản phẩm vẫn đang phát và tài khoản Console đúng tài khoản đã xác minh. Sản phẩm tạo tay không có mã TikTok nên không ghim. Nếu Chrome TikTok kết nối sau khi phiên đã chạy, việc ghim bắt đầu từ lần cập nhật trạng thái kế tiếp. Dừng phiên sẽ tắt danh sách ghim.
-- **Tự đọc chat** (tùy chọn của bàn trả lời, mặc định bật): phiên bắt đầu thì đọc chat công khai của tài khoản đã xác minh; phiên kết thúc thì dừng — chỉ khi chính phiên đã bật nó, chat bạn tự bấm "Đọc chat" được giữ nguyên.
-
-Đã kiểm thử bằng bộ ghim giả và trình đọc chat giả; **chưa ghim thật trên TikTok**.
+Tùy chọn của bàn trả lời (mặc định bật): phiên bắt đầu thì đọc chat công khai của tài khoản đã xác minh; phiên kết thúc thì dừng — chỉ khi chính phiên đã bật nó, chat bạn tự bấm "Đọc chat" được giữ nguyên. Đã kiểm thử bằng trình đọc chat giả.
 
 ### Trả lời khách bằng giọng đọc và bình luận
 
@@ -106,29 +116,34 @@ Theo mô hình `AI_AUTO_REPLY` của nhánh dev, gói trong `studio/replies.py` 
 
 Đóng gói: spec PyInstaller thêm `TikTokLive`/`TikTokLiveProto`; chưa build lại sidecar để xác nhận.
 
-### Phiên LIVE và phát video qua OBS
+### Phiên LIVE: Single Video Timeline như nhánh dev
 
-Studio không tự livestream bằng avatar: nó phát lại video sản phẩm đã quay sẵn vào Media Source của OBS; người vận hành tự bật stream TikTok/OBS. Migration 5 thêm `live_sessions` (tên, trạng thái draft/live/ended, chính sách phát, lý do kết thúc), `live_session_products` (thứ tự sản phẩm) và `live_events` (nhật ký, tối đa 500 dòng mỗi phiên).
+Studio không tự livestream bằng avatar và không tự đổi sản phẩm theo số video/phút (không khớp nội dung video — đã bỏ chế độ phát theo sản phẩm). Như dev (`docs/SINGLE_VIDEO_TIMELINE.md`): phiên là danh sách video phát nối tiếp, sản phẩm được ghim theo **mốc thời gian của từng video**; vị trí phát OBS là đồng hồ, nên ghim luôn khớp đoạn video đang giới thiệu.
 
-- Dùng lại nguyên runtime phát của Windows Agent: `ObsController` (một kết nối obs-websocket, mật khẩu DPAPI), `PlaybackEngine` (nguồn A/B, hàng đợi theo sản phẩm, chuyển ngay / sau video hiện tại, chính sách thứ tự video và tự đổi sản phẩm, watchdog tự phục hồi) và `ObsSettingsStore`. Studio đặt `SARAE_AGENT_HOME=<dữ liệu studio>/engine`, nên cấu hình OBS, bản sao video đã xoay chiều và mật khẩu nằm trong dữ liệu Studio, không đụng thư mục Agent cũ. Model chính sách của engine được mở rộng để nhận UUID của Studio, vẫn giữ ID số/hex của bản cloud.
-- Một thời điểm chỉ một phiên được phát. Bắt đầu phát chọn sản phẩm đầu tiên có video sẵn sàng; sản phẩm chưa có video bị bỏ qua. Thêm/gỡ video hay sửa phiên khi đang phát được đẩy ngay vào engine.
-- Core khởi động lại không bao giờ tự phát tiếp: phiên đang "live" được đánh dấu kết thúc với lý do `core_restart`. Đóng Studio sẽ dừng video và kết thúc phiên (`core_stopped`).
-- Giao diện: danh sách phiên, trình soạn phiên (chọn/xếp sản phẩm, thứ tự video, tự đổi sản phẩm sau N video hoặc M phút), phòng điều khiển (sản phẩm đang phát, tiến độ video, tạm dừng/tiếp/trước/sau, chuyển ngay hoặc sau video này, hủy chuyển, nhật ký) và hộp thoại kết nối OBS.
+Khác dev để thao tác nhanh: mốc ghim **gắn với video trong thư viện** (đặt một lần, mọi phiên dùng lại), tự lưu, không có bước nháp → duyệt → kích hoạt. Migration 7 thêm `media_markers` (video, `at_ms`, PIN_PRODUCT/UNPIN_PRODUCT, sản phẩm), cột `video_ids`/`video_order`/`video_loop` của `live_sessions`, và xóa `live_session_products`, `sales_scripts` của bản trước.
 
-Đã kiểm thử tự động với obs-websocket giả và MP4 thật; giao diện được chạy với core thật nhưng OBS giả lập. **Chưa thử với OBS thật** — trên máy đang LIVE, chỉ thử khi không có phiên phát thật.
+- **Đặt mốc** (Thư viện video → "Đặt mốc ghim"): xem video, chọn sản phẩm, bấm "Ghim từ mm:ss" (phím P) hoặc "Bỏ ghim từ mm:ss" (phím U). Thanh thời gian tô màu đoạn ghim từng sản phẩm; sửa thời điểm, đổi sản phẩm, xóa từng mốc; tự lưu. Chỉ sản phẩm đồng bộ từ TikTok mới ghim được; xóa sản phẩm xóa các mốc của nó.
+- **Phiên**: tên, các video theo thứ tự, phát lần lượt/ngẫu nhiên/xáo trộn, lặp lại hay một lượt. Bấm "Phát" là chạy. Khi đang phát chỉ đổi được tên và lặp lại.
+- **Ghim theo mốc**: dùng nguyên `TimelineScheduler` của Agent (chỉ ghim khi khác với cái đang ghim, tua không phát lại mốc đã qua, qua video kế giữ ghim cũ tới mốc đầu tiên, thử lại có giới hạn rồi `PIN_FAILED`, đọc lại Console định kỳ). Sửa mốc khi đang phát được áp ngay từ vị trí hiện tại.
+- **Chạy thử / ghim thật** (công tắc, mặc định chạy thử như dry-run của dev): chạy thử chỉ ghi lại sẽ ghim gì; ghim thật bấm trên TikTok LIVE Console qua Chrome của Studio (`ConsolePinExecutor`) và chỉ khi Console xác nhận đang LIVE (`ConsoleLiveGate`, fail closed). Nhãn nhận diện LIVE của Console thừa hưởng từ dev, chưa kiểm chứng trên Console thật.
+- Engine phát, OBS và mật khẩu: `PlaybackEngine.video_play`, `ObsController`, `ObsSettingsStore` của Agent, dữ liệu trong `<dữ liệu studio>/engine` (`SARAE_AGENT_HOME`). Scheduler và model chính sách nhận UUID của Studio, vẫn giữ ID số của cloud.
+- Một phiên phát tại một thời điểm; video thiếu file chặn bắt đầu. Core khởi động lại không tự phát tiếp (`core_restart`); đóng Studio dừng video (`core_stopped`).
+- Phòng điều khiển: video đang phát, thanh tiến độ có chấm mốc (bấm để tua), mốc kế tiếp, trạng thái ghim (sẽ ghim / đang ghim / chờ LIVE / lỗi), danh sách video, nhật ký.
+- Bàn trả lời lấy ngữ cảnh AI từ sản phẩm timeline đang ghim.
 
-### Trợ lý AI, thông tin sản phẩm và kịch bản
+Kiểm thử tự động với obs-websocket giả, MP4 thật và executor chạy thử; giao diện chạy với core thật, OBS giả lập. **Chưa thử OBS thật và chưa ghim thật trên TikTok.** Overlay theo mốc (dev `LIVE_OVERLAYS.md`) là mốc kế tiếp; truyền sang điện thoại tạm hoãn.
 
-Migration 4 thêm `products.facts` (JSON), bảng `settings` không chứa bí mật và bảng `sales_scripts`.
+### Trợ lý AI và thông tin sản phẩm
+
+Migration 4 thêm `products.facts` (JSON) và bảng `settings` không chứa bí mật (bảng kịch bản đã bị xóa ở migration 7).
 
 - **Thông tin sản phẩm cho AI**: ngoài mô tả, mỗi sản phẩm có bảng size (cân nặng/chiều cao), màu, chất liệu, giao hàng/đổi trả, lưu ý và các dữ kiện thêm dạng khóa–giá trị. Core kiểm tra và chuẩn hóa; đồng bộ TikTok không ghi đè phần này.
 - **Provider**: `gemini` (cloud, key), `openai_compatible` (cloud HTTPS, key, đổi được `base_url` — OpenAI, OpenRouter…), `seller_brain` (llama.cpp của sarae-ai-live-studio, mặc định `http://127.0.0.1:8830/v1`, chỉ nhận địa chỉ loopback, gửi `json_schema` và `enable_thinking: false`). Seller Brain dùng chung GPU với OBS/TTS; UI cảnh báo trước khi chọn.
 - **API key** chỉ ghi, được mã hóa DPAPI với entropy riêng của Studio trong `secrets/ai-<provider>.dpapi.json`, UI chỉ thấy 4 ký tự cuối. Lỗi của provider được che key trước khi trả về. Key không nằm trong SQLite, settings hay log.
 - **Trả lời bình luận** (`studio.ai.reply`): ngữ cảnh chỉ gồm tên, giá, giá gốc, tồn kho, danh mục, mô tả và facts của sản phẩm được chọn; bình luận được coi là dữ liệu. Kết quả gồm intent, câu trả lời ngắn, `needs_review` và lý do. Trang Trợ lý AI có khung thử với bình luận mẫu; **chưa đọc chat TikTok, chưa gửi chat, chưa đọc TTS** — `action_executed` luôn `false`.
-- **Kịch bản LIVE**: AI soạn theo giọng điệu (thân thiện/sôi động/chuyên gia), thời lượng 1–15 phút và ghi chú; kịch bản được lưu, sửa, sao chép, xóa hoặc tự viết tay. Xóa sản phẩm xóa kịch bản của sản phẩm đó.
 - Gọi provider chạy ngoài khóa của service; bộ đếm lượt gọi/token/lỗi chỉ tồn tại trong phiên Core.
 
-Đã thử giao diện với một server giả lập Seller Brain trên máy (trả lời giá từ ngữ cảnh sản phẩm, đánh dấu cần duyệt, tạo kịch bản); **chưa gọi Gemini/OpenAI hay Seller Brain thật**. Test tự động dùng provider giả, không gọi mạng; một lần kiểm tra thủ công xác nhận DPAPI thật mã hóa và đọc lại được key.
+Đã thử giao diện với một server giả lập Seller Brain trên máy (trả lời giá từ ngữ cảnh sản phẩm, đánh dấu cần duyệt); **chưa gọi Gemini/OpenAI hay Seller Brain thật**. Test tự động dùng provider giả, không gọi mạng; một lần kiểm tra thủ công xác nhận DPAPI thật mã hóa và đọc lại được key.
 
 ### Người giới thiệu
 
@@ -147,14 +162,14 @@ Trong thư viện video có nút gắn để đổi sản phẩm và người gi
 | `agent-core/src/sarae_agent/studio/service.py` | Nghiệp vụ local dùng chung, không import Backend/identity/activation. |
 | `agent-core/src/sarae_agent/studio/storage.py` | SQLite, migration và transaction. |
 | `agent-core/src/sarae_agent/studio/replies.py` | Bàn trả lời: đọc chat, lọc, AI, giọng đọc và bình luận. |
-| `agent-core/src/sarae_agent/studio/live.py` | Phiên LIVE, điều khiển OBS qua PlaybackEngine của Agent. |
-| `agent-core/src/sarae_agent/studio/ai.py` | Provider AI, key DPAPI, trả lời bình luận, soạn kịch bản. |
+| `agent-core/src/sarae_agent/studio/live.py` | Phiên LIVE theo timeline: phát video qua PlaybackEngine, ghim theo mốc qua TimelineScheduler của Agent. |
+| `agent-core/src/sarae_agent/studio/ai.py` | Provider AI, key DPAPI, trả lời bình luận. |
 | `agent-core/src/sarae_agent/studio/tiktok.py` | Kết nối Chrome TikTok, đồng bộ snapshot, cache ảnh bìa. |
 | `agent-core/src/sarae_agent/studio/transport.py` | HTTP RPC, upload, SSE và media Range. |
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.scripts.list/create/update/delete/generate`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/switch/pause/resume/next/previous/cancel_pending/stop/automation`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/pause/resume/next/previous/seek/stop/pins`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url/markers.list/markers.set`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 

@@ -73,8 +73,8 @@ class FakeTikTok:
 
 
 def make_live(product_id=None):
-    engine = SimpleNamespace(active=product_id is not None, product_id=product_id)
-    return SimpleNamespace(engine=engine, _live_session=lambda: None)
+    """The LIVE layer as the desk sees it: the product the timeline has pinned now."""
+    return SimpleNamespace(current_product_id=lambda: product_id, _live_session=lambda: None)
 
 
 @pytest.fixture

@@ -120,6 +120,36 @@ MIGRATIONS = (
         )""",
         "CREATE INDEX live_events_session ON live_events(session_id, id)",
     )),
+    # Metadata is filled on import or explicit inspection, never during migration/listing.
+    (6, (
+        "ALTER TABLE media ADD COLUMN duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds > 0)",
+        "ALTER TABLE media ADD COLUMN width INTEGER CHECK(width IS NULL OR width > 0)",
+        "ALTER TABLE media ADD COLUMN height INTEGER CHECK(height IS NULL OR height > 0)",
+        "ALTER TABLE media ADD COLUMN metadata_probed INTEGER NOT NULL DEFAULT 0 CHECK(metadata_probed IN (0, 1))",
+    )),
+    # Single Video Timeline (dev docs/SINGLE_VIDEO_TIMELINE.md): a session plays videos in order, and products are
+    # pinned at time markers of each video. Markers belong to the video, so every session reuses them. The product
+    # lineup, rotation policy and sales scripts of earlier Studio builds are dropped (clean app, user decision).
+    (7, (
+        """CREATE TABLE media_markers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+            at_ms INTEGER NOT NULL CHECK(at_ms >= 0),
+            action TEXT NOT NULL CHECK(action IN ('PIN_PRODUCT', 'UNPIN_PRODUCT')),
+            product_id TEXT REFERENCES products(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL DEFAULT 0,
+            CHECK((action = 'PIN_PRODUCT') = (product_id IS NOT NULL))
+        )""",
+        "CREATE INDEX media_markers_media ON media_markers(media_id, at_ms, seq)",
+        "CREATE INDEX media_markers_product ON media_markers(product_id)",
+        "ALTER TABLE live_sessions ADD COLUMN video_ids TEXT NOT NULL DEFAULT '[]'",
+        """ALTER TABLE live_sessions ADD COLUMN video_order TEXT NOT NULL DEFAULT 'sequential'
+            CHECK(video_order IN ('sequential', 'random', 'shuffle'))""",
+        "ALTER TABLE live_sessions ADD COLUMN video_loop INTEGER NOT NULL DEFAULT 1 CHECK(video_loop IN (0, 1))",
+        "DROP TABLE live_session_products",
+        "DROP TABLE sales_scripts",
+        "DELETE FROM settings WHERE key = 'live_automation'",
+    )),
 )
 
 

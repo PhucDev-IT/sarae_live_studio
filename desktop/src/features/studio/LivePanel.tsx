@@ -1,20 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, Check, CircleStop, Clock3, Film, ListVideo, MonitorPlay, Package, Pause, Pencil, Pin, Play, Plus, Radio, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
-import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type PlaybackPolicy, type Product } from '../../services/studio'
+import { AlertTriangle, ArrowDown, ArrowUp, Check, CircleStop, Film, FlaskConical, ListVideo, MonitorPlay, Pause, Pencil, Pin, PinOff, Play, Plus, Radio, Repeat, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
+import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type Product, type VideoOrder } from '../../services/studio'
+import { clock } from './MarkerEditor'
 import { ReplyDesk } from './ReplyDesk'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
 type Props = { products: Product[]; media: Media[]; disabled: boolean; visible: boolean; onNotice: (message: string) => void }
-const defaultPolicy: PlaybackPolicy = { video_order: 'sequential', product_rotation: 'off', rotate_after_videos: 3, rotate_after_minutes: null, switch_mode: 'after_current', auto: true }
 const when = new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
-const endReasons: Record<string, string> = { operator: 'Bạn đã dừng', core_restart: 'Gián đoạn do ứng dụng khởi động lại', core_stopped: 'Ứng dụng đã đóng', playback_ended: 'Phát lỗi nhiều lần nên đã dừng' }
-const eventLabels: Record<string, string> = { STARTED: 'Bắt đầu phát', STOPPED: 'Đã dừng', PAUSE: 'Tạm dừng', RESUME: 'Phát tiếp', SWITCH_REQUESTED: 'Yêu cầu chuyển sản phẩm', PRODUCT_SWITCHED: 'Đã chuyển sản phẩm', PLAYBACK_ENDED: 'Phát kết thúc', ERROR: 'Lỗi phát video' }
+const endReasons: Record<string, string> = { operator: 'Bạn đã dừng', core_restart: 'Gián đoạn do ứng dụng khởi động lại', core_stopped: 'Ứng dụng đã đóng', playback_ended: 'Đã phát hết danh sách' }
+const eventLabels: Record<string, string> = { STARTED: 'Bắt đầu phát', STOPPED: 'Đã dừng', PAUSE: 'Tạm dừng', RESUME: 'Phát tiếp', PIN_APPLIED: 'Đã ghim theo mốc', PIN_FAILED: 'Ghim không được', PIN_DRIFT: 'Ghim bị đổi trên TikTok', LIVE_GATE_CHANGED: 'Trạng thái LIVE thay đổi', PIN_MODE: 'Đổi chế độ ghim', PLAYBACK_ENDED: 'Phát kết thúc', ERROR: 'Lỗi phát video' }
+const orders: [VideoOrder, string][] = [['sequential', 'Lần lượt'], ['random', 'Ngẫu nhiên'], ['shuffle', 'Xáo trộn']]
 
-function clock(ms: number | null | undefined) {
-  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '--:--'
-  const total = Math.max(0, Math.floor(ms / 1000))
-  return `${Math.floor(total / 60).toString().padStart(2, '0')}:${(total % 60).toString().padStart(2, '0')}`
-}
 function duration(seconds: number) {
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60)
   return h ? `${h} giờ ${m} phút` : `${m} phút`
@@ -29,13 +25,7 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
   const [obsOpen, setObsOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
-  const productById = useMemo(() => new Map(products.map(product => [product.id, product])), [products])
-  const videoCount = useMemo(() => {
-    const result = new Map<string, number>()
-    for (const item of media) if (item.product_id && item.status === 'ready') result.set(item.product_id, (result.get(item.product_id) ?? 0) + 1)
-    return result
-  }, [media])
-  const mediaNames = useMemo(() => new Map(media.map(item => [item.id, item.original_name])), [media])
+  const mediaById = useMemo(() => new Map(media.map(item => [item.id, item])), [media])
   const loadAll = useCallback(async () => {
     try {
       const [nextSessions, nextStatus, nextObs] = await Promise.all([studioClient.listLiveSessions(), studioClient.liveStatus(), studioClient.obsStatus()])
@@ -43,14 +33,14 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
     } catch (cause) { setError(errorMessage(cause)) }
   }, [])
   useEffect(() => { if (visible && !disabled) void loadAll() }, [visible, disabled, loadAll, products, media])
-  // While on air, poll the player (cursor/state change every second without a mutation event).
+  // While on air, poll the player: the cursor and the pins change every second without a mutation event.
   useEffect(() => {
     if (!visible || disabled || !status?.active) return
-    const timer = window.setInterval(() => { void studioClient.liveStatus().then(setStatus).catch(() => {}) }, 1500)
+    const timer = window.setInterval(() => { void studioClient.liveStatus().then(setStatus).catch(() => {}) }, 1000)
     return () => window.clearInterval(timer)
   }, [visible, disabled, status?.active])
 
-  const act = async (key: string, action: () => Promise<LiveStatus | unknown>, message?: string) => {
+  const act = async (key: string, action: () => Promise<unknown>, message?: string) => {
     if (busy || disabled) return
     setBusy(key)
     setError('')
@@ -63,73 +53,90 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
     finally { setBusy('') }
   }
   const live = status?.active ? status : null
-  const removeSession = async () => {
-    if (!deleting) return
-    await act('delete', () => studioClient.deleteLiveSession(deleting.id), 'Đã xóa phiên.')
-    setDeleting(null)
-  }
+  const realPins = status?.pins.real ?? false
 
   return <>
     <div className="studio-page-heading">
-      <div><h1>Phiên LIVE</h1><p>Phát lại video sản phẩm qua OBS; chuyển sản phẩm ngay hoặc sau video đang phát.</p></div>
+      <div><h1>Phiên LIVE</h1><p>Phát video qua OBS; sản phẩm được ghim đúng lúc video giới thiệu nó.</p></div>
       <div className="studio-actions">
         <button className={`studio-obs-chip ${obs?.connected ? 'ok' : 'off'}`} onClick={() => setObsOpen(true)} title="Cài đặt OBS"><MonitorPlay size={16} />{obs?.connected ? `OBS ${obs.obs_version ?? ''}`.trim() : 'OBS chưa kết nối'}<Settings2 size={14} /></button>
         <button className="studio-button primary" disabled={disabled} onClick={() => setEditing('new')}><Plus size={17} />Tạo phiên</button>
       </div>
     </div>
     {error && <ErrorNotice message={error} />}
-    {live && live.session && <ControlRoom status={live} session={live.session} productById={productById} videoCount={videoCount} mediaNames={mediaNames} busy={busy} disabled={disabled}
-      onSwitch={(productId, mode) => act('switch:' + productId + mode, () => studioClient.liveSwitch(productId, mode), mode === 'immediate' ? 'Đã chuyển sản phẩm.' : 'Sẽ chuyển sau video hiện tại.')}
+    {live && live.session && <ControlRoom status={live} session={live.session} mediaById={mediaById} busy={busy} disabled={disabled}
       onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)}
-      onAutoPin={enabled => act('autopin', () => studioClient.liveAutomation(enabled), enabled ? 'Đã bật tự ghim sản phẩm.' : 'Đã tắt tự ghim sản phẩm.')} />}
+      onSeek={ms => act('seek', () => studioClient.liveSeek(ms))}
+      onPins={real => act('pins', () => studioClient.livePins(real), real ? 'Đã bật ghim thật trên TikTok.' : 'Đã chuyển sang chạy thử: không bấm ghim trên TikTok.')} />}
     <ReplyDesk products={products} disabled={disabled} visible={visible} onNotice={onNotice} />
     <section className="studio-card">
-      <header className="studio-card-heading"><ListVideo size={19} /><div><h2>Danh sách phiên</h2><p>Mỗi phiên là một danh sách sản phẩm theo thứ tự cùng cách phát video.</p></div></header>
-      {!sessions.length ? <EmptyState icon={<Radio size={30} />} title="Chưa có phiên LIVE nào" description="Tạo phiên, chọn các sản phẩm đã có video, rồi bấm Phát khi OBS đã sẵn sàng." action={<button className="studio-button primary" disabled={disabled} onClick={() => setEditing('new')}><Plus size={16} />Tạo phiên đầu tiên</button>} />
+      <header className="studio-card-heading"><ListVideo size={19} /><div className="studio-grow"><h2>Danh sách phiên</h2><p>Mỗi phiên là các video phát nối tiếp; mốc ghim đặt sẵn trên từng video trong Thư viện video.</p></div>
+        {!live && <label className="studio-switch studio-pin-mode" title="Tắt: chạy thử, chỉ ghi lại sẽ ghim gì. Bật: bấm ghim thật trên TikTok LIVE Console."><input type="checkbox" role="switch" checked={realPins} disabled={disabled || !!busy || !status} onChange={event => void act('pins', () => studioClient.livePins(event.target.checked), event.target.checked ? 'Đã bật ghim thật trên TikTok.' : 'Đã chuyển sang chạy thử.')} /><span aria-hidden="true" /><small>{realPins ? 'Ghim thật trên TikTok' : 'Chạy thử (không ghim thật)'}</small></label>}
+      </header>
+      {!sessions.length ? <EmptyState icon={<Radio size={30} />} title="Chưa có phiên LIVE nào" description="Đặt mốc ghim cho video trong Thư viện video, rồi tạo phiên với các video đó và bấm Phát." action={<button className="studio-button primary" disabled={disabled} onClick={() => setEditing('new')}><Plus size={16} />Tạo phiên đầu tiên</button>} />
         : <ul className="studio-session-list">{sessions.map(session => {
-          const ready = session.product_ids.filter(id => videoCount.get(id)).length
+          const videos = session.video_ids.map(id => mediaById.get(id)).filter((item): item is Media => !!item)
+          const pins = videos.reduce((total, item) => total + (item.marker_count ?? 0), 0)
+          const missing = videos.filter(item => item.status === 'missing').length
           const isLive = session.status === 'live'
           return <li key={session.id} className={isLive ? 'live' : ''}>
-            <div className="studio-session-thumbs" aria-hidden="true">{session.product_ids.slice(0, 3).map(id => { const product = productById.get(id); return <span key={id}>{product?.thumbnail_url ? <img src={product.thumbnail_url} alt="" /> : <Package size={14} />}</span> })}</div>
+            <div className="studio-session-thumbs" aria-hidden="true">{videos.slice(0, 3).map(item => <span key={item.id}>{item.thumbnail_url ? <img src={item.thumbnail_url} alt="" /> : <Film size={14} />}</span>)}</div>
             <div className="studio-grow">
               <strong>{session.title}</strong>
-              <small>{session.product_ids.length} sản phẩm · {ready} có video{session.started_at ? ` · lần phát gần nhất ${when.format(new Date(session.started_at))}` : ''}{session.status === 'ended' && session.end_reason ? ` · ${endReasons[session.end_reason] ?? session.end_reason}` : ''}</small>
+              <small>{videos.length} video · {pins} mốc ghim · {orders.find(o => o[0] === session.video_order)?.[1]}{session.video_loop ? ', lặp lại' : ', phát một lượt'}{session.started_at ? ` · phát gần nhất ${when.format(new Date(session.started_at))}` : ''}{session.status === 'ended' && session.end_reason ? ` · ${endReasons[session.end_reason] ?? session.end_reason}` : ''}</small>
+              {missing > 0 && <small className="studio-warn-line"><AlertTriangle size={12} />{missing} video thiếu file</small>}
             </div>
-            {isLive ? <span className="studio-live-badge"><i />Đang phát</span> : <span className={`studio-tag ${session.status === 'ended' ? 'neutral' : 'honey'}`}>{session.status === 'ended' ? 'Đã kết thúc' : 'Nháp'}</span>}
+            {isLive ? <span className="studio-live-badge"><i />Đang phát</span> : <span className={`studio-tag ${session.status === 'ended' ? 'neutral' : 'honey'}`}>{session.status === 'ended' ? 'Đã kết thúc' : 'Chưa phát'}</span>}
             <div className="studio-actions">
-              {!isLive && <button className="studio-button" disabled={disabled || !!busy || !!live || !ready} title={!ready ? 'Chưa có sản phẩm nào có video' : live ? 'Đang có phiên khác phát' : 'Bắt đầu phát'} onClick={() => void act('start:' + session.id, () => studioClient.liveStart(session.id), 'Đã bắt đầu phát phiên LIVE.')}><Play size={15} fill="currentColor" />{busy === 'start:' + session.id ? 'Đang mở…' : 'Phát'}</button>}
+              {!isLive && <button className="studio-button primary" disabled={disabled || !!busy || !!live || !videos.length || missing > 0} title={live ? 'Đang có phiên khác phát' : 'Bắt đầu phát'} onClick={() => void act('start:' + session.id, () => studioClient.liveStart(session.id), realPins ? 'Đã bắt đầu phát, ghim thật theo mốc.' : 'Đã bắt đầu phát (chạy thử ghim).')}><Play size={15} fill="currentColor" />{busy === 'start:' + session.id ? 'Đang mở…' : 'Phát'}</button>}
               <button className="studio-button ghost icon-only" disabled={disabled} aria-label={`Sửa ${session.title}`} title="Sửa phiên" onClick={() => setEditing(session)}><Pencil size={16} /></button>
               <button className="studio-button ghost icon-only danger" disabled={disabled || isLive} aria-label={`Xóa ${session.title}`} title={isLive ? 'Dừng phiên trước khi xóa' : 'Xóa phiên'} onClick={() => setDeleting(session)}><Trash2 size={16} /></button>
             </div>
           </li>
         })}</ul>}
     </section>
-    {editing && <SessionEditor session={editing === 'new' ? null : editing} products={products} videoCount={videoCount} onClose={() => setEditing(null)} onSaved={async message => { setEditing(null); onNotice(message); await loadAll() }} />}
-    {deleting && <Modal title="Xóa phiên LIVE?" onClose={() => setDeleting(null)}><div className="studio-form"><p>Phiên <strong>{deleting.title}</strong> và nhật ký của nó sẽ bị xóa. Sản phẩm và video vẫn được giữ.</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setDeleting(null)}>Giữ lại</button><button className="studio-button danger-solid" disabled={!!busy} onClick={() => void removeSession()}>Xóa phiên</button></div></div></Modal>}
+    {editing && <SessionEditor session={editing === 'new' ? null : editing} media={media} onClose={() => setEditing(null)} onSaved={async message => { setEditing(null); onNotice(message); await loadAll() }} />}
+    {deleting && <Modal title="Xóa phiên LIVE?" onClose={() => setDeleting(null)}><div className="studio-form"><p>Phiên <strong>{deleting.title}</strong> và nhật ký của nó sẽ bị xóa. Video và mốc ghim vẫn được giữ.</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setDeleting(null)}>Giữ lại</button><button className="studio-button danger-solid" disabled={!!busy} onClick={() => void act('delete', () => studioClient.deleteLiveSession(deleting.id), 'Đã xóa phiên.').then(() => setDeleting(null))}>Xóa phiên</button></div></div></Modal>}
     {obsOpen && obs && <ObsSettings status={obs} live={!!live} onClose={() => setObsOpen(false)} onChanged={next => { setObs(next) }} onNotice={onNotice} />}
   </>
 }
 
-function ControlRoom({ status, session, productById, videoCount, mediaNames, busy, disabled, onSwitch, onControl, onAutoPin }: {
-  status: LiveStatus; session: LiveSession; productById: Map<string, Product>; videoCount: Map<string, number>; mediaNames: Map<string, string>; busy: string; disabled: boolean
-  onSwitch: (productId: string, mode: 'immediate' | 'after_current') => void; onControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => void
-  onAutoPin: (enabled: boolean) => void
+function PinState({ status }: { status: LiveStatus }) {
+  const pins = status.pins
+  const name = (id: string | null) => (id && pins.product_names[id]) || 'sản phẩm'
+  if (pins.real && !pins.chrome_connected) return <span className="studio-pin-state warn"><AlertTriangle size={13} />Chưa kết nối Chrome TikTok: vào Sản phẩm → Kết nối để ghim được</span>
+  if (pins.real && pins.live !== true) return <span className="studio-pin-state warn">Chờ TikTok xác nhận đang LIVE trên Console rồi mới ghim</span>
+  if (pins.in_flight) return <span className="studio-pin-state busy"><span className="studio-typing"><i /><i /><i /></span>{pins.in_flight.action === 'PIN_PRODUCT' ? `Đang ghim ${name(pins.in_flight.product_id)}` : 'Đang bỏ ghim'}…</span>
+  if (pins.last_error && pins.desired_product_id !== pins.actual_product_id) return <span className="studio-pin-state warn" title={pins.last_error}>Ghim chưa được: {pins.last_error}</span>
+  if (pins.actual_product_id) return <span className="studio-pin-state ok"><Check size={13} />{pins.real ? 'Đang ghim' : 'Chạy thử · sẽ ghim'} {name(pins.actual_product_id)}</span>
+  if (pins.desired_product_id) return <span className="studio-pin-state busy">Sắp ghim {name(pins.desired_product_id)}</span>
+  return <span className="studio-pin-state off"><PinOff size={13} />Chưa tới mốc ghim nào</span>
+}
+
+function ControlRoom({ status, session, mediaById, busy, disabled, onControl, onSeek, onPins }: {
+  status: LiveStatus; session: LiveSession; mediaById: Map<string, Media>; busy: string; disabled: boolean
+  onControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'stop') => void; onSeek: (ms: number) => void; onPins: (real: boolean) => void
 }) {
   const [confirmStop, setConfirmStop] = useState(false)
-  const current = status.product_id ? productById.get(status.product_id) : undefined
-  const pending = status.pending_product_id ? productById.get(status.pending_product_id) : undefined
-  const progress = status.duration_ms && status.cursor_ms !== null ? Math.min(100, Math.max(0, status.cursor_ms / status.duration_ms * 100)) : 0
+  const [confirmReal, setConfirmReal] = useState(false)
+  const current = status.media_id ? mediaById.get(status.media_id) : undefined
+  const length = status.duration_ms || (current?.duration_seconds ?? 0) * 1000 || 1
+  const cursor = status.cursor_ms ?? 0
   const locked = disabled || !!busy
+  const next = status.markers.find(marker => marker.at_ms > cursor)
   return <section className="studio-control-room" aria-label="Phòng điều khiển LIVE">
     <div className="studio-now-playing">
-      <div className="studio-now-cover">{current?.thumbnail_url ? <img src={current.thumbnail_url} alt="" /> : <Package size={34} />}<span className="studio-live-badge"><i />{status.paused ? 'Tạm dừng' : 'Đang phát'}</span></div>
+      <div className="studio-now-cover">{current?.thumbnail_url ? <img src={current.thumbnail_url} alt="" /> : <Film size={34} />}<span className="studio-live-badge"><i />{status.paused ? 'Tạm dừng' : 'Đang phát'}</span></div>
       <div className="studio-grow studio-now-info">
-        <small>{session.title} · đã phát {duration(status.session_seconds)}</small>
-        <h2>{current?.name ?? 'Sản phẩm không còn trong danh mục'}</h2>
-        <p className="studio-muted"><Film size={13} />Video {status.index + 1}/{status.queue.length}{status.media_id ? ` · ${mediaNames.get(status.media_id) ?? ''}` : ''}</p>
-        <div className="studio-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)} aria-label="Tiến độ video"><span style={{ width: `${progress}%` }} /></div>
-        <div className="studio-progress-time"><span>{clock(status.cursor_ms)}</span><span>{clock(status.duration_ms)}</span></div>
-        {pending && <div className="studio-pending"><Clock3 size={14} />Sau video này sẽ chuyển sang <strong>{pending.name}</strong><button className="studio-button ghost" disabled={locked} onClick={() => onControl('cancel_pending')}><X size={14} />Hủy</button></div>}
+        <small>{session.title} · đã phát {duration(status.session_seconds)}{status.loop_iteration ? ` · lượt ${status.loop_iteration + 1}` : ''}</small>
+        <h2 title={current?.original_name}>{current?.original_name ?? 'Video không còn trong thư viện'}</h2>
+        <p className="studio-muted"><Film size={13} />Video {status.index + 1}/{status.queue.length}{session.video_loop && <><Repeat size={12} />lặp lại</>}</p>
+        <div className="studio-progress studio-progress-markers" role="slider" tabIndex={0} aria-label="Vị trí video" aria-valuemin={0} aria-valuemax={Math.round(length)} aria-valuenow={Math.round(cursor)}
+          onClick={event => { if (locked) return; const box = event.currentTarget.getBoundingClientRect(); onSeek((event.clientX - box.left) / box.width * length) }}>
+          <span style={{ width: `${Math.min(100, cursor / length * 100)}%` }} />
+          {status.markers.map((marker, index) => <i key={index} className={marker.action === 'PIN_PRODUCT' ? 'pin' : 'unpin'} style={{ left: `${Math.min(100, marker.at_ms / length * 100)}%` }} title={`${clock(marker.at_ms)} · ${marker.action === 'PIN_PRODUCT' ? `Ghim ${marker.product_name ?? ''}` : 'Bỏ ghim'}`} />)}
+        </div>
+        <div className="studio-progress-time"><span>{clock(cursor)}</span><span>{next ? `${next.action === 'PIN_PRODUCT' ? `Ghim ${next.product_name ?? ''}` : 'Bỏ ghim'} sau ${clock(next.at_ms - cursor)}` : status.markers.length ? 'Hết mốc trong video này' : 'Video chưa có mốc ghim'}</span><span>{clock(length)}</span></div>
         {!status.obs_connected && <ErrorNotice message={`OBS không phản hồi${status.obs_error ? `: ${status.obs_error}` : ''}. Engine sẽ tự thử lại.`} />}
       </div>
       <div className="studio-transport">
@@ -140,87 +147,68 @@ function ControlRoom({ status, session, productById, videoCount, mediaNames, bus
       </div>
     </div>
     <div className="studio-automation">
-      <label className="studio-switch dark"><input type="checkbox" role="switch" checked={status.automation.auto_pin} disabled={locked} onChange={event => onAutoPin(event.target.checked)} /><span aria-hidden="true" /><small><Pin size={13} />Tự ghim sản phẩm đang phát</small></label>
-      <PinState status={status} productName={current?.name} />
+      <label className="studio-switch dark"><input type="checkbox" role="switch" checked={status.pins.real} disabled={locked} onChange={event => event.target.checked ? setConfirmReal(true) : onPins(false)} /><span aria-hidden="true" /><small>{status.pins.real ? <><Pin size={13} />Ghim thật trên TikTok</> : <><FlaskConical size={13} />Chạy thử ghim</>}</small></label>
+      <PinState status={status} />
     </div>
-    <div className="studio-lineup">{session.product_ids.map(id => {
-      const product = productById.get(id)
-      const count = videoCount.get(id) ?? 0
-      const isCurrent = id === status.product_id
-      const isPending = id === status.pending_product_id
-      return <article key={id} className={`studio-lineup-item${isCurrent ? ' current' : ''}${isPending ? ' pending' : ''}${!count ? ' empty' : ''}`}>
-        <span className="studio-lineup-thumb">{product?.thumbnail_url ? <img src={product.thumbnail_url} alt="" /> : <Package size={16} />}</span>
-        <div className="studio-grow"><strong title={product?.name}>{product?.name ?? 'Đã xóa'}</strong><small>{isCurrent ? 'Đang phát' : isPending ? 'Chờ chuyển' : `${count} video`}</small></div>
-        {!isCurrent && count > 0 && <div className="studio-lineup-actions"><button className="studio-button ghost" disabled={locked} title="Chuyển khi video hiện tại kết thúc" onClick={() => onSwitch(id, 'after_current')}>Sau video này</button><button className="studio-button" disabled={locked} onClick={() => onSwitch(id, 'immediate')}>Chuyển ngay</button></div>}
+    <div className="studio-lineup">{status.queue.map((id, index) => {
+      const item = mediaById.get(id)
+      return <article key={id} className={`studio-lineup-item${index === status.index ? ' current' : ''}`}>
+        <span className="studio-lineup-thumb">{item?.thumbnail_url ? <img src={item.thumbnail_url} alt="" /> : <Film size={16} />}</span>
+        <div className="studio-grow"><strong title={item?.original_name}>{item?.original_name ?? 'Đã xóa'}</strong><small>{index === status.index ? 'Đang phát' : `${item?.marker_count ?? 0} mốc ghim`}</small></div>
       </article>
     })}</div>
-    {status.events.length > 0 && <details className="studio-live-log"><summary>Nhật ký phiên ({status.events.length})</summary><ul>{status.events.map(event => <li key={event.id}><time>{new Date(event.created_at).toLocaleTimeString('vi-VN')}</time><span>{eventLabels[event.kind] ?? event.kind}</span>{event.product_id && <em>{productById.get(event.product_id)?.name}</em>}</li>)}</ul></details>}
-    {confirmStop && <Modal title="Dừng phiên LIVE?" onClose={() => setConfirmStop(false)}><div className="studio-form"><p>Video trong OBS sẽ dừng ngay. TikTok LIVE và OBS stream không bị tắt; bạn tự kết thúc LIVE trên TikTok nếu cần.</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setConfirmStop(false)}>Tiếp tục phát</button><button className="studio-button danger-solid" onClick={() => { setConfirmStop(false); onControl('stop') }}>Dừng phiên</button></div></div></Modal>}
+    {status.events.length > 0 && <details className="studio-live-log"><summary>Nhật ký phiên ({status.events.length})</summary><ul>{status.events.map(event => <li key={event.id}><time>{new Date(event.created_at).toLocaleTimeString('vi-VN')}</time><span>{eventLabels[event.kind] ?? event.kind}</span>{event.product_id && <em>{status.pins.product_names[event.product_id] ?? ''}</em>}{event.detail?.dry_run === true && <em>(chạy thử)</em>}</li>)}</ul></details>}
+    {confirmStop && <Modal title="Dừng phiên LIVE?" onClose={() => setConfirmStop(false)}><div className="studio-form"><p>Video trong OBS sẽ dừng ngay và Studio ngừng ghim. TikTok LIVE và OBS stream không bị tắt; bạn tự kết thúc LIVE trên TikTok nếu cần.</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setConfirmStop(false)}>Tiếp tục phát</button><button className="studio-button danger-solid" onClick={() => { setConfirmStop(false); onControl('stop') }}>Dừng phiên</button></div></div></Modal>}
+    {confirmReal && <Modal title="Bật ghim thật trên TikTok?" onClose={() => setConfirmReal(false)}><div className="studio-form"><p>Studio sẽ bấm ghim sản phẩm trên TikTok LIVE Console theo mốc của video, trên tài khoản đã đồng bộ. Chỉ ghim khi Console xác nhận đang LIVE.</p><p className="studio-muted">Cần Chrome TikTok đang kết nối (trang Sản phẩm → Kết nối).</p><div className="studio-form-actions"><button className="studio-button" onClick={() => setConfirmReal(false)}>Để chạy thử</button><button className="studio-button primary" onClick={() => { setConfirmReal(false); onPins(true) }}>Ghim thật</button></div></div></Modal>}
   </section>
 }
 
-function PinState({ status, productName }: { status: LiveStatus; productName?: string }) {
-  const pin = status.pin
-  if (!status.automation.auto_pin) return <span className="studio-pin-state off">Không ghim tự động</span>
-  if (!pin.browser_open) return <span className="studio-pin-state warn">Chưa kết nối Chrome TikTok: vào Sản phẩm → Kết nối để ghim được</span>
-  if (pin.status === 'PENDING') return <span className="studio-pin-state busy"><span className="studio-typing"><i /><i /><i /></span>Đang ghim {productName ?? 'sản phẩm'}…</span>
-  if (pin.status === 'SUCCESS') return <span className="studio-pin-state ok"><Check size={13} />Đã ghim {pin.card_name || productName || 'sản phẩm'}</span>
-  if (pin.status === 'FAILED') return <span className="studio-pin-state warn" title={pin.error ?? undefined}>Ghim chưa được: {pin.error ?? 'không xác nhận được trên TikTok'}</span>
-  return <span className="studio-pin-state">Sẽ ghim khi chuyển sản phẩm</span>
-}
-
-function SessionEditor({ session, products, videoCount, onClose, onSaved }: { session: LiveSession | null; products: Product[]; videoCount: Map<string, number>; onClose: () => void; onSaved: (message: string) => Promise<void> }) {
+function SessionEditor({ session, media, onClose, onSaved }: { session: LiveSession | null; media: Media[]; onClose: () => void; onSaved: (message: string) => Promise<void> }) {
   const [title, setTitle] = useState(session?.title ?? `Phiên ${new Date().toLocaleDateString('vi-VN')}`)
-  const [selected, setSelected] = useState<string[]>(session?.product_ids ?? [])
-  const [policy, setPolicy] = useState<PlaybackPolicy>({ ...defaultPolicy, ...(session?.policy ?? {}) })
+  const [selected, setSelected] = useState<string[]>(session?.video_ids ?? [])
+  const [order, setOrder] = useState<VideoOrder>(session?.video_order ?? 'sequential')
+  const [loop, setLoop] = useState(session?.video_loop ?? true)
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const byId = useMemo(() => new Map(products.map(product => [product.id, product])), [products])
-  const available = useMemo(() => products.filter(product => !selected.includes(product.id) && product.name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))
-    .sort((a, b) => (videoCount.get(b.id) ? 1 : 0) - (videoCount.get(a.id) ? 1 : 0) || a.name.localeCompare(b.name, 'vi')), [products, selected, query, videoCount])
+  const byId = useMemo(() => new Map(media.map(item => [item.id, item])), [media])
+  const available = useMemo(() => media.filter(item => item.status === 'ready' && !selected.includes(item.id) && item.original_name.toLocaleLowerCase('vi').includes(query.trim().toLocaleLowerCase('vi')))
+    .sort((a, b) => (b.marker_count ? 1 : 0) - (a.marker_count ? 1 : 0) || a.original_name.localeCompare(b.original_name, 'vi')), [media, selected, query])
   const move = (index: number, delta: number) => setSelected(current => { const next = [...current]; const [item] = next.splice(index, 1); next.splice(index + delta, 0, item); return next })
-  const rotating = policy.product_rotation !== 'off'
+  const live = session?.status === 'live'
   const save = async (event: FormEvent) => {
     event.preventDefault()
     if (busy) return
-    if (!selected.length) { setError('Chọn ít nhất một sản phẩm cho phiên.'); return }
-    if (rotating && !policy.rotate_after_videos && !policy.rotate_after_minutes) { setError('Khi tự đổi sản phẩm, hãy đặt số video hoặc số phút cho mỗi sản phẩm.'); return }
+    if (!selected.length) { setError('Chọn ít nhất một video cho phiên.'); return }
     setBusy(true)
     setError('')
     try {
-      const input = { title: title.trim(), product_ids: selected, policy }
-      if (session) await studioClient.updateLiveSession(session.id, input)
-      else await studioClient.createLiveSession(input)
-      await onSaved(session ? (session.status === 'live' ? 'Đã lưu, áp dụng ngay cho phiên đang phát.' : 'Đã lưu phiên.') : 'Đã tạo phiên LIVE.')
+      if (session) await studioClient.updateLiveSession(session.id, live ? { title: title.trim(), video_loop: loop } : { title: title.trim(), video_ids: selected, video_order: order, video_loop: loop })
+      else await studioClient.createLiveSession({ title: title.trim(), video_ids: selected, video_order: order, video_loop: loop })
+      await onSaved(session ? 'Đã lưu phiên.' : 'Đã tạo phiên LIVE.')
     } catch (cause) { setError(errorMessage(cause)); setBusy(false) }
   }
-  const segment = <K extends keyof PlaybackPolicy>(key: K, options: [PlaybackPolicy[K], string][], label: string) => <div className="studio-field">{label}<div className="studio-segmented wide" role="radiogroup" aria-label={label}>{options.map(([value, text]) => <button type="button" role="radio" key={String(value)} aria-checked={policy[key] === value} className={policy[key] === value ? 'active' : ''} onClick={() => setPolicy({ ...policy, [key]: value })}>{text}</button>)}</div></div>
   return <Modal title={session ? 'Sửa phiên LIVE' : 'Tạo phiên LIVE'} onClose={() => { if (!busy) onClose() }} wide><form className="studio-form" onSubmit={event => void save(event)}>
     <label className="studio-field">Tên phiên<input data-autofocus autoFocus value={title} maxLength={200} disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
+    {live && <div className="studio-callout warning"><Radio size={16} /><span>Phiên đang phát: chỉ đổi được tên và lặp lại. Dừng phiên để đổi video hoặc thứ tự.</span></div>}
     <div className="studio-picker">
       <div className="studio-picker-col">
-        <div className="studio-picker-head"><strong>Sản phẩm</strong><input aria-label="Tìm sản phẩm" placeholder="Tìm…" value={query} onChange={event => setQuery(event.target.value)} /></div>
-        <ul>{available.map(product => { const count = videoCount.get(product.id) ?? 0; return <li key={product.id}><button type="button" disabled={busy} onClick={() => setSelected(current => [...current, product.id])}><span className="studio-lineup-thumb">{product.thumbnail_url ? <img src={product.thumbnail_url} alt="" /> : <Package size={14} />}</span><span className="studio-grow">{product.name}<small className={count ? '' : 'warn'}>{count ? `${count} video` : 'Chưa có video'}</small></span><Plus size={15} /></button></li> })}
-          {!available.length && <li className="studio-picker-empty">Không còn sản phẩm phù hợp.</li>}</ul>
+        <div className="studio-picker-head"><strong>Thư viện video</strong><input aria-label="Tìm video" placeholder="Tìm…" value={query} onChange={event => setQuery(event.target.value)} /></div>
+        <ul>{available.map(item => <li key={item.id}><button type="button" disabled={busy || live} onClick={() => setSelected(current => [...current, item.id])}><span className="studio-lineup-thumb">{item.thumbnail_url ? <img src={item.thumbnail_url} alt="" /> : <Film size={14} />}</span><span className="studio-grow">{item.original_name}<small className={item.marker_count ? '' : 'warn'}>{item.duration_seconds ? `${clock(item.duration_seconds * 1000)} · ` : ''}{item.marker_count ? `${item.marker_count} mốc ghim` : 'Chưa có mốc ghim'}</small></span><Plus size={15} /></button></li>)}
+          {!available.length && <li className="studio-picker-empty">Không còn video phù hợp.</li>}</ul>
       </div>
       <div className="studio-picker-col selected">
         <div className="studio-picker-head"><strong>Thứ tự phát ({selected.length})</strong></div>
-        <ol>{selected.map((id, index) => { const product = byId.get(id); const count = videoCount.get(id) ?? 0; return <li key={id}><span className="studio-order">{index + 1}</span><span className="studio-grow">{product?.name ?? 'Đã xóa'}<small className={count ? '' : 'warn'}>{count ? `${count} video` : 'Chưa có video, sẽ bị bỏ qua'}</small></span>
-          <button type="button" className="studio-button ghost icon-only" disabled={busy || index === 0} aria-label="Lên trên" onClick={() => move(index, -1)}><ArrowUp size={14} /></button>
-          <button type="button" className="studio-button ghost icon-only" disabled={busy || index === selected.length - 1} aria-label="Xuống dưới" onClick={() => move(index, 1)}><ArrowDown size={14} /></button>
-          <button type="button" className="studio-button ghost icon-only danger" disabled={busy} aria-label="Bỏ khỏi phiên" onClick={() => setSelected(current => current.filter(item => item !== id))}><X size={14} /></button></li> })}
-          {!selected.length && <li className="studio-picker-empty">Bấm vào sản phẩm bên trái để thêm vào phiên.</li>}</ol>
+        <ol>{selected.map((id, index) => { const item = byId.get(id); return <li key={id}><span className="studio-order">{index + 1}</span><span className="studio-grow">{item?.original_name ?? 'Đã xóa'}<small className={item?.marker_count ? '' : 'warn'}>{item?.marker_count ? `${item.marker_count} mốc ghim` : 'Chưa có mốc ghim: sẽ không ghim gì'}</small></span>
+          <button type="button" className="studio-button ghost icon-only" disabled={busy || live || index === 0} aria-label="Lên trên" onClick={() => move(index, -1)}><ArrowUp size={14} /></button>
+          <button type="button" className="studio-button ghost icon-only" disabled={busy || live || index === selected.length - 1} aria-label="Xuống dưới" onClick={() => move(index, 1)}><ArrowDown size={14} /></button>
+          <button type="button" className="studio-button ghost icon-only danger" disabled={busy || live} aria-label="Bỏ khỏi phiên" onClick={() => setSelected(current => current.filter(value => value !== id))}><X size={14} /></button></li> })}
+          {!selected.length && <li className="studio-picker-empty">Bấm vào video bên trái để thêm vào phiên.</li>}</ol>
       </div>
     </div>
     <div className="studio-policy">
-      {segment('video_order', [['sequential', 'Lần lượt'], ['random', 'Ngẫu nhiên'], ['shuffle', 'Xáo trộn']], 'Thứ tự video trong sản phẩm')}
-      {segment('product_rotation', [['off', 'Tắt'], ['sequential', 'Lần lượt'], ['random', 'Ngẫu nhiên'], ['shuffle', 'Xáo trộn']], 'Tự đổi sản phẩm')}
-      {rotating && <div className="studio-form-row">
-        <label className="studio-field">Đổi sau số video<input type="number" min={1} max={50} value={policy.rotate_after_videos ?? ''} placeholder="Không dùng" onChange={event => setPolicy({ ...policy, rotate_after_videos: event.target.value ? Number(event.target.value) : null })} /></label>
-        <label className="studio-field">hoặc sau số phút<input type="number" min={1} max={240} value={policy.rotate_after_minutes ?? ''} placeholder="Không dùng" onChange={event => setPolicy({ ...policy, rotate_after_minutes: event.target.value ? Number(event.target.value) : null })} /></label>
-      </div>}
-      {rotating && segment('switch_mode', [['after_current', 'Đợi hết video'], ['immediate', 'Đổi ngay khi đủ thời gian']], 'Khi đến lượt đổi')}
+      <div className="studio-field">Thứ tự phát<div className="studio-segmented wide" role="radiogroup" aria-label="Thứ tự phát">{orders.map(([value, text]) => <button type="button" role="radio" key={value} aria-checked={order === value} className={order === value ? 'active' : ''} disabled={live} onClick={() => setOrder(value)}>{text}</button>)}</div></div>
+      <label className="studio-switch studio-switch-field"><input type="checkbox" role="switch" checked={loop} onChange={event => setLoop(event.target.checked)} /><span aria-hidden="true" /><small>Phát lại từ đầu khi hết danh sách</small></label>
     </div>
     {error && <ErrorNotice message={error} />}
     <div className="studio-form-actions"><button type="button" className="studio-button" disabled={busy} onClick={onClose}>Hủy</button><button className="studio-button primary" disabled={busy || !title.trim()}>{busy ? 'Đang lưu…' : session ? 'Lưu phiên' : 'Tạo phiên'}</button></div>

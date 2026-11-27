@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -20,6 +21,7 @@ from sarae_agent import __version__
 from .models import (EMPTY_FACTS, StudioError, identifier, identifier_list, presenter_fields, product_facts,
                      product_fields, tiktok_snapshot, timestamp)
 from .storage import StudioStorage, data_root
+from . import media_thumbnails
 
 
 # Validate both the suffix and FFprobe's actual demuxer. A renamed image or an
@@ -47,8 +49,45 @@ THUMBNAIL_SUFFIXES = {".jpg", ".png", ".webp"}
 log = logging.getLogger(__name__)
 
 
-def probe_video(path: Path) -> None:
-    """Check the copied bytes, using a bounded FFprobe query and a 15s deadline."""
+def _finite_number(value) -> float | None:
+    try:
+        number = float(value) if not isinstance(value, bool) else math.nan
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _video_metadata(video: dict, container: dict) -> dict:
+    duration = _finite_number(video.get("duration"))
+    if duration is None or duration <= 0:
+        duration = _finite_number(container.get("duration"))
+    if duration is not None and duration <= 0:
+        duration = None
+    width, height = int(video["width"]), int(video["height"])
+    rotation = None
+    for side_data in video.get("side_data_list", []):
+        rotation = _finite_number(side_data.get("rotation"))
+        if rotation is None and isinstance(side_data.get("displaymatrix"), str):
+            # FFprobe prints three indexed rows of the fixed-point display matrix.
+            try:
+                rows = [line.split(":", 1)[1].split()
+                        for line in side_data["displaymatrix"].splitlines() if ":" in line]
+                a, b = float(rows[0][0]), float(rows[0][1])
+                if math.isfinite(a) and math.isfinite(b) and (a or b):
+                    rotation = math.degrees(math.atan2(-b, a))
+            except (IndexError, ValueError):
+                pass
+        if rotation is not None:
+            break
+    if rotation is None:
+        rotation = _finite_number(video.get("tags", {}).get("rotate"))
+    if rotation is not None and math.isclose(rotation % 180, 90, abs_tol=0.01):
+        width, height = height, width
+    return {"duration_seconds": duration, "width": width, "height": height}
+
+
+def probe_video(path: Path) -> dict:
+    """Validate the copied bytes and read display metadata with a 15s deadline."""
     executable = None
     # Native packaging may place FFprobe beside the sidecar or in its
     # PyInstaller extraction root. Source/development runs use PATH.
@@ -70,9 +109,10 @@ def probe_video(path: Path) -> None:
         # accumulate arbitrary probe output or stderr in memory.
         with tempfile.TemporaryFile() as output:
             result = subprocess.run(
-                [executable, "-v", "error", "-protocol_whitelist", "file,pipe",
+                [executable, "-v", "error", "-protocol_whitelist", "file",
                  "-format_whitelist", ",".join(sorted(allowed)), "-select_streams", "v:0",
-                 "-show_entries", "stream=codec_type,width,height:stream_disposition=attached_pic:format=format_name",
+                 "-show_entries", "stream=codec_type,width,height,duration:stream_disposition=attached_pic:"
+                 "stream_tags=rotate:stream_side_data=rotation,displaymatrix:format=format_name,duration",
                  "-of", "json", str(path)],
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
                 timeout=15, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -89,6 +129,7 @@ def probe_video(path: Path) -> None:
         formats = set(payload.get("format", {}).get("format_name", "").split(","))
         if video is None or not formats.intersection(allowed):
             raise ValueError("No supported video stream/container")
+        return _video_metadata(video, payload.get("format", {}))
     except subprocess.TimeoutExpired as exc:
         raise StudioError("INVALID_MEDIA", "Video verification timed out.") from exc
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -105,6 +146,8 @@ class StudioService:
 
     def __init__(self, data_dir: Path | None = None):
         self._lock = threading.RLock()
+        # Bumped on every marker change: the pin scheduler restarts its attempt budget for a new timeline.
+        self.markers_revision = 1
         self._closed = False
         self._storage: StudioStorage | None = None
         try:
@@ -126,6 +169,12 @@ class StudioService:
             raise
 
     def dispatch(self, method: str, params: dict) -> dict:
+        # Inspection and frame generation release the lock. OBS/live
+        # controls and shutdown must remain responsive during library backfills.
+        if method == "studio.media.inspect":
+            return self._inspect_media(params)
+        if method == "studio.media.thumbnail":
+            return self._generate_media_thumbnail(params)
         with self._lock:
             self._ensure_open()
             if not isinstance(method, str) or not isinstance(params, dict):
@@ -134,10 +183,6 @@ class StudioService:
                 "studio.status": (self._status, set()),
                 "studio.products.list": (self._list_products, set()),
                 "studio.products.update": (self._update_product, {"id", "description", "facts"}),
-                "studio.scripts.list": (self._list_scripts, {"product_id"}),
-                "studio.scripts.create": (self._create_script, {"product_id", "title", "body"}),
-                "studio.scripts.update": (self._update_script, {"id", "title", "body"}),
-                "studio.scripts.delete": (self._delete_script, {"id"}),
                 "studio.products.delete": (self._delete_product, {"id"}),
                 "studio.presenters.list": (self._list_presenters, set()),
                 "studio.presenters.create": (self._create_presenter, {"name", "description", "active"}),
@@ -147,6 +192,8 @@ class StudioService:
                 "studio.media.import": (self._import_media, {"source_path", "product_id", "presenter_ids"}),
                 "studio.media.update": (self._update_media, {"id", "product_id", "presenter_ids"}),
                 "studio.media.delete": (self._delete_media, {"id"}),
+                "studio.media.markers.list": (self._list_markers, {"media_id"}),
+                "studio.media.markers.set": (self._set_markers, {"media_id", "markers"}),
             }
             if method not in handlers:
                 raise StudioError("METHOD_NOT_FOUND", f"Unknown studio method: {method}")
@@ -213,73 +260,6 @@ class StudioService:
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
                                    (key, json.dumps(value, ensure_ascii=False), timestamp()))
 
-    # --- sales scripts ----------------------------------------------------------------------
-    def _script(self, script_id: str):
-        row = self._storage.connection.execute("SELECT * FROM sales_scripts WHERE id = ?", (script_id,)).fetchone()
-        if row is None:
-            raise StudioError("NOT_FOUND", "Script not found.", {"id": script_id})
-        return dict(row)
-
-    @staticmethod
-    def _script_fields(params: dict, *, partial: bool) -> dict:
-        fields = {}
-        if not partial or "title" in params:
-            title = params.get("title")
-            if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200 or "\x00" in title:
-                raise StudioError("VALIDATION_ERROR", "title must contain 1 to 200 characters.", {"field": "title"})
-            fields["title"] = title.strip()
-        if not partial or "body" in params:
-            body = params.get("body")
-            if not isinstance(body, str) or not body.strip() or len(body) > 20000 or "\x00" in body:
-                raise StudioError("VALIDATION_ERROR", "body must contain 1 to 20000 characters.", {"field": "body"})
-            fields["body"] = body.strip()
-        return fields
-
-    def _list_scripts(self, params: dict) -> dict:
-        if params.get("product_id") is not None:
-            product_id = identifier(params["product_id"], "product_id")
-            self._product(product_id)
-            rows = self._storage.connection.execute(
-                "SELECT * FROM sales_scripts WHERE product_id = ? ORDER BY updated_at DESC, id", (product_id,))
-        else:
-            rows = self._storage.connection.execute("SELECT * FROM sales_scripts ORDER BY updated_at DESC, id")
-        return {"scripts": [dict(row) for row in rows]}
-
-    def save_script(self, product_id: str, title: str, body: str, source: str) -> dict:
-        fields = self._script_fields({"title": title, "body": body}, partial=False)
-        with self._lock:
-            self._ensure_open()
-            product_id = identifier(product_id, "product_id")
-            script_id, now = str(uuid4()), timestamp()
-            with self._storage.transaction() as connection:
-                self._product(product_id)
-                connection.execute("""INSERT INTO sales_scripts(id, product_id, title, body, source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""", (script_id, product_id, fields["title"], fields["body"],
-                                                      "ai" if source == "ai" else "manual", now, now))
-                return self._script(script_id)
-
-    def _create_script(self, params: dict) -> dict:
-        return {"script": self.save_script(params.get("product_id"), params.get("title"), params.get("body"), "manual")}
-
-    def _update_script(self, params: dict) -> dict:
-        script_id = identifier(params.get("id"))
-        fields = self._script_fields(params, partial=True)
-        if not fields:
-            raise StudioError("VALIDATION_ERROR", "Provide a title or body to update.")
-        fields["updated_at"] = timestamp()
-        with self._storage.transaction() as connection:
-            self._script(script_id)
-            connection.execute("UPDATE sales_scripts SET " + ", ".join(f"{key} = ?" for key in fields) + " WHERE id = ?",
-                               (*fields.values(), script_id))
-            return {"script": self._script(script_id)}
-
-    def _delete_script(self, params: dict) -> dict:
-        script_id = identifier(params.get("id"))
-        with self._storage.transaction() as connection:
-            self._script(script_id)
-            connection.execute("DELETE FROM sales_scripts WHERE id = ?", (script_id,))
-        return {"deleted": True}
-
     def _list_products(self, params: dict) -> dict:
         rows = self._storage.connection.execute(
             "SELECT * FROM products ORDER BY tiktok_product_id IS NULL, name COLLATE NOCASE, id").fetchall()
@@ -327,13 +307,17 @@ class StudioService:
         row = self._storage.connection.execute("SELECT * FROM live_sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             raise StudioError("NOT_FOUND", "LIVE session not found.", {"id": session_id})
-        session = dict(row)
+        session = {key: row[key] for key in ("id", "title", "status", "end_reason", "started_at", "ended_at",
+                                            "created_at", "updated_at", "video_order")}
+        session["video_loop"] = bool(row["video_loop"])
         try:
-            session["policy"] = json.loads(session["policy"] or "{}")
+            ids = json.loads(row["video_ids"] or "[]")
         except ValueError:
-            session["policy"] = {}
-        session["product_ids"] = [r[0] for r in self._storage.connection.execute(
-            "SELECT product_id FROM live_session_products WHERE session_id = ? ORDER BY position", (session_id,))]
+            ids = []
+        # A video deleted from the library leaves the session (its markers went with it).
+        session["video_ids"] = [media_id for media_id in ids if isinstance(media_id, str) and
+                                self._storage.connection.execute("SELECT 1 FROM media WHERE id = ?",
+                                                                 (media_id,)).fetchone()]
         return session
 
     def live_session(self, session_id: str) -> dict:
@@ -354,42 +338,51 @@ class StudioService:
             raise StudioError("VALIDATION_ERROR", "title must contain 1 to 200 characters.", {"field": "title"})
         return title.strip()
 
-    def _set_session_products(self, connection, session_id: str, product_ids: object) -> None:
-        ids = product_ids if isinstance(product_ids, list) else None
-        if ids is None or not 1 <= len(ids) <= 300:
-            raise StudioError("VALIDATION_ERROR", "Choose 1 to 300 products for the session.", {"field": "product_ids"})
-        ids = [identifier(value, "product_ids") for value in ids]
+    def _session_videos(self, video_ids: object) -> list[str]:
+        if not isinstance(video_ids, list) or not 1 <= len(video_ids) <= 100:
+            raise StudioError("VALIDATION_ERROR", "Choose 1 to 100 videos for the session.", {"field": "video_ids"})
+        ids = [identifier(value, "video_ids") for value in video_ids]
         if len(set(ids)) != len(ids):
-            raise StudioError("VALIDATION_ERROR", "A product appears twice in the session.", {"field": "product_ids"})
-        for product_id in ids:
-            self._product(product_id)
-        connection.execute("DELETE FROM live_session_products WHERE session_id = ?", (session_id,))
-        connection.executemany("INSERT INTO live_session_products(session_id, product_id, position) VALUES (?, ?, ?)",
-                               [(session_id, product_id, index) for index, product_id in enumerate(ids)])
+            raise StudioError("VALIDATION_ERROR", "A video appears twice in the session.", {"field": "video_ids"})
+        for media_id in ids:
+            self._media(media_id)
+        return ids
 
-    def save_live_session(self, session_id: str | None, *, title=None, product_ids=None, policy: dict | None = None) -> dict:
+    def save_live_session(self, session_id: str | None, params: dict) -> dict:
+        """Create (session_id None) or update a session: title, video_ids (ordered), video_order, video_loop."""
+        unknown = set(params) - {"title", "video_ids", "video_order", "video_loop"}
+        if unknown:
+            raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, unknown))})
+        fields = {}
+        if session_id is None or "title" in params:
+            fields["title"] = self._session_title(params.get("title"))
+        if "video_order" in params:
+            if params["video_order"] not in ("sequential", "random", "shuffle"):
+                raise StudioError("VALIDATION_ERROR", "video_order must be sequential, random or shuffle.",
+                                  {"field": "video_order"})
+            fields["video_order"] = params["video_order"]
+        if "video_loop" in params:
+            if not isinstance(params["video_loop"], bool):
+                raise StudioError("VALIDATION_ERROR", "video_loop must be true or false.", {"field": "video_loop"})
+            fields["video_loop"] = int(params["video_loop"])
         with self._lock:
             self._ensure_open()
+            if session_id is None or "video_ids" in params:
+                fields["video_ids"] = json.dumps(self._session_videos(params.get("video_ids")))
             now = timestamp()
             with self._storage.transaction() as connection:
                 if session_id is None:
                     session_id = str(uuid4())
-                    connection.execute("""INSERT INTO live_sessions(id, title, policy, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)""", (session_id, self._session_title(title),
-                                                    json.dumps(policy or {}), now, now))
-                    self._set_session_products(connection, session_id, product_ids)
+                    connection.execute("INSERT INTO live_sessions(id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                                       (session_id, fields["title"], now, now))
                 else:
                     session_id = identifier(session_id)
                     self._session_row(session_id)
-                    if title is not None:
-                        connection.execute("UPDATE live_sessions SET title = ? WHERE id = ?",
-                                           (self._session_title(title), session_id))
-                    if policy is not None:
-                        connection.execute("UPDATE live_sessions SET policy = ? WHERE id = ?",
-                                           (json.dumps(policy), session_id))
-                    if product_ids is not None:
-                        self._set_session_products(connection, session_id, product_ids)
-                    connection.execute("UPDATE live_sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+                if not fields and session_id:
+                    raise StudioError("VALIDATION_ERROR", "Provide a title, videos, order or loop to update.")
+                fields["updated_at"] = now
+                connection.execute("UPDATE live_sessions SET " + ", ".join(f"{key} = ?" for key in fields)
+                                   + " WHERE id = ?", (*fields.values(), session_id))
                 return self._session_row(session_id)
 
     def delete_live_session(self, session_id: str) -> None:
@@ -428,40 +421,77 @@ class StudioService:
                 connection.execute("""UPDATE live_sessions SET status = 'ended', ended_at = ?, end_reason = ?,
                     updated_at = ? WHERE status = 'live'""", (now, reason, now))
 
-    def product_lineup(self, product_ids: list[str]) -> list[dict]:
-        """Ready library videos per product, oldest first (the order they were added)."""
-        with self._lock:
-            self._ensure_open()
-            lineup = []
-            for product_id in product_ids:
-                rows = self._storage.connection.execute(
-                    "SELECT * FROM media WHERE product_id = ? ORDER BY created_at, id", (product_id,)).fetchall()
-                ready = []
-                for row in rows:
-                    try:
-                        self.resolve_media(row["id"])
-                        ready.append(row["id"])
-                    except StudioError:
-                        continue
-                lineup.append({"product_id": product_id, "media_ids": ready})
-            return lineup
+    # --- pin markers (per video) -----------------------------------------------------------
+    def _marker_rows(self, media_ids: list[str]) -> list[dict]:
+        if not media_ids:
+            return []
+        rows = self._storage.connection.execute(
+            "SELECT m.*, p.name AS product_name, p.tiktok_product_id FROM media_markers m "
+            "LEFT JOIN products p ON p.id = m.product_id WHERE m.media_id IN ("
+            + ", ".join("?" for _ in media_ids) + ") ORDER BY m.media_id, m.at_ms, m.seq, m.id", media_ids)
+        return [dict(row) for row in rows]
 
-    def pin_targets(self, product_ids: list[str], expected_user_id: str) -> dict[str, dict]:
-        """What the TikTok pinner needs per Studio product; products not from TikTok cannot be pinned."""
+    def _list_markers(self, params: dict) -> dict:
+        media_id = identifier(params.get("media_id"), "media_id")
+        self._media(media_id)
+        return {"markers": self._marker_rows([media_id])}
+
+    def _set_markers(self, params: dict) -> dict:
+        """Replace one video's markers (the editor autosaves the whole list)."""
+        media_id = identifier(params.get("media_id"), "media_id")
+        markers = params.get("markers")
+        if not isinstance(markers, list) or len(markers) > 500:
+            raise StudioError("VALIDATION_ERROR", "markers must list at most 500 markers.", {"field": "markers"})
+        row = self._media(media_id)
+        limit_ms = int(row["duration_seconds"] * 1000) + 1000 if row["duration_seconds"] else None
+        clean = []
+        for index, marker in enumerate(markers):
+            if not isinstance(marker, dict) or set(marker) - {"at_ms", "action", "product_id"}:
+                raise StudioError("VALIDATION_ERROR", "A marker is invalid.", {"field": "markers", "index": index})
+            at_ms, action = marker.get("at_ms"), marker.get("action")
+            if isinstance(at_ms, bool) or not isinstance(at_ms, int) or at_ms < 0 or (limit_ms and at_ms > limit_ms):
+                raise StudioError("VALIDATION_ERROR", "A marker is outside the video.", {"field": "markers", "index": index})
+            if action not in ("PIN_PRODUCT", "UNPIN_PRODUCT"):
+                raise StudioError("VALIDATION_ERROR", "action must be PIN_PRODUCT or UNPIN_PRODUCT.",
+                                  {"field": "markers", "index": index})
+            product_id = None
+            if action == "PIN_PRODUCT":
+                product_id = identifier(marker.get("product_id"), "product_id")
+                if not self._product(product_id)["tiktok_product_id"]:
+                    raise StudioError("VALIDATION_ERROR", "Only products synced from TikTok can be pinned.",
+                                      {"field": "markers", "index": index})
+            elif marker.get("product_id") is not None:
+                raise StudioError("VALIDATION_ERROR", "An unpin marker has no product.", {"field": "markers", "index": index})
+            clean.append((at_ms, action, product_id))
+        clean.sort(key=lambda item: item[0])
+        with self._storage.transaction() as connection:
+            connection.execute("DELETE FROM media_markers WHERE media_id = ?", (media_id,))
+            connection.executemany(
+                "INSERT INTO media_markers(media_id, at_ms, action, product_id, seq) VALUES (?, ?, ?, ?, ?)",
+                [(media_id, at_ms, action, product_id, seq) for seq, (at_ms, action, product_id) in enumerate(clean)])
+            self.markers_revision += 1
+        return {"markers": self._marker_rows([media_id])}
+
+    def timeline_for(self, media_ids: list[str], expected_user_id: str) -> dict:
+        """The scheduler's timeline for a session's videos: markers plus what the pinner needs per product."""
         with self._lock:
             self._ensure_open()
-            targets = {}
-            for product_id in product_ids:
-                row = self._storage.connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-                if row is None or not row["tiktok_product_id"]:
-                    continue
-                price = row["price"]
-                targets[product_id] = {
-                    "tiktok_product_id": row["tiktok_product_id"], "name": row["name"][:200],
-                    "image_url": (row["image_url"] or "")[:1000],
-                    "price_text": (f"{int(price):,}".replace(",", ".") + "₫") if price is not None else "",
-                    "expected_user_id": expected_user_id}
-            return targets
+            markers = self._marker_rows(media_ids)
+            products = {}
+            for marker in markers:
+                product_id = marker["product_id"]
+                if product_id and product_id not in products:
+                    product = self._product(product_id)
+                    price = product["price"]
+                    products[product_id] = {
+                        "sarae_product_id": product_id, "tiktok_product_id": product["tiktok_product_id"],
+                        "name": product["name"][:200], "image_url": (product["image_url"] or "")[:1000],
+                        "price_text": (f"{int(price):,}".replace(",", ".") + "₫") if price is not None else ""}
+            return {"version": self.markers_revision, "expected_user_id": expected_user_id,
+                    "markers": [{"id": m["id"], "media_id": m["media_id"], "at_ms": m["at_ms"], "action": m["action"],
+                                 "product_id": m["product_id"], "product_name": m["product_name"], "seq": m["seq"]}
+                                for m in markers],
+                    "products": list(products.values())}
 
     def record_live_event(self, session_id: str, kind: str, product_id: str | None = None,
                           detail: dict | None = None) -> None:
@@ -762,10 +792,17 @@ class StudioService:
 
     def _serialize_media(self, row, links: dict[str, list[str]] | None = None) -> dict:
         media = {key: row[key] for key in ("id", "product_id", "original_name", "size_bytes", "sha256",
-                                          "storage_mode", "mime_type", "created_at")}
+                                          "storage_mode", "mime_type", "created_at", "duration_seconds",
+                                          "width", "height")}
+        media["metadata_probed"] = bool(row["metadata_probed"])
+        media["has_thumbnail"] = False
+        # Transport supplies a session-token URL, never a filesystem path.
+        media["thumbnail_url"] = None
         if links is None:
             links = self._presenter_links([row["id"]])
         media["presenter_ids"] = links.get(row["id"], [])
+        media["marker_count"] = self._storage.connection.execute(
+            "SELECT COUNT(*) FROM media_markers WHERE media_id = ?", (row["id"],)).fetchone()[0]
         try:
             self.resolve_media(row["id"])
             media["status"] = "ready"
@@ -773,7 +810,79 @@ class StudioService:
             if exc.code not in {"MEDIA_MISSING", "UNSAFE_PATH", "STORAGE_ERROR"}:
                 raise
             media["status"] = "missing"
+        if media["status"] == "ready":
+            try:
+                target = media_thumbnails.checked_path(self.data_dir, media_thumbnails.cache_name(row["id"], row["sha256"]))
+                media["has_thumbnail"] = media_thumbnails.valid_jpeg(target)
+            except (OSError, RuntimeError, StudioError):
+                pass
         return media
+
+    def resolve_media_thumbnail(self, media_id: str) -> Path:
+        """Resolve an existing JPEG for a real managed video; never generate on GET."""
+        with self._lock:
+            self._ensure_open()
+            try:
+                media_id = identifier(media_id)
+                row = self._media(media_id)
+                self.resolve_media(media_id)
+                target = media_thumbnails.checked_path(self.data_dir, media_thumbnails.cache_name(media_id, row["sha256"]))
+                if not media_thumbnails.valid_jpeg(target):
+                    raise StudioError("NOT_FOUND", "This video has no cached thumbnail.", {"id": media_id})
+                return target
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                raise StudioError("NOT_FOUND", "This video has no cached thumbnail.") from exc
+
+    def _generate_media_thumbnail(self, params: dict) -> dict:
+        temporary = None
+        try:
+            with self._lock:
+                self._ensure_open()
+                if not isinstance(params, dict):
+                    raise StudioError("VALIDATION_ERROR", "params must be an object.")
+                if params.keys() - {"id"}:
+                    raise StudioError("VALIDATION_ERROR", "Unexpected parameters.",
+                                      {"fields": sorted(str(key) for key in params.keys() - {"id"})})
+                media_id = identifier(params.get("id"))
+                row = self._media(media_id)
+                path = self.resolve_media(media_id)
+                fingerprint = self._media_fingerprint(path)
+                identity = (row["relative_path"], row["size_bytes"], row["sha256"])
+                name = media_thumbnails.cache_name(media_id, row["sha256"])
+                target = media_thumbnails.checked_path(self.data_dir, name)
+                if media_thumbnails.valid_jpeg(target, decode=True):
+                    return {"media": self._serialize_media(row)}
+                folder = media_thumbnails.cache_dir(self.data_dir, create=True)
+                outgoing = tempfile.NamedTemporaryFile(mode="w+b", prefix=".frame-", suffix=".jpg",
+                                                       dir=folder, delete=False)
+                temporary = Path(outgoing.name)
+                duration = row["duration_seconds"]
+                allowed = VIDEO_FORMATS[path.suffix.lower()][0]
+            # No global lock during subprocess execution, including fallback.
+            with outgoing:
+                media_thumbnails.generate_frame(path, outgoing, allowed, duration)
+            with self._lock:
+                self._ensure_open()
+                row = self._media(media_id)
+                current_path = self.resolve_media(media_id)
+                if (identity != (row["relative_path"], row["size_bytes"], row["sha256"])
+                        or current_path != path or self._media_fingerprint(current_path) != fingerprint):
+                    raise StudioError("MEDIA_MISSING", "The managed video changed during thumbnail generation.", {"id": media_id})
+                target = media_thumbnails.checked_path(self.data_dir, name)
+                stage = media_thumbnails.checked_path(self.data_dir, temporary.name)
+                if not media_thumbnails.valid_jpeg(stage, decode=True):
+                    raise StudioError("THUMBNAIL_FAILED", "FFmpeg did not create a valid JPEG thumbnail.")
+                os.replace(stage, target)
+                temporary = None
+                return {"media": self._serialize_media(row)}
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            raise StudioError("THUMBNAIL_FAILED", "Cannot create the local video thumbnail. You can retry.") from exc
+        finally:
+            if temporary is not None:
+                try:
+                    media_thumbnails.checked_path(self.data_dir, temporary.name).unlink(missing_ok=True)
+                except (OSError, RuntimeError, StudioError):
+                    log.warning("Could not remove a staged video thumbnail: %s", temporary.name)
 
     def _list_media(self, params: dict) -> dict:
         conditions, args = [], []
@@ -792,6 +901,56 @@ class StudioService:
             f"SELECT * FROM media{where} ORDER BY created_at DESC, id", args).fetchall()
         links = self._presenter_links()
         return {"media": [self._serialize_media(row, links) for row in rows]}
+
+    @staticmethod
+    def _media_fingerprint(path: Path) -> tuple:
+        info = path.stat()
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _inspect_media(self, params: dict) -> dict:
+        try:
+            with self._lock:
+                self._ensure_open()
+                if not isinstance(params, dict):
+                    raise StudioError("VALIDATION_ERROR", "params must be an object.")
+                if params.keys() - {"id"}:
+                    raise StudioError("VALIDATION_ERROR", "Unexpected parameters.",
+                                      {"fields": sorted(str(key) for key in params.keys() - {"id"})})
+                media_id = identifier(params.get("id"))
+                row = self._media(media_id)
+                if row["metadata_probed"] or (row["width"] is not None and row["height"] is not None):
+                    if not row["metadata_probed"]:
+                        with self._storage.transaction() as connection:
+                            connection.execute("UPDATE media SET metadata_probed = 1 WHERE id = ?", (media_id,))
+                    return {"media": self._serialize_media(self._media(media_id))}
+                path = self.resolve_media(media_id)
+                fingerprint = self._media_fingerprint(path)
+                identity = (row["relative_path"], row["size_bytes"], row["sha256"])
+            error = None
+            try:
+                metadata = probe_video(path) or {}
+            except StudioError as exc:
+                error, metadata = exc, {}
+            with self._lock:
+                self._ensure_open()
+                row = self._media(media_id)
+                current_path = self.resolve_media(media_id)
+                if (identity != (row["relative_path"], row["size_bytes"], row["sha256"])
+                        or current_path != path or self._media_fingerprint(current_path) != fingerprint):
+                    raise StudioError("MEDIA_MISSING", "The managed video changed during inspection.", {"id": media_id})
+                if error is not None:
+                    # Keep the record retryable after installing FFprobe or
+                    # recovering from a transient read/probe failure.
+                    raise error
+                with self._storage.transaction() as connection:
+                    connection.execute("""UPDATE media SET
+                        duration_seconds = COALESCE(duration_seconds, ?),
+                        width = COALESCE(width, ?), height = COALESCE(height, ?), metadata_probed = 1
+                        WHERE id = ?""", (metadata.get("duration_seconds"), metadata.get("width"),
+                                          metadata.get("height"), media_id))
+                return {"media": self._serialize_media(self._media(media_id))}
+        except (OSError, sqlite3.Error) as exc:
+            raise StudioError("STORAGE_ERROR", "The local storage operation failed. Check disk space and permissions.") from exc
 
     def _import_media(self, params: dict) -> dict:
         raw_source = params.get("source_path")
@@ -837,15 +996,17 @@ class StudioService:
                         raise StudioError("INVALID_MEDIA", "The source video is empty.")
                     outgoing.flush()
                     os.fsync(outgoing.fileno())
-                probe_video(temporary)
+                metadata = probe_video(temporary) or {}
                 self._managed_dir()
                 os.replace(temporary, target)
                 published = target
                 temporary = None
                 connection.execute("""INSERT INTO media(id, product_id, original_name, relative_path,
-                    size_bytes, sha256, storage_mode, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    size_bytes, sha256, storage_mode, mime_type, created_at, duration_seconds, width, height,
+                    metadata_probed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
                                    (media_id, product_id, source.name, target.name, size, digest.hexdigest(),
-                                    "managed", VIDEO_FORMATS[suffix][1], timestamp()))
+                                    "managed", VIDEO_FORMATS[suffix][1], timestamp(), metadata.get("duration_seconds"),
+                                    metadata.get("width"), metadata.get("height")))
                 self._link_presenters(connection, media_id, presenter_ids)
                 media = self._serialize_media(self._media(media_id))
                 if media["status"] != "ready":
@@ -889,6 +1050,11 @@ class StudioService:
             except OSError:
                 # Deletion is committed; recovery can remove the tombstone.
                 log.warning("Could not remove a deleted managed video: %s", tombstone.name)
+        try:
+            thumbnail = media_thumbnails.checked_path(self.data_dir, media_thumbnails.cache_name(media_id, row["sha256"]))
+            thumbnail.unlink(missing_ok=True)
+        except (OSError, RuntimeError, StudioError):
+            log.warning("Could not remove a deleted video's thumbnail: %s", media_id)
         return {"deleted": True}
 
     def _recover_imports(self) -> None:

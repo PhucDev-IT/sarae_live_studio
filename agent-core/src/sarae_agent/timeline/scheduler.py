@@ -75,6 +75,18 @@ def marker_at(markers: list[dict], position_ms: int) -> dict | None:
     return found
 
 
+def _product_key(value):
+    """The Cloud numbers its products; the local Studio uses UUID strings. Both stay as given."""
+    if isinstance(value, str) and not value.isdigit():
+        return value
+    return int(value)
+
+
+def _is_product(value) -> bool:
+    """A known catalog product (not UNKNOWN, None, or a card the timeline does not know)."""
+    return isinstance(value, int) or (isinstance(value, str) and value != UNKNOWN and not value.startswith("TIKTOK:"))
+
+
 class TimelineScheduler:
     def __init__(self, executor: PinExecutor, gate: LiveGate, emit: Callable[[dict], None] | None = None, *,
                  clock: Callable[[], float] = time.monotonic, max_attempts: int = 3,
@@ -139,7 +151,7 @@ class TimelineScheduler:
                 self.version = int(timeline.get("version") or 0)
                 self.markers = sorted((dict(m) for m in timeline.get("markers") or []),
                                       key=lambda m: (m["at_ms"], m.get("seq", 0), m.get("id", 0)))
-                self.targets = {int(p["sarae_product_id"]): {k: v for k, v in p.items() if k != "sarae_product_id"}
+                self.targets = {_product_key(p["sarae_product_id"]): {k: v for k, v in p.items() if k != "sarae_product_id"}
                                 for p in timeline.get("products") or []}
                 self.expected_user_id = timeline.get("expected_user_id") or ""
             self._event("TIMELINE_LOADED", {"version": self.version, "markers": len(self.markers),
@@ -290,7 +302,7 @@ class TimelineScheduler:
                 # Changed on TikTok outside Sarae: the timeline wins, the next observation pins the wanted product.
                 self._event("PIN_DRIFT", {"tiktok_product_id": tiktok_product_id, "wanted_product_id": self.desired,
                                           "position_ms": self.position_ms},
-                            product_id=observed if isinstance(observed, int) else None)
+                            product_id=observed if _is_product(observed) else None)
 
     def _fail(self, key: tuple, error: str, final: bool, attempt: int = 1) -> None:
         self.last_error = error[:300]
@@ -332,7 +344,7 @@ class TimelineScheduler:
                     "media_id": self.media_id, "position_ms": self.position_ms, "iteration": self.iteration,
                     "desired_product_id": self.desired,
                     "desired_marker_id": (self.desired_marker or {}).get("id"),
-                    "actual_product_id": self.actual if isinstance(self.actual, int) else None,
+                    "actual_product_id": self.actual if _is_product(self.actual) else None,
                     "actual_known": self.actual != UNKNOWN,
                     "actual_tiktok_product_id": self.actual.split(":", 1)[1]
                     if isinstance(self.actual, str) and self.actual.startswith("TIKTOK:") else None,

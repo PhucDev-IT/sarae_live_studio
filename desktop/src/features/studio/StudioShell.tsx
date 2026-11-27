@@ -1,8 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { BrainCircuit, Check, CircleHelp, Database, FileText, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldCheck, UsersRound, X } from 'lucide-react'
+import { BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldCheck, UsersRound, X } from 'lucide-react'
 import { AIPanel } from './AIPanel'
 import { LivePanel } from './LivePanel'
-import { ScriptsPanel } from './ScriptsPanel'
 import { ProductsPanel } from './ProductsPanel'
 import { PresentersPanel } from './PresentersPanel'
 import { MediaPanel } from './MediaPanel'
@@ -10,8 +9,8 @@ import { useStudio } from './useStudio'
 import { formatBytes } from './ui'
 
 const APP_VERSION = '0.3.0'
-type Page = 'products' | 'presenters' | 'media' | 'live' | 'scripts' | 'ai'
-const pageTitles: Record<Page, string> = { products: 'Sản phẩm', presenters: 'Người giới thiệu', media: 'Thư viện video', live: 'Phiên LIVE', scripts: 'Kịch bản LIVE', ai: 'Trợ lý AI' }
+type Page = 'products' | 'presenters' | 'media' | 'live' | 'ai'
+const pageTitles: Record<Page, string> = { products: 'Sản phẩm', presenters: 'Người giới thiệu', media: 'Thư viện video', live: 'Phiên LIVE', ai: 'Trợ lý AI' }
 const libraryPages: Page[] = ['products', 'presenters', 'media']
 
 export function StudioShell() {
@@ -50,7 +49,7 @@ export function StudioShell() {
       <div className="studio-brand"><div className="studio-brand-mark"><Layers3 size={25} strokeWidth={1.7} /></div><div><strong>Sarae</strong><span>LIVE STUDIO</span></div></div>
       <div className="studio-workspace-label"><Monitor size={14} /><span>Không gian trên máy</span><span className="studio-local-dot" /></div>
       <nav aria-label="Điều hướng Studio"><p className="studio-nav-label">THƯ VIỆN CỦA BẠN</p>{navItem('products', <Package size={19} />, studio.products.length)}{navItem('presenters', <UsersRound size={19} />, studio.presenters.length)}{navItem('media', <Film size={19} />, studio.media.length)}
-      <p className="studio-nav-label future">KHÔNG GIAN LIVE</p>{navItem('live', <Radio size={19} />)}{navItem('scripts', <FileText size={19} />)}{navItem('ai', <BrainCircuit size={19} />)}</nav>
+      <p className="studio-nav-label future">KHÔNG GIAN LIVE</p>{navItem('live', <Radio size={19} />)}{navItem('ai', <BrainCircuit size={19} />)}</nav>
       <div className="studio-sidebar-bottom"><div className="studio-local-note"><ShieldCheck size={20} /><strong>Dữ liệu ở trên máy bạn</strong><p>Sản phẩm và video được quản lý trong thư viện local.</p></div><div className="studio-version"><span>Sarae Live Studio</span><span>v{APP_VERSION}</span></div></div>
     </aside>
     <div className="studio-workspace">
@@ -61,9 +60,8 @@ export function StudioShell() {
         {libraryPages.includes(page) && <div className="studio-overview" aria-label="Tổng quan thư viện"><div className="studio-stat"><span className="studio-stat-icon terracotta"><Package size={21} /></span><div><span>Sản phẩm</span><strong>{studio.loading ? '—' : studio.products.length.toLocaleString('vi-VN')}</strong></div><small>{studio.tiktok?.account ? 'Đồng bộ từ TikTok' : 'Chưa đồng bộ TikTok'}</small></div><div className="studio-stat"><span className="studio-stat-icon plum"><UsersRound size={21} /></span><div><span>Người giới thiệu</span><strong>{studio.loading ? '—' : studio.presenters.filter(presenter => presenter.active).length.toLocaleString('vi-VN')}</strong></div><small>Đang hoạt động</small></div><div className="studio-stat"><span className="studio-stat-icon jade"><Film size={21} /></span><div><span>Video đã nhập</span><strong>{studio.loading ? '—' : studio.media.length.toLocaleString('vi-VN')}</strong></div><small>{missingCount ? `${missingCount} video thiếu file` : 'Trong thư viện của bạn'}</small></div><div className="studio-stat"><span className="studio-stat-icon honey"><HardDrive size={21} /></span><div><span>Dung lượng video</span><strong>{studio.loading ? '—' : formatBytes(studio.media.reduce((total, media) => total + media.size_bytes, 0))}</strong></div><small>Tổng kích thước đã ghi nhận</small></div></div>}
         <div hidden={page !== 'products'}><ProductsPanel {...shared} tiktok={studio.tiktok} onTiktok={studio.setTiktok} disabled={!studio.connected || mediaBusy} onOpenMedia={id => openMedia({ product: id })} /></div>
         <div hidden={page !== 'presenters'}><PresentersPanel presenters={studio.presenters} media={studio.media} loading={studio.loading} disabled={!studio.connected || mediaBusy} onRefresh={studio.refresh} onNotice={setNotice} onOpenMedia={id => openMedia({ presenter: id })} /></div>
-        <div hidden={page !== 'media'}><MediaPanel {...shared} presenters={studio.presenters} onBusyChange={setMediaBusy} nativeDialog={studio.status?.capabilities.native_dialog ?? false} productFilter={productFilter} onProductFilter={setProductFilter} presenterFilter={presenterFilter} onPresenterFilter={setPresenterFilter} /></div>
+        <div hidden={page !== 'media'}><MediaPanel {...shared} visible={page === 'media'} presenters={studio.presenters} onBusyChange={setMediaBusy} nativeDialog={studio.status?.capabilities.native_dialog ?? false} productFilter={productFilter} onProductFilter={setProductFilter} presenterFilter={presenterFilter} onPresenterFilter={setPresenterFilter} /></div>
         <div hidden={page !== 'live'}><LivePanel products={studio.products} media={studio.media} disabled={!studio.connected} visible={page === 'live'} onNotice={setNotice} /></div>
-        <div hidden={page !== 'scripts'}><ScriptsPanel products={studio.products} disabled={!studio.connected} visible={page === 'scripts'} onOpenAI={() => setPage('ai')} onNotice={setNotice} /></div>
         <div hidden={page !== 'ai'}><AIPanel products={studio.products} disabled={!studio.connected} visible={page === 'ai'} onNotice={setNotice} /></div>
         <footer className="studio-footer"><span><Database size={14} />SQLite · Thư viện trên máy</span><span><CircleHelp size={14} />Studio chỉ điều khiển OBS và chat; bạn tự bật/tắt LIVE trên TikTok.</span></footer>
       </main>

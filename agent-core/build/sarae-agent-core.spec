@@ -12,6 +12,9 @@ SRC = os.path.abspath(os.path.join(SPECPATH, "..", "src"))
 FFPROBE = os.environ.get("SARAE_FFPROBE") or shutil.which("ffprobe")
 if not FFPROBE or not os.path.isfile(FFPROBE):
     raise RuntimeError("FFprobe is required: install it on PATH or set SARAE_FFPROBE to ffprobe.exe")
+FFMPEG = os.environ.get("SARAE_FFMPEG") or shutil.which("ffmpeg")
+if not FFMPEG or not os.path.isfile(FFMPEG):
+    raise RuntimeError("FFmpeg is required for video thumbnails: install it on PATH or set SARAE_FFMPEG to ffmpeg.exe")
 
 hidden = collect_submodules("sarae_agent") + collect_submodules("obsws_python") + collect_submodules("edge_tts")
 # Studio reply desk: public LIVE chat reader (generated protobuf modules are imported dynamically).
@@ -23,7 +26,7 @@ hidden += ["sarae_agent.studio.__main__", "sarae_agent.studio.service", "sqlite3
 a = Analysis(
     [os.path.join(SRC, "sarae_agent", "__main__.py")],
     pathex=[SRC],
-    binaries=[(os.path.abspath(FFPROBE), ".")],
+    binaries=[(os.path.abspath(FFPROBE), "."), (os.path.abspath(FFMPEG), ".")],
     # The OBS overlay renderer page (built from web/ by `npm run build:overlay`), served by sarae_agent.overlay.server.
     datas=[(os.path.join(SRC, "sarae_agent", "overlay", "renderer"), os.path.join("sarae_agent", "overlay", "renderer")),
            (os.path.join(SRC, "sarae_agent", "monitoring", "resources"), os.path.join("sarae_agent", "monitoring", "resources"))],

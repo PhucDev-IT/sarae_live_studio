@@ -1,7 +1,11 @@
-"""LIVE sessions: product lineup played through OBS by the Agent's engine (fake obs-websocket, real MP4 files)."""
+"""LIVE sessions, Single Video Timeline: videos played through OBS, products pinned at each video's markers.
+
+Fake obs-websocket and real MP4 files; pins run in rehearsal (the Agent's dry-run executor) unless a test says so.
+"""
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 from uuid import uuid4
 
@@ -10,7 +14,7 @@ import pytest
 from fake_obs import FakeWs
 from sarae_agent.studio.live import StudioLive
 from sarae_agent.studio.service import StudioError, StudioService
-from studio_helpers import ACCOUNT, create_product
+from studio_helpers import create_product
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +31,8 @@ def clip(tmp_path):
         pytest.skip("FFmpeg and FFprobe are required to generate and validate real video")
     path = tmp_path / "clip.mp4"
     subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                    "color=c=green:s=32x32:r=10:d=0.5", "-an", "-c:v", "mpeg4", str(path)],
-                   check=True, capture_output=True, timeout=30)
+                    "color=c=green:s=32x32:r=5:d=10", "-an", "-c:v", "mpeg4", str(path)],
+                   check=True, capture_output=True, timeout=60)
     return path
 
 
@@ -39,6 +43,12 @@ class Rig:
         self.service = StudioService(data_dir=root)
         self.live = StudioLive(self.service, emit=lambda name, data: self.events.append(name),
                                obs_client_factory=lambda cfg, password: self.ws)
+
+    def video(self, clip, **params):
+        return self.service.dispatch("studio.media.import", {"source_path": str(clip), **params})["media"]
+
+    def markers(self, media_id, *markers):
+        return self.service.dispatch("studio.media.markers.set", {"media_id": media_id, "markers": list(markers)})["markers"]
 
     def close(self):
         self.live.close()
@@ -52,11 +62,18 @@ def rig(tmp_path):
     instance.close()
 
 
-def product_with_videos(rig, clip, name, count=1):
-    product = create_product(rig.service, name)
-    for _ in range(count):
-        rig.service.dispatch("studio.media.import", {"source_path": str(clip), "product_id": product["id"]})
-    return product
+def pin(at_ms, product):
+    return {"at_ms": at_ms, "action": "PIN_PRODUCT", "product_id": product["id"]}
+
+
+def unpin(at_ms):
+    return {"at_ms": at_ms, "action": "UNPIN_PRODUCT"}
+
+
+def at(rig, media_id, position_ms, iteration=0):
+    """One engine watchdog report: the video position drives the pins."""
+    rig.live._on_position({"session_id": rig.live.engine.session_id, "media_id": media_id,
+                           "position_ms": position_ms, "iteration": iteration})
 
 
 def error_code(operation) -> str:
@@ -73,99 +90,153 @@ def test_engine_files_stay_inside_studio_data(rig, tmp_path):
     assert status["port"] == 4456 and status["media_input"] == "Video bán hàng" and "password" not in status
 
 
-def test_session_validation_and_default_policy(rig, clip):
-    a = create_product(rig.service, "Áo")
-    session = rig.live.sessions_create({"title": "  Phiên tối  ", "product_ids": [a["id"]]})["session"]
-    assert session["title"] == "Phiên tối" and session["status"] == "draft" and session["product_ids"] == [a["id"]]
-    assert session["policy"]["video_order"] == "sequential" and session["policy"]["product_rotation"] == "off"
-    for bad in ({"title": "x", "product_ids": []}, {"title": "x", "product_ids": [a["id"], a["id"]]},
-                {"title": "", "product_ids": [a["id"]]}, {"title": "x", "product_ids": [str(uuid4())]},
-                {"title": "x", "product_ids": [a["id"]], "policy": {"video_order": "chaos"}},
-                {"title": "x", "product_ids": [a["id"]], "policy": {"product_rotation": "random",
-                                                                     "rotate_after_videos": None}}):
+def test_markers_belong_to_the_video_and_are_validated(rig, clip):
+    shirt, dress = create_product(rig.service, "Áo"), create_product(rig.service, "Váy")
+    video = rig.video(clip)
+    saved = rig.markers(video["id"], pin(6000, dress), unpin(9000), pin(1000, shirt))
+    assert [(m["at_ms"], m["action"], m["product_name"]) for m in saved] == \
+        [(1000, "PIN_PRODUCT", "Áo"), (6000, "PIN_PRODUCT", "Váy"), (9000, "UNPIN_PRODUCT", None)]
+    listed = rig.service.dispatch("studio.media.list", {})["media"][0]
+    assert listed["marker_count"] == 3
+    for bad in ([{"at_ms": 99_000, "action": "PIN_PRODUCT", "product_id": shirt["id"]}],
+                [{"at_ms": -1, "action": "UNPIN_PRODUCT"}], [{"at_ms": 10, "action": "SWITCH"}],
+                [{"at_ms": 10, "action": "UNPIN_PRODUCT", "product_id": shirt["id"]}],
+                [{"at_ms": 10, "action": "PIN_PRODUCT", "product_id": str(uuid4())}],
+                [{"at_ms": True, "action": "UNPIN_PRODUCT"}]):
+        code = error_code(lambda: rig.service.dispatch("studio.media.markers.set",
+                                                       {"media_id": video["id"], "markers": bad}))
+        assert code in {"VALIDATION_ERROR", "NOT_FOUND"}
+    assert len(rig.service.dispatch("studio.media.markers.list", {"media_id": video["id"]})["markers"]) == 3
+    rig.service.dispatch("studio.products.delete", {"id": dress["id"]})
+    assert [m["product_name"] for m in rig.service.dispatch("studio.media.markers.list",
+                                                            {"media_id": video["id"]})["markers"]] == ["Áo", None]
+
+
+def test_session_is_an_ordered_video_list(rig, clip):
+    first, second = rig.video(clip), rig.video(clip)
+    session = rig.live.sessions_create({"title": "  Phiên tối ", "video_ids": [second["id"], first["id"]],
+                                        "video_order": "shuffle", "video_loop": False})["session"]
+    assert (session["title"], session["video_ids"], session["video_order"], session["video_loop"], session["status"]) == \
+        ("Phiên tối", [second["id"], first["id"]], "shuffle", False, "draft")
+    for bad in ({"title": "x", "video_ids": []}, {"title": "x", "video_ids": [first["id"], first["id"]]},
+                {"title": "", "video_ids": [first["id"]]}, {"title": "x", "video_ids": [str(uuid4())]},
+                {"title": "x", "video_ids": [first["id"]], "video_order": "chaos"},
+                {"title": "x", "video_ids": [first["id"]], "product_ids": []}):
         assert error_code(lambda: rig.live.sessions_create(bad)) in {"VALIDATION_ERROR", "NOT_FOUND"}
-    assert len(rig.live.sessions_list()["sessions"]) == 1
+    rig.service.dispatch("studio.media.delete", {"id": second["id"]})
+    assert rig.service.live_session(session["id"])["video_ids"] == [first["id"]]
 
 
-def test_start_requires_a_playable_video(rig):
-    a = create_product(rig.service, "Không video")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [a["id"]]})["session"]
-    assert error_code(lambda: rig.live.start({"session_id": session["id"]})) == "NO_PLAYABLE_VIDEO"
-    assert rig.live.status()["active"] is False
-    assert rig.service.live_session(session["id"])["status"] == "draft"
-
-
-def test_start_plays_first_product_with_videos_in_obs(rig, clip):
-    empty = create_product(rig.service, "Chưa có video")
-    shirt = product_with_videos(rig, clip, "Áo linen", 2)
-    session = rig.live.sessions_create({"title": "Phiên sáng", "product_ids": [empty["id"], shirt["id"]]})["session"]
+def test_start_plays_the_videos_and_pins_at_markers_in_rehearsal(rig, clip):
+    shirt, dress = create_product(rig.service, "Áo"), create_product(rig.service, "Váy")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(2000, shirt), pin(6000, dress), unpin(9000))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
     status = rig.live.start({"session_id": session["id"]})
-    assert status["active"] is True and status["product_id"] == shirt["id"] and len(status["queue"]) == 2
-    assert status["session"]["status"] == "live" and status["obs_connected"] is True
-    played = rig.ws.settings["Sarae Video"]["local_file"]
-    assert played.startswith(str(rig.service.media_dir))
-    assert [event["kind"] for event in status["events"]] == ["STARTED"]
+    assert status["active"] and status["media_id"] == video["id"] and status["session"]["status"] == "live"
+    assert rig.ws.settings["Sarae Video"]["local_file"].startswith(str(rig.service.media_dir))
+    assert status["pins"]["real"] is False and len(status["markers"]) == 3
+    at(rig, video["id"], 1000)
+    assert rig.live.status()["pins"]["desired_product_id"] is None and rig.live.current_product_id() is None
+    at(rig, video["id"], 2500)
+    pins = rig.live.status()["pins"]
+    assert pins["desired_product_id"] == shirt["id"] and pins["actual_product_id"] == shirt["id"]
+    assert pins["product_names"][shirt["id"]] == "Áo" and rig.live.current_product_id() == shirt["id"]
+    at(rig, video["id"], 7000)
+    assert rig.live.status()["pins"]["actual_product_id"] == dress["id"]
+    at(rig, video["id"], 9500)
+    assert rig.live.status()["pins"]["actual_product_id"] is None
+    kinds = [event["kind"] for event in rig.live.status()["events"]]
+    assert kinds.count("PIN_APPLIED") == 3 and kinds[-1] == "STARTED"
+
+
+def test_seek_pins_what_is_in_force_without_replaying(rig, clip):
+    shirt, dress = create_product(rig.service, "Áo"), create_product(rig.service, "Váy")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(1000, shirt), pin(5000, dress))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    at(rig, video["id"], 8000)
+    status = rig.live.status()
+    assert status["pins"]["actual_product_id"] == dress["id"]
+    assert [e["kind"] for e in status["events"]].count("PIN_APPLIED") == 1
+
+
+def test_real_pins_wait_for_the_tiktok_console(rig, clip):
+    shirt = create_product(rig.service, "Áo")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(0, shirt))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.configure_pins({"real": True})
+    rig.live.start({"session_id": session["id"]})
+    at(rig, video["id"], 3000)
+    pins = rig.live.status()["pins"]
+    assert pins["real"] is True and pins["chrome_connected"] is False
+    assert pins["desired_product_id"] == shirt["id"] and pins["actual_product_id"] is None  # fail closed
+    rig.live.configure_pins({"real": False})
+    at(rig, video["id"], 3500)
+    assert rig.live.status()["pins"]["actual_product_id"] == shirt["id"]
+    assert error_code(lambda: rig.live.configure_pins({"real": "yes"})) == "VALIDATION_ERROR"
+
+
+def test_marker_edits_reach_the_running_session(rig, clip):
+    shirt, dress = create_product(rig.service, "Áo"), create_product(rig.service, "Váy")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(1000, shirt))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    at(rig, video["id"], 4000)
+    rig.markers(video["id"], pin(1000, shirt), pin(3000, dress))
+    rig.live.refresh()
+    at(rig, video["id"], 4100)
+    assert rig.live.status()["pins"]["actual_product_id"] == dress["id"]
+
+
+def test_session_edits_while_live(rig, clip):
+    first, second = rig.video(clip), rig.video(clip)
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [first["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    assert error_code(lambda: rig.live.sessions_update({"id": session["id"], "video_ids": [second["id"]]})) == "SESSION_LIVE"
+    rig.live.sessions_update({"id": session["id"], "video_loop": False, "title": "Đổi tên"})
+    assert rig.live.engine.loop is False
     assert error_code(lambda: rig.live.sessions_delete({"id": session["id"]})) == "SESSION_LIVE"
-    other = rig.live.sessions_create({"title": "Khác", "product_ids": [shirt["id"]]})["session"]
+    other = rig.live.sessions_create({"title": "Khác", "video_ids": [second["id"]]})["session"]
     assert error_code(lambda: rig.live.start({"session_id": other["id"]})) == "SESSION_CONFLICT"
 
 
-def test_switch_after_current_immediate_and_cancel(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    dress = product_with_videos(rig, clip, "Váy")
-    outsider = product_with_videos(rig, clip, "Ngoài phiên")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"], dress["id"]]})["session"]
-    rig.live.start({"session_id": session["id"]})
-    queued = rig.live.switch({"product_id": dress["id"], "mode": "after_current"})
-    assert queued["product_id"] == shirt["id"] and queued["pending_product_id"] == dress["id"]
-    assert rig.live.cancel_pending()["pending_product_id"] is None
-    now = rig.live.switch({"product_id": dress["id"], "mode": "immediate"})
-    assert now["product_id"] == dress["id"]
-    assert error_code(lambda: rig.live.switch({"product_id": outsider["id"]})) == "VALIDATION_ERROR"
-    assert error_code(lambda: rig.live.switch({"product_id": dress["id"], "mode": "later"})) == "VALIDATION_ERROR"
-
-
-def test_pause_resume_stop_and_restart_from_ended(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+def test_pause_seek_stop_and_restart(rig, clip):
+    shirt = create_product(rig.service, "Áo")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(0, shirt))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
     rig.live.start({"session_id": session["id"]})
     assert rig.live.pause()["paused"] is True
     assert rig.live.resume()["paused"] is False
+    assert rig.live.seek({"position_ms": 4000})["active"] is True
+    assert error_code(lambda: rig.live.seek({"position_ms": -5})) == "VALIDATION_ERROR"
     stopped = rig.live.stop()
     assert stopped["active"] is False and stopped["session"] is None
+    assert rig.live.scheduler.status()["session_id"] is None  # nothing pinned after a stop
     ended = rig.service.live_session(session["id"])
     assert ended["status"] == "ended" and ended["end_reason"] == "operator"
     assert error_code(rig.live.pause) == "SESSION_NOT_LIVE"
     assert rig.live.start({"session_id": session["id"]})["active"] is True
 
 
-def test_new_video_reaches_the_running_engine(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
-    rig.live.start({"session_id": session["id"]})
-    rig.service.dispatch("studio.media.import", {"source_path": str(clip), "product_id": shirt["id"]})
-    rig.live.refresh()
-    assert len(rig.live.engine.product_media[shirt["id"]]) == 2
-
-
-def test_policy_update_while_live_is_pushed_to_engine(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    dress = product_with_videos(rig, clip, "Váy")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"], dress["id"]]})["session"]
-    rig.live.start({"session_id": session["id"]})
-    rig.live.sessions_update({"id": session["id"], "policy": {"product_rotation": "sequential",
-                                                              "rotate_after_videos": 2, "video_order": "shuffle"}})
-    assert rig.live.engine.policy.product_rotation == "sequential"
-    assert rig.live.engine.product_order == [shirt["id"], dress["id"]]
+def test_start_requires_playable_videos(rig, clip):
+    video = rig.video(clip)
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.service.resolve_media(video["id"]).unlink()
+    assert error_code(lambda: rig.live.start({"session_id": session["id"]})) == "NO_PLAYABLE_VIDEO"
+    assert rig.service.live_session(session["id"])["status"] == "draft"
 
 
 def test_core_restart_never_resumes_a_live_session(tmp_path, clip):
     first = Rig(tmp_path / "studio")
-    shirt = product_with_videos(first, clip, "Áo")
-    session = first.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    video = first.video(clip)
+    session = first.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
     first.live.start({"session_id": session["id"]})
-    # Simulate a crash: the service closes without the LIVE layer stopping the session.
-    first.live.engine.stop_monitor()
+    first.live.engine.stop_monitor()  # a crash: the LIVE layer never stopped the session
     first.service.close()
     second = Rig(tmp_path / "studio")
     try:
@@ -178,92 +249,28 @@ def test_core_restart_never_resumes_a_live_session(tmp_path, clip):
 
 def test_obs_errors_become_studio_errors(rig, clip):
     rig.ws.broken = True
-    shirt = product_with_videos(rig, clip, "Áo")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    video = rig.video(clip)
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
     code = error_code(lambda: rig.live.start({"session_id": session["id"]}))
     assert code.startswith("OBS_") or code.startswith("PLAYBACK")
     assert rig.service.live_session(session["id"])["status"] == "draft"
     assert error_code(lambda: rig.live.obs_configure({"port": 99999})) == "VALIDATION_ERROR"
 
 
-class FakePinner:
-    """Stands in for AutoPinService's auto-pin API (no Chrome)."""
-
-    def __init__(self):
-        self.enabled, self.products, self.session_id = False, {}, None
-        self.armed, self.queued = [], []
-
-    def status(self):
-        return {"browser_open": True}
-
-    def set_video_auto(self, enabled, products, session_id=None):
-        self.enabled, self.products, self.session_id = enabled, dict(products), session_id
-        self.armed.append((enabled, sorted(products), session_id))
-
-    def video_product(self, product_id, session_id=None):
-        if not self.enabled or (session_id is not None and session_id != self.session_id):
-            return None
-        return self.products.get(product_id)
-
-    def queue_video_pin(self, product_id, current, guard=None, session_id=None):
-        self.queued.append((product_id, current()))
-
-    def pin_status(self):
-        return {"status": "CONFIRMED" if self.queued else "IDLE", "product_id": None, "auto_enabled": self.enabled}
-
-
-def attach_pinner(rig, pinner=None):
-    pinner = pinner or FakePinner()
-    rig.live.tiktok = type("Connector", (), {"_browser": pinner})()
-    return pinner
-
-
-def test_auto_pin_follows_the_product_on_air(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    dress = product_with_videos(rig, clip, "Váy")
-    pinner = attach_pinner(rig)
-    rig.live.configure_automation({"auto_pin": True})
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"], dress["id"]]})["session"]
-    status = rig.live.start({"session_id": session["id"]})
-    assert status["automation"] == {"auto_pin": True} and status["pin"]["browser_open"] is True
-    assert pinner.armed[-1] == (True, sorted([shirt["id"], dress["id"]]), session["id"])
-    target = pinner.products[shirt["id"]]
-    assert target["expected_user_id"] == ACCOUNT["user_id"] and target["tiktok_product_id"] == shirt["tiktok_product_id"]
-    assert pinner.queued == [(shirt["id"], True)]
-    rig.live.status()  # polling never pins the same product twice
-    assert len(pinner.queued) == 1
-    rig.live.switch({"product_id": dress["id"], "mode": "immediate"})
-    assert pinner.queued[-1] == (dress["id"], True)
-    rig.live.stop()
-    assert pinner.armed[-1] == (False, [], None)
-
-
-def test_auto_pin_is_off_by_default_and_can_be_turned_on_while_live(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    pinner = attach_pinner(rig)
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
-    rig.live.start({"session_id": session["id"]})
-    assert pinner.queued == [] and rig.live.status()["automation"] == {"auto_pin": False}
-    rig.live.configure_automation({"auto_pin": True})
-    assert pinner.queued == [(shirt["id"], True)]
-    assert error_code(lambda: rig.live.configure_automation({"auto_pin": "yes"})) == "VALIDATION_ERROR"
-
-
-def test_auto_pin_starts_when_chrome_connects_after_the_session(rig, clip):
-    shirt = product_with_videos(rig, clip, "Áo")
-    rig.live.configure_automation({"auto_pin": True})
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
-    assert rig.live.start({"session_id": session["id"]})["pin"]["browser_open"] is False
-    pinner = attach_pinner(rig)
-    rig.live.status()
-    assert pinner.queued == [(shirt["id"], True)]
-
-
 def test_session_listeners_hear_start_and_stop(rig, clip):
     heard = []
     rig.live.session_listeners.append(lambda session, started: heard.append((session["status"], started)))
-    shirt = product_with_videos(rig, clip, "Áo")
-    session = rig.live.sessions_create({"title": "Phiên", "product_ids": [shirt["id"]]})["session"]
+    video = rig.video(clip)
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
     rig.live.start({"session_id": session["id"]})
     rig.live.stop()
     assert heard == [("live", True), ("ended", False)]
+
+
+def test_old_product_lineups_and_scripts_are_gone(rig):
+    connection = sqlite3.connect(rig.service.database_path)
+    try:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        connection.close()
+    assert "media_markers" in tables and "live_session_products" not in tables and "sales_scripts" not in tables

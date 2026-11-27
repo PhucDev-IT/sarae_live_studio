@@ -34,8 +34,6 @@ export interface AIState {
 }
 export interface AIUsage { provider: AIProvider; model: string; input_tokens: number; output_tokens: number; latency_ms: number }
 export interface AIReply { intent: string; reply: string; needs_review: boolean; reason: string; product_id: string | null; usage: AIUsage }
-export interface SalesScript { id: string; product_id: string; title: string; body: string; source: 'ai' | 'manual'; created_at: string; updated_at: string }
-export type ScriptStyle = 'friendly' | 'energetic' | 'expert'
 
 export interface TikTokAccount {
   user_id: string
@@ -46,50 +44,57 @@ export interface TikTokAccount {
   last_synced_at: string
 }
 
-export interface PlaybackPolicy {
-  video_order: 'sequential' | 'random' | 'shuffle'
-  product_rotation: 'off' | 'sequential' | 'random' | 'shuffle'
-  rotate_after_videos: number | null
-  rotate_after_minutes: number | null
-  switch_mode: 'after_current' | 'immediate'
-  auto: boolean
-}
+export type VideoOrder = 'sequential' | 'random' | 'shuffle'
 export interface LiveSession {
   id: string
   title: string
   status: 'draft' | 'live' | 'ended'
-  policy: PlaybackPolicy
-  product_ids: string[]
+  video_ids: string[]
+  video_order: VideoOrder
+  video_loop: boolean
   end_reason: string | null
   started_at: string | null
   ended_at: string | null
   created_at: string
   updated_at: string
 }
+export type MarkerAction = 'PIN_PRODUCT' | 'UNPIN_PRODUCT'
+export interface MarkerInput { at_ms: number; action: MarkerAction; product_id?: string | null }
+export interface MediaMarker { id: number; media_id: string; at_ms: number; action: MarkerAction; product_id: string | null; product_name: string | null; tiktok_product_id: string | null; seq: number }
 export interface LiveEvent { id: number; kind: string; product_id: string | null; detail: Record<string, unknown>; created_at: string }
+export interface LivePins {
+  real: boolean
+  chrome_connected: boolean
+  live: boolean | null
+  desired_product_id: string | null
+  actual_product_id: string | null
+  actual_known: boolean
+  in_flight: { action: string; product_id: string | null; attempt: number } | null
+  last_error: string | null
+  last_applied: { action: string; product_id: string | null; position_ms: number } | null
+  product_names: Record<string, string>
+}
 export interface LiveStatus {
   active: boolean
   busy: boolean
   paused: boolean
   session: LiveSession | null
-  product_id: string | null
-  pending_product_id: string | null
   media_id: string | null
   queue: string[]
   index: number
+  loop_iteration: number
   media_state: string | null
   cursor_ms: number | null
   duration_ms: number | null
   obs_connected: boolean
   obs_error: string | null
   last_status: string
-  rotation: { auto: boolean; videos_in_product: number; product_seconds: number; next_product_id: string | null } | null
   session_seconds: number
   errors: number
   recoveries: number
+  markers: { at_ms: number; action: MarkerAction; product_id: string | null; product_name: string | null }[]
+  pins: LivePins
   events: LiveEvent[]
-  automation: { auto_pin: boolean }
-  pin: { browser_open: boolean; status: string; action: string | null; tiktok_product_id: string | null; card_name: string | null; error: string | null; auto_enabled: boolean }
 }
 export interface ObsStatus {
   connected: boolean
@@ -162,6 +167,13 @@ export interface Media {
   presenter_ids: string[]
   original_name: string
   size_bytes: number
+  duration_seconds: number | null
+  width: number | null
+  height: number | null
+  metadata_probed: boolean
+  marker_count: number
+  has_thumbnail: boolean
+  thumbnail_url: string | null
   sha256: string
   storage_mode: 'managed'
   status: 'ready' | 'missing'
@@ -223,10 +235,10 @@ function unwrap<T>(envelope: Envelope<T>): T {
 // A TikTok sync reloads the LIVE Console and waits for its product list.
 const slowMethods: Record<string, number> = {
   'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
-  'studio.ai.reply': 100_000, 'studio.ai.test': 100_000, 'studio.scripts.generate': 120_000,
+  'studio.ai.reply': 100_000, 'studio.ai.test': 100_000,
   // Starting or switching may render an OBS copy of a rotated video first.
   'studio.replies.send_comment': 130_000,
-  'studio.live.start': 120_000, 'studio.live.switch': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
+  'studio.live.start': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
 }
 
 async function request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -319,29 +331,26 @@ export const studioClient = {
   aiDeleteKey: (provider: AIProvider) => request<AIState>('studio.ai.delete_key', { provider }),
   aiTest: () => request<{ ok: boolean; usage: AIUsage; sample: string }>('studio.ai.test'),
   aiReply: (input: { comment: string; product_id?: string; username?: string }) => request<AIReply>('studio.ai.reply', { ...input }),
-  listScripts: async (productId?: string) => (await request<{ scripts: SalesScript[] }>('studio.scripts.list', productId ? { product_id: productId } : {})).scripts,
-  generateScript: async (input: { product_id: string; style: ScriptStyle; duration_minutes: number; notes: string }) => (await request<{ script: SalesScript; usage: AIUsage }>('studio.scripts.generate', { ...input })),
-  createScript: async (input: { product_id: string; title: string; body: string }) => (await request<{ script: SalesScript }>('studio.scripts.create', { ...input })).script,
-  updateScript: async (id: string, input: { title?: string; body?: string }) => (await request<{ script: SalesScript }>('studio.scripts.update', { id, ...input })).script,
-  deleteScript: (id: string) => request<{ deleted: boolean }>('studio.scripts.delete', { id }),
   obsStatus: () => request<ObsStatus>('studio.obs.status'),
   obsConfigure: (input: ObsSettingsInput) => request<ObsStatus>('studio.obs.configure', { ...input }),
   obsConnect: () => request<ObsStatus>('studio.obs.connect'),
   obsDisconnect: () => request<ObsStatus>('studio.obs.disconnect'),
   listLiveSessions: async () => (await request<{ sessions: LiveSession[] }>('studio.live.sessions.list')).sessions,
-  createLiveSession: async (input: { title: string; product_ids: string[]; policy: PlaybackPolicy }) => (await request<{ session: LiveSession }>('studio.live.sessions.create', { ...input })).session,
-  updateLiveSession: async (id: string, input: { title?: string; product_ids?: string[]; policy?: PlaybackPolicy }) => (await request<{ session: LiveSession }>('studio.live.sessions.update', { id, ...input })).session,
+  createLiveSession: async (input: { title: string; video_ids: string[]; video_order: VideoOrder; video_loop: boolean }) => (await request<{ session: LiveSession }>('studio.live.sessions.create', { ...input })).session,
+  updateLiveSession: async (id: string, input: { title?: string; video_ids?: string[]; video_order?: VideoOrder; video_loop?: boolean }) => (await request<{ session: LiveSession }>('studio.live.sessions.update', { id, ...input })).session,
+  listMarkers: async (mediaId: string) => (await request<{ markers: MediaMarker[] }>('studio.media.markers.list', { media_id: mediaId })).markers,
+  setMarkers: async (mediaId: string, markers: MarkerInput[]) => (await request<{ markers: MediaMarker[] }>('studio.media.markers.set', { media_id: mediaId, markers })).markers,
   deleteLiveSession: (id: string) => request<{ deleted: boolean }>('studio.live.sessions.delete', { id }),
   liveStatus: () => request<LiveStatus>('studio.live.status'),
-  liveStart: (sessionId: string, productId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(productId ? { product_id: productId } : {}) }),
-  liveSwitch: (productId: string, mode: 'immediate' | 'after_current') => request<LiveStatus>('studio.live.switch', { product_id: productId, mode }),
+  liveStart: (sessionId: string, mediaId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(mediaId ? { media_id: mediaId } : {}) }),
+  liveSeek: (positionMs: number) => request<LiveStatus>('studio.live.seek', { position_ms: Math.max(0, Math.round(positionMs)) }),
+  livePins: (real: boolean) => request<LiveStatus>('studio.live.pins', { real }),
   replies: (method: 'status' | 'chat_stop' | 'stop_voice') => request<ReplyDeskStatus>(`studio.replies.${method}`),
   repliesConfigure: (input: Partial<ReplySettings>) => request<ReplyDeskStatus>('studio.replies.configure', { ...input }),
   repliesChatStart: (username?: string) => request<ReplyDeskStatus>('studio.replies.chat_start', username ? { username } : {}),
   repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),
   replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
-  liveAutomation: (autoPin: boolean) => request<LiveStatus>('studio.live.automation', { auto_pin: autoPin }),
-  liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'cancel_pending' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
+  liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),
   tiktokConnect: () => request<TikTokStatus>('studio.tiktok.connect'),
@@ -352,6 +361,8 @@ export const studioClient = {
   updatePresenter: async (id: string, input: Partial<PresenterInput>) => (await request<{ presenter: Presenter }>('studio.presenters.update', { id, ...input })).presenter,
   deletePresenter: (id: string) => request<{ deleted: boolean }>('studio.presenters.delete', { id }),
   listMedia: async (productId?: string) => (await request<{ media: Media[] }>('studio.media.list', productId ? { product_id: productId } : {})).media,
+  inspectMedia: async (id: string) => (await request<{ media: Media }>('studio.media.inspect', { id })).media,
+  createMediaThumbnail: async (id: string) => (await request<{ media: Media }>('studio.media.thumbnail', { id })).media,
   updateMedia: async (id: string, links: MediaLinks) => (await request<{ media: Media }>('studio.media.update', { id, ...links })).media,
   importMedia,
   deleteMedia: (id: string) => request<{ deleted: boolean }>('studio.media.delete', { id }),

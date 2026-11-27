@@ -174,38 +174,3 @@ def test_provider_errors_are_redacted_and_counted(studio):
     assert KEY not in caught.value.message and "sk-abcdef123456" not in caught.value.message
     assert ai.config()["usage"]["errors"] == 1
     assert redact("AIzaSyAAAAAAAAAAAAAAAA", None) == "***"
-
-
-def test_generated_script_is_saved_and_editable(studio):
-    product = create_product(studio, "Váy hoa", product_id=701)
-    ai, fake = ai_for(studio, {"title": "Kịch bản váy hoa", "body": "MỞ ĐẦU\nChào cả nhà!"}, max_output_tokens=300)
-    result = ai.generate_script({"product_id": product["id"], "style": "energetic", "duration_minutes": 5,
-                                 "notes": "nhấn mạnh chất voan"})
-    script = result["script"]
-    assert script["source"] == "ai" and script["product_id"] == product["id"] and script["title"] == "Kịch bản váy hoa"
-    assert fake.calls[0]["body"]["generationConfig"]["maxOutputTokens"] == 2250
-    listed = studio.dispatch("studio.scripts.list", {"product_id": product["id"]})["scripts"]
-    assert [item["id"] for item in listed] == [script["id"]]
-    edited = studio.dispatch("studio.scripts.update", {"id": script["id"], "body": "MỞ ĐẦU\nXin chào"})["script"]
-    assert edited["body"] == "MỞ ĐẦU\nXin chào" and edited["title"] == script["title"]
-    manual = studio.dispatch("studio.scripts.create", {"product_id": product["id"], "title": "Tự viết",
-                                                       "body": "Nội dung"})["script"]
-    assert manual["source"] == "manual"
-    studio.dispatch("studio.products.delete", {"id": product["id"]})
-    assert studio.dispatch("studio.scripts.list", {})["scripts"] == []
-
-
-@pytest.mark.parametrize("params", [{"style": "rap"}, {"duration_minutes": 0}, {"duration_minutes": True},
-                                    {"notes": 5}, {"title": "x"}])
-def test_invalid_script_requests_are_rejected_before_calling_ai(studio, params):
-    product = create_product(studio)
-    ai, fake = ai_for(studio, {"title": "t", "body": "b"})
-    assert error_code(lambda: ai.generate_script({"product_id": product["id"], **params})) == "VALIDATION_ERROR"
-    assert fake.calls == []
-
-
-def test_empty_script_from_ai_is_not_saved(studio):
-    product = create_product(studio)
-    ai, _ = ai_for(studio, {"title": "t", "body": "   "})
-    assert error_code(lambda: ai.generate_script({"product_id": product["id"]})) == "AI_PROVIDER_ERROR"
-    assert studio.dispatch("studio.scripts.list", {})["scripts"] == []
