@@ -11,6 +11,8 @@ set "ROOT=%~dp0"
 set "CORE=%ROOT%agent-core"
 set "DESK=%ROOT%desktop"
 set "PY=%CORE%\.venv\Scripts\python.exe"
+rem Du lieu that (san pham, video, phien LIVE) nam trong du an: studio-data\ (khong dua len git).
+if not defined SARAE_STUDIO_DATA_DIR set "SARAE_STUDIO_DATA_DIR=%ROOT%studio-data"
 set "URL=http://127.0.0.1:1420"
 set "MODE=%~1"
 if "%MODE%"=="" set "MODE=web"

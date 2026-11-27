@@ -37,3 +37,6 @@ backend/data/agent_commands.lock
 
 # Google Drive OAuth PoC output (file names / folder IDs of a real account)
 google_drive_poc_report*.json
+
+# Studio data of this machine (products, videos, LIVE sessions, secrets)
+/studio-data/
