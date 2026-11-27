@@ -150,6 +150,37 @@ MIGRATIONS = (
         "DROP TABLE sales_scripts",
         "DELETE FROM settings WHERE key = 'live_automation'",
     )),
+    # LIVE overlays (dev docs/LIVE_OVERLAYS.md), kept on the library video like the pin markers. `data` is the
+    # validated overlay (studio/overlays.py); overlay images are files in overlay_assets/ named by their id.
+    (8, (
+        """CREATE TABLE media_overlays (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK(position >= 0),
+            data TEXT NOT NULL
+        )""",
+        "CREATE INDEX media_overlays_media ON media_overlays(media_id, position)",
+        """CREATE TABLE overlay_assets (
+            id TEXT PRIMARY KEY CHECK(length(id) = 32),
+            original_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL CHECK(mime_type IN ('image/png', 'image/jpeg', 'image/webp')),
+            sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+            width INTEGER NOT NULL CHECK(width > 0),
+            height INTEGER NOT NULL CHECK(height > 0),
+            size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+            created_at TEXT NOT NULL
+        )""",
+    )),
+    # Overlay schedule per LIVE session (dev LIVE_OVERLAYS.md §13–14: one switch for all the videos of a version):
+    # fixed | window | random, with the dev Backend's defaults and limits (studio/overlays.py).
+    (9, (
+        """ALTER TABLE live_sessions ADD COLUMN overlay_mode TEXT NOT NULL DEFAULT 'fixed'
+            CHECK(overlay_mode IN ('fixed', 'window', 'random'))""",
+        """ALTER TABLE live_sessions ADD COLUMN overlay_every_ms INTEGER NOT NULL DEFAULT 120000
+            CHECK(overlay_every_ms BETWEEN 10000 AND 3600000)""",
+        """ALTER TABLE live_sessions ADD COLUMN overlay_min_gap_ms INTEGER NOT NULL DEFAULT 20000
+            CHECK(overlay_min_gap_ms BETWEEN 0 AND 600000)""",
+    )),
 )
 
 

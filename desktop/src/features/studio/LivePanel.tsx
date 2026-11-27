@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, ArrowDown, ArrowUp, Check, CircleStop, Film, FlaskConical, ListVideo, MonitorPlay, Pause, Pencil, Pin, PinOff, Play, Plus, Radio, Repeat, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Check, CircleStop, Film, FlaskConical, Layers, ListVideo, MonitorPlay, Pause, Pencil, Pin, PinOff, Play, Plus, Radio, Repeat, Settings2, SkipBack, SkipForward, Trash2, X } from 'lucide-react'
 import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type Product, type VideoOrder } from '../../services/studio'
 import { clock } from './MarkerEditor'
 import { ReplyDesk } from './ReplyDesk'
@@ -101,6 +101,16 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
   </>
 }
 
+function OverlayState({ status }: { status: LiveStatus }) {
+  const overlay = status.overlay
+  if (!overlay || !overlay.overlay_count || overlay.state === 'disabled' || overlay.state === 'idle') return null
+  const source = `nguồn "${overlay.source_name}"`
+  if (overlay.state === 'error') return <span className="studio-pin-state warn" title={overlay.error?.message}><AlertTriangle size={13} />Overlay chưa hiện: {overlay.error?.message ?? `kiểm tra ${source} trong OBS`}</span>
+  if (overlay.state === 'loading') return <span className="studio-pin-state busy"><Layers size={13} />Đang nạp {overlay.overlay_count} overlay vào OBS…</span>
+  const showing = overlay.active_overlays?.length ?? 0
+  return <span className={`studio-pin-state${showing ? ' ok' : ''}`} title={`Hiện qua ${source}`}><Layers size={13} />{showing ? `Đang hiện ${showing} overlay` : `${overlay.overlay_count} overlay sẵn sàng`}</span>
+}
+
 function PinState({ status }: { status: LiveStatus }) {
   const pins = status.pins
   const name = (id: string | null) => (id && pins.product_names[id]) || 'sản phẩm'
@@ -149,6 +159,7 @@ function ControlRoom({ status, session, mediaById, busy, disabled, onControl, on
     <div className="studio-automation">
       <label className="studio-switch dark"><input type="checkbox" role="switch" checked={status.pins.real} disabled={locked} onChange={event => event.target.checked ? setConfirmReal(true) : onPins(false)} /><span aria-hidden="true" /><small>{status.pins.real ? <><Pin size={13} />Ghim thật trên TikTok</> : <><FlaskConical size={13} />Chạy thử ghim</>}</small></label>
       <PinState status={status} />
+      <OverlayState status={status} />
     </div>
     <div className="studio-lineup">{status.queue.map((id, index) => {
       const item = mediaById.get(id)

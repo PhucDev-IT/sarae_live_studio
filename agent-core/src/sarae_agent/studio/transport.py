@@ -25,12 +25,14 @@ METHODS = (
     "studio.tiktok.status", "studio.tiktok.login", "studio.tiktok.connect", "studio.tiktok.sync",
     "studio.presenters.list", "studio.presenters.create", "studio.presenters.update", "studio.presenters.delete",
     "studio.media.list", "studio.media.import", "studio.media.update", "studio.media.delete", "studio.media.url", "studio.media.inspect", "studio.media.thumbnail",
-    "studio.media.markers.list", "studio.media.markers.set",
+    "studio.media.markers.list", "studio.media.markers.set", "studio.media.overlays.list", "studio.media.overlays.set",
+    "studio.overlays.templates", "studio.overlays.assets.list", "studio.overlays.assets.import",
+    "studio.overlays.assets.delete",
     "studio.ai.config", "studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.test",
     "studio.ai.reply",
     "studio.obs.status", "studio.obs.configure", "studio.obs.connect", "studio.obs.disconnect",
     "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
-    "studio.live.sessions.delete", "studio.live.status", "studio.live.start",
+    "studio.live.sessions.delete", "studio.live.sessions.overlay_issues", "studio.live.status", "studio.live.start",
     "studio.live.pause", "studio.live.resume", "studio.live.next", "studio.live.previous", "studio.live.seek",
     "studio.live.stop", "studio.live.pins",
     "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
@@ -84,6 +86,21 @@ class StudioTransport:
         url = f"{self.base_url}/studio/media-thumbnails/{quote(media['id'], safe='')}?token={self.token}&v={quote(media['sha256'], safe='')}"
         return {**media, "thumbnail_url": url if media.get("has_thumbnail") and self.base_url else None}
 
+    def _asset_url(self, asset_id: str) -> str:
+        return f"/api/studio-assets/{quote(asset_id, safe='')}?token={self.token}"
+
+    def _scene_urls(self, scene: dict) -> dict:
+        """The editor loads scene images from this server: `/api/…` paths with the session token (the renderer
+        resolves them against the core's base URL). The OBS renderer gets its own cached copies instead."""
+        scene = {**scene, "products": {k: dict(v) for k, v in scene.get("products", {}).items()},
+                 "assets": {k: dict(v) for k, v in scene.get("assets", {}).items()}}
+        for item in [*scene["products"].values(), *scene["assets"].values()]:
+            for key in ("image_url", "url"):
+                if isinstance(item.get(key), str) and item[key].startswith("/api/"):
+                    item[key] = f"{item[key]}?token={self.token}"
+        scene["api_base"] = self.base_url
+        return scene
+
     def dispatch(self, method: str, params: dict) -> dict:
         if method not in METHODS:
             raise StudioError("METHOD_NOT_FOUND", "Phương thức studio không được hỗ trợ.")
@@ -136,7 +153,12 @@ class StudioTransport:
             result = {"media": [self._media_thumbnail_url(media) for media in result["media"]]}
         elif method.startswith("studio.media.") and "media" in result:
             result = {"media": self._media_thumbnail_url(result["media"])}
-        if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"} or method == "studio.media.markers.set":
+        if method in ("studio.media.overlays.list", "studio.media.overlays.set"):
+            result = {**result, "scene": self._scene_urls(result["scene"])}
+        elif method == "studio.overlays.assets.list":
+            result = {"assets": [{**asset, "url": self._asset_url(asset["id"])} for asset in result["assets"]]}
+        if method.rsplit(".", 1)[-1] in {"create", "update", "delete", "import"} or method in (
+                "studio.media.markers.set", "studio.media.overlays.set"):
             self.emit("studio.changed", {"method": method})
             if self.live is not None and method.split(".")[1] in {"media", "products"}:
                 # A running session pins by the new markers from its current position.
@@ -271,6 +293,10 @@ class StudioHandler(BaseHTTPRequestHandler):
             if self._authorize(query_token=True):
                 self._thumbnail(path.removeprefix("/studio/thumbnails/"))
             return
+        if path.startswith("/api/studio-assets/") or path.startswith("/api/studio-products/"):
+            if self._authorize(query_token=True):
+                self._overlay_image(path)
+            return
         if path.startswith("/studio/media-thumbnails/"):
             if self._authorize(query_token=True):
                 self._media_thumbnail(path.removeprefix("/studio/media-thumbnails/"))
@@ -317,6 +343,17 @@ class StudioHandler(BaseHTTPRequestHandler):
                 if method == "studio.media.import":
                     raise StudioError("NATIVE_ONLY", "Trình duyệt phải chọn và gửi file qua chức năng nhập video.")
                 result = self.transport.dispatch(method, params)
+            elif path == "/studio/overlay-assets":
+                if not 0 < length <= 5 * 1024 * 1024:
+                    self._error(413, "UPLOAD_TOO_LARGE", "Ảnh overlay tối đa 5 MB.")
+                    return
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise StudioError("UPLOAD_INTERRUPTED", "Ảnh chưa được gửi đầy đủ; hãy chọn lại.")
+                name = parse_qs(urlsplit(self.path).query).get("filename", ["image"])[0]
+                asset = self.transport.service.add_overlay_asset(body, name)
+                self.transport.emit("studio.changed", {"method": "studio.overlays.assets.import"})
+                result = {"asset": {**asset, "url": self.transport._asset_url(asset["id"])}}
             elif path == "/studio/upload":
                 if not 0 < length <= MAX_UPLOAD:
                     self._error(413, "UPLOAD_TOO_LARGE", "Video phải có dung lượng từ 1 byte đến 20 GB.")
@@ -379,6 +416,18 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._error(404, "THUMBNAIL_MISSING", "Ảnh bìa video chưa được tạo hoặc không còn trong cache.")
             return
         self._headers(200, len(data), "image/jpeg")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _overlay_image(self, path: str):
+        try:
+            data = self.transport.service.overlay_image(path)
+        except (StudioError, OSError, ValueError):
+            self._error(404, "NOT_FOUND", "Ảnh overlay không còn trên máy.")
+            return
+        content_type = {b"\xff\xd8": "image/jpeg", b"\x89P": "image/png"}.get(data[:2], "image/webp")
+        self._headers(200, len(data), content_type)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)

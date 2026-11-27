@@ -1,6 +1,7 @@
 // One contract for native IPC and the browser's loopback development adapter.
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { Overlay, OverlayIssue, OverlayPreset, OverlayScene } from '../features/overlay/overlayModel'
 
 export interface Product {
   id: string
@@ -94,7 +95,16 @@ export interface LiveStatus {
   recoveries: number
   markers: { at_ms: number; action: MarkerAction; product_id: string | null; product_name: string | null }[]
   pins: LivePins
+  overlay?: LiveOverlayStatus
   events: LiveEvent[]
+}
+export interface LiveOverlayStatus {
+  state: 'disabled' | 'showing' | 'loading' | 'error' | 'hidden' | 'idle' | null
+  visible: boolean | null
+  overlay_count: number | null
+  active_overlays: string[] | null
+  error: { code?: string; message: string } | null
+  source_name: string
 }
 export interface ObsStatus {
   connected: boolean
@@ -172,6 +182,7 @@ export interface Media {
   height: number | null
   metadata_probed: boolean
   marker_count: number
+  overlay_count: number
   has_thumbnail: boolean
   thumbnail_url: string | null
   sha256: string
@@ -299,6 +310,22 @@ async function importMedia(file: File | string, productId?: string, onProgress?:
   })
 }
 
+export interface OverlayAsset { id: string; original_name: string; mime_type: string; width: number; height: number; size_bytes: number; url: string; created_at: string }
+export interface VideoOverlays { overlays: Overlay[]; issues: OverlayIssue[]; scene: OverlayScene & { api_base: string } }
+export interface OverlayTemplates { canvas: { width: number; height: number }; templates: OverlayPreset[]; animations: string[]; max_concurrent: number }
+
+/** An overlay image: the browser sends the file's bytes; the native app passes the path chosen in a dialog. */
+async function uploadOverlayAsset(file: File | string): Promise<OverlayAsset> {
+  if (typeof file === 'string') return (await request<{ asset: OverlayAsset }>('studio.overlays.assets.import', { source_path: file })).asset
+  if (file.size > 5 * 1024 * 1024) throw new StudioError({ code: 'VALIDATION_ERROR', message: 'Ảnh overlay tối đa 5 MB.' })
+  const connection = await session()
+  const response = await fetch(`/studio/overlay-assets?${new URLSearchParams({ filename: file.name })}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${connection.token}`, 'Content-Type': 'application/octet-stream' }, body: file,
+  })
+  if (response.status === 401) sessionPromise = undefined
+  return unwrap(await response.json() as Envelope<{ asset: OverlayAsset }>).asset
+}
+
 async function subscribe(callback: (event: StudioEvent) => void): Promise<() => void> {
   if (isTauri()) {
     const unlisten = await listen<StudioEvent>('core://event', ({ payload }) => callback(payload))
@@ -340,6 +367,12 @@ export const studioClient = {
   updateLiveSession: async (id: string, input: { title?: string; video_ids?: string[]; video_order?: VideoOrder; video_loop?: boolean }) => (await request<{ session: LiveSession }>('studio.live.sessions.update', { id, ...input })).session,
   listMarkers: async (mediaId: string) => (await request<{ markers: MediaMarker[] }>('studio.media.markers.list', { media_id: mediaId })).markers,
   setMarkers: async (mediaId: string, markers: MarkerInput[]) => (await request<{ markers: MediaMarker[] }>('studio.media.markers.set', { media_id: mediaId, markers })).markers,
+  listOverlays: (mediaId: string) => request<VideoOverlays>('studio.media.overlays.list', { media_id: mediaId }),
+  setOverlays: (mediaId: string, overlays: Overlay[]) => request<VideoOverlays>('studio.media.overlays.set', { media_id: mediaId, overlays }),
+  overlayTemplates: () => request<OverlayTemplates>('studio.overlays.templates'),
+  listOverlayAssets: async () => (await request<{ assets: OverlayAsset[] }>('studio.overlays.assets.list')).assets,
+  deleteOverlayAsset: (id: string) => request<{ deleted: boolean }>('studio.overlays.assets.delete', { id }),
+  uploadOverlayAsset,
   deleteLiveSession: (id: string) => request<{ deleted: boolean }>('studio.live.sessions.delete', { id }),
   liveStatus: () => request<LiveStatus>('studio.live.status'),
   liveStart: (sessionId: string, mediaId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(mediaId ? { media_id: mediaId } : {}) }),

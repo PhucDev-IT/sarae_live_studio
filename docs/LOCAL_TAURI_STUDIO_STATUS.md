@@ -131,7 +131,23 @@ Khác dev để thao tác nhanh: mốc ghim **gắn với video trong thư việ
 - Phòng điều khiển: video đang phát, thanh tiến độ có chấm mốc (bấm để tua), mốc kế tiếp, trạng thái ghim (sẽ ghim / đang ghim / chờ LIVE / lỗi), danh sách video, nhật ký.
 - Bàn trả lời lấy ngữ cảnh AI từ sản phẩm timeline đang ghim.
 
-Kiểm thử tự động với obs-websocket giả, MP4 thật và executor chạy thử; giao diện chạy với core thật, OBS giả lập. **Chưa thử OBS thật và chưa ghim thật trên TikTok.** Overlay theo mốc (dev `LIVE_OVERLAYS.md`) là mốc kế tiếp; truyền sang điện thoại tạm hoãn.
+Kiểm thử tự động với obs-websocket giả, MP4 thật và executor chạy thử; giao diện chạy với core thật, OBS giả lập. **Chưa thử OBS thật và chưa ghim thật trên TikTok.** Overlay theo mốc: xem mục "Overlay theo mốc trên video (như dev)" bên dưới; truyền sang điện thoại tạm hoãn.
+
+### Overlay theo mốc trên video (như dev)
+
+Như dev (`docs/LIVE_OVERLAYS.md`): overlay là lớp đồ họa (thông tin sản phẩm, giá, bảng size, ảnh, chữ…) hiện trên video LIVE trong một khoảng thời gian của video. Khác dev giống mốc ghim: overlay **gắn với video trong thư viện**, tự lưu, không có bước nháp → duyệt → kích hoạt.
+
+- **Schema** (`studio/overlays.py`): port từ dev `backend/app/live_overlays.py` — khối `text` / `product_field` / `image` / `shape`, vị trí theo tỉ lệ khung 1080×1920, hiệu ứng vào/ra; bộ mẫu dựng sẵn (`TEMPLATES`) chép nguyên của dev. ID sản phẩm là UUID của Studio; ảnh overlay là file local.
+- **Dữ liệu** (migration 8): `media_overlays` (theo video, có thứ tự, dữ liệu JSON) và `overlay_assets` (PNG/JPEG/WebP ≤ 5 MB, ≤ 4096 px mỗi cạnh, kiểm tra magic bytes và kích thước trong header; file nằm ở `<dữ liệu studio>/overlay_assets/<id>`). Xóa ảnh đang dùng bị từ chối (`ASSET_IN_USE`).
+- **Soạn** (Thư viện video → "Overlay" trên thẻ video): preview 9:16 kéo/đổi cỡ trực tiếp, xem kiểu OBS hoặc người xem TikTok, vùng an toàn, chọn mẫu dựng sẵn; bảng thuộc tính gồm thời gian, sản phẩm, các khối, hiệu ứng, thư viện ảnh (tải ảnh lên); thanh thời gian hiện các overlay; tự lưu. Font Be Vietnam Pro (`@fontsource/be-vietnam-pro` 5.3.0, như web/renderer OBS của dev).
+- **Cảnh báo/lỗi**: `AFTER_END` (bắt đầu sau khi video hết), `PRODUCT_MISSING`, `ASSET_MISSING`; `TOO_MANY_AT_ONCE` khi quá 4 overlay cùng lúc — chỉ là cảnh báo khi soạn, nhưng renderer OBS từ chối snapshot đó.
+- **Phát trên OBS**: dùng nguyên `OverlayService` và trang renderer của Agent, nhận dữ liệu local (snapshot dựng từ các video của phiên, ảnh đọc từ file local, không gọi mạng). Cổng riêng **17893** và Browser Source **"Sarae Studio Overlay"**, nên Agent chạy cùng máy vẫn giữ "Sarae Overlay" của nó. Vị trí phát của engine điều khiển overlay; dừng phiên hoặc hết video thì ẩn overlay. `studio.live.status` trả thêm `overlay`.
+- **Snapshot** giữ đúng dạng của dev (revision hash, canvas, overlays, products, assets); đường dẫn ảnh là `/api/studio-assets/<id>` và `/api/studio-products/<id>` (editor gọi kèm token phiên).
+
+- **Giao diện soạn** theo bố cục overlay studio của dev: khung xem trước 9:16 (nền tối, phát/tua), danh sách overlay dạng thẻ (ảnh, trạng thái bật/ẩn, cảnh báo, menu ⋮), bảng thuộc tính 2 cột (thông tin cơ bản, thời gian, vị trí/lớp/độ trong suốt/hiệu ứng; sản phẩm và các khối mở/đóng với đủ tùy chọn chữ, màu, viền, bo góc, khung trong overlay), thư viện mẫu có biểu tượng, kho ảnh, dòng thời gian (thước, mốc ghim sản phẩm của video, mỗi overlay một hàng, kéo thanh để dời).
+- **Lịch hiển thị theo phiên** (dev §13–14, migration 9 trên `live_sessions`): `overlay_mode` `fixed` (mặc định, đúng mốc) / `window` (theo khoảng) / `random` (ngẫu nhiên theo đoạn ghim), `overlay_every_ms` 10 s–60 phút (mặc định 2 phút), `overlay_min_gap_ms` 0–10 phút (mặc định 20 s); mỗi overlay có `show_ms` 1 s–10 phút (mặc định 6 s). Snapshot `fixed` giữ nguyên; `window`/`random` thêm `schedule`, `timeline_id` (FNV-1a của id phiên), `pins` (đoạn ghim từ mốc ghim), `durations` để `overlay/schedule.py` của Agent lập lịch. Kiểm tra `studio.live.sessions.overlay_issues` port `planned_issues` của dev. Đổi lịch khi đang LIVE đồng bộ OBS ngay. **Chưa có chỗ chọn chế độ lịch trên giao diện phiên** (chỉ có ở core).
+
+Kiểm thử tự động: `test_studio_overlays.py` (15 test), `test_studio_overlay_schedule.py` (20 test). **Chưa thử trên OBS thật.**
 
 ### Trợ lý AI và thông tin sản phẩm
 
@@ -163,13 +179,16 @@ Trong thư viện video có nút gắn để đổi sản phẩm và người gi
 | `agent-core/src/sarae_agent/studio/storage.py` | SQLite, migration và transaction. |
 | `agent-core/src/sarae_agent/studio/replies.py` | Bàn trả lời: đọc chat, lọc, AI, giọng đọc và bình luận. |
 | `agent-core/src/sarae_agent/studio/live.py` | Phiên LIVE theo timeline: phát video qua PlaybackEngine, ghim theo mốc qua TimelineScheduler của Agent. |
+| `agent-core/src/sarae_agent/studio/overlays.py` | Schema overlay và bộ mẫu dựng sẵn port từ dev `live_overlays.py`. |
+| `desktop/src/features/overlay/` | Renderer, model, lịch hiển thị, stage và CSS editor port từ `web/src/overlay` của dev. |
+| `desktop/src/features/studio/OverlayEditor.tsx` | Trình soạn overlay theo video: preview 9:16, mẫu, thuộc tính, thư viện ảnh, tự lưu. |
 | `agent-core/src/sarae_agent/studio/ai.py` | Provider AI, key DPAPI, trả lời bình luận. |
 | `agent-core/src/sarae_agent/studio/tiktok.py` | Kết nối Chrome TikTok, đồng bộ snapshot, cache ảnh bìa. |
 | `agent-core/src/sarae_agent/studio/transport.py` | HTTP RPC, upload, SSE và media Range. |
 | `agent-core/src/sarae_agent/studio/__main__.py` | Entrypoint local, IPC, khóa data directory và lifecycle. |
 | `desktop/scripts/studio-dev.mjs` | Chạy core và Vite cùng vòng đời cho browser dev. |
 
-Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/pause/resume/next/previous/seek/stop/pins`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url/markers.list/markers.set`. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
+Methods: `studio.status`, `studio.products.list/update/delete` (update chỉ nhận `description` và `facts`), `studio.tiktok.status/login/connect/sync`, `studio.ai.config/configure/set_key/delete_key/test/reply`, `studio.obs.status/configure/connect/disconnect`, `studio.live.sessions.list/create/update/delete`, `studio.live.status/start/pause/resume/next/previous/seek/stop/pins`, `studio.replies.status/configure/chat_start/chat_stop/simulate/speak/send_comment/cancel/dismiss/stop_voice`, `studio.presenters.list/create/update/delete`, `studio.media.list/import/update/delete/url/markers.list/markers.set/overlays.list/overlays.set`, `studio.overlays.templates`, `studio.overlays.assets.list/import/delete`. Ảnh overlay tải lên từ browser qua `POST /studio/overlay-assets`; editor đọc ảnh qua `GET /api/studio-assets/<id>` và `/api/studio-products/<id>` kèm token phiên. `studio.media.list` nhận `product_id` và `presenter_id` để lọc; `studio.media.import` và endpoint upload (`presenter_id` lặp lại trong query) nhận danh sách người giới thiệu. Lỗi có `code`, `message`, `details`; mutation phát `studio.changed`. `studio.media.import` nhận đường dẫn chỉ qua native IPC; browser phải dùng endpoint upload. `activation.*` và lệnh cloud không đăng ký trong core local.
 
 ## Kiểm thử và phạm vi còn lại
 
@@ -178,10 +197,12 @@ Các lệnh kiểm tra:
 ```powershell
 npm --prefix desktop run build
 Set-Location agent-core
-.venv/Scripts/python.exe -m pytest tests/test_studio_replies.py tests/test_studio_live.py tests/test_studio_ai.py tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py tests/test_playback_engine.py tests/test_playback_policy.py tests/test_media_playback.py tests/test_obs_controller.py -q
+.venv/Scripts/python.exe -m pytest tests/test_studio_replies.py tests/test_studio_live.py tests/test_studio_ai.py tests/test_studio_tiktok.py tests/test_studio_presenters.py tests/test_studio_storage.py tests/test_studio_transport.py tests/test_protocol_config.py tests/test_playback_engine.py tests/test_playback_policy.py tests/test_media_playback.py tests/test_obs_controller.py tests/test_timeline_scheduler.py tests/test_timeline_reconcile.py tests/test_studio_media_metadata.py tests/test_studio_media_thumbnails.py tests/test_studio_overlays.py -q
 ```
 
-Kết quả bộ test trên: **254 passed** (26/11/2026, sau bàn trả lời; gồm cả test playback/OBS của Agent). Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
+Hoặc chạy `start-studio.cmd test` (cùng bộ test trên rồi build giao diện).
+
+Kết quả bộ test trên: **373 passed** (27/11/2026, sau overlay theo mốc; gồm cả test playback/OBS/timeline của Agent; `test_studio_overlays.py` riêng 15 test); production build frontend đạt. Đã kiểm tra SQLite qua lần đóng/mở lại, validation/rollback, copy và xóa giữ file gốc, video giả/audio-only bị từ chối, resolver không nhận đường dẫn tùy ý, HTTP token/origin, upload/Range, IPC khởi động/dừng, khóa controller và dọn upload gián đoạn. Regression shutdown khi đang import xác nhận kết quả đã commit được trả về trước `core.stopped`. Browser được thử bằng MP4 H.264 tạo từ FFmpeg: tạo/sửa sản phẩm tiếng Việt, nhập/gắn video và preview đọc được hình/metadata, tắt tiếng mặc định.
 
 `cargo check --locked` và production build frontend đã qua. Sidecar PyInstaller được build và kiểm tra `--self-check`, IPC local, persistence, single-instance, graceful shutdown và dọn core sau khi bootloader bị đóng cưỡng bức; nhập video vẫn chạy khi FFprobe không có trên PATH nhờ binary trong bundle. Đây là kiểm tra trên máy phát triển, chưa phải chứng nhận bộ cài trên Windows sạch.
 

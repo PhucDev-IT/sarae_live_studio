@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 OBS_FIELDS = {"host", "port", "password", "clear_password", "media_input", "dual_mode", "source_a", "source_b",
               "auto_connect"}
 PIN_SETTING = "live_pins"
+STUDIO_OVERLAY_PORT = 17893
+STUDIO_OVERLAY_SOURCE = "Sarae Studio Overlay"
 TIMELINE_EVENTS = {"PIN_APPLIED", "PIN_FAILED", "PIN_DRIFT", "LIVE_GATE_CHANGED"}
 
 
@@ -121,6 +123,19 @@ class StudioLive:
         self.gate = _LiveGate(self)
         self.scheduler = TimelineScheduler(_PinExecutor(self), self.gate, emit=self._timeline_event)
         self.engine.on_position = self._on_position
+        # Overlays (dev LIVE_OVERLAYS.md §9-10): the Agent's OverlayService and renderer page, fed from local data.
+        # Its own port and Browser Source name, so an Agent on the same PC keeps its "Sarae Overlay" untouched.
+        from sarae_agent.config import paths
+        from sarae_agent.overlay.cache import OverlayCache
+        from sarae_agent.overlay.service import OverlayService
+        overlay = self.config.get().overlay
+        if overlay.port == 17891 or overlay.source_name == "Sarae Overlay":
+            self.config.update({"overlay": {"port": STUDIO_OVERLAY_PORT, "source_name": STUDIO_OVERLAY_SOURCE}})
+        self.overlay = OverlayService(self.config, self.obs.request, lambda: self.obs.status().get("connected", False),
+                                      self._video_sources, self._overlay_snapshot, service.overlay_image,
+                                      OverlayCache(paths.overlay_cache),
+                                      playback_state=lambda: {"active": self.engine.active, "paused": self.engine.paused,
+                                                              "session_id": self.engine.session_id})
         self._lock = threading.RLock()
         # The TikTok Console browser is owned by the TikTok connector (attached by the runtime).
         self.tiktok = None
@@ -171,6 +186,21 @@ class StudioLive:
         account = self.service.tiktok_account() or {}
         return self.service.timeline_for(session["video_ids"], account.get("user_id") or "")
 
+    def _video_sources(self) -> list[str]:
+        """OBS Media Sources the engine plays the video in (the overlay goes above them)."""
+        config = self.engine.config
+        names = [config.input_name]
+        if config.dual_mode:
+            names += [config.source_a.strip() or config.input_name + " A", config.source_b.strip() or config.input_name + " B"]
+        return names
+
+    def _overlay_snapshot(self, session_id) -> dict | None:
+        try:
+            session = self.service.live_session(session_id)
+        except StudioError:
+            return None
+        return self.service.overlay_snapshot(session)
+
     def _session_changed(self, session: dict, started: bool) -> None:
         for listener in list(self.session_listeners):
             try:
@@ -183,6 +213,11 @@ class StudioLive:
         """Engine watchdog (~1 s): the video position drives the pins."""
         self.scheduler.observe(report["session_id"], report["position_ms"], report["iteration"],
                                media_id=report.get("media_id"))
+        try:  # an overlay error never reaches the pins
+            self.overlay.observe(report["session_id"], report.get("media_id"), report["position_ms"],
+                                 report.get("media_state"), report["iteration"])
+        except Exception:  # noqa: BLE001
+            log.exception("Overlay did not get the playback position")
 
     def _on_event(self, event: dict) -> None:
         session_id = event.get("session_id")
@@ -192,6 +227,7 @@ class StudioLive:
                 self.service.record_live_event(session_id, kind, event.get("product_id"), event.get("detail"))
                 if kind == "PLAYBACK_ENDED":
                     self.scheduler.clear("playback_ended")
+                    self.overlay.clear("playback_ended")
                     session = self.service.set_live_status(session_id, "ended", str(
                         (event.get("detail") or {}).get("reason") or "playback_ended")[:60])
                     self._session_changed(session, False)
@@ -273,6 +309,8 @@ class StudioLive:
             if playing and "video_loop" in changes:
                 with self.engine.lock:
                     self.engine.loop = session["video_loop"]
+            if playing and {"overlay_mode", "overlay_every_ms", "overlay_min_gap_ms"} & changes.keys():
+                self.overlay.request_sync()  # the new schedule reaches OBS now, not at the next periodic sync
             return {"session": session}
 
     def sessions_delete(self, params: dict) -> dict:
@@ -306,6 +344,7 @@ class StudioLive:
             self._agent(lambda: self.engine.video_play(session["id"], media_id=first, loop=session["video_loop"],
                                                        media_ids=ids, video_order=session["video_order"]))
             self.scheduler.load(session["id"], self._timeline(session))
+            self.overlay.request_sync()
             session = self.service.set_live_status(session["id"], "live")
             self.service.record_live_event(session["id"], "STARTED", None,
                                            {"pins": "real" if self.real_pins() else "rehearsal"})
@@ -347,6 +386,7 @@ class StudioLive:
             error = None
             # A pin on its way becomes stale: nothing is pinned after the operator stopped.
             self.scheduler.clear(reason)
+            self.overlay.clear(reason)
             if self.engine.active:
                 try:
                     self.engine.stop()
@@ -383,6 +423,7 @@ class StudioLive:
                     self.scheduler.load(session["id"], self._timeline(session))
                 except StudioError as exc:
                     log.warning("Could not refresh the LIVE timeline: %s", exc.code)
+                self.overlay.request_sync()
 
     def current_product_id(self) -> str | None:
         """The product the timeline wants pinned now (AI reply context)."""
@@ -436,11 +477,22 @@ class StudioLive:
                      "in_flight": pins.get("in_flight"), "last_error": pins.get("last_error"),
                      "last_applied": pins.get("last_applied"), "product_names": names},
             "events": self.service.live_events(session["id"], 15) if session else [],
+            "overlay": self._overlay_status(),
         }
+
+    def _overlay_status(self) -> dict:
+        try:
+            state = self.overlay.status()
+        except Exception:  # noqa: BLE001
+            return {"state": "error", "error": {"message": "Không đọc được trạng thái overlay"}}
+        return {"state": state.get("state"), "visible": state.get("visible"), "overlay_count": state.get("overlay_count"),
+                "active_overlays": state.get("active_overlays"), "error": state.get("error"),
+                "source_name": self.config.get().overlay.source_name}
 
     # --- lifecycle -------------------------------------------------------------------------
     def start_watchdog(self) -> None:
         self.engine.start_monitor()
+        self.overlay.start()
 
     def close(self) -> None:
         try:
@@ -452,4 +504,8 @@ class StudioLive:
                 self.stop(reason="core_stopped")
         except Exception:  # noqa: BLE001 - shutdown must continue
             log.warning("Could not stop the LIVE session cleanly on shutdown")
+        try:
+            self.overlay.close()  # hides our overlay; never touches the video
+        except Exception:  # noqa: BLE001
+            pass
         self.obs.close()

@@ -21,6 +21,9 @@ from sarae_agent import __version__
 from .models import (EMPTY_FACTS, StudioError, identifier, identifier_list, presenter_fields, product_facts,
                      product_fields, tiktok_snapshot, timestamp)
 from .storage import StudioStorage, data_root
+from . import overlays as overlay_rules
+from .overlays import image_info
+from sarae_agent.overlay import schedule as overlay_schedule
 from . import media_thumbnails
 
 
@@ -194,6 +197,13 @@ class StudioService:
                 "studio.media.delete": (self._delete_media, {"id"}),
                 "studio.media.markers.list": (self._list_markers, {"media_id"}),
                 "studio.media.markers.set": (self._set_markers, {"media_id", "markers"}),
+                "studio.media.overlays.list": (self._list_overlays, {"media_id"}),
+                "studio.media.overlays.set": (self._set_overlays, {"media_id", "overlays"}),
+                "studio.overlays.templates": (lambda _: self.overlay_templates(), set()),
+                "studio.overlays.assets.list": (self._list_overlay_assets, set()),
+                "studio.overlays.assets.import": (self._import_overlay_asset, {"source_path"}),
+                "studio.overlays.assets.delete": (self._delete_overlay_asset, {"id"}),
+                "studio.live.sessions.overlay_issues": (lambda p: self.session_overlay_issues(p.get("id")), {"id"}),
             }
             if method not in handlers:
                 raise StudioError("METHOD_NOT_FOUND", f"Unknown studio method: {method}")
@@ -303,6 +313,8 @@ class StudioService:
     # --- LIVE sessions ----------------------------------------------------------------------
     # Business rules live here; studio/live.py validates the playback policy with the engine's
     # own model and drives OBS. Only one session can be "live" at a time.
+    SCHEDULE_FIELDS = ("overlay_mode", "overlay_every_ms", "overlay_min_gap_ms")
+
     def _session_row(self, session_id: str) -> dict:
         row = self._storage.connection.execute("SELECT * FROM live_sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
@@ -310,6 +322,10 @@ class StudioService:
         session = {key: row[key] for key in ("id", "title", "status", "end_reason", "started_at", "ended_at",
                                             "created_at", "updated_at", "video_order")}
         session["video_loop"] = bool(row["video_loop"])
+        # Overlay schedule (dev LIVE_OVERLAYS.md §13–14): one switch for all the session's videos.
+        session["overlay_mode"] = row["overlay_mode"]
+        session["overlay_every_ms"] = row["overlay_every_ms"]
+        session["overlay_min_gap_ms"] = row["overlay_min_gap_ms"]
         try:
             ids = json.loads(row["video_ids"] or "[]")
         except ValueError:
@@ -349,8 +365,10 @@ class StudioService:
         return ids
 
     def save_live_session(self, session_id: str | None, params: dict) -> dict:
-        """Create (session_id None) or update a session: title, video_ids (ordered), video_order, video_loop."""
-        unknown = set(params) - {"title", "video_ids", "video_order", "video_loop"}
+        """Create (session_id None) or update a session: title, video_ids (ordered), video_order, video_loop and the
+        overlay schedule (overlay_mode, overlay_every_ms, overlay_min_gap_ms; editable while live: the snapshot's
+        revision changes, so the running OverlayService picks it up on its next sync)."""
+        unknown = set(params) - {"title", "video_ids", "video_order", "video_loop", *self.SCHEDULE_FIELDS}
         if unknown:
             raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, unknown))})
         fields = {}
@@ -365,6 +383,19 @@ class StudioService:
             if not isinstance(params["video_loop"], bool):
                 raise StudioError("VALIDATION_ERROR", "video_loop must be true or false.", {"field": "video_loop"})
             fields["video_loop"] = int(params["video_loop"])
+        if "overlay_mode" in params:
+            if params["overlay_mode"] not in overlay_rules.SCHEDULE_MODES:
+                raise StudioError("VALIDATION_ERROR", "overlay_mode must be fixed, window or random.",
+                                  {"field": "overlay_mode"})
+            fields["overlay_mode"] = params["overlay_mode"]
+        for field, low, high in (("overlay_every_ms", overlay_rules.MIN_EVERY_MS, overlay_rules.MAX_EVERY_MS),
+                                 ("overlay_min_gap_ms", 0, overlay_rules.MAX_GAP_MS)):
+            if field in params:
+                value = params[field]
+                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                    raise StudioError("VALIDATION_ERROR", f"{field} must be a whole number from {low} to {high}.",
+                                      {"field": field})
+                fields[field] = value
         with self._lock:
             self._ensure_open()
             if session_id is None or "video_ids" in params:
@@ -521,6 +552,252 @@ class StudioService:
                     event["detail"] = {}
                 events.append(event)
             return events
+
+    # --- overlays (per video) ---------------------------------------------------------------
+    def _overlay_rows(self, media_ids: list[str]) -> list[dict]:
+        if not media_ids:
+            return []
+        rows = self._storage.connection.execute(
+            "SELECT * FROM media_overlays WHERE media_id IN (" + ", ".join("?" for _ in media_ids)
+            + ") ORDER BY media_id, position, id", media_ids)
+        result = []
+        for row in rows:
+            try:
+                overlay = json.loads(row["data"])
+            except ValueError:
+                continue
+            result.append({"id": row["id"], "media_id": row["media_id"], **overlay})
+        return result
+
+    def _overlay_issues(self, media_row, overlays: list[dict]) -> list[dict]:
+        issues = []
+        duration_ms = int(media_row["duration_seconds"] * 1000) if media_row["duration_seconds"] else None
+        products = {row[0] for row in self._storage.connection.execute("SELECT id FROM products")}
+        assets = {row[0] for row in self._storage.connection.execute("SELECT id FROM overlay_assets")}
+        for index, overlay in enumerate(overlays):
+            if duration_ms and overlay["start_ms"] + overlay["duration_ms"] > duration_ms + 500:
+                issues.append({"level": "error", "code": "AFTER_END", "overlay": index,
+                               "message": "Overlay kết thúc sau khi video hết."})
+            if overlay_rules.product_refs(overlay) - products:
+                issues.append({"level": "error", "code": "PRODUCT_MISSING", "overlay": index,
+                               "message": "Sản phẩm của overlay không còn trong danh mục."})
+            if overlay_rules.asset_refs(overlay) - assets:
+                issues.append({"level": "error", "code": "ASSET_MISSING", "overlay": index,
+                               "message": "Ảnh của overlay đã bị xóa."})
+        peak, at = overlay_rules.busiest(overlays)
+        if peak > overlay_rules.MAX_CONCURRENT:
+            issues.append({"level": "warning", "code": "TOO_MANY_AT_ONCE", "at_ms": at,
+                           "message": f"{peak} overlay cùng lúc (tối đa {overlay_rules.MAX_CONCURRENT}); OBS sẽ không hiện bản này."})
+        return issues
+
+    def _list_overlays(self, params: dict) -> dict:
+        media_id = identifier(params.get("media_id"), "media_id")
+        row = self._media(media_id)
+        overlays = self._overlay_rows([media_id])
+        return {"overlays": overlays, "issues": self._overlay_issues(row, overlays),
+                "scene": self._overlay_scene([media_id], include_disabled=True)}
+
+    def _set_overlays(self, params: dict) -> dict:
+        """Replace one video's overlays (the editor autosaves the whole list, in drawing order)."""
+        media_id = identifier(params.get("media_id"), "media_id")
+        row = self._media(media_id)
+        overlays = overlay_rules.validate_overlays(params.get("overlays"))
+        duration_ms = int(row["duration_seconds"] * 1000) if row["duration_seconds"] else None
+        for index, overlay in enumerate(overlays):
+            if duration_ms and overlay["start_ms"] + overlay["duration_ms"] > duration_ms + 500:
+                raise StudioError("VALIDATION_ERROR", f"Overlay {index + 1} kết thúc sau khi video hết.",
+                                  {"field": "overlays", "index": index})
+            for product_id in overlay_rules.product_refs(overlay):
+                self._product(product_id)
+            for asset_id in overlay_rules.asset_refs(overlay):
+                self._overlay_asset(asset_id)
+        with self._storage.transaction() as connection:
+            connection.execute("DELETE FROM media_overlays WHERE media_id = ?", (media_id,))
+            connection.executemany("INSERT INTO media_overlays(media_id, position, data) VALUES (?, ?, ?)",
+                                   [(media_id, index, json.dumps(overlay, ensure_ascii=False))
+                                    for index, overlay in enumerate(overlays)])
+        saved = self._overlay_rows([media_id])
+        return {"overlays": saved, "issues": self._overlay_issues(row, saved),
+                "scene": self._overlay_scene([media_id], include_disabled=True)}
+
+    def _overlay_scene(self, media_ids: list[str], *, include_disabled: bool) -> dict:
+        """Snapshot-shaped scene (dev LIVE_OVERLAYS.md §6) for the renderer: overlays plus the products and images they
+        read. Images are local paths `/api/studio-…/<id>` (the editor adds its token, the OBS cache reads the file)."""
+        overlays = [o for o in self._overlay_rows(media_ids) if include_disabled or o.get("enabled", True)]
+        products, assets = {}, {}
+        for overlay in overlays:
+            for product_id in overlay_rules.product_refs(overlay):
+                if product_id in products:
+                    continue
+                row = self._storage.connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+                if row is None:
+                    continue
+                products[product_id] = {"name": row["name"], "sku": row["tiktok_product_id"] or "", "price": row["price"],
+                                        "origin_price": row["origin_price"],
+                                        **({"image_url": f"/api/studio-products/{product_id}"} if row["thumbnail"] else {})}
+            for asset_id in overlay_rules.asset_refs(overlay):
+                row = self._storage.connection.execute("SELECT * FROM overlay_assets WHERE id = ?", (asset_id,)).fetchone()
+                if row is not None:
+                    assets[asset_id] = {"url": f"/api/studio-assets/{asset_id}", "mime_type": row["mime_type"],
+                                        "sha256": row["sha256"], "width": row["width"], "height": row["height"],
+                                        "size_bytes": row["size_bytes"]}
+        scene = {"canvas": {"width": overlay_rules.CANVAS_WIDTH, "height": overlay_rules.CANVAS_HEIGHT},
+                 "overlays": [{key: value for key, value in o.items() if key != "id"} for o in overlays],
+                 "products": products, "assets": assets}
+        scene["revision"] = hashlib.sha256(json.dumps(scene, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+        return scene
+
+    @staticmethod
+    def _session_schedule(session: dict) -> dict:
+        return {"mode": session.get("overlay_mode") or "fixed",
+                "every_ms": session.get("overlay_every_ms", overlay_rules.DEFAULT_SCHEDULE["every_ms"]),
+                "min_gap_ms": session.get("overlay_min_gap_ms", overlay_rules.DEFAULT_SCHEDULE["min_gap_ms"])}
+
+    @staticmethod
+    def overlay_timeline_id(session_id: str) -> int:
+        """The plan seed's `timeline_id` of a session (dev: the version id, an int). Studio sessions have UUIDs, so
+        this is FNV-1a 32-bit of the session id (overlay/schedule.seed_of): stable, an integer for the TS model."""
+        return overlay_schedule.seed_of(session_id)
+
+    def _video_context(self, media_ids: list[str]) -> tuple[dict, dict]:
+        """(pins, durations) of videos, like dev's video_context: pin spans from each video's markers (the Agent's
+        schedule.pin_spans; unknown duration: up to UNKNOWN_DURATION_MS) and the known durations in ms."""
+        durations = {}
+        for media_id in media_ids:
+            row = self._storage.connection.execute("SELECT duration_seconds FROM media WHERE id = ?",
+                                                   (media_id,)).fetchone()
+            if row is not None and row["duration_seconds"]:
+                durations[media_id] = int(row["duration_seconds"] * 1000)
+        markers = self._marker_rows(media_ids)
+        pins = {media_id: overlay_schedule.pin_spans([m for m in markers if m["media_id"] == media_id],
+                                                     durations.get(media_id) or overlay_rules.UNKNOWN_DURATION_MS)
+                for media_id in dict.fromkeys(media_ids)}
+        return pins, durations
+
+    def overlay_snapshot(self, session: dict | list[str]) -> dict | None:
+        """What the Agent's OverlayService shows for a session: its videos' enabled overlays, None when there are none.
+        Fixed mode: the scene plus version / timeline_id None (unchanged). Window / random: also `schedule`,
+        `timeline_id` (overlay_timeline_id), `pins` and `durations`, all part of the revision. A bare list of media
+        ids (older callers) counts as a fixed-mode session of those videos."""
+        if isinstance(session, list):
+            session = {"id": None, "video_ids": session}
+        media_ids = session["video_ids"]
+        schedule = self._session_schedule(session)
+        with self._lock:
+            self._ensure_open()
+            scene = self._overlay_scene(media_ids, include_disabled=False)
+            if not scene["overlays"]:
+                return None
+            if not overlay_schedule.is_planned(schedule["mode"]):
+                return {**scene, "version": 1, "timeline_id": None}
+            pins, durations = self._video_context(media_ids)
+        content = {key: value for key, value in scene.items() if key != "revision"}
+        content.update({"version": 1, "timeline_id": self.overlay_timeline_id(session["id"]), "schedule": schedule,
+                        "pins": pins, "durations": durations})
+        content["revision"] = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False)
+                                             .encode("utf-8")).hexdigest()[:24]
+        return content
+
+    def session_overlay_issues(self, session_id: str) -> dict:
+        """Checks of the session's overlay schedule (dev planned_issues) over all its videos' overlays: errors
+        SHOW_LONGER_THAN_WINDOW (window), SHOW_LONGER_THAN_SLOT, ANIMATION_LONGER_THAN_SHOW; warnings
+        PRODUCT_NEVER_PINNED / PIN_TOO_SHORT (random), DENSITY_TOO_HIGH, NO_OVERLAY_IN_SLOTS. Fixed mode: none (the
+        per-video checks of studio.media.overlays.list apply)."""
+        with self._lock:
+            self._ensure_open()
+            session = self._session_row(identifier(session_id, "id"))
+            schedule = self._session_schedule(session)
+            if not overlay_schedule.is_planned(schedule["mode"]):
+                return {"schedule": schedule, "issues": []}
+            overlays = self._overlay_rows(session["video_ids"])
+            pins, durations = self._video_context(session["video_ids"])
+        return {"schedule": schedule, "issues": overlay_rules.planned_issues(overlays, schedule, pins, durations)}
+
+    def overlay_templates(self) -> dict:
+        return overlay_rules.templates()
+
+    # Overlay images: PNG/JPEG/WebP, ≤ 5 MB, ≤ 4096 px a side (dev LIVE_OVERLAYS.md §5), stored by id.
+    def _asset_dir(self) -> Path:
+        folder = self.data_dir / "overlay_assets"
+        folder.mkdir(exist_ok=True)
+        if folder.is_symlink() or folder.resolve() != folder:
+            raise StudioError("UNSAFE_PATH", "The overlay image directory points outside the studio data directory.")
+        return folder
+
+    def _overlay_asset(self, asset_id: str):
+        if not isinstance(asset_id, str) or len(asset_id) != 32 or any(c not in "0123456789abcdef" for c in asset_id):
+            raise StudioError("VALIDATION_ERROR", "Invalid overlay image id.", {"field": "asset_id"})
+        row = self._storage.connection.execute("SELECT * FROM overlay_assets WHERE id = ?", (asset_id,)).fetchone()
+        if row is None:
+            raise StudioError("NOT_FOUND", "Overlay image not found.", {"id": asset_id})
+        return row
+
+    def add_overlay_asset(self, data: bytes, original_name: str) -> dict:
+        kind, width, height = image_info(data)
+        if len(data) > 5 * 1024 * 1024:
+            raise StudioError("VALIDATION_ERROR", "Ảnh overlay tối đa 5 MB.", {"field": "file"})
+        if kind is None:
+            raise StudioError("VALIDATION_ERROR", "Chỉ nhận ảnh PNG, JPEG hoặc WebP.", {"field": "file"})
+        if not width or not height or max(width, height) > 4096:
+            raise StudioError("VALIDATION_ERROR", "Ảnh overlay tối đa 4096 px mỗi cạnh.", {"field": "file"})
+        asset_id = uuid4().hex
+        with self._lock:
+            self._ensure_open()
+            folder = self._asset_dir()
+            target = folder / asset_id
+            temporary = folder / (".partial-" + asset_id)
+            temporary.write_bytes(data)
+            try:
+                with self._storage.transaction() as connection:
+                    os.replace(temporary, target)
+                    connection.execute("""INSERT INTO overlay_assets(id, original_name, mime_type, sha256, width, height,
+                        size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                       (asset_id, Path(original_name or "image").name[:200], kind,
+                                        hashlib.sha256(data).hexdigest(), width, height, len(data), timestamp()))
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
+            finally:
+                temporary.unlink(missing_ok=True)
+            return dict(self._overlay_asset(asset_id))
+
+    def _import_overlay_asset(self, params: dict) -> dict:
+        raw = params.get("source_path")
+        if not isinstance(raw, str) or not Path(raw).is_absolute() or not Path(raw).is_file():
+            raise StudioError("VALIDATION_ERROR", "source_path must be an absolute image file path.", {"field": "source_path"})
+        with open(raw, "rb") as handle:
+            data = handle.read(5 * 1024 * 1024 + 1)
+        return {"asset": self.add_overlay_asset(data, Path(raw).name)}
+
+    def _list_overlay_assets(self, params: dict) -> dict:
+        rows = self._storage.connection.execute("SELECT * FROM overlay_assets ORDER BY created_at DESC, id")
+        return {"assets": [dict(row) for row in rows]}
+
+    def _delete_overlay_asset(self, params: dict) -> dict:
+        row = self._overlay_asset(params.get("id"))
+        for overlay in self._overlay_rows([r[0] for r in self._storage.connection.execute("SELECT id FROM media")]):
+            if row["id"] in overlay_rules.asset_refs(overlay):
+                raise StudioError("ASSET_IN_USE", "Ảnh đang được dùng trong một overlay; gỡ khỏi overlay trước khi xóa.")
+        with self._storage.transaction() as connection:
+            connection.execute("DELETE FROM overlay_assets WHERE id = ?", (row["id"],))
+        (self._asset_dir() / row["id"]).unlink(missing_ok=True)
+        return {"deleted": True}
+
+    def overlay_image(self, url: str) -> bytes:
+        """Bytes of a scene image path: `/api/studio-assets/<id>` or `/api/studio-products/<id>` (product cover)."""
+        with self._lock:
+            self._ensure_open()
+            path = url.split("?", 1)[0]
+            if path.startswith("/api/studio-assets/"):
+                row = self._overlay_asset(path.removeprefix("/api/studio-assets/"))
+                target = self._asset_dir() / row["id"]
+            elif path.startswith("/api/studio-products/"):
+                target = self.resolve_thumbnail(path.removeprefix("/api/studio-products/"))
+            else:
+                raise StudioError("NOT_FOUND", "Unknown overlay image.")
+            if target.is_symlink() or not target.is_file():
+                raise StudioError("NOT_FOUND", "Overlay image file is missing.")
+            return target.read_bytes()
 
     # --- TikTok catalog -------------------------------------------------------------------
     def import_tiktok_snapshot(self, account: object, rows: object) -> dict:
@@ -803,6 +1080,8 @@ class StudioService:
         media["presenter_ids"] = links.get(row["id"], [])
         media["marker_count"] = self._storage.connection.execute(
             "SELECT COUNT(*) FROM media_markers WHERE media_id = ?", (row["id"],)).fetchone()[0]
+        media["overlay_count"] = self._storage.connection.execute(
+            "SELECT COUNT(*) FROM media_overlays WHERE media_id = ?", (row["id"],)).fetchone()[0]
         try:
             self.resolve_media(row["id"])
             media["status"] = "ready"
