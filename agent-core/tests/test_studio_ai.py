@@ -227,6 +227,34 @@ def test_http_bad_request_exposes_sanitized_provider_reason(monkeypatch, status,
         assert "Unsupported parameter" in caught.value.message
 
 
+def test_reply_prompt_sizes_by_weight_when_height_is_missing():
+    from sarae_agent.studio.ai import reply_prompt
+    system, _ = reply_prompt("50kg mặc size gì", "Lan", None)
+    rule = system.split("5.")[1].split("6.")[0]
+    # Weight alone is enough: no "need your height" and no operator review for it.
+    assert "chỉ cho cân nặng" in rule and "không bắt hỏi chiều cao" in rule and "needs_review = false" in rule
+    assert "ưu tiên cân nặng" in rule and "ngoài bảng size" in rule
+
+
+def test_a_weight_only_chart_hides_height_from_the_ai():
+    from sarae_agent.studio.ai import product_prompt_context, reply_prompt
+    product = {"name": "Set HELO", "price": 109000, "facts": {"colors": ["Xanh than"], "sizes": [
+        {"size": "M", "weight_min": 40, "weight_max": 50, "height_min": None, "height_max": None, "note": ""},
+        {"size": "L", "weight_min": 50, "weight_max": 58, "height_min": None, "height_max": None, "note": "form rộng"}]}}
+    facts = product_prompt_context(product)["thong_tin"]
+    assert facts["sizes"] == [{"size": "M", "weight_min": 40, "weight_max": 50},
+                              {"size": "L", "weight_min": 50, "weight_max": 58, "note": "form rộng"}]
+    assert facts["bang_size_chi_theo"] == ["cân nặng"] and facts["colors"] == ["Xanh than"]
+    assert product["facts"]["sizes"][0]["height_min"] is None  # the stored product is untouched
+    system, data = reply_prompt("1m60 48kg mặc size gì", "Lan", product)
+    assert "bỏ qua" in system and "KHÔNG nhắc tới" in system and "chưa xác định" in system
+    assert "height" not in data and "bang_size_chi_theo" in data
+    # A chart with both measures keeps both; no chart leaves facts alone.
+    both = {"sizes": [{"size": "M", "weight_min": 40, "weight_max": 50, "height_min": 150, "height_max": 160}]}
+    assert product_prompt_context({"name": "x", "facts": both})["thong_tin"]["bang_size_chi_theo"] == ["cân nặng", "chiều cao"]
+    assert product_prompt_context({"name": "x", "facts": {"colors": ["Đen"]}})["thong_tin"] == {"colors": ["Đen"]}
+
+
 def test_reply_prompt_asks_back_on_ambiguous_questions_instead_of_guessing():
     from sarae_agent.studio.ai import reply_prompt
     system, data = reply_prompt("quần dài bn ạ", "Mẹ Cải Bắp", None)
