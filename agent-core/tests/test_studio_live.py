@@ -90,6 +90,11 @@ def test_engine_files_stay_inside_studio_data(rig, tmp_path):
     assert status["port"] == 4456 and status["media_input"] == "Video bán hàng" and "password" not in status
 
 
+def test_obs_status_reports_the_canvas_videos_are_fitted_to(rig):
+    status = rig.live.obs_connect()
+    assert status["connected"] and status["canvas"] == {"width": 1080, "height": 1920}
+
+
 def test_markers_belong_to_the_video_and_are_validated(rig, clip):
     shirt, dress = create_product(rig.service, "Áo"), create_product(rig.service, "Váy")
     video = rig.video(clip)

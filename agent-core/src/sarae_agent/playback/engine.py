@@ -226,6 +226,7 @@ class PlaybackEngine:
         self.scene_name = ""
         self.camera_mode = False
         self.camera_scene_item_id: int | None = None
+        self.audio_fixes = 0
         self._prepared: dict[str, tuple[int, int, str]] = {}
         # OBS canvas (width, height) the prepared copies are rendered for; re-read when a session starts.
         self.loop = False
@@ -870,7 +871,7 @@ class PlaybackEngine:
                         client.trigger_media_input_action(self.config.input_name,
                                                           "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")
                         client.set_input_mute(self.config.input_name, False)
-                    muted = client.get_input_mute(self.active_source()).input_muted
+                    muted = self._settle_audio(client)
                     log.info("OBS playback source=%s file=%s mute=%s", self.active_source(), name, muted)
                     if muted:
                         raise PlaybackError(503, "OBS vẫn mute nguồn video đang phát")
@@ -1341,6 +1342,26 @@ class PlaybackEngine:
                     self._deactivate("obs_error", f"Đã tạm dừng do OBS lỗi nhiều lần: {exc}")
                 else:
                     self.next_retry_at = time.monotonic() + min(2 ** self.retry_count, 20)
+
+    def _settle_audio(self, client) -> bool:
+        """Once per video (start or switch): exactly the visible source is heard. A/B: the stand-by source is
+        muted. A call OBS did not take is sent once more. Returns whether the visible source is still muted."""
+        active = self.active_source()
+        fixed = []
+        if client.get_input_mute(active).input_muted:
+            client.set_input_mute(active, False)
+            fixed.append(f"bật lại tiếng {active}")
+        if self.dual_mode and len(self.slots) == 2:
+            standby = self.slots[1 - self.active_slot]
+            if not client.get_input_mute(standby).input_muted:
+                client.set_input_mute(standby, True)
+                fixed.append(f"tắt tiếng nguồn chờ {standby}")
+                if not client.get_input_mute(standby).input_muted:
+                    raise PlaybackError(503, f"OBS không tắt được tiếng nguồn chờ {standby}: hai video sẽ đè tiếng")
+        if fixed:
+            self.audio_fixes += 1
+            log.warning("OBS audio corrected at switch: %s", "; ".join(fixed))
+        return bool(client.get_input_mute(active).input_muted)
 
     def _schedule_swap(self, cursor, duration):
         """A/B: swap to the stand-by source just before the visible video ends; the watchdog polls only each second."""

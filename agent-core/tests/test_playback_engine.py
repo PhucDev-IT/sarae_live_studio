@@ -163,6 +163,28 @@ COVER = {"positionX": 540, "positionY": 960, "alignment": 0, "rotation": 0, "sca
 
 
 class SingleSourceTests(EngineTestBase):
+    def test_start_unmutes_a_source_left_muted_in_obs(self):
+        self.obs.muted["Sarae Video"] = True
+        real = self.obs.set_input_mute
+        dropped = []
+
+        def flaky(name, muted):
+            if not muted and not dropped:
+                dropped.append(name)  # OBS ignores the first unmute
+                return
+            real(name, muted)
+        self.obs.set_input_mute = flaky
+        self.engine.start_playlist(self.ids("pl1", "pl2"))
+        self.assertEqual(dropped, ["Sarae Video"])
+        self.assertFalse(self.obs.muted["Sarae Video"])
+        self.assertEqual(self.engine.audio_fixes, 1)
+
+    def test_audio_is_not_polled_while_a_video_plays(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"))
+        self.obs.muted["Sarae Video"] = True  # a click in OBS during the video is the operator's choice
+        self.engine.tick()
+        self.assertTrue(self.obs.muted["Sarae Video"])
+
     def test_every_video_covers_canvas_again(self):
         self.engine.start_playlist(self.ids("pl1", "pl2"))
         self.assertEqual(self.obs.transforms[1], COVER)
@@ -410,6 +432,46 @@ class DualModeTests(EngineTestBase):
         self.assertEqual(self.obs.transforms[2]["scaleX"], -1)
         self.engine.next()
         self.assertEqual(self.obs.transforms[1]["scaleX"], 1)
+
+    def test_each_switch_leaves_only_the_visible_source_heard(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        a, b = "Sarae Video A", "Sarae Video B"
+        real = self.obs.set_input_mute
+        for _ in range(3):
+            outgoing = self.engine.active_source()
+            dropped = []
+
+            def flaky(name, muted, outgoing=outgoing, dropped=dropped):
+                if name == outgoing and muted and not dropped:
+                    dropped.append(name)  # OBS ignores the mute of the outgoing source
+                    return
+                real(name, muted)
+            self.obs.set_input_mute = flaky
+            self.engine.next()
+            visible = self.engine.active_source()
+            standby = b if visible == a else a
+            self.assertEqual(dropped, [outgoing])
+            self.assertFalse(self.obs.muted[visible])
+            self.assertTrue(self.obs.muted[standby])
+        # (the stand-by source is muted again when the following video is staged into it, before the check)
+
+    def test_switch_retries_an_unmute_obs_did_not_take(self):
+        self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)
+        incoming = "Sarae Video B"
+        real = self.obs.set_input_mute
+        dropped = []
+
+        def flaky(name, muted):
+            if name == incoming and not muted and not dropped:
+                dropped.append(name)  # OBS ignores the first unmute
+                return
+            real(name, muted)
+        self.obs.set_input_mute = flaky
+        self.engine.next()
+        self.assertEqual(dropped, [incoming])
+        self.assertFalse(self.obs.muted[incoming])
+        self.assertTrue(self.obs.muted["Sarae Video A"])
+        self.assertTrue(self.engine.active)
 
     def test_rapid_switches_never_unmute_both_video_sources(self):
         self.engine.start_playlist(self.ids("pl1", "pl2"), loop=True)

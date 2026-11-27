@@ -200,6 +200,11 @@ class ObsController:
             result["media"] = self.media_status(cfg.media_input)
         except AgentError:
             result["media"] = None
+        try:  # the canvas videos are fitted to (TikTok LIVE wants 9:16)
+            video = self._call("GetVideoSettings")
+            result["canvas"] = {"width": video.get("baseWidth"), "height": video.get("baseHeight")}
+        except AgentError:
+            result["canvas"] = None
         result.update({k: v for k, v in self.status().items() if k in ("connected", "state", "error")})
         return result
 

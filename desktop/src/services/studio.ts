@@ -122,6 +122,8 @@ export interface ObsStatus {
   source_a: string
   source_b: string
   dual_sources: string[]
+  /** OBS base canvas the videos are fitted to (cover: no black bars). */
+  canvas?: { width: number | null; height: number | null } | null
 }
 export interface ObsSettingsInput { host?: string; port?: number; password?: string; clear_password?: boolean; media_input?: string; dual_mode?: boolean; source_a?: string; source_b?: string }
 

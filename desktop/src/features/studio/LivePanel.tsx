@@ -5,6 +5,13 @@ import { clock } from './MarkerEditor'
 import { ReplyDesk } from './ReplyDesk'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
+/** Videos always cover the whole OBS canvas (no black bars); the canvas itself must be 9:16 for TikTok LIVE. */
+function canvasWarning(obs: ObsStatus | null): string | null {
+  const width = obs?.connected ? obs.canvas?.width : null, height = obs?.connected ? obs.canvas?.height : null
+  if (!width || !height || Math.abs(width / height - 9 / 16) < 0.01) return null
+  return `Khung OBS đang là ${width}×${height}, không phải 9:16: video vẫn phủ kín khung (không viền đen) nhưng hình ra sẽ không dọc. Vào OBS → Settings → Video, đặt Base (Canvas) Resolution 1080×1920.`
+}
+
 type Props = { products: Product[]; media: Media[]; disabled: boolean; visible: boolean; onNotice: (message: string) => void }
 const when = new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
 const endReasons: Record<string, string> = { operator: 'Bạn đã dừng', core_restart: 'Gián đoạn do ứng dụng khởi động lại', core_stopped: 'Ứng dụng đã đóng', playback_ended: 'Đã phát hết danh sách' }
@@ -64,6 +71,7 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
       </div>
     </div>
     {error && <ErrorNotice message={error} />}
+    {canvasWarning(obs) && <div className="studio-callout warning"><AlertTriangle size={16} /><span>{canvasWarning(obs)}</span></div>}
     {live && live.session && <ControlRoom status={live} session={live.session} mediaById={mediaById} busy={busy} disabled={disabled}
       onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)}
       onSeek={ms => act('seek', () => studioClient.liveSeek(ms))}
@@ -254,6 +262,8 @@ function ObsSettings({ status, live, onClose, onChanged, onNotice }: { status: O
     <div className={`studio-obs-state ${current.connected ? 'ok' : 'off'}`}><MonitorPlay size={20} /><div className="studio-grow"><strong>{current.connected ? `Đã kết nối OBS ${current.obs_version ?? ''}` : 'Chưa kết nối OBS'}</strong><span>{current.connected ? (current.media_input_ok === false ? `Không thấy nguồn “${current.media_input}” trong OBS. Hãy tạo Media Source đúng tên này.` : 'OBS WebSocket đang trả lời.') : (current.error?.message ?? 'Bật OBS → Tools → WebSocket Server Settings, rồi bấm Kết nối.')}</span></div>
       {current.connected ? <button type="button" className="studio-button" disabled={!!busy || live} onClick={() => void run('disconnect', studioClient.obsDisconnect, 'Đã ngắt OBS.')}>Ngắt</button> : <button type="button" className="studio-button primary" disabled={!!busy} onClick={() => void run('connect', studioClient.obsConnect, 'Đã kết nối OBS.')}>{busy === 'connect' ? 'Đang kết nối…' : 'Kết nối'}</button>}</div>
     {live && <div className="studio-callout warning"><Radio size={16} /><span>Đang có phiên phát. Dừng phiên trước khi đổi cài đặt OBS.</span></div>}
+    {current.connected && current.canvas?.width && <p className="studio-muted">Khung OBS {current.canvas.width}×{current.canvas.height}. Mỗi video được tự phủ kín khung (giữ tỉ lệ, cắt phần thừa, không viền đen); khi dùng 2 nguồn A/B chỉ nguồn đang hiện có tiếng.</p>}
+    {canvasWarning(current) && <div className="studio-callout warning"><AlertTriangle size={16} /><span>{canvasWarning(current)}</span></div>}
     <div className="studio-form-row">
       <label className="studio-field">Địa chỉ<input value={host} disabled={live || !!busy} onChange={event => setHost(event.target.value)} /></label>
       <label className="studio-field narrow">Cổng<input type="number" min={1} max={65535} value={port} disabled={live || !!busy} onChange={event => setPort(event.target.value)} /></label>
