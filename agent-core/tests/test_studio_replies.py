@@ -103,10 +103,47 @@ def error_code(operation) -> str:
 
 
 def test_question_heuristic():
-    for text in ("giá bn shop", "50kg mặc size gì", "còn màu đen ko", "ship mấy ngày?", "1m58 45kg"):
+    for text in ("giá bn shop", "50kg mặc size gì", "còn màu đen ko", "ship mấy ngày?", "1m58 45kg",
+                 "giá: bao nhiu", "ib e", "tư vấn e với", "có ship cod hông", "còn size L k ạ", "áo này có không shop",
+                 "quần dài bn ạ", "link đâu"):
         assert is_question(text), text
-    for text in ("đẹp quá", "hello shop", "❤️❤️"):
+    for text in ("đẹp quá", "hello shop", "❤️❤️", "theo dõi shop", "xinh thế", "okk"):
         assert not is_question(text), text
+
+
+def test_operator_edit_is_saved_and_the_ai_text_never_goes_out(studio):
+    clock, speaker, tiktok = Clock(), FakeVoice(), FakeTikTok()
+    desk = desk_for(studio, clock=clock, speaker=speaker, tiktok=tiktok, auto_voice=True, confirm_seconds=5)
+    studio.set_tiktok_account(ACCOUNT) if hasattr(studio, "set_tiktok_account") else None
+    entry_id = desk.ingest(comment("quần dài bn ạ"), simulated=False)["id"]
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert desk.status()["entries"][0]["auto_in"] == 5
+    # Starting to edit stops the countdown; saving keeps the operator's text.
+    assert desk.hold({"id": entry_id})["entry"]["auto"] == []
+    saved = desk.edit({"id": entry_id, "text": "Quần dài riêng 59.000đ nha chị"})["entry"]
+    assert saved["reply"] == "Quần dài riêng 59.000đ nha chị" and saved["edited"] is True
+    assert desk.status()["entries"][0]["reply"] == "Quần dài riêng 59.000đ nha chị"
+    desk.speak({"id": entry_id})  # Đọc after saving: the saved text, not the AI's
+    assert speaker.calls[-1]["text"] == "Quần dài riêng 59.000đ nha chị"
+    assert error_code(lambda: desk.edit({"id": entry_id, "text": "  "})) == "VALIDATION_ERROR"
+    assert error_code(lambda: desk.edit({"id": entry_id})) == "VALIDATION_ERROR"
+
+
+def test_a_late_ai_answer_does_not_overwrite_the_operator_text(studio):
+    desk = desk_for(studio)
+    entry_id = desk.ingest(comment("giá bao nhiêu"), simulated=False)["id"]
+    entry = desk._entry(desk._queue.popleft())
+    desk.edit({"id": entry_id, "text": "Dạ 109k nha"})  # written by hand while the AI was still thinking
+    desk.answer(entry)
+    assert desk.status()["entries"][0]["reply"] == "Dạ 109k nha"
+
+
+def test_the_whole_feed_is_returned(studio):
+    desk = desk_for(studio)
+    for n in range(120):
+        desk.ingest(comment(f"đẹp quá {n}", msg_id=f"m{n}", username=f"user{n}"), simulated=False)
+    status = desk.status()
+    assert len(status["entries"]) == 120 and status["stats"]["received"] == 120
 
 
 def test_filters_before_ai(studio):
@@ -269,11 +306,51 @@ def test_chat_reader_delivers_comments_with_stable_ids():
     reader = ChatReader(received.append, lambda: states.append(1), FakeLiveClient)
     reader.start("shopviet")
     deadline = time.monotonic() + 5
+    reader.backoff = (60,)
     while (not received or reader.snapshot()["status"] in ("connecting", "connected")) and time.monotonic() < deadline:
         time.sleep(0.02)
     assert received == [{"msg_id": "777", "username": "lan.nguyen", "nickname": "Lan", "user_id": "42",
                          "comment": "giá nhiêu?"}]
-    assert reader.snapshot()["status"] == "disconnected"
+    # TikTok closed the chat while nobody pressed Stop: the reader connects again by itself.
+    assert reader.snapshot()["status"] == "reconnecting" and reader.snapshot()["reconnects"] == 1
+    reader.stop()
+    assert reader.snapshot()["status"] == "idle"
+
+
+class DroppingClient(FakeLiveClient):
+    """Each connection delivers one comment, then TikTok drops it."""
+    count = 0
+
+    async def connect(self):
+        DroppingClient.count += 1
+        await self.handlers["ConnectEvent"](None)
+        user = SimpleNamespace(unique_id="lan.nguyen", nickname="Lan", id=42)
+        await self.handlers["CommentEvent"](SimpleNamespace(user=user, comment=f"câu {DroppingClient.count}?",
+                                                            common=SimpleNamespace(msg_id=DroppingClient.count)))
+        if DroppingClient.count >= 3:
+            raise ConnectionError("network down")
+
+
+def test_chat_reader_reconnects_after_drops_until_stopped():
+    DroppingClient.count = 0
+    received = []
+    reader = ChatReader(received.append, lambda: None, DroppingClient)
+    reader.backoff = (0,)
+    reader.start("shopviet")
+    deadline = time.monotonic() + 5
+    while len(received) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    reader.backoff = (60,)
+    assert [r["comment"] for r in received[:3]] == ["câu 1?", "câu 2?", "câu 3?"]
+    while reader.snapshot()["status"] != "reconnecting" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert "network down" in reader.snapshot()["error"]
+    # While it waits to reconnect it is still running: a second start is refused, Stop cancels the reconnect.
+    with pytest.raises(StudioError):
+        reader.start("other")
+    reader.stop()
+    time.sleep(0.1)
+    assert reader.snapshot()["status"] == "idle"
 
 
 class FakeReader:

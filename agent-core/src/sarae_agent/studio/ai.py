@@ -134,6 +134,11 @@ def reply_prompt(comment: str, username: str, product: dict | None) -> tuple[str
         "4. Câu trả lời ngắn, tự nhiên như người bán đang LIVE: tối đa 2 câu, dưới 220 ký tự, xưng 'shop', gọi khách là 'bạn' hoặc theo tên.\n"
         "5. Khi hỏi size có cân nặng/chiều cao, chỉ gợi ý size nếu bảng size trong PRODUCT bao phủ số đó.\n"
         "6. Bình luận tục tĩu, xúc phạm hay spam: reply rỗng, intent OTHER, needs_review = true.\n"
+        "7. Câu hỏi hiểu được nhiều nghĩa thì không tự chọn một nghĩa rồi trả lời chắc chắn. Ví dụ 'quần dài bn' có thể là "
+        "giá quần lẻ hoặc quần dài bao nhiêu cm; 'bn' không nói rõ hỏi tiền, cm hay kg. Khi đó hỏi lại ngắn gọn khách muốn biết "
+        "gì (có thể kèm dữ kiện chắc chắn đang có) và đặt needs_review = true.\n"
+        "8. Trả lời đúng phần khách hỏi. Nếu khách hỏi một món trong set (quần, áo…) mà PRODUCT chỉ có giá cả set, nói rõ đó là "
+        "giá cả set, không gán giá đó cho món lẻ; không có số đo của món đó thì không đoán.\n"
         "Trả về một JSON object duy nhất: intent (một trong " + ", ".join(INTENTS) + "), reply, "
         "needs_review (boolean), reason (ngắn, nêu dữ kiện đã dùng hoặc còn thiếu)."
     )

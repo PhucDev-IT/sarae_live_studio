@@ -39,7 +39,12 @@ QUESTION_TERMS = ("giá", "gia ", "bao nhiêu", "bao nhieu", "bn", "nhiêu", "si
                   "màu", "mau ", "còn", "con hang", "hết", "ship", "giao", "freeship", "cod", "vải", "chất", "chat lieu",
                   "đổi", "trả", "bảo hành", "mua", "đặt", "chốt", "link", "giỏ", "gio hang", "mã", "voucher", "giảm",
                   "sale", "khuyến mãi", "form", "mặc", "vừa", "rộng", "chật", "dài", "ngắn", "co giãn", "mỏng", "dày",
-                  "nóng", "giặt", "xem", "mẫu", "khi nào", "bao lâu", "ở đâu", "sao", "không ạ", "ko ạ", "k ạ")
+                  "nóng", "giặt", "xem", "mẫu", "khi nào", "bao lâu", "ở đâu", "sao", "không ạ", "ko ạ", "k ạ",
+                  "ib", "inbox", "tư vấn", "tu van", "check", "nhiu", "bnhieu", "thế nào", "như nào", "nhu nao",
+                  "lên form", "có không", "được không", "đc không", "dc ko", "đc k", "dc k", "số đo", "eo", "vòng")
+# "… không?", "… ko", "… k ạ", "… hông shop": a yes/no question without "?".
+QUESTION_END = re.compile(r"(?:^|\s)(?:không|khong|ko|k|hông|hong|hok|hk|khum|chưa|chua)"
+                          r"(?:\s+(?:ạ|a|vậy|v|vay|nhỉ|nhi|nhé|shop|sh|chị|chi|c|em|e|ah))?\s*[.!]*$")
 NOISE = re.compile(r"^[\W_]*$|^(.)\1*$", re.UNICODE)
 
 
@@ -49,7 +54,10 @@ def normalize(text: str) -> str:
 
 def is_question(text: str) -> bool:
     t = normalize(text)
-    return "?" in t or any(term in f"{t} " for term in QUESTION_TERMS) or bool(re.search(r"\d+\s*(kg|ký|cm|m\d)", t))
+    # Words without punctuation: short terms ("ib", "eo", "giá") must be whole words, not parts of other words.
+    padded = f" {' '.join(re.sub(r'[^\w]+', ' ', t).split())} "
+    return ("?" in t or any(f" {term} " in padded if len(term) <= 3 else term in padded for term in QUESTION_TERMS)
+            or bool(QUESTION_END.search(t)) or bool(re.search(r"\d+\s*(kg|ký|ki|cm|m\d|tuổi)", t)))
 
 
 def validate_settings(params: dict, current: dict) -> dict:
@@ -97,14 +105,17 @@ class ChatReader:
         self._generation = 0
         self._client = None
         self._loop = None
+        self.reconnects = 0
+        # Seconds before each automatic reconnect after an unexpected drop (the last one repeats).
+        self.backoff = (2, 5, 10, 20, 30)
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {"username": self.username, "status": self.status, "error": self.error}
+            return {"username": self.username, "status": self.status, "error": self.error, "reconnects": self.reconnects}
 
     def start(self, username: str) -> None:
         with self._lock:
-            if self.status in ("connecting", "connected"):
+            if self.status in ("connecting", "connected", "reconnecting"):
                 raise StudioError("CHAT_RUNNING", "Đang đọc chat. Hãy dừng trước khi đổi tài khoản.")
             client_type = self._client_type
             if client_type is None:
@@ -115,9 +126,28 @@ class ChatReader:
             self._generation += 1
             generation = self._generation
             self.username, self.status, self.error = username, "connecting", ""
+            self.reconnects = 0
+        self._spawn(generation, username, client_type)
+        self._on_state()
+
+    def _spawn(self, generation: int, username: str, client_type) -> None:
         threading.Thread(target=self._worker, args=(generation, username, client_type), name="studio-chat",
                          daemon=True).start()
-        self._on_state()
+
+    def _retry(self, generation: int, username: str, client_type, attempt: int) -> None:
+        """An unexpected drop (network, TikTok closing the socket): connect again while nobody pressed Stop."""
+        delay = self.backoff[min(attempt - 1, len(self.backoff) - 1)]
+        log.warning("LIVE chat dropped; reconnecting in %ss (attempt %s)", delay, attempt)
+
+        def later():
+            time.sleep(delay)
+            with self._lock:
+                if generation != self._generation or self.status != "reconnecting":
+                    return  # stopped or restarted meanwhile
+                self.status = "connecting"
+            self._on_state()
+            self._spawn(generation, username, client_type)
+        threading.Thread(target=later, name="studio-chat-retry", daemon=True).start()
 
     def _worker(self, generation: int, username: str, client_type) -> None:
         from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
@@ -134,7 +164,7 @@ class ChatReader:
         async def on_connect(_event):
             with self._lock:
                 if generation == self._generation:
-                    self.status = "connected"
+                    self.status, self.error = "connected", ""
             self._on_state()
 
         @client.on(CommentEvent)
@@ -157,23 +187,33 @@ class ChatReader:
                     self.status = "disconnected"
             self._on_state()
 
+        failure = ""
         try:
             loop.run_until_complete(client.connect())
         except Exception as exc:  # noqa: BLE001 - offline user, network, TikTok changes
-            with self._lock:
-                if generation == self._generation and self.status != "stopping":
-                    self.status, self.error = "error", f"{type(exc).__name__}: {str(exc)[:200]}"
+            failure = f"{type(exc).__name__}: {str(exc)[:200]}"
         finally:
+            retry = 0
             with self._lock:
                 if generation == self._generation:
-                    if self.status in ("connecting", "connected", "stopping"):
-                        self.status = "idle" if self.status == "stopping" else "disconnected"
                     self._client = self._loop = None
+                    if self.status == "stopping":
+                        self.status = "idle"
+                    else:
+                        # Not stopped by the operator: keep reading the chat.
+                        self.reconnects += 1
+                        retry = self.reconnects
+                        self.status = "reconnecting"
+                        self.error = failure or "TikTok đã ngắt kết nối chat."
             loop.close()
             self._on_state()
+            if retry:
+                self._retry(generation, username, client_type, retry)
 
     def stop(self) -> None:
         with self._lock:
+            if self.status == "reconnecting":
+                self._generation += 1  # cancels the pending reconnect
             if self.status not in ("connecting", "connected"):
                 self.status = "idle"
                 return
@@ -263,7 +303,7 @@ class ReplyDesk:
     def _on_session(self, session: dict, started: bool) -> None:
         """Follow the LIVE session: read its chat while it plays (docs/AI_AUTO_REPLY.md, dev behaviour)."""
         if started:
-            if not self.settings()["follow_session"] or self.reader.snapshot()["status"] in ("connecting", "connected"):
+            if not self.settings()["follow_session"] or self.reader.snapshot()["status"] in ("connecting", "connected", "reconnecting"):
                 return
             account = self.service.tiktok_account() or {}
             username = (account.get("user_name") or "").strip().lstrip("@")
@@ -299,7 +339,8 @@ class ReplyDesk:
                      "user_id": str(message.get("user_id") or "")[:40], "comment": text, "simulated": simulated,
                      "created_at": datetime.now(timezone.utc).isoformat(), "at": now, "stage": "queued",
                      "reason": "", "product_id": None, "intent": None, "reply": "", "needs_review": False,
-                     "voice": None, "comment_delivery": None, "auto_at": None, "auto": [], "usage": None}
+                     "voice": None, "comment_delivery": None, "auto_at": None, "auto": [], "usage": None,
+                     "edited": False}
             self.stats["received"] += 1
             account = self.service.tiktok_account() if not simulated else None
             own = account and username.casefold() in {(account.get("user_name") or "").casefold()}
@@ -376,8 +417,13 @@ class ReplyDesk:
             self._changed()
             return
         with self._lock:
-            entry.update({"intent": result["intent"], "reply": result["reply"], "needs_review": result["needs_review"],
+            if entry["stage"] == "dismissed":
+                self._changed()
+                return
+            entry.update({"intent": result["intent"], "needs_review": result["needs_review"],
                           "reason": result["reason"], "usage": result["usage"]})
+            if not entry["edited"]:
+                entry["reply"] = result["reply"]
             self.stats["answered"] += 1
             if not result["reply"]:
                 entry["stage"] = "review"
@@ -504,7 +550,7 @@ class ReplyDesk:
     # --- operator API ------------------------------------------------------------------------
     def status(self, params: dict | None = None) -> dict:
         with self._lock:
-            entries = [self._public(entry) for entry in list(self._entries)[:80]]
+            entries = [self._public(entry) for entry in self._entries]
             stats, queued = dict(self.stats), len(self._queue)
         account = self.service.tiktok_account()
         voice = self._voice.status() if self._voice is not None else None
@@ -567,8 +613,27 @@ class ReplyDesk:
             raise StudioError("VALIDATION_ERROR", "Reply text must contain 1 to 300 characters.", {"field": "text"})
         text = " ".join(text.split())
         with self._lock:
+            if text != entry["reply"]:
+                entry["edited"] = True
             entry["reply"], entry["auto"], entry["auto_at"] = text, [], None
         return text
+
+    def edit(self, params: dict) -> dict:
+        """Save the operator's text as the reply (later Đọc / Gửi and any automatic send use it)."""
+        unknown = set(params) - {"id", "text"}
+        if unknown:
+            raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, unknown))})
+        with self._lock:
+            entry = self._entry(params.get("id"))
+        if "text" not in params:
+            raise StudioError("VALIDATION_ERROR", "text is required.", {"field": "text"})
+        self._text(entry, params)
+        self._changed()
+        return {"entry": self._public(entry)}
+
+    def hold(self, params: dict) -> dict:
+        """The operator started editing: the countdown stops so the AI's text is never sent meanwhile."""
+        return self.cancel(params)
 
     def speak(self, params: dict) -> dict:
         with self._lock:

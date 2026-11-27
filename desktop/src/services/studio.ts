@@ -153,10 +153,12 @@ export interface ReplyEntry {
   needs_review: boolean; voice: { status: string; detail: string } | null
   comment_delivery: { status: string; mode?: string | null; error: string | null } | null
   auto: ('voice' | 'comment')[]; auto_in: number | null; age_seconds: number
+  /** The operator rewrote the AI's reply. */
+  edited?: boolean
 }
 export interface ReplyDeskStatus {
   settings: ReplySettings
-  chat: { username: string; status: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'stopping' | 'error'; error: string }
+  chat: { username: string; status: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'stopping' | 'error'; error: string; reconnects?: number }
   entries: ReplyEntry[]
   stats: Record<string, number>
   queued: number
@@ -403,7 +405,7 @@ export const studioClient = {
   repliesConfigure: (input: Partial<ReplySettings>) => request<ReplyDeskStatus>('studio.replies.configure', { ...input }),
   repliesChatStart: (username?: string) => request<ReplyDeskStatus>('studio.replies.chat_start', username ? { username } : {}),
   repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),
-  replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
+  replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss' | 'edit' | 'hold', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
   liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),

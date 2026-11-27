@@ -225,3 +225,12 @@ def test_http_bad_request_exposes_sanitized_provider_reason(monkeypatch, status,
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
         assert caught.value.details["param"] == "max_tokens"
         assert "Unsupported parameter" in caught.value.message
+
+
+def test_reply_prompt_asks_back_on_ambiguous_questions_instead_of_guessing():
+    from sarae_agent.studio.ai import reply_prompt
+    system, data = reply_prompt("quần dài bn ạ", "Mẹ Cải Bắp", None)
+    # "bn" can be the price of the trousers alone or their length: ask back and wait for the operator.
+    assert "'quần dài bn'" in system and "hỏi lại" in system and "giá cả set" in system
+    assert "needs_review = true" in system.split("7.")[1]
+    assert json.loads(data.removeprefix("DATA:\n"))["COMMENT"] == "quần dài bn ạ"

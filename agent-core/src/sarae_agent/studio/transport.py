@@ -37,6 +37,7 @@ METHODS = (
     "studio.live.stop", "studio.live.pins",
     "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
     "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
+    "studio.replies.edit", "studio.replies.hold",
     "studio.replies.dismiss", "studio.replies.stop_voice", "studio.replies.voices", "studio.replies.voices_start",
 )
 REPLY_METHODS = {name: name.rsplit(".", 1)[-1] for name in METHODS if name.startswith("studio.replies.")}
