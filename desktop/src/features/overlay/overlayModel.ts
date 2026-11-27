@@ -12,7 +12,6 @@ import type { OverlaySchedule, PinSpan } from './overlaySchedule'
 
 export const CANVAS = {width:1080, height:1920} as const
 export const MIN_DURATION_MS = 500
-export const MAX_DURATION_MS = 3_600_000
 export const MAX_ELEMENTS = 20
 export const ANIMATIONS = ['none', 'fade', 'slide_up', 'slide_down', 'slide_left', 'slide_right', 'zoom'] as const
 export const PRODUCT_FIELDS = ['name', 'price', 'origin_price', 'sku'] as const

@@ -7,6 +7,8 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import subprocess
+from concurrent.futures import Future
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -182,6 +184,73 @@ def test_real_pins_wait_for_the_tiktok_console(rig, clip):
     at(rig, video["id"], 3500)
     assert rig.live.status()["pins"]["actual_product_id"] == shirt["id"]
     assert error_code(lambda: rig.live.configure_pins({"real": "yes"})) == "VALIDATION_ERROR"
+
+
+def test_switching_from_rehearsal_never_claims_a_real_pin_was_confirmed(rig, clip):
+    shirt = create_product(rig.service, "Áo")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(0, shirt))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    at(rig, video["id"], 1000)
+    assert rig.live.status()["pins"]["actual_known"] is True
+    result = rig.live.configure_pins({"real": True})
+    assert result["pins"]["actual_known"] is False
+    assert result["pins"]["actual_product_id"] is None
+    assert result["console_live"]["state"] == "UNKNOWN"
+
+
+def test_status_exposes_next_marker_and_separates_tiktok_from_obs_playback(rig, clip):
+    shirt = create_product(rig.service, "Áo")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(0, shirt), unpin(8000))
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    rig.ws.cursor["Sarae Video"] = 3000
+    result = rig.live.status()
+    assert result["active"] is True and result["broadcast"]["state"] != "live"
+    assert result["console_live"]["state"] == "UNKNOWN"
+    assert result["next_marker"]["action"] == "UNPIN_PRODUCT"
+    assert result["next_marker"]["remaining_ms"] == 5000
+    rig.ws.cursor["Sarae Video"] = 9000
+    assert rig.live.status()["next_marker"] is None
+
+
+@pytest.mark.parametrize("console_state,expected_clicks", [("LIVE", 1), ("OFFLINE", 0), ("UNKNOWN", 0)])
+def test_real_pin_uses_console_executor_and_requires_console_live(rig, clip, console_state, expected_clicks):
+    shirt = create_product(rig.service, "Áo")
+    video = rig.video(clip)
+    rig.markers(video["id"], pin(0, shirt))
+    calls = []
+    actual = [None]
+    def completed(value):
+        future = Future()
+        future.set_result(value)
+        return future
+    def submit_pin(target, current, guard):
+        assert current()
+        calls.append(target)
+        actual[0] = target["tiktok_product_id"]
+        return completed({"pinned_product_id": actual[0]})
+    browser = SimpleNamespace(status=lambda: {"browser_open": True},
+                              submit_live_state=lambda: completed({"state": console_state}),
+                              submit_pin_state=lambda: completed({"pinned_product_id": actual[0]}),
+                              submit_pin=submit_pin)
+    rig.live.tiktok = SimpleNamespace(_browser=browser)
+    rig.live.configure_pins({"real": True})
+    session = rig.live.sessions_create({"title": "Phiên", "video_ids": [video["id"]]})["session"]
+    rig.live.start({"session_id": session["id"]})
+    rig.live.status()  # read the Console state before the next playback observation
+    at(rig, video["id"], 1000)
+    at(rig, video["id"], 2000)
+    assert len(calls) == expected_clicks
+    result = rig.live.status()
+    if expected_clicks:
+        assert result["pins"]["actual_known"] is True
+        assert result["pins"]["actual_product_id"] == shirt["id"]
+        assert calls[0]["tiktok_product_id"] == shirt["tiktok_product_id"]
+    else:
+        assert result["pins"]["actual_known"] is False
 
 
 def test_marker_edits_reach_the_running_session(rig, clip):

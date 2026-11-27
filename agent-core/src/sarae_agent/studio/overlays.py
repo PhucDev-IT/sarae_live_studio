@@ -52,7 +52,7 @@ CANVAS_WIDTH, CANVAS_HEIGHT = 1080, 1920
 MAX_OVERLAYS = 200          # per video
 MAX_ELEMENTS = 20
 MAX_CONCURRENT = 4
-MIN_DURATION_MS, MAX_DURATION_MS = 500, 3_600_000
+MIN_DURATION_MS = 500
 ANIMATIONS = ("none", "fade", "slide_up", "slide_down", "slide_left", "slide_right", "zoom")
 PRODUCT_FIELDS = ("name", "price", "origin_price", "sku")
 COLOR = r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
@@ -163,8 +163,9 @@ class OverlayInput(BaseModel):
     model_config = {"extra": "forbid"}
     template: str = Field(default="", pattern=TEMPLATE)
     label: str = Field(default="", max_length=200)
-    start_ms: int = Field(ge=0, le=86_400_000)
-    duration_ms: int = Field(ge=MIN_DURATION_MS, le=MAX_DURATION_MS)
+    # The owning video's length is checked by StudioService, rather than a fixed hourly cap.
+    start_ms: int = Field(ge=0)
+    duration_ms: int = Field(ge=MIN_DURATION_MS)
     # Window / random schedules only: how long one appearance lasts.
     show_ms: int = Field(default=DEFAULT_SHOW_MS, ge=MIN_SHOW_MS, le=MAX_SHOW_MS)
     product_id: str | None = Field(default=None, pattern=PRODUCT_ID)

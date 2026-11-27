@@ -1,7 +1,7 @@
 // Ported from web/src/overlay (dev branch) for the local Studio: product ids are UUID strings.
 import { useCallback, useRef, useState } from 'react'
 import {
-  MAX_DURATION_MS, MIN_DURATION_MS, busiest, coveredBy, endOf, normalizeOverlay, productOf,
+  MIN_DURATION_MS, busiest, coveredBy, endOf, normalizeOverlay, productOf,
   type Overlay, type OverlayIssue, type OverlayPreset,
 } from './overlayModel'
 import {
@@ -111,7 +111,7 @@ export function localIssues(overlays:Overlay[], ctx:{
     // Random (list) mode ignores start_ms / duration_ms, but they are kept (for switching back) and the Backend still
     // refuses to save times past the video end: say how to fix them, since random mode does not show them.
     const kept = list ? ' (giờ cũ giữ lại khi đổi chế độ: chuyển sang “Chính xác” để sửa)' : ''
-    if (o.duration_ms < MIN_DURATION_MS || o.duration_ms > MAX_DURATION_MS) add('error', 'DURATION', (planned && !list ? 'Khoảng cho phép phải từ 0,5 giây tới 1 giờ' : 'Thời lượng phải từ 0,5 giây tới 1 giờ') + kept)
+    if (!Number.isSafeInteger(o.duration_ms) || o.duration_ms < MIN_DURATION_MS) add('error', 'DURATION', (planned && !list ? 'Khoảng cho phép phải từ 0,5 giây trở lên' : 'Thời lượng phải là số hợp lệ, từ 0,5 giây trở lên') + kept)
     const video = ctx.durationOf(o.media_id)
     if (video != null && endOf(o) > video) add('error', 'AFTER_END', (planned && !list ? 'Khoảng cho phép kéo dài quá cuối video' : 'Overlay kéo dài quá cuối video') + kept)
     if (planned) {

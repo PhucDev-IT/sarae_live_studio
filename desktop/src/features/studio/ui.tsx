@@ -18,6 +18,7 @@ export function errorMessage(error: unknown): string {
       CORE_NOT_READY: 'Studio Core đang khởi động. Ứng dụng sẽ tự kết nối khi sẵn sàng.',
       CORE_UNAVAILABLE: 'Chưa kết nối được Studio Core. Hãy thử kết nối lại; với chế độ trình duyệt, chạy npm run studio.',
       CORE_ALREADY_RUNNING: 'Thư mục dữ liệu này đang được một Studio khác sử dụng. Hãy đóng cửa sổ còn lại rồi thử lại.',
+      METHOD_NOT_FOUND: 'Studio Core đang chạy bản cũ, chưa có chức năng này. Dừng cửa sổ chạy Studio bằng Ctrl+C rồi mở lại start-studio.cmd. Chỉ tải lại trang chưa cập nhật được Core.',
       REQUEST_TIMEOUT: 'Studio Core phản hồi quá lâu. Kiểm tra thư viện trước khi thử lại để tránh nhập trùng.',
       IMPORT_TIMEOUT: 'Core có thể vẫn đang nhập video. Đang kiểm tra lại thư viện; hãy đợi kết quả trước khi nhập lại.',
       UPLOAD_INTERRUPTED: 'Video chưa được gửi đầy đủ. Hãy chọn file và nhập lại.',
@@ -33,6 +34,7 @@ export function errorMessage(error: unknown): string {
     if (code === 'STORAGE_ERROR' && 'message' in error && String(error.message).includes('newer version')) return 'Dữ liệu này cần phiên bản Studio mới hơn. Hãy cập nhật ứng dụng.'
     if (code === 'VALIDATION_ERROR' && 'details' in error && error.details && typeof error.details === 'object' && 'field' in error.details) {
       const field = String(error.details.field)
+      if (field === 'overlays' && 'message' in error) return String(error.message)
       const fieldMessages: Record<string, string> = {
         model: 'Model ID chưa hợp lệ. Chỉ dùng chữ, số và . _ - : (ví dụ gemini-3.5-flash-lite).',
         base_url: 'Địa chỉ API chưa hợp lệ. Dịch vụ cloud phải dùng https://; Seller Brain phải chạy trên máy này (127.0.0.1).',

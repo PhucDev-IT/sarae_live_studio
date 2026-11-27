@@ -8,6 +8,10 @@
     "studio": "node scripts/studio-dev.mjs",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
+    "test:products": "node --experimental-strip-types --test tests/productInformation.test.ts",
+    "test:overlays": "node --experimental-strip-types --test tests/overlayAutosave.test.ts tests/overlayTiming.test.ts",
+    "test:obs": "node --experimental-strip-types --test tests/obsConnection.test.ts",
+    "test:live": "node --experimental-strip-types --test tests/livePresentation.test.ts",
     "tauri": "tauri"
   },
   "dependencies": {

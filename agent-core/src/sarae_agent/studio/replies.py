@@ -26,6 +26,7 @@ from typing import Callable
 from sarae_agent.errors import AgentError
 
 from .models import StudioError
+from .voice_server import LocalVoiceServer, VOICE_ID
 
 log = logging.getLogger(__name__)
 SETTING_KEY = "reply"
@@ -65,7 +66,8 @@ def validate_settings(params: dict, current: dict) -> dict:
         number = value[key]
         if isinstance(number, bool) or not isinstance(number, int) or not low <= number <= high:
             raise StudioError("VALIDATION_ERROR", f"{key} must be {low} to {high}.", {"field": key})
-    if value["voice"] not in VOICES:
+    voice = value["voice"]
+    if not isinstance(voice, str) or (voice not in VOICES and not (voice.startswith("local:") and VOICE_ID.fullmatch(voice[6:]))):
         raise StudioError("VALIDATION_ERROR", "Unknown voice.", {"field": "voice"})
     names = value["ignored_usernames"]
     if not isinstance(names, list) or len(names) > 100:
@@ -192,11 +194,12 @@ class ReplyDesk:
 
     def __init__(self, service, ai, live, tiktok, *, emit: Callable[[str, dict], None] = lambda *_: None,
                  voice=None, reader_client_type=None, clock: Callable[[], float] = time.monotonic,
-                 start_threads: bool = True):
+                 start_threads: bool = True, voice_server=None):
         self.service, self.ai, self.live, self.tiktok = service, ai, live, tiktok
         self.emit = emit
         self._clock = clock
         self._voice = voice
+        self.voice_server = voice_server or LocalVoiceServer()
         self._lock = threading.RLock()
         self._wake = threading.Condition(self._lock)
         self._entries: deque[dict] = deque(maxlen=self.MAX_ENTRIES)
@@ -216,6 +219,7 @@ class ReplyDesk:
             listeners.append(self._on_session)
         self._threads = []
         if start_threads:
+            threading.Thread(target=self.voice_server.refresh, name="studio-voice-catalog", daemon=True).start()
             for target, name in ((self._ai_worker, "studio-reply-ai"), (self._scheduler, "studio-reply-send")):
                 thread = threading.Thread(target=target, name=name, daemon=True)
                 thread.start()
@@ -226,7 +230,10 @@ class ReplyDesk:
     def voice(self):
         if self._voice is None:
             from sarae_agent.voice.tts import VoiceEngine
-            self._voice = VoiceEngine(self.live.config, self.live.obs)
+            from sarae_agent.voice.providers import default_registry
+            registry = default_registry()
+            registry.register("local_voice", self.voice_server)
+            self._voice = VoiceEngine(self.live.config, self.live.obs, registry=registry)
         return self._voice
 
     def settings(self) -> dict:
@@ -417,7 +424,14 @@ class ReplyDesk:
         # The viewer's name is its own cached clip, so the answer body is reused for everyone.
         intro = f"{name[:40]} ơi," if settings["call_name"] and name else None
         try:
-            result = self.voice.speak(text, settings["voice"], rate=settings["rate"], duck=settings["duck_video"],
+            voice = settings["voice"]
+            options = {}
+            if voice.startswith("local:"):
+                if not self.voice_server.catalog()["voice_server"]["online"]:
+                    raise AgentError("TTS_UNAVAILABLE", "Giọng local chưa sẵn sàng. Bật voice server rồi bấm Làm mới giọng.")
+                voice = voice[6:]
+                options = {"provider": "local_voice", "model": "live_fast", "settings": {"revision": self.voice_server.revision(voice)}}
+            result = self.voice.speak(text, voice, rate=settings["rate"], duck=settings["duck_video"], **options,
                                       intro=intro, ttl_seconds=float(settings["max_age_seconds"]))
             status = {"status": "QUEUED", "detail": f"Vị trí {result.get('position')} trong hàng đọc"}
             with self._lock:
@@ -494,13 +508,30 @@ class ReplyDesk:
             stats, queued = dict(self.stats), len(self._queue)
         account = self.service.tiktok_account()
         voice = self._voice.status() if self._voice is not None else None
+        catalog = self.voice_server.catalog()
         return {"settings": self.settings(), "chat": self.reader.snapshot(), "entries": entries, "stats": stats,
-                "queued": queued, "voice": voice, "voices": list(VOICES),
+                "queued": queued, "voice": voice,
+                "voices": [v["id"] for v in catalog["voice_options"]], **catalog,
                 "account_username": (account or {}).get("user_name") or None,
                 "product_id": self._product_on_air()}
 
     def configure(self, params: dict) -> dict:
         self.service.set_setting(SETTING_KEY, validate_settings(params, self.settings()))
+        return self.status()
+
+    def voices(self, params: dict | None = None) -> dict:
+        if params:
+            raise StudioError("VALIDATION_ERROR", "Unexpected parameters.")
+        self.voice_server.refresh()
+        return self.status()
+
+    def voices_start(self, params: dict | None = None) -> dict:
+        if params:
+            raise StudioError("VALIDATION_ERROR", "Unexpected parameters.")
+        try:
+            self.voice_server.start()
+        except AgentError as exc:
+            raise StudioError(exc.code, exc.message) from exc
         return self.status()
 
     def chat_start(self, params: dict) -> dict:

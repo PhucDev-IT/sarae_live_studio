@@ -174,3 +174,54 @@ def test_provider_errors_are_redacted_and_counted(studio):
     assert KEY not in caught.value.message and "sk-abcdef123456" not in caught.value.message
     assert ai.config()["usage"]["errors"] == 1
     assert redact("AIzaSyAAAAAAAAAAAAAAAA", None) == "***"
+
+
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-5-mini", "o3", "o4-mini"])
+def test_official_openai_reasoning_models_use_supported_parameters(studio, model):
+    ai, fake = ai_for(studio, {"intent": "GREETING", "reply": "Chào bạn", "needs_review": False, "reason": ""},
+                      provider="openai_compatible", model=model)
+    ai.reply({"comment": "hello"})
+    body = fake.calls[0]["body"]
+    assert body["max_completion_tokens"] == 300
+    assert "max_tokens" not in body and "temperature" not in body
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_official_openai_standard_model_keeps_temperature(studio):
+    ai, fake = ai_for(studio, {"intent": "GREETING", "reply": "Chào bạn", "needs_review": False, "reason": ""},
+                      provider="openai_compatible", model="gpt-4.1-mini", temperature=0.7)
+    ai.reply({"comment": "hello"})
+    assert fake.calls[0]["body"]["max_completion_tokens"] == 300
+    assert fake.calls[0]["body"]["temperature"] == 0.7
+
+
+def test_compatible_endpoint_keeps_its_token_and_temperature_contract(studio):
+    ai, fake = ai_for(studio, {"intent": "GREETING", "reply": "Chào bạn", "needs_review": False, "reason": ""},
+                      provider="openai_compatible", model="gpt-6-luna", base_url="https://gateway.example/v1")
+    ai.reply({"comment": "hello"})
+    body = fake.calls[0]["body"]
+    assert body["max_tokens"] == 300 and body["temperature"] == 0.4
+    assert "max_completion_tokens" not in body
+
+
+@pytest.mark.parametrize("status,body", [
+    (400, {"error": {"message": "Unsupported parameter for " + KEY, "param": "max_tokens", "code": "unsupported_parameter"}}),
+    (422, {"error": "Invalid image"}), (400, []),
+])
+def test_http_bad_request_exposes_sanitized_provider_reason(monkeypatch, status, body):
+    import httpx
+    response = httpx.Response(status, json=body, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, *args, **kwargs): return response
+    monkeypatch.setattr(httpx, "Client", Client)
+    with pytest.raises(StudioError) as caught:
+        StudioAI._httpx_post("https://api.openai.com/v1/chat/completions", headers={"Authorization": "Bearer " + KEY}, body={}, timeout=1)
+    assert caught.value.code == "AI_BAD_REQUEST"
+    assert caught.value.details["status"] == status
+    assert KEY not in caught.value.message and KEY not in json.dumps(caught.value.details)
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        assert caught.value.details["param"] == "max_tokens"
+        assert "Unsupported parameter" in caught.value.message

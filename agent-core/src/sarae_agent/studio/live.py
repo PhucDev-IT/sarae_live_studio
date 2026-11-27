@@ -89,16 +89,21 @@ class _LiveGate:
     def is_live(self):
         if not self.live.real_pins():
             return True
+        return {"LIVE": True, "OFFLINE": False}.get(self.console_status()["state"])
+
+    def console_status(self) -> dict:
+        """Observe the real Console even during rehearsal; rehearsal never proves TikTok is live."""
         browser = self.live.browser()
         if browser is None:
-            return None
+            return {"state": "UNKNOWN", "age_seconds": None, "connected": False}
         if browser is not self._browser:
             from sarae_agent.timeline.executors import ConsoleLiveGate
             self._browser, self._gate = browser, ConsoleLiveGate(
                 browser, on_change=lambda state, evidence: self.live._timeline_event(
                     {"type": "LIVE_GATE_CHANGED", "session_id": self.live.scheduler.session_id, "product_id": None,
                      "detail": {"state": state}}))
-        return self._gate.is_live()
+        confirmed = self._gate.is_live()
+        return {**self._gate.status(), "state": "LIVE" if confirmed is True else "OFFLINE" if confirmed is False else "UNKNOWN", "connected": True}
 
     def status(self) -> dict | None:
         return self._gate.status() if self._gate is not None and self.live.real_pins() else None
@@ -106,7 +111,7 @@ class _LiveGate:
 
 class StudioLive:
     def __init__(self, service: StudioService, *, emit: Callable[[str, dict], None] = lambda *_: None,
-                 obs_client_factory=None):
+                 obs_client_factory=None, broadcast_checker=None):
         self.service = service
         self.emit = emit
         # Agent modules resolve paths from SARAE_AGENT_HOME on every access.
@@ -137,6 +142,8 @@ class StudioLive:
                                       playback_state=lambda: {"active": self.engine.active, "paused": self.engine.paused,
                                                               "session_id": self.engine.session_id})
         self._lock = threading.RLock()
+        from .broadcast import BroadcastWatch, check_room
+        self.broadcast = BroadcastWatch(broadcast_checker or check_room)
         # The TikTok Console browser is owned by the TikTok connector (attached by the runtime).
         self.tiktok = None
         # Called with (session, started: bool) when a session starts or ends (the reply desk follows the chat).
@@ -405,10 +412,12 @@ class StudioLive:
         """Rehearsal (nothing clicked on TikTok) or real pins on the Console."""
         if set(params) != {"real"} or not isinstance(params.get("real"), bool):
             raise StudioError("VALIDATION_ERROR", "real must be true or false.", {"field": "real"})
+        changed = params["real"] != self.real_pins()
         self.service.set_setting(PIN_SETTING, {"real": params["real"]})
         session = self._live_session()
-        if session is not None and self.engine.active:
+        if changed and session is not None and self.engine.active:
             # What is pinned is unknown again in the new mode: read it back before acting.
+            self.scheduler.clear("pin_mode_changed")
             self.scheduler.load(session["id"], self._timeline(session))
             self.service.record_live_event(session["id"], "PIN_MODE", None,
                                            {"pins": "real" if params["real"] else "rehearsal"})
@@ -449,6 +458,8 @@ class StudioLive:
             snapshot, metrics, ids, index, busy = {}, engine.metrics(), [], 0, True
         current_media = ids[index] if engine.active and 0 <= index < len(ids) else None
         pins = self.scheduler.status()
+        self.broadcast.follow((self.service.tiktok_account() or {}).get("user_name", "").strip().lstrip("@"))
+        console = self.gate.console_status()
         names = {}
         markers = []
         if current_media:
@@ -461,6 +472,23 @@ class StudioLive:
                     names[pins[key]] = self.service.product_context(pins[key])["name"]
                 except StudioError:
                     pass
+        cursor = snapshot.get("media_cursor")
+        next_marker = None
+        if current_media and isinstance(cursor, (int, float)):
+            upcoming = next((m for m in markers if m["at_ms"] > cursor), None)
+            if upcoming:
+                next_marker = {**upcoming, "media_id": current_media, "next_video": False,
+                               "remaining_ms": max(0, upcoming["at_ms"] - cursor)}
+            else:
+                # The next video's first action is useful even when its exact arrival time is unknown.
+                for next_id in ids[index + 1:]:
+                    try:
+                        upcoming_markers = self.service.dispatch("studio.media.markers.list", {"media_id": next_id})["markers"]
+                    except StudioError:
+                        continue
+                    if upcoming_markers:
+                        next_marker = {**upcoming_markers[0], "media_id": next_id, "next_video": True, "remaining_ms": None}
+                        break
         return {
             "active": engine.active, "busy": busy, "paused": bool(metrics.get("paused")),
             "session": session, "media_id": current_media, "queue": ids if engine.active else [], "index": index,
@@ -471,9 +499,11 @@ class StudioLive:
             "session_seconds": metrics.get("session_seconds", 0),
             "errors": metrics.get("error_count", 0), "recoveries": metrics.get("recovery_count", 0),
             "markers": markers,
+            "next_marker": next_marker, "broadcast": self.broadcast.view(), "console_live": console,
             "pins": {"real": self.real_pins(), "chrome_connected": self.browser() is not None,
                      "live": pins.get("live"), "desired_product_id": pins.get("desired_product_id"),
                      "actual_product_id": pins.get("actual_product_id"), "actual_known": pins.get("actual_known"),
+                     "actual_tiktok_product_id": pins.get("actual_tiktok_product_id"), "last_read": pins.get("last_read"),
                      "in_flight": pins.get("in_flight"), "last_error": pins.get("last_error"),
                      "last_applied": pins.get("last_applied"), "product_names": names},
             "events": self.service.live_events(session["id"], 15) if session else [],
@@ -491,10 +521,13 @@ class StudioLive:
 
     # --- lifecycle -------------------------------------------------------------------------
     def start_watchdog(self) -> None:
+        self.broadcast.follow((self.service.tiktok_account() or {}).get("user_name", "").strip().lstrip("@"))
+        self.broadcast.start()
         self.engine.start_monitor()
         self.overlay.start()
 
     def close(self) -> None:
+        self.broadcast.close()
         try:
             self.engine.stop_monitor()
         except Exception:  # noqa: BLE001

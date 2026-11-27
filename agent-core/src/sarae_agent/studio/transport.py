@@ -29,7 +29,7 @@ METHODS = (
     "studio.overlays.templates", "studio.overlays.assets.list", "studio.overlays.assets.import",
     "studio.overlays.assets.delete",
     "studio.ai.config", "studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.test",
-    "studio.ai.reply",
+    "studio.ai.reply", "studio.ai.product_analyze", "studio.tiktok.detail", "studio.products.detail",
     "studio.obs.status", "studio.obs.configure", "studio.obs.connect", "studio.obs.disconnect",
     "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
     "studio.live.sessions.delete", "studio.live.sessions.overlay_issues", "studio.live.status", "studio.live.start",
@@ -37,7 +37,7 @@ METHODS = (
     "studio.live.stop", "studio.live.pins",
     "studio.replies.status", "studio.replies.configure", "studio.replies.chat_start", "studio.replies.chat_stop",
     "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
-    "studio.replies.dismiss", "studio.replies.stop_voice",
+    "studio.replies.dismiss", "studio.replies.stop_voice", "studio.replies.voices", "studio.replies.voices_start",
 )
 REPLY_METHODS = {name: name.rsplit(".", 1)[-1] for name in METHODS if name.startswith("studio.replies.")}
 LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_configure",
@@ -51,7 +51,8 @@ LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_
 READ_ONLY_LIVE = {"studio.obs.status", "studio.live.sessions.list", "studio.live.status"}
 # Provider calls run outside the service lock, on the transport's worker thread.
 AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",
-              "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply"}
+              "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply",
+              "studio.ai.product_analyze": "product_analyze"}
 MAX_UPLOAD = 20 * 1024**3
 DEFAULT_ORIGINS = frozenset({"http://127.0.0.1:1420", "http://localhost:1420"})
 
@@ -104,12 +105,18 @@ class StudioTransport:
     def dispatch(self, method: str, params: dict) -> dict:
         if method not in METHODS:
             raise StudioError("METHOD_NOT_FOUND", "Phương thức studio không được hỗ trợ.")
+        if method == "studio.products.detail":
+            if set(params) != {"id"}:
+                raise StudioError("VALIDATION_ERROR", "Cần mã sản phẩm trong Studio.")
+            self.service.product_context(params["id"])
+            return {"detail": self.service.get_setting("product_detail:" + params["id"], {}) or None}
         if method.startswith("studio.tiktok."):
-            if params:
+            if params and method != "studio.tiktok.detail":
                 raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, params))})
             if self.tiktok is None:
                 raise StudioError("TIKTOK_UNAVAILABLE", "Kết nối TikTok chưa sẵn sàng trong Studio Core.")
-            result = getattr(self.tiktok, method.rsplit(".", 1)[-1])()
+            result = (self.tiktok.detail(params) if method == "studio.tiktok.detail"
+                      else getattr(self.tiktok, method.rsplit(".", 1)[-1])())
             if method == "studio.tiktok.sync":
                 self.emit("studio.changed", {"method": method})
             return result

@@ -1,7 +1,8 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { CheckCircle2, Film, LogIn, Package, Pencil, PlugZap, RefreshCw, Search, ShoppingBag, Sparkles, Trash2 } from 'lucide-react'
+import { CheckCircle2, Download, Film, LogIn, Package, Pencil, PlugZap, RefreshCw, Search, ShoppingBag, Sparkles, Trash2 } from 'lucide-react'
 import { studioClient, type Media, type Product, type ProductFacts, type TikTokStatus } from '../../services/studio'
 import { FactsEditor, factsProblem } from './FactsEditor'
+import { ProductEnrichment, exportProducts } from './ProductEnrichment'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
 type Props = {
@@ -98,6 +99,7 @@ export function ProductsPanel({ products, media, tiktok, loading, disabled, onRe
         <label className="studio-search"><Search size={17} /><input aria-label="Tìm sản phẩm" placeholder="Tìm theo tên, danh mục hoặc mã TikTok…" value={query} onChange={event => setQuery(event.target.value)} /></label>
         <div className="studio-segmented" role="group" aria-label="Lọc sản phẩm">{filters.map(item => <button key={item.value} aria-pressed={filter === item.value} className={filter === item.value ? 'active' : ''} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div>
         <span className="studio-muted">{describedCount}/{products.length} có thông tin cho AI</span>
+        <button className="studio-button" disabled={!visible.length} onClick={() => exportProducts(visible)}><Download size={15} />Xuất JSON ({visible.length})</button>
       </div>
       {loading ? <div className="studio-empty" role="status">Đang tải sản phẩm…</div>
         : !products.length ? <EmptyState icon={<ShoppingBag size={30} />} title="Chưa có sản phẩm nào" description="Kết nối TikTok LIVE Console ở trên rồi bấm Đồng bộ sản phẩm. Studio lấy tên, ảnh, giá, tồn kho và danh mục từ giỏ hàng LIVE." />
@@ -121,6 +123,7 @@ export function ProductsPanel({ products, media, tiktok, loading, disabled, onRe
     </section>
     {editing && <Modal title="Thông tin sản phẩm cho AI" onClose={() => { if (!busy) setEditing(null) }} wide><form className="studio-form" onSubmit={event => void save(event)}>
       <div className="studio-product-summary"><ProductThumb product={editing} large /><div><strong>{editing.name}</strong><span><PriceCell product={editing} /> · <StockTag stock={editing.stock_num} plain /></span><small>{editing.source === 'tiktok' ? 'Tên, giá, tồn kho và ảnh được cập nhật mỗi lần đồng bộ TikTok.' : 'Sản phẩm tạo tay trước đây, không được đồng bộ.'}</small></div></div>
+      <ProductEnrichment key={editing.id} product={editing} description={description} facts={facts} busy={busy} disabled={disabled} onBusy={setBusy} onApply={(nextDescription, nextFacts) => { setDescription(nextDescription); setFacts(nextFacts) }} />
       <div className="studio-tabs" role="tablist" aria-label="Thông tin sản phẩm">
         <button type="button" role="tab" aria-selected={tab === 'description'} className={tab === 'description' ? 'active' : ''} onClick={() => setTab('description')}>Mô tả tư vấn</button>
         <button type="button" role="tab" aria-selected={tab === 'facts'} className={tab === 'facts' ? 'active' : ''} onClick={() => setTab('facts')}>Thông tin chi tiết{factsCount(facts) ? <small>{factsCount(facts)}</small> : null}</button>

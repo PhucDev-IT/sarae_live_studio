@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Ban, Bot, MessageSquareText, Mic, Play, Radio, Send, Settings2, Square, Timer, Volume2, X } from 'lucide-react'
+import { Ban, Bot, MessageSquareText, Mic, Play, Radio, RefreshCw, Send, Settings2, Square, Timer, Volume2, X } from 'lucide-react'
 import { studioClient, type Product, type ReplyDeskStatus, type ReplyEntry, type ReplySettings } from '../../services/studio'
 import { ErrorNotice, Modal, errorMessage } from './ui'
 
@@ -66,6 +66,9 @@ export function ReplyDesk({ products, disabled, visible, onNotice }: Props) {
     <header className="studio-card-heading"><MessageSquareText size={19} /><div className="studio-grow"><h2>Bàn trả lời khách</h2><p>AI trả lời câu hỏi theo sản phẩm đang phát{desk?.product_id ? `: ${names.get(desk.product_id) ?? ''}` : ' (chưa phát sản phẩm nào)'}.</p></div>
       <button className="studio-button ghost icon-only" aria-label="Cài đặt trả lời" title="Cài đặt trả lời" disabled={!desk} onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button></header>
     <div className="studio-reply-bar">
+      <label className="studio-live-voice">Giọng đọc<select aria-label="Giọng đọc LIVE" value={desk?.settings.voice ?? ''} disabled={disabled || !desk || !!busy} onChange={event => void run('voice', () => studioClient.repliesConfigure({ voice: event.target.value }))}>{(desk?.voice_options ?? desk?.voices.map(id => ({ id, name: voiceNames[id] ?? id, provider: 'edge' as const, ready: true })) ?? []).map(voice => <option key={voice.id} value={voice.id}>{voice.name}{voice.provider === 'local_voice' ? ' · giọng local' : ''}</option>)}</select></label>
+      <button className="studio-button ghost" disabled={disabled || !!busy || !desk} onClick={() => void run('voices', () => studioClient.replies('voices'))}><RefreshCw size={14} />{busy === 'voices' ? 'Đang đọc giọng…' : 'Làm mới giọng'}</button>
+      {desk?.voice_server && !desk.voice_server.online && <button className="studio-button" disabled={disabled || !!busy || desk.voice_server.starting} onClick={() => void run('voices-start', () => studioClient.replies('voices_start'))}><Volume2 size={14} />{desk.voice_server.starting ? 'Đang bật voice server…' : 'Bật voice server'}</button>}
       <div className={`studio-chat-state ${desk?.chat.status ?? 'idle'}`}><Radio size={15} /><span><strong>{chatStates[desk?.chat.status ?? 'idle']}</strong>{desk?.chat.username ? ` · @${desk.chat.username}` : desk?.account_username ? ` · @${desk.account_username}` : ''}</span>
         {chatOn ? <button className="studio-button ghost" disabled={disabled || !!busy} onClick={() => void run('chat', () => studioClient.replies('chat_stop'))}><Square size={13} />Dừng</button>
           : <button className="studio-button" disabled={disabled || !!busy || !desk?.account_username} title={desk?.account_username ? 'Đọc chat công khai của tài khoản đã xác minh' : 'Đồng bộ sản phẩm TikTok trước để xác minh tài khoản'} onClick={() => void run('chat', () => studioClient.repliesChatStart())}><Play size={13} fill="currentColor" />Đọc chat</button>}
@@ -74,6 +77,7 @@ export function ReplyDesk({ products, disabled, visible, onNotice }: Props) {
       <label className="studio-switch"><input type="checkbox" role="switch" checked={!!desk?.settings.auto_comment} disabled={disabled || !desk || !!busy} onChange={() => toggle('auto_comment')} /><span aria-hidden="true" /><small><Send size={13} />Tự gửi bình luận</small></label>
       <span className="studio-muted studio-reply-stats">{desk ? `${desk.stats.answered ?? 0} trả lời · ${desk.queued} chờ` : ''}</span>
     </div>
+    {desk?.settings.voice.startsWith('local:') && desk.voice_server && <p className="studio-reply-note">{desk.voice_server.online ? 'Giọng local qua sarae-voice-server · chế độ đọc nhanh cho LIVE.' : desk.voice_server.error}</p>}
     {desk?.chat.status === 'error' && <ErrorNotice message={`Không đọc được chat: ${desk.chat.error}. Kiểm tra tài khoản đang LIVE công khai.`} />}
     {(desk?.settings.auto_voice || desk?.settings.auto_comment) && <p className="studio-reply-note"><Timer size={13} />Câu trả lời tự gửi sau {desk.settings.confirm_seconds} giây để bạn kịp hủy; câu cần duyệt luôn chờ bạn bấm.</p>}
     <form className="studio-test-box" onSubmit={simulate}><Bot size={16} /><input aria-label="Bình luận thử" value={test} maxLength={500} disabled={disabled || !desk} placeholder="Thử một bình luận như khách (không gửi lên TikTok)…" onChange={event => setTest(event.target.value)} /><button className="studio-button" disabled={disabled || !test.trim() || !!busy}>Thử</button></form>
@@ -83,7 +87,7 @@ export function ReplyDesk({ products, disabled, visible, onNotice }: Props) {
       {entries.map(entry => <ReplyCard key={entry.id} entry={entry} productName={entry.product_id ? names.get(entry.product_id) : undefined} disabled={disabled} onAction={(action, text) => run(`${action}:${entry.id}`, () => studioClient.replyAction(action, entry.id, text))} busy={busy} />)}
       {hidden > 0 && <button className="studio-button ghost studio-show-all" onClick={() => setShowAll(value => !value)}>{showAll ? 'Ẩn bình luận không cần trả lời' : `Hiện ${hidden} bình luận không cần trả lời`}</button>}
     </div>
-    {settingsOpen && desk && <ReplySettingsModal settings={desk.settings} voices={desk.voices} onClose={() => setSettingsOpen(false)} onSaved={next => { setDesk(next); setSettingsOpen(false); onNotice('Đã lưu cài đặt trả lời.') }} />}
+    {settingsOpen && desk && <ReplySettingsModal settings={desk.settings} voices={desk.voices} voiceOptions={desk.voice_options} onClose={() => setSettingsOpen(false)} onSaved={next => { setDesk(next); setSettingsOpen(false); onNotice('Đã lưu cài đặt trả lời.') }} />}
   </section>
 }
 
@@ -120,7 +124,7 @@ function ReplyCard({ entry, productName, disabled, busy, onAction }: { entry: Re
   </article>
 }
 
-function ReplySettingsModal({ settings, voices, onClose, onSaved }: { settings: ReplySettings; voices: string[]; onClose: () => void; onSaved: (status: ReplyDeskStatus) => void }) {
+function ReplySettingsModal({ settings, voices, voiceOptions, onClose, onSaved }: { settings: ReplySettings; voices: string[]; voiceOptions?: ReplyDeskStatus['voice_options']; onClose: () => void; onSaved: (status: ReplyDeskStatus) => void }) {
   const [draft, setDraft] = useState(settings)
   const [ignored, setIgnored] = useState(settings.ignored_usernames.map(name => '@' + name).join(', '))
   const [busy, setBusy] = useState(false)
@@ -138,7 +142,7 @@ function ReplySettingsModal({ settings, voices, onClose, onSaved }: { settings: 
   return <Modal title="Cài đặt trả lời khách" onClose={() => { if (!busy) onClose() }} wide><form className="studio-form" onSubmit={event => void save(event)}>
     <h3 className="studio-subhead">Giọng đọc (phát vào nguồn giọng của OBS)</h3>
     <div className="studio-form-row">
-      <label className="studio-field">Giọng<select value={draft.voice} onChange={event => setDraft({ ...draft, voice: event.target.value })}>{voices.map(voice => <option key={voice} value={voice}>{voiceNames[voice] ?? voice}</option>)}</select></label>
+      <label className="studio-field">Giọng<select value={draft.voice} onChange={event => setDraft({ ...draft, voice: event.target.value })}>{voices.map(voice => <option key={voice} value={voice}>{voiceOptions?.find(item => item.id === voice)?.name ?? voiceNames[voice] ?? voice}</option>)}</select></label>
       {number('rate', 'Tốc độ đọc', -30, 50, '%')}
     </div>
     <label className="studio-switch studio-switch-field"><input type="checkbox" role="switch" checked={draft.call_name} onChange={event => setDraft({ ...draft, call_name: event.target.checked })} /><span aria-hidden="true" /><small>Gọi tên khách trước câu trả lời (“Lan ơi, …”)</small></label>

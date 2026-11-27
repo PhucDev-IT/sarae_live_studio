@@ -89,6 +89,41 @@ def test_overlays_are_saved_per_video_with_their_scene(studio, clip):
     assert listed["overlays"] == result["overlays"]
 
 
+def test_custom_display_times_survive_saving_and_reopening_studio(studio, clip):
+    media = video(studio, clip)
+    save(studio, media["id"], overlay(start_ms=1200, duration_ms=6300, show_ms=2300))
+    root = studio.data_dir
+    studio.close()
+    reopened = StudioService(data_dir=root)
+    try:
+        result = reopened.dispatch("studio.media.overlays.list", {"media_id": media["id"]})
+        saved = result["overlays"][0]
+        assert (saved["start_ms"], saved["duration_ms"], saved["show_ms"]) == (1200, 6300, 2300)
+        rendered = result["scene"]["overlays"][0]
+        assert (rendered["start_ms"], rendered["duration_ms"], rendered["show_ms"]) == (1200, 6300, 2300)
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("duration_seconds", [3601, 10_800.125, 108_000])
+def test_overlay_can_cover_an_entire_long_video(studio, clip, duration_seconds):
+    media = video(studio, clip)
+    # Exercise long-video metadata without generating hours of video for the test.
+    with studio._storage.transaction() as connection:
+        connection.execute("UPDATE media SET duration_seconds = ? WHERE id = ?", (duration_seconds, media["id"]))
+    duration_ms = int(duration_seconds * 1000)
+    result = save(studio, media["id"], overlay(start_ms=0, duration_ms=duration_ms))
+    assert result["overlays"][0]["duration_ms"] == duration_ms
+    assert result["issues"] == []
+    listed = studio.dispatch("studio.media.overlays.list", {"media_id": media["id"]})
+    assert listed["overlays"][0]["duration_ms"] == duration_ms
+    assert studio.overlay_snapshot([media["id"]])["overlays"][0]["duration_ms"] == duration_ms
+    # A late start is valid too, including starts after the old 24-hour boundary.
+    start_ms = max(0, duration_ms - 900_000)
+    save(studio, media["id"], overlay(start_ms=start_ms, duration_ms=duration_ms - start_ms))
+    assert error_code(lambda: save(studio, media["id"], overlay(start_ms=0, duration_ms=duration_ms + 1000))) == "VALIDATION_ERROR"
+
+
 @pytest.mark.parametrize("bad", [
     {"start_ms": 9000, "duration_ms": 3000},                        # after the end of the 10 s video
     {"duration_ms": 100},                                           # shorter than 0.5 s

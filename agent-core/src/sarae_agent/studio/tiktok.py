@@ -25,9 +25,12 @@ MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
 
 def _image_url_allowed(url: str) -> bool:
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    return parts.scheme == "https" and parts.port in (None, 443) and host.endswith(IMAGE_HOST_SUFFIXES)
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        return parts.scheme == "https" and parts.port in (None, 443) and not parts.username and not parts.password and host.endswith(IMAGE_HOST_SUFFIXES)
+    except (ValueError, TypeError):
+        return False
 
 
 class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
@@ -147,6 +150,27 @@ class TikTokConnector:
             return {"status": "FAILED", "mode": None,
                     "error": "Chưa kết nối TikTok LIVE Console trong Studio; bình luận chưa được gửi."}
         return self._call(lambda: browser.chat_send(payload))
+
+    def detail(self, params: dict) -> dict:
+        if set(params) != {"id"}:
+            raise StudioError("VALIDATION_ERROR", "Cần mã sản phẩm trong Studio.")
+        product = next((p for p in self.service.dispatch("studio.products.list", {})["products"]
+                        if p["id"] == params["id"]), None)
+        if product is None:
+            raise StudioError("NOT_FOUND", "Không tìm thấy sản phẩm.")
+        if not product.get("tiktok_product_id"):
+            raise StudioError("VALIDATION_ERROR", "Sản phẩm này chưa có mã TikTok.")
+        if not self._syncing.acquire(blocking=False):
+            raise StudioError("TIKTOK_BUSY", "Đang đọc TikTok. Hãy đợi lượt hiện tại hoàn tất.")
+        try:
+            browser = self._get_browser()
+            if not browser.status().get("browser_open"):
+                raise StudioError("TIKTOK_NOT_CONNECTED", "Hãy kết nối TikTok LIVE Console trước.")
+            detail = self._call(lambda: browser.read_product_detail(product["tiktok_product_id"]))
+            self.service.set_setting("product_detail:" + product["id"], detail)
+            return {"detail": detail}
+        finally:
+            self._syncing.release()
 
     def _start_thumbnails(self) -> None:
         if self._thumbnails is not None and self._thumbnails.is_alive():

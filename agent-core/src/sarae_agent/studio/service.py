@@ -306,6 +306,7 @@ class StudioService:
             thumbnail = self._product(product_id)["thumbnail"]
             # Media remains usable in the library when its product is deleted.
             connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            connection.execute("DELETE FROM settings WHERE key = ?", ("product_detail:" + product_id,))
         if thumbnail:
             self._remove_thumbnail(thumbnail)
         return {"deleted": True}

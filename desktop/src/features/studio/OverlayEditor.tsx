@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
@@ -12,6 +12,8 @@ import {
   type OverlayPreset, type OverlayScene, type TextStyle,
 } from '../overlay/overlayModel'
 import { overlayName, secondsText, trackName } from '../overlay/overlayDraft'
+import { createOverlayAutosave, type OverlaySaveState } from '../overlay/overlayAutosave'
+import { wholeVideoTiming } from '../overlay/overlayTiming'
 import { OverlayPreview } from '../overlay/OverlayStage'
 import '../overlay/overlay-editor.css'
 import '../overlay/overlay-panel.css'
@@ -36,7 +38,6 @@ const PRESET_ICON: Record<string, typeof Type> = {
 }
 
 type Scene = OverlayScene & { api_base: string }
-type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'blocked'
 
 /** Checks the core would refuse (so autosave waits), shown on the overlay. */
 function localProblem(o: Overlay): string | null {
@@ -69,11 +70,16 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
   const [zones, setZones] = useState(false)
   const [library, setLibrary] = useState(false)
   const [picking, setPicking] = useState<number | null>(null)
-  const [saving, setSaving] = useState<SaveState>('idle')
+  const [saving, setSaving] = useState<OverlaySaveState>('idle')
+  const [closing, setClosing] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const video = useRef<HTMLVideoElement>(null)
   const timer = useRef<number | undefined>(undefined)
   const latest = useRef<Overlay[]>([])
+  const closeInProgress = useRef(false)
+  const durationRef = useRef(duration)
+  durationRef.current = duration
   const pinnable = useMemo(() => products.filter(p => p.source === 'tiktok').sort((a, b) => a.name.localeCompare(b.name, 'vi')), [products])
   const productById = useMemo(() => new Map(products.map(p => [p.id, p])), [products])
 
@@ -91,6 +97,7 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
         setIssues(data.issues)
         setPresets(templates.templates)
         setMarkers(pins)
+        setLoaded(true)
       }).catch(cause => { if (alive) setError(errorMessage(cause)) })
     return () => { alive = false }
   }, [media.id])
@@ -104,29 +111,46 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
     return () => cancelAnimationFrame(frame)
   }, [playing])
 
-  const save = useCallback(async () => {
-    window.clearTimeout(timer.current)
-    if (latest.current.some(o => localProblem(o))) { setSaving('blocked'); return }
-    setSaving('saving')
-    try {
-      const data = await studioClient.setOverlays(media.id, latest.current)
+  const autosave = useMemo(() => createOverlayAutosave({
+    snapshot: () => latest.current,
+    validate: (list: Overlay[]) => {
+      for (const [index, overlay] of list.entries()) {
+        const problem = localProblem(overlay)
+        if (problem) return `Overlay ${index + 1}: ${problem}`
+        if (durationRef.current > 0 && endOf(overlay) > durationRef.current + 500) return `Overlay ${index + 1} kết thúc sau khi video hết. Giảm thời lượng hoặc đổi thời điểm bắt đầu.`
+      }
+      return null
+    },
+    persist: (list: Overlay[]) => studioClient.setOverlays(media.id, list),
+    onState: setSaving,
+    onSaved: data => {
       setScene(data.scene)
       setIssues(data.issues)
-      setSaving('saved')
       setError('')
-    } catch (cause) { setSaving('error'); setError(errorMessage(cause)) }
-  }, [media.id])
+    },
+    onError: cause => setError(errorMessage(cause)),
+  }), [media.id])
+  const save = () => {
+    window.clearTimeout(timer.current)
+    return autosave.flush()
+  }
 
   const change = (next: Overlay[], select: number | null = selected) => {
     latest.current = next
     setOverlays(next)
     setSelected(select)
-    setSaving('pending')
+    autosave.changed()
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => void save(), 700)
   }
   const patch = (index: number, value: Partial<Overlay>) => change(latest.current.map((o, i) => i === index ? { ...o, ...value } : o))
-  const close = async () => { if (saving === 'pending') await save(); onClose() }
+  const close = async () => {
+    if (closeInProgress.current) return
+    closeInProgress.current = true
+    setClosing(true)
+    try { if (await save()) onClose() }
+    finally { closeInProgress.current = false; setClosing(false) }
+  }
   useEffect(() => () => window.clearTimeout(timer.current), [])
 
   const length = Math.max(duration, ...overlays.map(endOf), 1000)
@@ -202,7 +226,7 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
             <header className="ovs-card-head">
               <span className="te-card-title"><Layers size={17} />Overlay của video <b className="ovs-count">{overlays.length}</b></span>
               {stateText && <span className={`studio-save-state ${saving}`}>{saving === 'saved' && <Check size={13} />}{stateText}</span>}
-              <button type="button" className="studio-button primary ovs-add" onClick={() => setLibrary(true)}><Plus size={15} />Thêm overlay</button>
+              <button type="button" className="studio-button primary ovs-add" disabled={!loaded || closing} onClick={() => setLibrary(true)}><Plus size={15} />Thêm overlay</button>
             </header>
             {general.length > 0 && <ul className="te-issues">{general.map(i => <li key={i.code + (i.at_ms ?? '')} className={`is-${i.level}`}><CircleAlert size={14} />
               <span>{i.message}</span>{i.at_ms != null && <button type="button" className="ove-link" onClick={() => seek(i.at_ms!)}>Tua tới</button>}</li>)}</ul>}
@@ -231,7 +255,7 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
 
           {current && selected !== null
             ? <Inspector key={selected} overlay={current} presets={presets} products={pinnable} productById={productById} issues={issues.filter(i => i.overlay === selected)}
-              problem={localProblem(current)} assetUrl={assetUrl} now={now} on={current.enabled !== false}
+              problem={localProblem(current)} assetUrl={assetUrl} now={now} videoDuration={duration} on={current.enabled !== false}
               onChange={value => patch(selected, value)} onPickImage={block => setPicking(block)} onPreview={part => previewAnimation(selected, part)}
               onDuplicate={() => duplicate(selected)} onRemove={() => remove(selected)} onToggle={() => toggle(selected)} />
             : <section className="ovs-card"><EmptyState icon={<Layers size={26} />} title="Chọn một overlay" description="Bấm vào overlay trên khung xem trước, trên dòng thời gian hoặc trong danh sách để sửa." /></section>}
@@ -244,7 +268,8 @@ export function OverlayEditor({ media, products, onClose }: { media: Media; prod
       {error && <ErrorNotice message={error} />}
       <div className="ovs-foot">
         <span className="studio-muted">Overlay hiện trong OBS (nguồn “Sarae Studio Overlay”) khi video này phát LIVE, đúng các mốc trên. Thay đổi tự lưu.</span>
-        <button type="button" className="studio-button primary" onClick={() => void close()}>Xong</button>
+        <div className="studio-actions"><button type="button" className="studio-button" disabled={!loaded || closing || saving === 'saving' || saving === 'saved' || saving === 'idle'} onClick={() => void save()}>Lưu thay đổi</button>
+          <button type="button" className="studio-button primary" disabled={closing} onClick={() => void close()}>{closing ? 'Đang lưu…' : 'Xong'}</button></div>
       </div>
 
       {library && <Modal title={`Thêm overlay tại ${clock(now)}`} onClose={() => setLibrary(false)} wide>
@@ -309,13 +334,14 @@ function TemplateLibrary({ presets, onPick }: { presets: OverlayPreset[]; onPick
 
 type InspectorProps = {
   overlay: Overlay; presets: OverlayPreset[]; products: Product[]; productById: Map<string, Product>; issues: OverlayIssue[]; problem: string | null
-  assetUrl: (id: string | null) => string | undefined; now: number; on: boolean
+  assetUrl: (id: string | null) => string | undefined; now: number; videoDuration: number; on: boolean
   onChange: (value: Partial<Overlay>) => void; onPickImage: (block: number) => void; onPreview: (part: 'in' | 'out') => void
   onDuplicate: () => void; onRemove: () => void; onToggle: () => void
 }
 
 function Inspector(p: InspectorProps) {
   const { overlay: o } = p
+  const fullVideo = wholeVideoTiming(p.videoDuration)
   const layout = (value: Partial<Frame & { z_index: number; opacity: number }>) => {
     const merged = { ...o.layout, ...value }
     const c = clampFrame(merged, 0.005)
@@ -359,7 +385,8 @@ function Inspector(p: InspectorProps) {
             <NumberField label="Bắt đầu (giây)" min={0} step={0.1} value={o.start_ms / 1000} onChange={v => p.onChange({ start_ms: Math.max(0, Math.round(v * 1000)) })} />
             <NumberField label="Thời lượng (giây)" min={0.5} step={0.1} value={o.duration_ms / 1000} onChange={v => p.onChange({ duration_ms: Math.max(500, Math.round(v * 1000)) })} />
             <div className="ove-field-note"><span className="te-muted">Kết thúc</span><strong>{clock(endOf(o), true)}</strong>
-              <button type="button" className="ove-link" onClick={() => p.onChange({ start_ms: Math.round(p.now / 100) * 100 })}><Crosshair size={13} />Bắt đầu tại {clock(p.now)}</button></div>
+              <button type="button" className="ove-link" onClick={() => p.onChange({ start_ms: Math.round(p.now / 100) * 100 })}><Crosshair size={13} />Bắt đầu tại {clock(p.now)}</button>
+              <button type="button" className="ove-link" disabled={!fullVideo} onClick={() => { if (fullVideo) p.onChange(fullVideo) }}>Hiển thị cả video{fullVideo ? ` (${clock(fullVideo.duration_ms)})` : ''}</button></div>
           </div>
 
           <details className="ove-more">

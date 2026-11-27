@@ -570,3 +570,40 @@ button { touch-action: manipulation; }
 @media (max-width: 850px) { .studio-reply-stats { margin-left: 0; width: 100%; } .studio-reply-answer { margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
 
+
+/* Product source reading and AI draft assistance. */
+.studio-enrichment { padding: 16px; border: 1px solid #e6d9ca; background: #fdfaf6; border-radius: 10px; display: grid; gap: 12px; }
+.studio-enrichment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.studio-enrichment-heading strong { font-size: 13px; }
+.studio-enrichment-heading p, .studio-enrichment > .studio-muted { font-size: 11px; line-height: 1.6; margin: 4px 0 0; }
+.studio-enrichment-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-enrichment-actions label { cursor: pointer; }
+.studio-enrichment-actions input[type=file] { display: none; }
+.studio-enrichment-option { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.studio-enrichment-images { display: flex; flex-wrap: wrap; gap: 10px; }
+.studio-enrichment-images:empty { display: none; }
+.studio-enrichment-images > div { position: relative; }
+.studio-enrichment-images img { width: 72px; height: 72px; object-fit: contain; background: white; border: 1px solid #e6d9ca; border-radius: 6px; }
+.studio-enrichment-images button { position: absolute; top: -5px; right: -5px; border: 1px solid #ddd; background: white; border-radius: 50%; padding: 2px; display: flex; }
+.studio-enrichment summary { cursor: pointer; font-size: 12px; color: #8b6448; }
+.studio-enrichment-description { white-space: pre-wrap; max-height: 180px; overflow: auto; font-size: 12px; line-height: 1.6; }
+.studio-enrichment dl { font-size: 12px; }
+.studio-enrichment dl > div { display: flex; gap: 12px; margin: 6px 0; }
+.studio-enrichment dt { min-width: 100px; color: #8a7c6e; }
+.studio-enrichment dd { margin: 0; overflow-wrap: anywhere; }
+.studio-enrichment-message { color: #3d7a57; font-size: 12px; line-height: 1.7; margin: 0; }
+.studio-enrichment-warnings { font-size: 12px; line-height: 1.7; color: #976d24; padding-left: 18px; margin: 0; }
+
+/* Separate local playback, actual TikTok broadcast and pin confirmation. */
+.studio-live-health { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.studio-live-health article { min-width: 0; padding: 16px; border: 1px solid #e8e0d5; border-radius: 11px; background: white; }
+.studio-live-health small { color: #8b7a68; font-size: 11px; }
+.studio-live-health strong { display: block; margin-top: 8px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.studio-live-health p { color: #8b7a68; font-size: 11px; line-height: 1.6; margin: 6px 0 0; overflow-wrap: anywhere; }
+.studio-live-health .success { color: #28765e; }
+.studio-live-health .warning { color: #a36b27; }
+.studio-live-health .pending { color: #ae5d38; }
+.studio-live-voice { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.studio-live-voice select { max-width: 250px; padding: 7px 10px; border: 1px solid #e3d9cb; border-radius: 7px; background: white; color: #55483e; }
+@media(max-width: 1100px) { .studio-live-health { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media(max-width: 600px) { .studio-live-health { grid-template-columns: 1fr; } .studio-live-voice { flex-wrap: wrap; } }

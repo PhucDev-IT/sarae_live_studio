@@ -24,6 +24,14 @@ export interface Product {
 
 export interface SizeRow { size: string; weight_min: number | null; weight_max: number | null; height_min: number | null; height_max: number | null; note: string }
 export interface ProductFacts { sizes: SizeRow[]; colors: string[]; material: string; shipping: string; notes: string; extras: Record<string, string> }
+export interface ProductDetail {
+  product_id: string; title: string | null; description: string | null; images: string[]
+  colors: string[]; sizes: string[]; attributes: { name: string; value: string }[]
+  variants: { color: string | null; size: string | null; stock: number | null; sale_price: number | null; price: number | null }[]
+  in_stock_colors: string[]; size_guide_image: string | null; description_images: string[]
+  found: string[]; missing: string[]; incomplete: boolean; page_url: string; read_at: string
+}
+export interface ProductAnalysis { product_id: string; description: string; facts: ProductFacts; warnings: string[]; images_used: number; usage: AIUsage }
 
 export type AIProvider = 'gemini' | 'openai_compatible' | 'seller_brain'
 export interface AIConfig { provider: AIProvider; model: string; base_url: string; enabled: boolean; max_output_tokens: number; temperature: number }
@@ -70,6 +78,8 @@ export interface LivePins {
   desired_product_id: string | null
   actual_product_id: string | null
   actual_known: boolean
+  actual_tiktok_product_id?: string | null
+  last_read?: { ok: boolean; error?: string; tiktok_product_id?: string | null } | null
   in_flight: { action: string; product_id: string | null; attempt: number } | null
   last_error: string | null
   last_applied: { action: string; product_id: string | null; position_ms: number } | null
@@ -94,6 +104,9 @@ export interface LiveStatus {
   errors: number
   recoveries: number
   markers: { at_ms: number; action: MarkerAction; product_id: string | null; product_name: string | null }[]
+  next_marker?: { at_ms: number; action: MarkerAction; product_id: string | null; product_name: string | null; media_id: string; next_video: boolean; remaining_ms: number | null } | null
+  broadcast?: { state: 'live' | 'offline' | 'unknown' | 'checking'; username: string | null; room_id?: string | null; title?: string | null; viewers?: number | null; checked_at: number | null; age_seconds?: number | null; error: string; source: string }
+  console_live?: { state: 'LIVE' | 'OFFLINE' | 'UNKNOWN'; age_seconds: number | null; connected: boolean }
   pins: LivePins
   overlay?: LiveOverlayStatus
   events: LiveEvent[]
@@ -149,6 +162,8 @@ export interface ReplyDeskStatus {
   queued: number
   voice: Record<string, unknown> | null
   voices: string[]
+  voice_options?: { id: string; name: string; provider: 'edge' | 'local_voice'; ready: boolean; revision?: string }[]
+  voice_server?: { online: boolean; starting?: boolean; error: string }
   account_username: string | null
   product_id: string | null
 }
@@ -249,6 +264,7 @@ function unwrap<T>(envelope: Envelope<T>): T {
 const slowMethods: Record<string, number> = {
   'studio.media.import': 120_000, 'studio.tiktok.sync': 170_000, 'studio.tiktok.connect': 90_000,
   'studio.ai.reply': 100_000, 'studio.ai.test': 100_000,
+  'studio.tiktok.detail': 110_000, 'studio.ai.product_analyze': 180_000,
   // Starting or switching may render an OBS copy of a rotated video first.
   'studio.replies.send_comment': 130_000,
   'studio.live.start': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
@@ -352,6 +368,9 @@ export const studioClient = {
   request,
   getStatus: () => request<StudioStatus>('studio.status'),
   listProducts: async () => (await request<{ products: Product[] }>('studio.products.list')).products,
+  productDetail: async (id: string) => (await request<{ detail: ProductDetail | null }>('studio.products.detail', { id })).detail,
+  readProductDetail: async (id: string) => (await request<{ detail: ProductDetail }>('studio.tiktok.detail', { id })).detail,
+  analyzeProduct: (input: { id: string; text: string; images: string[] }) => request<ProductAnalysis>('studio.ai.product_analyze', input),
   updateProductDescription: async (id: string, description: string) => (await request<{ product: Product }>('studio.products.update', { id, description })).product,
   updateProduct: async (id: string, input: { description?: string; facts?: ProductFacts }) => (await request<{ product: Product }>('studio.products.update', { id, ...input })).product,
   aiState: () => request<AIState>('studio.ai.config'),
@@ -380,7 +399,7 @@ export const studioClient = {
   liveStart: (sessionId: string, mediaId?: string) => request<LiveStatus>('studio.live.start', { session_id: sessionId, ...(mediaId ? { media_id: mediaId } : {}) }),
   liveSeek: (positionMs: number) => request<LiveStatus>('studio.live.seek', { position_ms: Math.max(0, Math.round(positionMs)) }),
   livePins: (real: boolean) => request<LiveStatus>('studio.live.pins', { real }),
-  replies: (method: 'status' | 'chat_stop' | 'stop_voice') => request<ReplyDeskStatus>(`studio.replies.${method}`),
+  replies: (method: 'status' | 'chat_stop' | 'stop_voice' | 'voices' | 'voices_start') => request<ReplyDeskStatus>(`studio.replies.${method}`),
   repliesConfigure: (input: Partial<ReplySettings>) => request<ReplyDeskStatus>('studio.replies.configure', { ...input }),
   repliesChatStart: (username?: string) => request<ReplyDeskStatus>('studio.replies.chat_start', username ? { username } : {}),
   repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),

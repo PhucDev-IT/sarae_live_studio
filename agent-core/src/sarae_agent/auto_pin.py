@@ -901,6 +901,9 @@ class AutoPinService:
         nothing: the pin list and the snapshot keep what they had."""
         return self._submit("scan", expected_user_id).result(timeout=120)
 
+    def read_product_detail(self, product_id: str) -> dict:
+        return self._submit("product_detail", product_id).result(timeout=100)
+
     def _wait_for_console(self, page) -> bool:
         """Wait until the console's own account_info and product list responses were read (bodies included)."""
         waited = 0
@@ -1051,6 +1054,10 @@ class AutoPinService:
                     result = self._open_on_worker(*args)
                 elif method == "scan":
                     result = self._scan_on_worker(*args)
+                elif method == "product_detail":
+                    from sarae_agent.studio.product_detail import read_detail_page
+                    self._console_page()
+                    result = read_detail_page(self._context, *args)
                 elif method == "chat_send":
                     result = self._chat_send_on_worker(*args)
                 elif method == "chat_probe":

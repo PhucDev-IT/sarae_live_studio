@@ -3,6 +3,8 @@ import { AlertTriangle, ArrowDown, ArrowUp, Check, CircleStop, Film, FlaskConica
 import { studioClient, type LiveSession, type LiveStatus, type Media, type ObsStatus, type Product, type VideoOrder } from '../../services/studio'
 import { clock } from './MarkerEditor'
 import { ReplyDesk } from './ReplyDesk'
+import { saveObsConnection } from './obsConnection'
+import { broadcastPresentation, pinPresentation } from './livePresentation'
 import { EmptyState, ErrorNotice, Modal, errorMessage } from './ui'
 
 /** Videos always cover the whole OBS canvas (no black bars); the canvas itself must be 9:16 for TikTok LIVE. */
@@ -42,8 +44,13 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
   useEffect(() => { if (visible && !disabled) void loadAll() }, [visible, disabled, loadAll, products, media])
   // While on air, poll the player: the cursor and the pins change every second without a mutation event.
   useEffect(() => {
-    if (!visible || disabled || !status?.active) return
-    const timer = window.setInterval(() => { void studioClient.liveStatus().then(setStatus).catch(() => {}) }, 1000)
+    if (!visible || disabled) return
+    let pending = false
+    const timer = window.setInterval(() => {
+      if (pending) return
+      pending = true
+      void studioClient.liveStatus().then(setStatus).catch(() => {}).finally(() => { pending = false })
+    }, status?.active ? 1000 : 3000)
     return () => window.clearInterval(timer)
   }, [visible, disabled, status?.active])
 
@@ -72,6 +79,7 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
     </div>
     {error && <ErrorNotice message={error} />}
     {canvasWarning(obs) && <div className="studio-callout warning"><AlertTriangle size={16} /><span>{canvasWarning(obs)}</span></div>}
+    {status && <LiveHealth status={status} />}
     {live && live.session && <ControlRoom status={live} session={live.session} mediaById={mediaById} busy={busy} disabled={disabled}
       onControl={action => act(action, () => studioClient.liveControl(action), action === 'stop' ? 'Đã dừng phiên LIVE.' : undefined)}
       onSeek={ms => act('seek', () => studioClient.liveSeek(ms))}
@@ -109,6 +117,19 @@ export function LivePanel({ products, media, disabled, visible, onNotice }: Prop
   </>
 }
 
+function LiveHealth({ status }: { status: LiveStatus }) {
+  const pin = pinPresentation(status)
+  const broadcast = broadcastPresentation(status)
+  const next = status.next_marker
+  const action = next?.action === 'UNPIN_PRODUCT' ? 'Bỏ ghim sản phẩm' : next?.product_name || 'Ghim sản phẩm'
+  return <section className="studio-live-health" aria-label="Trạng thái LIVE và ghim thực tế">
+    <article><small>Phát video trong OBS</small><strong className={status.active && status.obs_connected ? 'success' : ''}>{status.active ? status.paused ? 'Đang tạm dừng' : status.obs_connected ? 'Đang phát video' : 'Mất kết nối OBS' : 'Chưa phát video'}</strong><p>{status.session?.title || 'Chọn phiên rồi bấm Phát.'}</p></article>
+    <article><small>Trạng thái TikTok LIVE</small><strong className={broadcast.tone}>{broadcast.label}</strong><p>{broadcast.source}{broadcast.age != null ? ` · kiểm tra ${Math.round(broadcast.age)} giây trước` : ''}</p>{status.broadcast?.viewers != null && <p>{status.broadcast.viewers.toLocaleString('vi-VN')} người xem</p>}</article>
+    <article><small>Ghim sản phẩm thực tế</small><strong className={pin.tone}>{pin.label}</strong><p>{pin.detail}</p></article>
+    <article><small>Mốc ghim tiếp theo</small><strong>{next ? next.next_video ? `Video kế tiếp · ${clock(next.at_ms)}` : `${clock(next.at_ms)} · còn ${clock(next.remaining_ms ?? 0)}` : status.active ? 'Không còn mốc trong lượt phát' : 'Chưa phát phiên'}</strong><p>{next ? action : 'Mốc ghim đặt trong Thư viện video → Mốc ghim.'}{next && status.paused ? ' · Đếm tiếp khi phát lại.' : ''}</p></article>
+  </section>
+}
+
 function OverlayState({ status }: { status: LiveStatus }) {
   const overlay = status.overlay
   if (!overlay || !overlay.overlay_count || overlay.state === 'disabled' || overlay.state === 'idle') return null
@@ -126,7 +147,7 @@ function PinState({ status }: { status: LiveStatus }) {
   if (pins.real && pins.live !== true) return <span className="studio-pin-state warn">Chờ TikTok xác nhận đang LIVE trên Console rồi mới ghim</span>
   if (pins.in_flight) return <span className="studio-pin-state busy"><span className="studio-typing"><i /><i /><i /></span>{pins.in_flight.action === 'PIN_PRODUCT' ? `Đang ghim ${name(pins.in_flight.product_id)}` : 'Đang bỏ ghim'}…</span>
   if (pins.last_error && pins.desired_product_id !== pins.actual_product_id) return <span className="studio-pin-state warn" title={pins.last_error}>Ghim chưa được: {pins.last_error}</span>
-  if (pins.actual_product_id) return <span className="studio-pin-state ok"><Check size={13} />{pins.real ? 'Đang ghim' : 'Chạy thử · sẽ ghim'} {name(pins.actual_product_id)}</span>
+  if (pins.actual_known && pins.actual_product_id) return <span className="studio-pin-state ok"><Check size={13} />{pins.real ? 'Đã ghim trên TikTok' : 'Chạy thử · sẽ ghim'} {name(pins.actual_product_id)}</span>
   if (pins.desired_product_id) return <span className="studio-pin-state busy">Sắp ghim {name(pins.desired_product_id)}</span>
   return <span className="studio-pin-state off"><PinOff size={13} />Chưa tới mốc ghim nào</span>
 }
@@ -246,17 +267,34 @@ function ObsSettings({ status, live, onClose, onChanged, onNotice }: { status: O
   const [error, setError] = useState('')
   const [current, setCurrent] = useState(status)
   const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const run = async (key: string, action: () => Promise<ObsStatus>, message: string) => {
+    if (busy) return
     setBusy(key)
     setError('')
-    try { const next = await action(); setCurrent(next); onChanged(next); onNotice(message) }
+    try { const next = await action(); if (mounted.current) { setCurrent(next); onChanged(next); onNotice(message) } }
     catch (cause) { if (mounted.current) setError(errorMessage(cause)) }
     finally { if (mounted.current) setBusy('') }
   }
   const save = (event: FormEvent) => {
     event.preventDefault()
-    void run('save', () => studioClient.obsConfigure({ host: host.trim(), port: Number(port), media_input: mediaInput.trim(), dual_mode: dual, source_a: sourceA.trim(), source_b: sourceB.trim(), ...(password ? { password } : {}) }).then(async next => { setPassword(''); try { return await studioClient.obsConnect() } catch { return next } }), 'Đã lưu cài đặt OBS.')
+    let configured = false
+    void run('save', async () => {
+      try {
+        return await saveObsConnection({ host: host.trim(), port: Number(port), media_input: mediaInput.trim(), dual_mode: dual, source_a: sourceA.trim(), source_b: sourceB.trim(), ...(password ? { password } : {}) }, {
+          configure: studioClient.obsConfigure,
+          connect: studioClient.obsConnect,
+          configured: next => {
+            configured = true
+            if (mounted.current) { setPassword(''); setCurrent(next); onChanged(next) }
+          },
+          connecting: () => { if (mounted.current) setBusy('save-connect') },
+        })
+      } catch (cause) {
+        if (configured) throw new Error(`Đã lưu cài đặt, nhưng chưa kết nối được OBS: ${errorMessage(cause)}`)
+        throw cause
+      }
+    }, 'Đã lưu cài đặt OBS.')
   }
   return <Modal title="Kết nối OBS" onClose={() => { if (!busy) onClose() }} wide><form className="studio-form" onSubmit={save}>
     <div className={`studio-obs-state ${current.connected ? 'ok' : 'off'}`}><MonitorPlay size={20} /><div className="studio-grow"><strong>{current.connected ? `Đã kết nối OBS ${current.obs_version ?? ''}` : 'Chưa kết nối OBS'}</strong><span>{current.connected ? (current.media_input_ok === false ? `Không thấy nguồn “${current.media_input}” trong OBS. Hãy tạo Media Source đúng tên này.` : 'OBS WebSocket đang trả lời.') : (current.error?.message ?? 'Bật OBS → Tools → WebSocket Server Settings, rồi bấm Kết nối.')}</span></div>
@@ -277,6 +315,6 @@ function ObsSettings({ status, live, onClose, onChanged, onNotice }: { status: O
     </div>}
     <p className="studio-field-hint left">Studio chỉ điều khiển Media Source trong scene; không bật/tắt stream hay ghi hình của OBS.</p>
     {error && <ErrorNotice message={error} />}
-    <div className="studio-form-actions"><button type="button" className="studio-button" disabled={!!busy} onClick={onClose}>Đóng</button><button className="studio-button primary" disabled={live || !!busy || !host.trim() || !mediaInput.trim()}>{busy === 'save' ? 'Đang lưu…' : 'Lưu & kết nối'}</button></div>
+    <div className="studio-form-actions"><button type="button" className="studio-button" disabled={!!busy} onClick={onClose}>Đóng</button><button className="studio-button primary" disabled={live || !!busy || !host.trim() || !mediaInput.trim()}>{busy === 'save' ? 'Đang lưu…' : busy === 'save-connect' ? 'Đã lưu · đang kết nối…' : 'Lưu & kết nối'}</button></div>
   </form></Modal>
 }
