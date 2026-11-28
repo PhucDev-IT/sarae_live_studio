@@ -126,15 +126,20 @@ class VoiceEngine(JobVoiceMixin):
             started = self._clock()
             log.info("TTS request started provider=%s model=%s voice=%s chars=%s cache=miss",
                      provider, spec["model"], voice, len(text))
+            outcome = None
             if self._legacy_synthesize and provider == "edge":
                 self._legacy_synthesize(text, voice, str(temp), f"{rate:+d}%")
             else:
                 provider_impl = self._registry.get(provider)
-                provider_impl.synthesize(text, voice, spec["model"], spec["settings"], temp,
+                outcome = provider_impl.synthesize(text, voice, spec["model"], spec["settings"], temp,
                     None, lambda: log.info("TTS first audio received provider=%s latency_ms=%s",
                                                 provider, int((self._clock() - started) * 1000)))
             if not temp.is_file() or temp.stat().st_size == 0:
                 raise AgentError("TTS_FAILED", "Dịch vụ TTS không trả về âm thanh", retryable=True)
+            if isinstance(outcome, dict) and outcome.get("cache") is False:
+                # A stand-in voice said it (Edge while the cloned voice is unavailable): played once, never
+                # cached as this voice. Pruned with the cache like any other file.
+                target = self._cache_dir / f"once_{uuid.uuid4().hex}.mp3"
             os.replace(temp, target)
             log.info("TTS audio ready provider=%s model=%s voice=%s chars=%s latency_ms=%s cache=miss",
                      provider, spec["model"], voice, len(text), int((self._clock() - started) * 1000))

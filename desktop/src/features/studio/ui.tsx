@@ -30,6 +30,8 @@ export function errorMessage(error: unknown): string {
       CORE_TIMEOUT: 'Studio Core phản hồi quá lâu. Hãy làm mới để xem kết quả trước khi thử lại.',
       AI_KEY_MISSING: 'Chưa có API key cho nhà cung cấp đã chọn. Dán key trong Trợ lý AI rồi thử lại.',
       AI_DISABLED: 'AI đang tắt. Bật AI trong trang Trợ lý AI rồi lưu cài đặt.',
+      LICENSE_REQUIRED: 'Cần kích hoạt máy và có license Sarae còn hạn để dùng chức năng này.',
+      VOICE_SERVER_REMOTE: 'Giọng clone chạy trên server Sarae; máy này không cần bật voice server.',
     }
     if (code === 'STORAGE_ERROR' && 'message' in error && String(error.message).includes('newer version')) return 'Dữ liệu này cần phiên bản Studio mới hơn. Hãy cập nhật ứng dụng.'
     if (code === 'VALIDATION_ERROR' && 'details' in error && error.details && typeof error.details === 'object' && 'field' in error.details) {

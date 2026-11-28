@@ -116,7 +116,8 @@ def validate_settings(params: dict, current: dict) -> dict:
         if isinstance(number, bool) or not isinstance(number, int) or not low <= number <= high:
             raise StudioError("VALIDATION_ERROR", f"{key} must be {low} to {high}.", {"field": key})
     voice = value["voice"]
-    if not isinstance(voice, str) or (voice not in VOICES and not (voice.startswith("local:") and VOICE_ID.fullmatch(voice[6:]))):
+    prefix, _, cloned = voice.partition(":") if isinstance(voice, str) else ("", "", "")
+    if not isinstance(voice, str) or (voice not in VOICES and not (prefix in ("local", "remote") and VOICE_ID.fullmatch(cloned))):
         raise StudioError("VALIDATION_ERROR", "Unknown voice.", {"field": "voice"})
     names = value["ignored_usernames"]
     if not isinstance(names, list) or len(names) > 100:
@@ -313,7 +314,7 @@ class ReplyDesk:
             from sarae_agent.voice.tts import VoiceEngine
             from sarae_agent.voice.providers import default_registry
             registry = default_registry()
-            registry.register("local_voice", self.voice_server)
+            registry.register(getattr(self.voice_server, "provider", "local_voice"), self.voice_server)
             self._voice = VoiceEngine(self.live.config, self.live.obs, registry=registry)
         return self._voice
 
@@ -520,7 +521,17 @@ class ReplyDesk:
         try:
             voice = settings["voice"]
             options = {}
-            if voice.startswith("local:"):
+            prefix = getattr(self.voice_server, "prefix", "local:")
+            if voice.startswith(("local:", "remote:")) and not voice.startswith(prefix):
+                # Chosen under the other voice mode (local dev server vs. Sarae server): the LIVE still speaks.
+                log.warning("Giọng %s không dùng được ở chế độ giọng hiện tại; đọc bằng giọng Edge %s.", voice, VOICES[0])
+                voice = VOICES[0]
+            elif voice.startswith("remote:"):
+                # Unavailable server: the provider says the line with Edge (remote_voice.py), never fails the LIVE.
+                voice = voice[7:]
+                options = {"provider": self.voice_server.provider, "model": "live_fast",
+                           "settings": {"revision": self.voice_server.revision(voice)}}
+            elif voice.startswith("local:"):
                 if not self.voice_server.catalog()["voice_server"]["online"]:
                     raise AgentError("TTS_UNAVAILABLE", "Giọng local chưa sẵn sàng. Bật voice server rồi bấm Làm mới giọng.")
                 voice = voice[6:]

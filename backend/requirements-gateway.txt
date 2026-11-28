@@ -1,0 +1,7 @@
+# Sarae Studio gateway (app/gateway_main.py, docs/HYBRID_STUDIO_SERVER.md) - only what the lean server imports.
+# Installed into backend\.venv by start-server.cmd. The full Cloud API uses requirements.txt instead.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+pydantic-settings>=2.7,<3
+sqlalchemy>=2.0,<3
+httpx>=0.27,<1

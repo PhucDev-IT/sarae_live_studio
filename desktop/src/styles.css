@@ -607,3 +607,42 @@ button { touch-action: manipulation; }
 .studio-live-voice select { max-width: 250px; padding: 7px 10px; border: 1px solid #e3d9cb; border-radius: 7px; background: white; color: #55483e; }
 @media(max-width: 1100px) { .studio-live-health { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media(max-width: 600px) { .studio-live-health { grid-template-columns: 1fr; } .studio-live-voice { flex-wrap: wrap; } }
+
+/* Activation, license and account (docs/HYBRID_STUDIO_SERVER.md) */
+.studio-activation { min-height: 100dvh; display: grid; place-items: center; padding: 32px 16px; background: var(--canvas); }
+.studio-activation-card { width: min(470px, 100%); padding: 28px 30px; display: flex; flex-direction: column; gap: 16px; }
+.studio-activation-card .studio-brand { padding: 0 0 6px; }
+.studio-activation-card h1 { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 600; }
+.studio-activation-card h1 svg { color: var(--brand); flex: none; }
+.studio-activation-card > p { font-size: 13px; line-height: 1.7; }
+.studio-activation-card .studio-error { margin-bottom: 0; }
+.studio-activation-form { display: flex; gap: 10px; align-items: flex-end; }
+.studio-activation-form .studio-field { flex: 1; min-width: 0; }
+.studio-activation-form input { font-family: 'Cascadia Code', Consolas, monospace; letter-spacing: .02em; }
+.studio-activation-form .studio-button { min-height: 39px; }
+.studio-activation-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.studio-activation-meta { font-size: 12px; color: var(--muted); }
+.studio-activation-hint { font-size: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.studio-activation-server { font-size: 10px; color: #ac9d90; overflow-wrap: anywhere; }
+.studio-activation-server code, .studio-account-actions code { font-family: 'Cascadia Code', Consolas, monospace; font-size: 10px; }
+.studio-license-banner { display: flex; gap: 12px; align-items: flex-start; background: #fbefeb; border: 1px solid #f0d7ce; color: #ac5742; border-radius: 9px; padding: 14px 18px; margin-bottom: 20px; }
+.studio-license-banner svg { flex: none; margin-top: 2px; }
+.studio-license-banner strong { font-size: 13px; font-weight: 600; }
+.studio-license-banner p { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+.studio-license-banner.subtle { background: #fbf1e5; border-color: #eedcc5; color: #966a36; }
+.studio-account-state { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; background: #f2eee8; color: #7d6d5b; }
+.studio-account-state.active { background: var(--jade-soft); color: var(--jade); }
+.studio-account-state.offline, .studio-account-state.dev { background: #fbf1e5; color: #966a36; }
+.studio-account-state.locked, .studio-account-state.unactivated { background: #fbefeb; color: #ac5742; }
+.studio-account-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 20px; margin: 4px 0 12px; }
+.studio-account-grid dt { font-size: 11px; color: #a09181; }
+.studio-account-grid dd { margin: 3px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.studio-account .studio-version-warning { font-size: 12px; margin: 0 0 10px; }
+.studio-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; }
+.studio-account-actions small { margin-left: auto; font-size: 10px; overflow-wrap: anywhere; }
+.studio-voice-server { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.studio-voice-server > span { width: 7px; height: 7px; border-radius: 50%; background: #c9b9a8; }
+.studio-voice-server.online > span { background: var(--jade); }
+.studio-voice-server.offline { color: #ac5742; }
+.studio-voice-server.offline > span { background: #d0715a; }
+@media (max-width: 650px) { .studio-activation-card { padding: 22px 18px; } .studio-activation-form { flex-direction: column; align-items: stretch; } .studio-account-actions small { margin-left: 0; } }

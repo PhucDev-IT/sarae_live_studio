@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldCheck, UsersRound, X } from 'lucide-react'
+import { BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldAlert, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react'
+import { AccountCard, ActivationScreen, LicenseBanner, formatDateTime } from './AccountPanel'
 import { AIPanel } from './AIPanel'
 import { LivePanel } from './LivePanel'
 import { ProductsPanel } from './ProductsPanel'
 import { PresentersPanel } from './PresentersPanel'
 import { MediaPanel } from './MediaPanel'
+import { useAccount } from './useAccount'
 import { useStudio } from './useStudio'
 import { formatBytes } from './ui'
 
@@ -15,6 +17,12 @@ const libraryPages: Page[] = ['products', 'presenters', 'media']
 
 export function StudioShell() {
   const studio = useStudio()
+  const { account, apply: applyAccount } = useAccount()
+  // Unknown (Core not answering yet) shows the shell with its connection state, never a false lock.
+  const licensed = !account || account.licensed
+  // docs/HYBRID_STUDIO_SERVER.md: a running LIVE is never cut; the lock waits for it to end.
+  const locked = !!account && !account.licensed && !account.live_running
+  const [showAccount, setShowAccount] = useState(false)
   const [page, setPage] = useState<Page>('products')
   const [productFilter, setProductFilter] = useState('')
   const [presenterFilter, setPresenterFilter] = useState('')
@@ -23,6 +31,8 @@ export function StudioShell() {
   const [refreshing, setRefreshing] = useState(false)
   const [mediaBusy, setMediaBusy] = useState(false)
   useEffect(() => { document.title = `Sarae Live Studio · ${APP_VERSION}` }, [])
+  const { refresh: refreshStudio } = studio
+  useEffect(() => { if (licensed) void refreshStudio() }, [licensed, refreshStudio])
   useEffect(() => {
     if (!notice) return
     const timer = window.setTimeout(() => setNotice(''), 5000)
@@ -43,6 +53,7 @@ export function StudioShell() {
   const reload = async () => { setRefreshing(true); try { await studio.refresh() } finally { setRefreshing(false) } }
   const shared = { products: studio.products, media: studio.media, loading: studio.loading, disabled: !studio.connected, onRefresh: studio.refresh, onNotice: setNotice }
   const missingCount = studio.media.filter(media => media.status === 'missing').length
+  if (locked) return <ActivationScreen account={account} onChange={applyAccount} />
   return <div className="studio-shell">
     <a className="studio-skip" href="#studio-content">Đến nội dung chính</a>
     <aside className="studio-sidebar">
@@ -53,9 +64,12 @@ export function StudioShell() {
       <div className="studio-sidebar-bottom"><div className="studio-local-note"><ShieldCheck size={20} /><strong>Dữ liệu ở trên máy bạn</strong><p>Sản phẩm và video được quản lý trong thư viện local.</p></div><div className="studio-version"><span>Sarae Live Studio</span><span>v{APP_VERSION}</span></div></div>
     </aside>
     <div className="studio-workspace">
-      <header className="studio-topbar"><div className="studio-breadcrumb">Studio<span>/</span><strong>{pageTitles[page]}</strong></div><div className="studio-topbar-actions"><span className={`studio-connection ${studio.connected ? 'connected' : studio.loading ? 'connecting' : 'disconnected'}`} role="status"><span />{studio.connected ? 'Core đã kết nối' : studio.loading ? 'Đang kết nối Core…' : 'Core mất kết nối'}</span><button className="studio-button ghost icon-only" title="Thư mục dữ liệu" aria-label="Xem thư mục dữ liệu" aria-expanded={showStorage} onClick={() => setShowStorage(value => !value)}><FolderOpen size={19} /></button><button className="studio-button ghost icon-only" disabled={refreshing || studio.loading || studio.retrying} title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu" onClick={() => void reload()}><RefreshCw size={18} className={refreshing ? 'studio-spin' : ''} /></button></div></header>
+      <header className="studio-topbar"><div className="studio-breadcrumb">Studio<span>/</span><strong>{pageTitles[page]}</strong></div><div className="studio-topbar-actions"><span className={`studio-connection ${studio.connected ? 'connected' : studio.loading ? 'connecting' : 'disconnected'}`} role="status"><span />{studio.connected ? 'Core đã kết nối' : studio.loading ? 'Đang kết nối Core…' : 'Core mất kết nối'}</span><button className="studio-button ghost icon-only" title="Tài khoản và license" aria-label="Xem tài khoản và license" aria-expanded={showAccount} disabled={!account} onClick={() => setShowAccount(value => !value)}>{account && !account.licensed ? <ShieldAlert size={19} /> : <UserRound size={19} />}</button><button className="studio-button ghost icon-only" title="Thư mục dữ liệu" aria-label="Xem thư mục dữ liệu" aria-expanded={showStorage} onClick={() => setShowStorage(value => !value)}><FolderOpen size={19} /></button><button className="studio-button ghost icon-only" disabled={refreshing || studio.loading || studio.retrying} title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu" onClick={() => void reload()}><RefreshCw size={18} className={refreshing ? 'studio-spin' : ''} /></button></div></header>
       <main id="studio-content" tabIndex={-1} className="studio-content">
         {!studio.connected && !studio.loading && <div className="studio-connection-banner" role="alert"><div><strong>Chưa kết nối được Studio Core</strong><p>{studio.error || 'Kiểm tra bộ máy local rồi thử kết nối lại.'}</p>{studio.status && <small>Danh sách đang hiển thị là dữ liệu từ lần kết nối trước.</small>}</div><button className="studio-button" disabled={studio.retrying} onClick={() => void studio.retry()}><RefreshCw size={16} className={studio.retrying ? 'studio-spin' : ''} />{studio.retrying ? 'Đang kết nối…' : 'Kết nối lại'}</button></div>}
+        {account && !account.licensed && account.live_running && <LicenseBanner account={account} />}
+        {account?.state === 'offline' && !account.dev_bypass && <div className="studio-license-banner subtle" role="status"><ShieldAlert size={18} /><div><strong>Chưa kết nối được server Sarae</strong><p>Studio vẫn dùng được đến {account.grace_until ? formatDateTime(account.grace_until) : 'hết 72 giờ'}; sau đó sẽ khóa nếu vẫn chưa kiểm tra được license. Phiên LIVE đang phát không bị cắt.</p></div></div>}
+        {showAccount && account && <AccountCard account={account} onChange={applyAccount} onClose={() => setShowAccount(false)} onNotice={setNotice} />}
         {showStorage && <section className="studio-storage studio-card"><div className="studio-storage-heading"><Database size={19} /><h2>Nơi lưu dữ liệu</h2><button className="studio-button ghost icon-only" aria-label="Ẩn thông tin lưu trữ" onClick={() => setShowStorage(false)}><X size={17} /></button></div>{studio.status ? <><label>Thư mục dữ liệu<code>{studio.status.data_dir}</code></label><label>Database SQLite<code>{studio.status.database_path}</code></label><p className="studio-muted">Core v{studio.status.version}. Sản phẩm và video đã nhập được lưu tại đây qua các lần mở ứng dụng.</p>{studio.status.version !== APP_VERSION && <p className="studio-version-warning">Phiên bản Core và giao diện khác nhau. Hãy mở lại ứng dụng sau khi cập nhật.</p>}</> : <p className="studio-muted">Kết nối Studio Core để xem vị trí dữ liệu thực tế.</p>}</section>}
         {libraryPages.includes(page) && <div className="studio-overview" aria-label="Tổng quan thư viện"><div className="studio-stat"><span className="studio-stat-icon terracotta"><Package size={21} /></span><div><span>Sản phẩm</span><strong>{studio.loading ? '—' : studio.products.length.toLocaleString('vi-VN')}</strong></div><small>{studio.tiktok?.account ? 'Đồng bộ từ TikTok' : 'Chưa đồng bộ TikTok'}</small></div><div className="studio-stat"><span className="studio-stat-icon plum"><UsersRound size={21} /></span><div><span>Người giới thiệu</span><strong>{studio.loading ? '—' : studio.presenters.filter(presenter => presenter.active).length.toLocaleString('vi-VN')}</strong></div><small>Đang hoạt động</small></div><div className="studio-stat"><span className="studio-stat-icon jade"><Film size={21} /></span><div><span>Video đã nhập</span><strong>{studio.loading ? '—' : studio.media.length.toLocaleString('vi-VN')}</strong></div><small>{missingCount ? `${missingCount} video thiếu file` : 'Trong thư viện của bạn'}</small></div><div className="studio-stat"><span className="studio-stat-icon honey"><HardDrive size={21} /></span><div><span>Dung lượng video</span><strong>{studio.loading ? '—' : formatBytes(studio.media.reduce((total, media) => total + media.size_bytes, 0))}</strong></div><small>Tổng kích thước đã ghi nhận</small></div></div>}
         <div hidden={page !== 'products'}><ProductsPanel {...shared} tiktok={studio.tiktok} onTiktok={studio.setTiktok} disabled={!studio.connected || mediaBusy} onOpenMedia={id => openMedia({ product: id })} /></div>

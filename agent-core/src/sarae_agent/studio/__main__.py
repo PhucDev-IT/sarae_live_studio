@@ -16,6 +16,8 @@ from sarae_agent.errors import AgentError
 from sarae_agent.ipc.server import IpcServer
 from sarae_agent.studio.service import StudioError, StudioService
 from sarae_agent.studio.storage import data_root
+from sarae_agent.studio.account import StudioAccount
+from sarae_agent.studio.remote_voice import voice_backend
 from sarae_agent.studio.ai import StudioAI
 from sarae_agent.studio.live import StudioLive
 from sarae_agent.studio.replies import ReplyDesk
@@ -64,17 +66,22 @@ def run(args: argparse.Namespace) -> int:
     tiktok = None
     live = None
     replies = None
+    account = None
     try:
         root = data_root(Path(args.data_dir) if args.data_dir else None)
         lock = RuntimeLock(root)
         service = StudioService(root)
         transport = StudioTransport(service, native=args.ipc)
+        account = transport.account = StudioAccount(root, emit=transport.emit)
+        account.live_running = transport.live_running
         tiktok = transport.tiktok = TikTokConnector(service, emit=transport.emit)
         ai = transport.ai = StudioAI(service)
         live = transport.live = StudioLive(service, emit=transport.emit)
         live.tiktok = tiktok
         live.start_watchdog()
-        replies = transport.replies = ReplyDesk(service, ai, live, tiktok, emit=transport.emit)
+        replies = transport.replies = ReplyDesk(service, ai, live, tiktok, emit=transport.emit,
+                                                voice_server=voice_backend(account))
+        account.start()  # startup + 6-hourly license checks on their own thread; never blocks startup
         http = StudioHTTPServer(transport, 0 if args.ipc else args.port)
         http_thread = threading.Thread(target=http.serve_forever, name="studio-http", daemon=True)
         http_thread.start()
@@ -141,6 +148,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"Studio: {exc}", file=sys.stderr)
         return 3 if getattr(exc, "code", "") == "CORE_ALREADY_RUNNING" else 2
     finally:
+        if account:
+            account.close()
         if replies:
             replies.close()
         if live:
