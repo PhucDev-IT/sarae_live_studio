@@ -90,7 +90,7 @@ rem ---------------------------------------------------------------------------
 pushd "%CORE%" || goto :fail
 "%PY%" -m pytest -q -p no:warnings tests\test_studio_replies.py tests\test_studio_live.py tests\test_studio_ai.py ^
   tests\test_studio_tiktok.py tests\test_studio_product_enrichment.py tests\test_studio_presenters.py tests\test_studio_storage.py tests\test_studio_transport.py ^
-  tests\test_protocol_config.py tests\test_playback_engine.py tests\test_playback_policy.py tests\test_media_playback.py ^
+  tests\test_protocol_config.py tests\test_playback_engine.py tests\test_playback_policy.py ^
   tests\test_obs_controller.py tests\test_timeline_scheduler.py tests\test_timeline_reconcile.py ^
   tests\test_studio_media_metadata.py tests\test_studio_media_thumbnails.py tests\test_studio_overlays.py tests\test_studio_overlay_schedule.py ^
   tests\test_studio_broadcast.py tests\test_studio_local_voice.py tests\test_bundled.py

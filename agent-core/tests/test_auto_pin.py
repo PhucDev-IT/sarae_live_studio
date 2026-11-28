@@ -8,7 +8,6 @@ from unittest import mock
 
 from sarae_agent import auto_pin
 from sarae_agent.auto_pin import AutoPinService, find_chrome, needs_login
-from sarae_agent.cloud.commands import CommandRouter
 
 CONSOLE = "https://shop.tiktok.com/streamer/live/product/dashboard"
 
@@ -242,29 +241,6 @@ class AutoPinTests(unittest.TestCase):
         self.pin.set_video_auto(False, {})
         self.pin.set_video_auto(True, {7: {"name": "Son đỏ"}}, session_id=4)
         self.assertFalse(current())
-
-    def test_cloud_command_router_reaches_dom_worker(self):
-        page = FakePinPage([pin_card(0, "Son đỏ")])
-        self.pin._context, self.pin._page = object(), page
-        self.pin._account_profile = {"user_id": "7494647113328657914"}
-        playback = mock.Mock()
-        playback.lock, playback.active, playback.session_id = threading.RLock(), True, 4
-        router = CommandRouter(playback=playback, monitor=mock.Mock(), voice=mock.Mock(), auto_pin=self.pin)
-        target = {"name": "Son đỏ", "expected_user_id": "7494647113328657914"}
-        self.assertEqual(router.execute("PIN_PRODUCT", {"session_id": 4, "target": target})["status"], "SUCCESS")
-        self.assertTrue(router.execute("GET_PIN_STATE", {})["pinned_card"])
-        self.assertEqual(router.execute("UNPIN_PRODUCT", {"session_id": 4,
-            "expected_user_id": "7494647113328657914"})["status"], "SUCCESS")
-        self.assertEqual(page.clicks, 2)
-        playback.active = False
-        with self.assertRaisesRegex(RuntimeError, "Video đã chuyển tiếp"):
-            router.execute("PIN_PRODUCT", {"session_id": 4, "target": target})
-        page.cards[0]["pinned"] = True
-        with self.assertRaisesRegex(RuntimeError, "Phiên LIVE đã kết thúc"):
-            router.execute("UNPIN_PRODUCT", {"session_id": 4,
-                "expected_user_id": "7494647113328657914"})
-        self.assertEqual(page.clicks, 2)
-        self.pin._context = None
 
 
 class ChromePathTests(unittest.TestCase):

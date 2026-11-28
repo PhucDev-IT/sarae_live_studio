@@ -4,8 +4,6 @@ import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from sarae_agent.cloud.commands import CommandRouter
-from sarae_agent.errors import AgentError
 from sarae_agent.timeline.executors import ConsolePinExecutor, DryRunPinExecutor
 from sarae_agent.timeline.scheduler import TimelineScheduler
 from test_playback_engine import EngineTestBase
@@ -135,17 +133,6 @@ class ConsoleReadTests(unittest.TestCase):
         futures[2].set_exception(RuntimeError("LIVE Console chưa mở"))
         self.assertEqual(results, [(True, "9001", None), (False, None, "Nhiều product card đang ghim"),
                                    (False, None, "LIVE Console chưa mở")])
-
-
-class RouterNoHoldTests(EngineTestBase):
-    def test_the_timeline_cannot_be_put_on_hold(self):
-        scheduler = TimelineScheduler(DryRunPinExecutor(), Gate(), clock=Clock())
-        router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=scheduler)
-        router.execute("video_play", {"session_id": 7, "media_id": self.files["pl1"], "timeline": timeline(PLAN)})
-        for kind in ("timeline_hold", "timeline_resume"):
-            with self.assertRaises(AgentError):
-                router.execute(kind, {"session_id": 7})
-        self.assertNotIn("mode", scheduler.status())
 
 
 if __name__ == "__main__":

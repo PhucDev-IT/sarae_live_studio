@@ -1,22 +1,14 @@
-"""Supported provider contracts and rejection of retired commands."""
+"""Supported TTS provider contracts."""
 import pytest
-from pydantic import ValidationError
-from sarae_agent.cloud.commands import TtsPayload, TtsPreparePayload
-from sarae_agent.ipc.methods import SpeakParams
 from sarae_agent.errors import AgentError
 from sarae_agent.voice.providers import EdgeTTSProvider, ProviderRegistry, default_registry
 from sarae_agent.voice.tts import VoiceService
 
 
-def test_removed_provider_is_not_registered_or_accepted_by_command_schemas():
+def test_removed_provider_is_not_registered():
     with pytest.raises(AgentError) as error:
         default_registry().get('elevenlabs')
     assert error.value.code == 'TTS_PROVIDER'
-    for schema, data in ((TtsPayload, {'text':'Xin chào'}),
-                         (TtsPreparePayload, {'texts':['Xin chào']}),
-                         (SpeakParams, {'text':'Xin chào'})):
-        with pytest.raises(ValidationError):
-            schema.model_validate({**data, 'provider':'elevenlabs'})
 
 
 def test_edge_normalization_and_invalid_settings():

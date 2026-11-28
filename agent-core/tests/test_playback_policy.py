@@ -2,10 +2,7 @@
 import random
 from unittest import mock
 
-import pytest
 
-from sarae_agent.cloud.commands import CommandRouter, lane
-from sarae_agent.errors import AgentError
 from sarae_agent.playback import engine as playback_engine
 from sarae_agent.playback.engine import PlaybackError
 from test_playback_engine import EngineTestBase
@@ -286,50 +283,3 @@ class DualPolicyTests(PolicyTestBase):
         self.start()
         self.assert_preload_matches(12)
         self.assertGreaterEqual(len(self.switches()), 5)
-
-
-# --- Cloud command ---------------------------------------------------------------------------
-MID = "a" * 32
-
-
-@pytest.fixture()
-def router():
-    engine = mock.Mock()
-    return CommandRouter(playback=engine, monitor=mock.Mock(), voice=mock.Mock()), engine
-
-
-def test_playback_policy_command_reaches_engine(router):
-    r, engine = router
-    assert lane("playback_policy") == "live"
-    r.execute("playback_policy", {"session_id": 12, "policy": {"video_order": "shuffle", "product_rotation": "random",
-                                                               "rotate_after_videos": 2},
-                                  "lineup": [{"product_id": 5, "media_ids": [MID]}, {"product_id": 6, "media_ids": []}]})
-    session_id, policy, lineup = engine.set_policy.call_args.args
-    assert session_id == 12
-    assert policy == {"video_order": "shuffle", "product_rotation": "random", "rotate_after_videos": 2,
-                      "rotate_after_minutes": None, "switch_mode": "after_current", "auto": True}
-    assert lineup == [{"product_id": 5, "media_ids": [MID]}, {"product_id": 6, "media_ids": []}]
-
-
-@pytest.mark.parametrize("payload", [
-    {"session_id": 0, "policy": {}, "lineup": []},
-    {"session_id": 1, "policy": {"video_order": "zigzag"}, "lineup": []},
-    {"session_id": 1, "policy": {"rotate_after_videos": 51}, "lineup": []},
-    {"session_id": 1, "policy": {"rotate_after_minutes": 0}, "lineup": []},
-    {"session_id": 1, "policy": {"switch_mode": "later"}, "lineup": []},
-    {"session_id": 1, "policy": {"product_rotation": "random", "rotate_after_videos": None}, "lineup": []},
-    {"session_id": 1, "policy": {"extra": 1}, "lineup": []},
-    {"session_id": 1, "policy": {}, "lineup": [], "extra": 1},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": 0, "media_ids": []}]},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": 1, "media_ids": ["../x"]}]},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": 1, "media_ids": [], "x": 1}]},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": 1}, {"product_id": 1}]},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": i} for i in range(1, 302)]},
-    {"session_id": 1, "policy": {}, "lineup": [{"product_id": i, "media_ids": [MID] * 1001} for i in (1, 2, 3)]},
-])
-def test_playback_policy_command_rejects(router, payload):
-    r, engine = router
-    with pytest.raises(AgentError) as exc:
-        r.execute("playback_policy", payload)
-    assert exc.value.code == "INVALID_COMMAND_PAYLOAD"
-    engine.set_policy.assert_not_called()

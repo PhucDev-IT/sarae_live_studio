@@ -8,8 +8,6 @@ import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from sarae_agent.cloud.commands import CommandRouter
-from sarae_agent.errors import AgentError
 from sarae_agent.timeline.executors import ConsoleLiveGate, ConsolePinExecutor, DryRunPinExecutor
 from sarae_agent.timeline.scheduler import TimelineScheduler
 from test_playback_engine import ENDED, EngineTestBase, PLAYING
@@ -374,72 +372,6 @@ class EngineTimelineTests(EngineTestBase):
             if self.engine.active:
                 played.append(self.playing())
         self.assertEqual(sorted(played), sorted(ids))
-
-
-class RouterTimelineTests(EngineTestBase):
-    def setUp(self):
-        super().setUp()
-        self.executor = DryRunPinExecutor()
-        self.scheduler = TimelineScheduler(self.executor, Gate(), clock=Clock())
-        self.router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=self.scheduler)
-        self.main = self.files["pl1"]
-
-    def test_video_play_loads_the_timeline_and_stop_clears_it(self):
-        payload = {"session_id": 7, "media_id": self.main, "loop": True, "timeline": timeline(PLAN)}
-        result = self.router.execute("video_play", payload)
-        self.assertEqual((result["timeline"]["session_id"], result["timeline"]["version"]), (7, 1))
-        changed = self.router.execute("timeline_set", {"session_id": 7, "timeline": timeline(PLAN[:1], version=2)})
-        self.assertEqual((changed["version"], changed["markers"]), (2, 1))
-        self.router.execute("playback_stop", {})
-        self.assertIsNone(self.scheduler.status()["session_id"])
-        with self.assertRaises(AgentError):
-            self.router.execute("timeline_set", {"session_id": 7, "timeline": None})
-
-    def test_video_play_of_several_videos(self):
-        ids = self.ids("pl1", "pl2")
-        result = self.router.execute("video_play", {"session_id": 7, "media_ids": ids, "video_order": "shuffle",
-                                                    "timeline": timeline([{"media_id": ids[1], "at_ms": 0,
-                                                                            "action": "PIN_PRODUCT", "product_id": 1}])})
-        self.assertIn(result["media_id"], ids)
-        self.assertEqual((self.engine.video_order, sorted(self.engine.ids)), ("shuffle", sorted(ids)))
-        for bad in ({"session_id": 7}, {"session_id": 7, "media_ids": [ids[0], ids[0]]},
-                    {"session_id": 7, "media_ids": ids[:1], "media_id": ids[1]},
-                    {"session_id": 7, "media_ids": ids, "video_order": "backwards"}):
-            with self.assertRaises(AgentError):
-                self.router.execute("video_play", bad)
-
-    def test_overlay_check_is_routed_to_the_overlay_service(self):
-        calls = []
-        router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=self.scheduler,
-                               overlay=SimpleNamespace(check=lambda sid: calls.append(sid) or {"ok": True}))
-        self.assertEqual(router.execute("overlay_check", {"session_id": 7}), {"ok": True})
-        self.assertEqual(calls, [7])
-        with self.assertRaises(AgentError):
-            router.execute("overlay_check", {"session_id": 0})
-        with self.assertRaises(AgentError):
-            CommandRouter(playback=self.engine, monitor=None, voice=None).execute("overlay_check", {"session_id": 7})
-
-    def test_overlay_preview_is_routed_to_the_overlay_service(self):
-        calls = []
-        router = CommandRouter(playback=self.engine, monitor=None, voice=None, timeline=self.scheduler,
-                               overlay=SimpleNamespace(preview_on_obs=lambda *a, **k: calls.append((a, k)) or {"preview": True}))
-        router.execute("overlay_preview", {"session_id": 7, "timeline_id": 3, "media_id": "a" * 32, "position_ms": 1500, "playing": True,
-                                           "iteration": 2})
-        router.execute("overlay_preview", {"session_id": 7, "stop": True})
-        self.assertEqual(calls, [((7, 3, "a" * 32, 1500, True, 120, False), {"iteration": 2}),
-                                 ((7, None, None, 0, False, 120, True), {"iteration": 0})])
-        with self.assertRaises(AgentError):
-            router.execute("overlay_preview", {"session_id": 7, "media_id": "../x"})
-        with self.assertRaises(AgentError):
-            router.execute("overlay_preview", {"session_id": 7, "iteration": -1})
-
-    def test_payloads_are_validated(self):
-        bad = {"session_id": 7, "media_id": self.main,
-               "timeline": {"version": 1, "markers": [{"id": 1, "at_ms": 0, "action": "SWITCH_VIDEO"}]}}
-        with self.assertRaises(AgentError):
-            self.router.execute("video_play", bad)
-        with self.assertRaises(AgentError):
-            self.router.execute("video_play", {"session_id": 7, "media_id": "not-an-id"})
 
 
 class FakeAutoPin:

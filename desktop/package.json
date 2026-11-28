@@ -7,6 +7,7 @@
     "dev": "vite",
     "studio": "node scripts/studio-dev.mjs",
     "build": "tsc -b && vite build",
+    "build:overlay": "vite build --config vite.overlay.config.ts",
     "typecheck": "tsc -b",
     "test:products": "node --experimental-strip-types --test tests/productInformation.test.ts",
     "test:overlays": "node --experimental-strip-types --test tests/overlayAutosave.test.ts tests/overlayTiming.test.ts",

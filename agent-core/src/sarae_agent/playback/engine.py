@@ -38,12 +38,12 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from sarae_agent.config import paths
 from sarae_agent.errors import AgentError
-from sarae_agent.media.cloud_cache import MEDIA_ID
 from sarae_agent.media.probe import obs_file, probe_media
 
 log = logging.getLogger("sarae.playback")
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+MEDIA_ID = re.compile(r"^[0-9a-f]{32}$")  # 32-hex media id
 ERROR_CODES = {409: "PLAYBACK_CONFLICT", 422: "INVALID_REQUEST", 502: "OBS_REQUEST_FAILED", 503: "OBS_UNAVAILABLE"}
 # A/B: poll up to 1s (20 x 50ms) for the stand-by source's first frame before pausing it there.
 STAGE_FRAME_POLLS = 20
