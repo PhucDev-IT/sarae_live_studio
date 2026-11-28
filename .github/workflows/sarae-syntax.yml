@@ -1,4 +1,4 @@
-name: Sarae syntax guard
+name: Sarae checks
 on:
   push:
     branches: [dev]
@@ -6,7 +6,7 @@ on:
     branches: [dev]
 
 jobs:
-  python-syntax:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,59 +14,33 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile Python modules
-        run: python -m compileall -q backend/app agent-core/src
-      - name: Install Backend dependencies
-        run: python -m pip install -r backend/requirements.txt
-      - name: Install Voice Engine test dependencies
-        run: python -m pip install pytest obsws-python edge-tts
-      - name: Test Voice Engine and LIVE reply integration with mock providers
+        run: python -m compileall -q backend/app backend/tools agent-core/src
+      - name: Install gateway dependencies
+        run: python -m pip install -r backend/requirements-gateway.txt pytest
+      - name: Test gateway, admin page and CLI
+        working-directory: backend
+        run: python -m pytest -q tests
+      - name: Install voice test dependencies
+        run: python -m pip install obsws-python edge-tts
+      - name: Test voice queue and providers
         env:
-          PYTHONPATH: backend:backend/tests:agent-core/src:agent-core/tests
-        run: python -m pytest -q agent-core/tests/test_voice_queue.py agent-core/tests/test_voice_providers.py backend/tests/test_ai_live_reply.py backend/tests/test_voice_settings.py
-      - name: Test TikTok Account contract
-        env:
-          PYTHONPATH: backend:backend/tests
-        run: python -m unittest discover -s backend/tests -p test_tiktok_account_contract.py
-      - name: Test Agent Cloud Media Cache (fake Cloud)
-        env:
-          PYTHONPATH: agent-core/src
-        run: python -m unittest discover -s agent-core/tests -p test_cloud_media_cache.py
-      - name: Test centralized Media Library (fake Google Drive)
-        env:
-          PYTHONPATH: backend:backend/tests
-        run: python -m unittest discover -s backend/tests -p test_media_library.py
-      - name: Test Cloudflare R2 and scoped reset (mock S3)
-        env:
-          PYTHONPATH: backend:backend/tests
-        run: |
-          python -m unittest discover -s backend/tests -p test_r2_storage.py
-          python -m unittest discover -s backend/tests -p test_cloud_storage_reset.py
+          PYTHONPATH: agent-core/src:agent-core/tests
+        run: python -m pytest -q agent-core/tests/test_voice_queue.py agent-core/tests/test_voice_providers.py
 
-  web-tsx-parse:
+  desktop:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install standalone TSX parser
-        run: npm install --global esbuild@0.25.12
-      - name: Parse affected frontend files without bundling
-        run: |
-          esbuild web/src/LiveSessions.tsx web/src/LiveControl.tsx web/src/liveSessionsApi.ts desktop/src/features/tool/Settings.tsx --outdir=/tmp/sarae-syntax --format=esm
-
-  web-typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install tooling
-        run: npm install --global pnpm@10.15.0
-      - name: Install Sarae Web dependencies
-        run: npm ci --prefix web
-      - name: Build Sarae Web
-        run: npm run build --prefix web
+      - name: Install Studio UI dependencies
+        run: npm ci --prefix desktop
+      - name: Typecheck and build Studio UI
+        run: npm run build --prefix desktop
+      - name: Build the OBS overlay page (to a scratch folder)
+        working-directory: desktop
+        run: npx vite build --config vite.overlay.config.ts --outDir /tmp/overlay-check --emptyOutDir
+      - name: Studio UI unit tests
+        working-directory: desktop
+        run: node --experimental-strip-types --test tests/*.test.ts

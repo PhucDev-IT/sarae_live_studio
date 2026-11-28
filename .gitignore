@@ -1,6 +1,5 @@
 node_modules/
 dist/
-backend/build/
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/*
 !desktop/src-tauri/binaries/README.md
@@ -22,21 +21,8 @@ __pycache__/
 *.db-wal
 .env
 .env.local
-backend/data/media/
-backend/data/obs_config.json
-backend/data/obs_config.tmp
-backend/data/product_images/
-backend/data/presenter_images/
-
-# Runtime credentials, local media metadata, session checkpoints and SaaS SQLite data
+# Server data: customers, devices, usage (identity.sqlite3, studio_gateway.sqlite3)
 backend/data/
-backend/data/url_signing.key
-backend/data/credential.key
-backend/data/agent_command_journal.json
-backend/data/agent_commands.lock
-
-# Google Drive OAuth PoC output (file names / folder IDs of a real account)
-google_drive_poc_report*.json
 
 # Studio data of this machine (products, videos, LIVE sessions, secrets)
 /studio-data/

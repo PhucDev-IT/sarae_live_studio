@@ -260,10 +260,10 @@ Không import toàn bộ FastAPI app vào sidecar rồi giả lập OWNER để 
 ## 10. Tài liệu liên quan
 
 - [Bàn giao để triển khai trên máy khác](LOCAL_TAURI_STUDIO_HANDOFF.md).
-- [Kiến trúc Windows Agent hiện tại](WINDOWS_AGENT_ARCHITECTURE.md).
+- [Máy khách + server PC nhà](HYBRID_STUDIO_SERVER.md) và [vận hành server](HYBRID_SERVER_OPS.md).
 - [IPC hiện tại](WINDOWS_AGENT_IPC.md) và [build Windows hiện tại](WINDOWS_AGENT_BUILD.md).
-- [Thư viện media hiện tại](MEDIA_LIBRARY.md), [thư mục local trước đây](LOCAL_FOLDER.md), [playback policy](PLAYBACK_POLICY.md).
-- [Tự động trả lời hiện tại](AI_AUTO_REPLY.md), [định dạng tri thức](AI_KNOWLEDGE_FORMAT.md), [tích hợp TTS](TTS_SERVER.md).
+- [Playback policy](PLAYBACK_POLICY.md).
+- [Tự động trả lời](AI_AUTO_REPLY.md) và [giọng đọc](VOICE_ENGINE.md).
 - [Repo AI tham khảo](https://github.com/PhucDev-IT/sarae-ai-live-studio/tree/dev).
 - [Tauri 2](https://v2.tauri.app/start/) và [capabilities](https://v2.tauri.app/security/capabilities/).
 

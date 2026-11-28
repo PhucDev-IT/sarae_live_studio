@@ -4,7 +4,7 @@ Tài liệu này dành cho người build và phát hành bộ cài. Khách ch�
 `SaraeLiveStudio-Setup-<version>.exe`: **không cần Python, Node, Rust hay FFmpeg**.
 
 Liên quan: [WINDOWS_AGENT_BUILD.md](WINDOWS_AGENT_BUILD.md) (máy build, lệnh dev),
-[HYBRID_CLOUD_AGENT.md](HYBRID_CLOUD_AGENT.md) (mô hình client/server).
+[HYBRID_STUDIO_SERVER.md](HYBRID_STUDIO_SERVER.md) (mô hình máy khách + server PC nhà).
 
 ## 1. Bộ cài gồm những gì
 

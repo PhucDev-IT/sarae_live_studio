@@ -32,4 +32,4 @@ Rebuild the Agent sidecar and desktop distribution together before installing an
 - Backend: run `.venv/Scripts/python.exe -m unittest discover -s tests -q` from `backend`.
 - Web: `npm run build`; browser fixtures are in `web/tests/voice_ui.py` (Vite port 5175).
 
-Contracts and historical phase reports: [TTS_SERVER.md](TTS_SERVER.md). Real desktop/OBS measurements, remaining audio acceptance limits, local operating steps, retention and remote checklist: [TTS_PHASE6.md](TTS_PHASE6.md). Historical ElevenLabs regression results describe the code at the time of those phases, not the current provider set.
+Cloned voices come from the home-PC gateway: [HYBRID_STUDIO_SERVER.md](HYBRID_STUDIO_SERVER.md).
