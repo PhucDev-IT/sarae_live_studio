@@ -255,6 +255,13 @@ def test_a_weight_only_chart_hides_height_from_the_ai():
     assert product_prompt_context({"name": "x", "facts": {"colors": ["Đen"]}})["thong_tin"] == {"colors": ["Đen"]}
 
 
+def test_reply_prompt_reads_questions_without_question_marks():
+    from sarae_agent.studio.ai import reply_prompt
+    system, _ = reply_prompt("quần bo ống ạ", "Lan", None)
+    rule = system.split("6b.")[1].split("7.")[0]
+    assert "'quần bo ống ạ'" in rule and "phải trả lời" in rule and "needs_review = false" in rule
+
+
 def test_reply_prompt_asks_back_on_ambiguous_questions_instead_of_guessing():
     from sarae_agent.studio.ai import reply_prompt
     system, data = reply_prompt("quần dài bn ạ", "Mẹ Cải Bắp", None)

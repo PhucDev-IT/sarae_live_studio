@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from sarae_agent.errors import AgentError
-from sarae_agent.studio.replies import ChatReader, ReplyDesk, is_question
+from sarae_agent.studio.replies import ChatReader, ReplyDesk, is_question, is_small_talk
 from sarae_agent.studio.service import StudioError, StudioService
 from studio_helpers import ACCOUNT, create_product
 
@@ -109,6 +109,49 @@ def test_question_heuristic():
         assert is_question(text), text
     for text in ("đẹp quá", "hello shop", "❤️❤️", "theo dõi shop", "xinh thế", "okk"):
         assert not is_question(text), text
+
+
+# Real LIVE comments: Vietnamese viewers rarely type "?".
+PRODUCT_QUESTIONS = ("quần bo ống ạ", "ống suông có chun ạ", "áo có túi", "chất nỉ hay cotton", "lên đơn cho em",
+                     "em lấy 1 set", "màu xanh than", "quần có túi ko", "áo dày ko shop", "em 1m60", "size L",
+                     "mẫu này ống đứng hay ống loe", "cạp chun", "có màu khác", "giặt máy được", "@vinhyen cho xem quần",
+                     "quần dài bn ạ", "đẹp quá còn màu đen ko")
+SMALL_TALK = ("đẹp quá", "xinh thế shop ơi", "hello shop", "chào em", "okkk", "follow shop rồi nha", "chúc shop đông khách",
+              "❤️❤️", "hihihi", "dễ thương ghê", "đẹppp quáaa", "cảm ơn shop", "thả tim cho shop", "@lan.nguyen xinh quá",
+              "hôm nay shop live đẹp thế", "yêu shop", "wow")
+
+
+def test_only_small_talk_skips_the_ai():
+    for text in PRODUCT_QUESTIONS:
+        assert not is_small_talk(text), text
+    for text in SMALL_TALK:
+        assert is_small_talk(text), text
+
+
+def test_product_questions_without_question_marks_reach_the_ai(studio):
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai)
+    for n, text in enumerate(PRODUCT_QUESTIONS + SMALL_TALK):
+        desk.ingest(comment(text, msg_id=f"q{n}", username=f"viewer{n}"), simulated=False)
+    stages = {entry["comment"]: entry["stage"] for entry in desk.status()["entries"]}
+    assert [t for t in PRODUCT_QUESTIONS if stages[t] != "queued"] == []
+    assert [t for t in SMALL_TALK if stages[t] != "skipped"] == []
+
+
+def test_ai_saying_nothing_to_answer_hides_the_comment(studio):
+    ai = FakeAI(answer={"intent": "OTHER", "reply": "", "needs_review": False, "reason": "khen sản phẩm",
+                        "usage": {"latency_ms": 5}})
+    desk = desk_for(studio, ai=ai, auto_voice=True)
+    desk.ingest(comment("mặc lên nhìn sang ghê luôn á"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    entry = desk.status()["entries"][0]
+    assert entry["stage"] == "skipped" and entry["reason"] == "AI: không cần trả lời (khen sản phẩm)"
+    assert entry["auto"] == [] and desk.status()["stats"]["answered"] == 0
+    # Obscene or spam still reaches the operator: empty reply WITH review.
+    ai.answer = {**ai.answer, "needs_review": True, "reason": "spam"}
+    desk.ingest(comment("vào link lừa đảo", msg_id="m2", username="spam"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert desk.status()["entries"][0]["stage"] == "review"
 
 
 def test_operator_edit_is_saved_and_the_ai_text_never_goes_out(studio):

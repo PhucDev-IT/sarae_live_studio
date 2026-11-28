@@ -3,8 +3,10 @@
 Mirrors the dev branch (docs/AI_AUTO_REPLY.md) on one machine:
 - comments come from the public LIVE chat (TikTokLive, read-only, no login) of the verified TikTok account,
   or from the operator's test box (simulated, never posted to TikTok);
-- deterministic filters first (own account, ignored users, duplicates, noise, not a sales question), then one AI
-  call per selected comment, using the product currently playing in OBS as context;
+- deterministic filters first (own account, ignored users, duplicates, noise, plain small talk), then one AI
+  call per remaining comment, using the product currently playing in OBS as context. Vietnamese viewers rarely
+  type "?" ("quần bo ống ạ"), so only comments that are certainly small talk are skipped here; the AI decides
+  the rest and an empty reply without review means "nothing to answer";
 - two independent branches: voice (Agent VoiceEngine → OBS voice input) and comment (Chrome chat sender on the
   Studio's TikTok profile, with its own pacing, duplicate and TTL guards). One failing never affects the other;
 - automatic sending waits ``confirm_seconds`` so the operator can cancel; replies that need review, simulated
@@ -46,10 +48,49 @@ QUESTION_TERMS = ("giá", "gia ", "bao nhiêu", "bao nhieu", "bn", "nhiêu", "si
 QUESTION_END = re.compile(r"(?:^|\s)(?:không|khong|ko|k|hông|hong|hok|hk|khum|chưa|chua)"
                           r"(?:\s+(?:ạ|a|vậy|v|vay|nhỉ|nhi|nhé|shop|sh|chị|chi|c|em|e|ah))?\s*[.!]*$")
 NOISE = re.compile(r"^[\W_]*$|^(.)\1*$", re.UNICODE)
+# Syllables that make up praise, greetings, thanks, follows and cheers. A comment skips the AI only when EVERY
+# syllable is one of these (after mentions and punctuation are removed) and no question signal is present:
+# an unknown word ("bo ống", "chun", "túi") always reaches the AI.
+SMALL_TALK = frozenset("""
+đẹp dep xinh xắn xan dễ de thương thuong cute xịn xin sang chảnh chanh tuyệt tuyet vời voi yêu yeu iu love
+mê me thích thich ưng ung hợp hop xỉu xiu
+hello helo hi hí chào chao alo lô lo hú
+ok oke okie oki okela uk ừ ừm um vâng vang dạ da yes
+cảm cam ơn on thanks thank tks thks
+follow fl flw theo dõi doi ủng ung hộ ho tim thả tha like share cho
+chúc chuc may mắn man đông dong khách khach ạ a ơi oi ah à á nha nhé nhe nhá na ne nè nhỉ nhi luôn luon
+quá qua lắm lam ghê ghe thế the vậy vay ghê wow woa ui uii ôi oi trời troi
+shop sh shopp em e chị chi c anh a mn mọi moi người nguoi cả ca nhà nha bạn ban bé be idol
+rồi roi nữa nua cũng cung vào vao live lai lại đây day hôm hom nay
+haha hihi hehe huhu kaka kkk hjhj good nice great
+""".split())
+LAUGH = re.compile(r"^(?:h[aiêeo]|k|j|hj)+$")
 
 
 def normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+
+
+def _base(char: str) -> str:
+    return unicodedata.normalize("NFD", char)[0]
+
+
+def is_small_talk(text: str) -> bool:
+    """Praise, greetings, thanks or cheers only: nothing a seller needs to answer."""
+    if is_question(text):
+        return False
+    t = re.sub(r"@\S+", " ", normalize(text))
+    words = re.sub(r"[^\w]+", " ", t).split()
+    if not words:
+        return True
+
+    def known(word: str) -> bool:
+        short = word  # "đẹppp", "okkk", "quáaa": a stretched last letter, accented or not
+        while len(short) > 1 and _base(short[-1]) == _base(short[-2]):
+            short = short[:-1] if _base(short[-1]) == short[-1] else short[:-2] + short[-1]
+        return word in SMALL_TALK or short in SMALL_TALK or bool(LAUGH.match(word))
+
+    return all(known(word) for word in words)
 
 
 def is_question(text: str) -> bool:
@@ -360,8 +401,8 @@ class ReplyDesk:
                 self._finish(entry, "ignored", "Cùng người, cùng nội dung trong 20 giây.")
             elif NOISE.match(text) or len(text) < 2:
                 self._finish(entry, "skipped", "Chỉ là biểu tượng hoặc ký tự lặp.")
-            elif not settings["answer_all"] and not is_question(text):
-                self._finish(entry, "skipped", "Không phải câu hỏi bán hàng.")
+            elif not settings["answer_all"] and is_small_talk(text):
+                self._finish(entry, "skipped", "Chỉ là lời khen, chào hoặc cảm ơn.")
             elif not self.ai.config()["config"]["enabled"]:
                 self._finish(entry, "skipped", "AI đang tắt.")
             else:
@@ -424,6 +465,13 @@ class ReplyDesk:
                           "reason": result["reason"], "usage": result["usage"]})
             if not entry["edited"]:
                 entry["reply"] = result["reply"]
+            if not result["reply"] and not result["needs_review"]:
+                # The AI read the comment and found nothing to answer: hidden like small talk, never a blank card.
+                entry["stage"] = "skipped"
+                entry["reason"] = "AI: không cần trả lời" + (f" ({result['reason']})" if result["reason"] else "")
+                self.stats["skipped"] += 1
+                self._changed()
+                return
             self.stats["answered"] += 1
             if not result["reply"]:
                 entry["stage"] = "review"
