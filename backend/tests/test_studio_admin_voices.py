@@ -148,5 +148,76 @@ class AdminVoiceTests(unittest.TestCase):
         self.assertEqual(r.status_code, 503)
 
 
+class AdminCustomerTests(unittest.TestCase):
+    """Customer management on the admin page: same operations as the CLI, on temp DBs."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from app import identity, studio_gateway
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        folder = Path(self.tmp.name)
+        self.patches = [patch.object(identity, "DB", folder / "identity.sqlite3"),
+                        patch.object(studio_gateway, "USAGE_DB", folder / "studio_gateway.sqlite3")]
+        for p in self.patches:
+            p.start()
+        self.gateway = studio_gateway
+        self.client = TestClient(admin_main.app, base_url=LOCAL, client=("127.0.0.1", 50000))
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    def customer(self, email):
+        rows = self.client.get("/admin/api/customers", headers=HEADERS).json()["customers"]
+        return next(c for c in rows if c["email"] == email)
+
+    def test_needs_header_and_loopback(self):
+        self.assertEqual(self.client.get("/admin/api/customers").status_code, 403)
+        remote = TestClient(admin_main.app, base_url=LOCAL, client=("203.0.113.9", 50000))
+        self.assertEqual(remote.post("/admin/api/customers", headers=HEADERS, json={"email": "x@y.vn"}).status_code, 403)
+
+    def test_create_returns_a_key_and_lists_customer(self):
+        r = self.client.post("/admin/api/customers", headers=HEADERS,
+                             json={"email": "Shop@Example.vn", "max_devices": 2, "expires": "2027-06-30"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["activation_key"].startswith("SARAE-ACT-"))
+        c = self.customer("shop@example.vn")
+        self.assertEqual((c["status"], c["devices"], c["max_devices"], c["priority"]), ("hợp lệ", 0, 2, False))
+        self.assertEqual(c["expires_at"], "2027-06-30T16:59:59+00:00")
+        dup = self.client.post("/admin/api/customers", headers=HEADERS, json={"email": "shop@example.vn"})
+        self.assertEqual(dup.status_code, 422)
+
+    def test_update_priority_devices_expiry_and_lock(self):
+        self.client.post("/admin/api/customers", headers=HEADERS, json={"email": "a@shop.vn"})
+        url = "/admin/api/customers/a%40shop.vn"
+        self.assertEqual(self.client.patch(url, headers=HEADERS, json={"priority": True, "max_devices": 3,
+                                                                       "expires": "2027-01-01"}).status_code, 200)
+        c = self.customer("a@shop.vn")
+        self.assertEqual((c["priority"], c["max_devices"], c["expires_at"]), (True, 3, "2027-01-01T16:59:59+00:00"))
+        self.client.patch(url, headers=HEADERS, json={"expires": None, "enabled": False, "priority": False})
+        c = self.customer("a@shop.vn")
+        self.assertEqual((c["expires_at"], c["status"], c["enabled"], c["priority"]), (None, "đang khóa", False, False))
+        self.assertEqual(self.client.patch(url, headers=HEADERS, json={"max_devices": 0}).status_code, 422)
+        self.assertEqual(self.client.patch("/admin/api/customers/none%40x.vn", headers=HEADERS,
+                                           json={"enabled": True}).status_code, 422)
+
+    def test_new_key_devices_and_revoke(self):
+        from app import gateway_main
+        self.client.post("/admin/api/customers", headers=HEADERS, json={"email": "b@shop.vn"})
+        key = self.client.post("/admin/api/customers/b%40shop.vn/keys", headers=HEADERS).json()["activation_key"]
+        self.gateway.reset_state()
+        with TestClient(gateway_main.app) as gw:
+            device = gw.post("/api/identity/activate", json={"activation_key": key, "hostname": "PC-B"}).json()
+        devices = self.client.get("/admin/api/customers/b%40shop.vn/devices", headers=HEADERS).json()["devices"]
+        self.assertEqual((devices[0]["agent_id"], devices[0]["hostname"], devices[0]["enabled"]),
+                         (device["agent_id"], "PC-B", True))
+        self.assertEqual(self.customer("b@shop.vn")["devices"], 1)
+        self.assertEqual(self.client.delete(f"/admin/api/devices/{device['agent_id']}", headers=HEADERS).status_code, 204)
+        self.assertEqual(self.customer("b@shop.vn")["devices"], 0)
+        self.assertEqual(self.client.delete("/admin/api/devices/agt_missing", headers=HEADERS).status_code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()

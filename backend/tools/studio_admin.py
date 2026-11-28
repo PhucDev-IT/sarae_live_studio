@@ -83,6 +83,15 @@ def set_expiry(email: str, expires_at: str | None) -> None:
         db.execute("UPDATE licenses SET expires_at=? WHERE owner_id=?", (expires_at, owner["id"]))
 
 
+def set_max_devices(email: str, max_devices: int) -> None:
+    """New device limit; machines already activated stay, only new activations are counted against it."""
+    if not 1 <= max_devices <= 100:
+        raise AdminError("Số máy phải từ 1 đến 100")
+    with db_open() as db:
+        owner = owner_by_email(db, email)
+        db.execute("UPDATE licenses SET max_agents=? WHERE owner_id=?", (max_devices, owner["id"]))
+
+
 def set_enabled(email: str, enabled: bool) -> None:
     with db_open() as db:
         owner = owner_by_email(db, email)
@@ -153,6 +162,9 @@ def run(args) -> None:
     elif cmd == "extend":
         set_expiry(args.email, _expiry_arg(args))
         print(f"Đã đặt hạn license của {args.email.strip().lower()}: {show_expiry(_expiry_arg(args))}.")
+    elif cmd == "set-devices":
+        set_max_devices(args.email, args.max_devices)
+        print(f"Đã đặt tối đa {args.max_devices} máy cho {args.email.strip().lower()}.")
     elif cmd in ("disable", "enable"):
         set_enabled(args.email, cmd == "enable")
         print(f"Đã {'mở' if cmd == 'enable' else 'khóa'} license của {args.email.strip().lower()}.")
@@ -200,6 +212,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="danh sách khách")
     with_expiry(cmd := sub.add_parser("extend", help="đổi hạn license"))
     cmd.add_argument("--email", required=True)
+    cmd = sub.add_parser("set-devices", help="đổi số máy tối đa")
+    cmd.add_argument("--email", required=True)
+    cmd.add_argument("--max-devices", type=int, required=True)
     sub.add_parser("disable", help="khóa license").add_argument("--email", required=True)
     sub.add_parser("enable", help="mở lại license").add_argument("--email", required=True)
     sub.add_parser("devices", help="các máy đã kích hoạt của khách").add_argument("--email", required=True)

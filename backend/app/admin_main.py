@@ -1,4 +1,4 @@
-"""Admin voice page for the home PC: `uvicorn app.admin_main:app --host 127.0.0.1 --port 8001` (start-admin.cmd).
+"""Admin page for the home PC: customers (license, devices, priority) and cloned voices. `uvicorn app.admin_main:app --host 127.0.0.1 --port 8001` (start-admin.cmd).
 
 Only the admin clones and manages voices (docs/HYBRID_STUDIO_SERVER.md); every licensed customer sees them all
 through the gateway. This app is never behind cloudflared: the tunnel only routes to the gateway on :8000.
@@ -164,9 +164,104 @@ def preview(voice_id: str, body: dict = Body(...)):
     return Response(audio, media_type="audio/wav")
 
 
+# --- customers (same operations as the CLI tools.studio_admin) ---------------------------------------------------
+def _admin():
+    from tools import studio_admin          # backend/ is the working directory, as for the CLI
+    return studio_admin
+
+
+def _run(operation):
+    admin = _admin()
+    try:
+        return operation(admin)
+    except admin.AdminError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+def _expiry(admin, body: dict):
+    """`expires`: "YYYY-MM-DD" (end of that day, Vietnam time) or null/"" for no expiry."""
+    value = body.get("expires")
+    return admin.expiry_from_date(str(value)) if value else None
+
+
+@app.get("/admin/api/customers")
+def customers(days: int = 7):
+    from app import studio_gateway
+    admin = _admin()
+    priority = studio_gateway.priority_owners()
+    usage: dict[str, dict] = {}
+    for row in studio_gateway.usage_rows(None, max(1, min(days, 90))):
+        total = usage.setdefault(row["owner_id"], {"requests": 0, "failures": 0, "chars": 0})
+        for key in total:
+            total[key] += row[key]
+    result = []
+    for r in admin.customers():
+        expires = r["expires_at"]
+        result.append({"email": r["email"], "status": admin.status_text(r), "enabled": bool(r["enabled"]),
+                       "devices": r["devices"], "max_devices": r["max_agents"], "expires_at": expires,
+                       "expires_text": admin.show_expiry(expires), "priority": r["id"] in priority,
+                       "usage": usage.get(r["id"], {"requests": 0, "failures": 0, "chars": 0})})
+    return {"customers": result, "days": days}
+
+
+@app.post("/admin/api/customers")
+def create_customer(body: dict = Body(...)):
+    """Create the customer and hand back a first activation key (shown once)."""
+    email = str(body.get("email") or "")
+    try:
+        max_devices = int(body.get("max_devices") or 1)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Số máy phải là số.") from None
+    key = _run(lambda a: (a.create_customer(email, max_devices, _expiry(a, body)), a.issue_key(email))[1])
+    log.info("customer created")
+    return {"email": email.strip().lower(), "activation_key": key}
+
+
+@app.post("/admin/api/customers/{email}/keys")
+def new_key(email: str):
+    return {"activation_key": _run(lambda a: a.issue_key(email))}
+
+
+@app.patch("/admin/api/customers/{email}")
+def update_customer(email: str, body: dict = Body(...)):
+    """Any of: `expires` (YYYY-MM-DD or null), `max_devices`, `enabled`, `priority`."""
+    from app import studio_gateway
+
+    def apply(admin):
+        if "expires" in body:
+            admin.set_expiry(email, _expiry(admin, body))
+        if "max_devices" in body:
+            try:
+                admin.set_max_devices(email, int(body["max_devices"]))
+            except (TypeError, ValueError):
+                raise admin.AdminError("Số máy phải là số.") from None
+        if "enabled" in body:
+            admin.set_enabled(email, bool(body["enabled"]))
+        if "priority" in body:
+            with admin.db_open() as db:
+                owner_id = admin.owner_by_email(db, email)["id"]
+            studio_gateway.set_owner_priority(owner_id, 1 if body["priority"] else 0)
+    _run(apply)
+    return {"ok": True}
+
+
+@app.get("/admin/api/customers/{email}/devices")
+def customer_devices(email: str):
+    admin = _admin()
+    rows = _run(lambda a: a.devices(email))
+    return {"devices": [{"agent_id": r["id"], "hostname": r["hostname"], "platform": r["platform"],
+                         "enabled": bool(r["enabled"]), "activated": admin.show_expiry(r["created_at"])} for r in rows]}
+
+
+@app.delete("/admin/api/devices/{agent_id}", status_code=204)
+def revoke_device(agent_id: str):
+    _run(lambda a: a.revoke_device(agent_id))
+    return Response(status_code=204)
+
+
 PAGE = r"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quản lý giọng Sarae</title>
+<title>Sarae Admin</title>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--text:#1b1f24;--muted:#626b76;--line:#dde1e6;--accent:#0b6bcb;--danger:#c62828;--ok:#2e7d32;--warn:#b26a00}
 @media (prefers-color-scheme:dark){:root{--bg:#111418;--card:#1a1f25;--text:#e6e9ed;--muted:#9aa4ae;--line:#2c333b;--accent:#5aa6f0;--danger:#ef6b6b;--ok:#6cc070;--warn:#e0a040}}
@@ -185,9 +280,36 @@ button:disabled{opacity:.5;cursor:default}.muted{color:var(--muted)}.pill{displa
 .voice header{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.voice header strong{font-size:15px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}#notice{min-height:20px;margin:8px 0 0}
 audio{width:100%;margin-top:8px}code{font-size:12px}
+.tabs{display:flex;gap:4px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--muted)}
+.tabs button[aria-selected=true]{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px}@media (max-width:640px){.row3{grid-template-columns:1fr}}
+input[type=number],input[type=date]{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font:inherit}
+.table{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-top:1px solid var(--line);vertical-align:middle;white-space:nowrap}
+th{color:var(--muted);font-weight:600;border-top:0}td input[type=number]{width:64px;padding:4px 6px}td input[type=date]{width:150px;padding:4px 6px}
+.keybox{margin-top:12px;padding:10px 12px;border:1px dashed var(--accent);border-radius:6px;word-break:break-all}
+.switch{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 </style></head><body><main>
-<h1>Quản lý giọng clone</h1>
-<p class="sub">Chỉ mở trên PC server. Mọi khách có license đều dùng được các giọng ở đây. <span id="server"></span></p>
+<h1>Sarae Admin</h1>
+<p class="sub">Chỉ mở trên PC server. <span id="server"></span></p>
+<nav class="tabs" role="tablist"><button role="tab" data-tab="customers" aria-selected="true">Khách hàng</button><button role="tab" data-tab="voices" aria-selected="false">Giọng clone</button></nav>
+
+<div data-panel="customers">
+<section class="card"><h2>Thêm khách</h2>
+<div class="row3"><div><label for="cemail">Email</label><input id="cemail" type="text" maxlength="254" placeholder="khach@shop.vn"></div>
+<div><label for="cmax">Số máy tối đa</label><input id="cmax" type="number" min="1" max="100" value="1"></div>
+<div><label for="cexp">Hết hạn <span class="muted">(để trống = vô thời hạn)</span></label><input id="cexp" type="date"></div></div>
+<div class="actions"><button class="primary" id="ccreate">Tạo khách + cấp mã</button></div>
+<div id="ckey"></div><p id="cnotice" role="status"></p></section>
+
+<section class="card"><h2>Danh sách khách <button id="creload" style="margin-left:8px">Làm mới</button></h2>
+<p class="muted" style="margin-top:-6px">Ưu tiên: câu TTS của tài khoản này được tạo trước các câu đang chờ của khách khác. Usage tính 7 ngày gần nhất.</p>
+<div class="table"><table><thead><tr><th>Email</th><th>Trạng thái</th><th>Máy</th><th>Hết hạn</th><th>Ưu tiên</th><th>Usage 7 ngày</th><th></th></tr></thead><tbody id="clist"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div id="cdetail"></div></section>
+</div>
+
+<div data-panel="voices" hidden>
+<p class="muted">Mọi khách có license đều dùng được các giọng ở đây.</p>
 
 <section class="card"><h2>Thêm giọng mới</h2>
 <div class="row"><div><label for="name">Tên hiển thị</label><input id="name" type="text" maxlength="100" placeholder="Giọng Linh Phương"></div>
@@ -201,6 +323,7 @@ audio{width:100%;margin-top:8px}code{font-size:12px}
 <section class="card"><h2>Danh sách giọng <button id="reload" style="margin-left:8px">Làm mới</button></h2>
 <label for="sample">Câu nghe thử</label><input id="sample" type="text" maxlength="450" value="Dạ chị ơi, mẫu này còn đủ size, chị cho em xin chiều cao cân nặng để em tư vấn nha.">
 <div id="list" style="margin-top:12px"><p class="muted">Đang tải…</p></div></section>
+</div>
 </main><script>
 const H={"X-Sarae-Admin":"1","Content-Type":"application/json"};
 const $=s=>document.querySelector(s);
@@ -244,4 +367,47 @@ $("#create").addEventListener("click",async()=>{const f=$("#wav").files[0];if(!f
   notice(`Đã tạo giọng "${v.name}".`,"ok");$("#wav").value="";$("#tr").value="";idEdited=false;await load()
  }catch(e){notice(e.message,"err")}finally{btn.disabled=false}});
 $("#reload").addEventListener("click",load);load();
+
+// --- tabs ---
+document.querySelectorAll(".tabs button").forEach(b=>b.addEventListener("click",()=>{
+ document.querySelectorAll(".tabs button").forEach(x=>x.setAttribute("aria-selected",x===b));
+ document.querySelectorAll("[data-panel]").forEach(p=>p.hidden=p.dataset.panel!==b.dataset.tab)}));
+
+// --- customers ---
+const enc=encodeURIComponent;
+function cnotice(t,cls){const n=$("#cnotice");n.textContent=t;n.className=cls||""}
+function showKey(email,key){$("#ckey").innerHTML=`<div class="keybox"><strong>Mã kích hoạt cho ${esc(email)}</strong> (chỉ hiện một lần, dùng cho một máy):<br><code id="keytext">${esc(key)}</code> <button id="copykey">Sao chép</button></div>`;
+ $("#copykey").onclick=()=>navigator.clipboard.writeText(key).then(()=>$("#copykey").textContent="Đã chép",()=>{})}
+const isoDate=iso=>{if(!iso)return"";const d=new Date(new Date(iso).getTime()+7*3600e3);return d.toISOString().slice(0,10)};
+async function loadCustomers(){const body=$("#clist");
+ try{const data=await (await api("GET","/admin/api/customers?days=7")).json();
+  if(!data.customers.length){body.innerHTML='<tr><td colspan="7" class="muted">Chưa có khách nào.</td></tr>';return}
+  body.innerHTML=data.customers.map(c=>`<tr data-email="${esc(c.email)}">
+   <td>${esc(c.email)}</td>
+   <td><span class="pill ${c.status==="hợp lệ"?"ok":c.status==="hết hạn"?"warn":"err"}">${esc(c.status)}</span></td>
+   <td>${c.devices} / <input class="cmax" type="number" min="1" max="100" value="${c.max_devices}" aria-label="Số máy tối đa"></td>
+   <td><input class="cexp" type="date" value="${isoDate(c.expires_at)}" aria-label="Ngày hết hạn" title="${esc(c.expires_text)}"></td>
+   <td><label class="switch"><input class="cprio" type="checkbox" ${c.priority?"checked":""}> ${c.priority?"Có":"Không"}</label></td>
+   <td class="muted">${c.usage.requests} câu · ${c.usage.chars} ký tự${c.usage.failures?` · ${c.usage.failures} lỗi`:""}</td>
+   <td><button class="csave">Lưu</button> <button class="ckey">Cấp mã</button> <button class="cdev">Máy</button> <button class="${c.enabled?"danger ":""}clock">${c.enabled?"Khóa":"Mở khóa"}</button></td></tr>`).join("");
+ }catch(e){body.innerHTML=`<tr><td colspan="7" class="err">${esc(e.message)}</td></tr>`}}
+$("#ccreate").addEventListener("click",async()=>{const btn=$("#ccreate");btn.disabled=true;cnotice("");
+ try{const r=await (await api("POST","/admin/api/customers",{email:$("#cemail").value.trim(),max_devices:Number($("#cmax").value||1),expires:$("#cexp").value||null})).json();
+  showKey(r.email,r.activation_key);cnotice(`Đã tạo khách ${r.email}.`,"ok");$("#cemail").value="";await loadCustomers()
+ }catch(e){cnotice(e.message,"err")}finally{btn.disabled=false}});
+$("#clist").addEventListener("click",async ev=>{const b=ev.target.closest("button");if(!b)return;const row=b.closest("tr");const email=row.dataset.email;
+ b.disabled=true;cnotice("");try{
+  if(b.classList.contains("csave")){await api("PATCH",`/admin/api/customers/${enc(email)}`,{max_devices:Number(row.querySelector(".cmax").value),expires:row.querySelector(".cexp").value||null,priority:row.querySelector(".cprio").checked});cnotice(`Đã lưu ${email}.`,"ok");await loadCustomers()}
+  if(b.classList.contains("ckey")){const r=await (await api("POST",`/admin/api/customers/${enc(email)}/keys`)).json();showKey(email,r.activation_key)}
+  if(b.classList.contains("clock")){const lock=b.textContent==="Khóa";if(!lock||confirm(`Khóa license của ${email}? Studio của khách sẽ bị khóa ở lần kiểm tra tới (phiên đang LIVE vẫn chạy hết).`)){await api("PATCH",`/admin/api/customers/${enc(email)}`,{enabled:!lock});await loadCustomers()}}
+  if(b.classList.contains("cdev"))await showDevices(email);
+ }catch(e){cnotice(e.message,"err")}finally{b.disabled=false}});
+$("#clist").addEventListener("change",async ev=>{const box=ev.target.closest(".cprio");if(!box)return;const email=box.closest("tr").dataset.email;
+ try{await api("PATCH",`/admin/api/customers/${enc(email)}`,{priority:box.checked});cnotice(`${box.checked?"Đã bật":"Đã tắt"} ưu tiên cho ${email}.`,"ok");await loadCustomers()}catch(e){cnotice(e.message,"err")}});
+async function showDevices(email){const box=$("#cdetail");const data=await (await api("GET",`/admin/api/customers/${enc(email)}/devices`)).json();
+ box.innerHTML=`<h2 style="margin-top:16px">Máy của ${esc(email)}</h2>`+(data.devices.length?`<div class="table"><table><thead><tr><th>Tên máy</th><th>Mã máy</th><th>Kích hoạt</th><th>Trạng thái</th><th></th></tr></thead><tbody>${data.devices.map(d=>`<tr data-agent="${esc(d.agent_id)}"><td>${esc(d.hostname)}</td><td><code>${esc(d.agent_id)}</code></td><td>${esc(d.activated)}</td><td>${d.enabled?'<span class="pill ok">đang dùng</span>':'<span class="pill">đã gỡ</span>'}</td><td>${d.enabled?'<button class="danger drevoke">Gỡ máy</button>':""}</td></tr>`).join("")}</tbody></table></div>`:'<p class="muted">Khách này chưa kích hoạt máy nào.</p>');
+ box.querySelectorAll(".drevoke").forEach(btn=>btn.onclick=async()=>{const id=btn.closest("tr").dataset.agent;
+  if(!confirm("Gỡ máy này? Máy đó phải nhập mã kích hoạt mới, và khách được trả lại một suất máy."))return;
+  try{await api("DELETE",`/admin/api/devices/${enc(id)}`);await showDevices(email);await loadCustomers()}catch(e){cnotice(e.message,"err")}})}
+$("#creload").addEventListener("click",loadCustomers);loadCustomers();
 </script></body></html>"""

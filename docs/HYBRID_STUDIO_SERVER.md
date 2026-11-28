@@ -171,7 +171,12 @@ Phiên LIVE đang chạy của khách không bị cắt khi khóa hoặc gỡ m�
 - Body request tối đa 64 KB.
 - Lỗi từ voice server được đổi như sau: `VOICE_NOT_FOUND` → `404 VOICE_NOT_FOUND`; 400/422 → `422 INVALID_PARAMS`; voice server bận (429 `TTS_BUSY`/`TTS_QUEUE_TIMEOUT`) → `503 TTS_QUEUE_TIMEOUT`; mất kết nối, 503, các lỗi khác, hoặc audio không phải RIFF/WAVE hay quá 10 MB → `503 TTS_UNAVAILABLE`.
 
-## Quản lý giọng (chỉ admin)
+## Trang admin (chỉ trên PC server)
+
+- Tab **Khách hàng**: tạo khách (nhận ngay mã kích hoạt), cấp thêm mã, đổi số máy tối đa và ngày hết hạn, bật/tắt ưu tiên TTS, khóa/mở license, xem và gỡ máy, xem usage 7 ngày. Mọi việc ở đây giống hệt lệnh CLI `tools.studio_admin`, CLI vẫn dùng được.
+- Tab **Giọng clone**: như mô tả bên dưới.
+
+### Quản lý giọng (chỉ admin)
 
 - Chạy `start-admin.cmd` trên PC server, rồi mở http://127.0.0.1:8001. Cần voice server đang chạy.
 - Trang này làm được: thêm giọng (WAV mẫu 1 đến 20 giây, tối đa 5 MB, transcript không bắt buộc), sửa transcript hoặc quay về Whisper, nghe thử bằng preset `live_fast` giống hệt khi LIVE, xóa giọng.
