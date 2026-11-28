@@ -39,7 +39,11 @@ METHODS = (
     "studio.replies.simulate", "studio.replies.speak", "studio.replies.send_comment", "studio.replies.cancel",
     "studio.replies.edit", "studio.replies.hold",
     "studio.replies.dismiss", "studio.replies.stop_voice", "studio.replies.voices", "studio.replies.voices_start",
+    "studio.account.status", "studio.account.activate", "studio.account.check", "studio.account.deactivate",
 )
+ACCOUNT_METHODS = {name: name.rsplit(".", 1)[-1] for name in METHODS if name.startswith("studio.account.")}
+# Answered without a license: the account screen itself, Core status, and stopping playback (never harmful).
+UNLICENSED_METHODS = frozenset({*ACCOUNT_METHODS, "studio.status", "studio.live.stop"})
 REPLY_METHODS = {name: name.rsplit(".", 1)[-1] for name in METHODS if name.startswith("studio.replies.")}
 LIVE_METHODS = {"studio.obs.status": "obs_status", "studio.obs.configure": "obs_configure",
                 "studio.obs.connect": "obs_connect", "studio.obs.disconnect": "obs_disconnect",
@@ -78,6 +82,7 @@ class StudioTransport:
         self.ai = None  # StudioAI, attached by the runtime
         self.live = None  # StudioLive, attached by the runtime
         self.replies = None  # ReplyDesk, attached by the runtime
+        self.account = None  # StudioAccount, attached by the runtime; None (tests, tools) means no license gate
 
     def _thumbnail_url(self, product: dict) -> dict:
         has_thumbnail = product.pop("has_thumbnail", False)
@@ -103,9 +108,38 @@ class StudioTransport:
         scene["api_base"] = self.base_url
         return scene
 
+    def live_running(self) -> bool:
+        """A LIVE session is playing now (also while paused)."""
+        engine = getattr(self.live, "engine", None)
+        return bool(getattr(engine, "active", False))
+
+    def _require_license(self, method: str) -> None:
+        """docs/HYBRID_STUDIO_SERVER.md: without a valid license only the account screen works — but a running
+        LIVE is never cut. Everything that session uses keeps working; only a new LIVE cannot start."""
+        if self.account is None or method in UNLICENSED_METHODS or self.account.licensed():
+            return
+        reason = self.account.status().get("reason")
+        if self.live_running():
+            if method == "studio.live.start":
+                raise StudioError("LICENSE_REQUIRED", "License chưa hợp lệ nên không bắt đầu được phiên LIVE mới. "
+                                  "Phiên đang phát vẫn chạy tiếp đến khi kết thúc.", {"reason": reason})
+            return
+        raise StudioError("LICENSE_REQUIRED", "Cần kích hoạt máy và có license Sarae còn hạn để dùng Studio.",
+                          {"reason": reason})
+
     def dispatch(self, method: str, params: dict) -> dict:
         if method not in METHODS:
             raise StudioError("METHOD_NOT_FOUND", "Phương thức studio không được hỗ trợ.")
+        self._require_license(method)
+        if method in ACCOUNT_METHODS:
+            if self.account is None:
+                raise StudioError("ACCOUNT_UNAVAILABLE", "Kích hoạt máy chưa sẵn sàng trong Studio Core.")
+            result = getattr(self.account, ACCOUNT_METHODS[method])(params)
+            if method in ("studio.account.activate", "studio.account.check") and result.get("licensed") \
+                    and self.replies is not None:
+                # The cloned voices come from the server this machine just reached.
+                threading.Thread(target=self.replies.voice_server.refresh, name="studio-voice-catalog", daemon=True).start()
+            return result
         if method == "studio.products.detail":
             if set(params) != {"id"}:
                 raise StudioError("VALIDATION_ERROR", "Cần mã sản phẩm trong Studio.")

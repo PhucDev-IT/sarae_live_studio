@@ -20,6 +20,11 @@ EDGE_VOICES = [{"id": "vi-VN-HoaiMyNeural", "name": "Hoài My (nữ)", "provider
 
 
 class LocalVoiceServer:
+    """Dev only (SARAE_STUDIO_VOICE_MODE=local): the voice server on this machine, 127.0.0.1:8780."""
+    provider = "local_voice"
+    prefix = "local:"
+    mode = "local"
+
     def __init__(self, root: Path | None = None, *, transport=None):
         self.root = root or Path(os.environ.get("SARAE_VOICE_SERVER_DIR") or
                                  Path(__file__).resolve().parents[4].parent / "sarae-voice-server")
@@ -80,7 +85,8 @@ class LocalVoiceServer:
             options = [*EDGE_VOICES, *[{"id": "local:" + p["voice_id"], "name": p.get("name") or p["voice_id"],
                         "provider": "local_voice", "ready": self._online and p.get("prompt") is not None,
                         "revision": p.get("rev", "")} for p in self._profiles]]
-            return {"voice_options": options, "voice_server": {"online": self._online, "starting": self._starting, "error": self._error}}
+            return {"voice_options": options, "voice_server": {"online": self._online, "starting": self._starting, "error": self._error,
+                                                       "mode": self.mode}}
 
     def start(self) -> None:
         """Explicit operator action; the shared GPU server keeps running when Studio closes."""

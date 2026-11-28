@@ -164,10 +164,37 @@ export interface ReplyDeskStatus {
   queued: number
   voice: Record<string, unknown> | null
   voices: string[]
-  voice_options?: { id: string; name: string; provider: 'edge' | 'local_voice'; ready: boolean; revision?: string }[]
-  voice_server?: { online: boolean; starting?: boolean; error: string }
+  voice_options?: { id: string; name: string; provider: 'edge' | 'local_voice' | 'remote_voice'; ready: boolean; revision?: string }[]
+  /** mode "remote": cloned voices from the Sarae server (default); "local": dev-only voice server on this PC. */
+  voice_server?: { online: boolean; starting?: boolean; error: string; mode?: 'remote' | 'local'; fallbacks?: number; last_fallback?: string | null }
   account_username: string | null
   product_id: string | null
+}
+
+/** This machine's activation and Sarae license (docs/HYBRID_STUDIO_SERVER.md). */
+export interface AccountStatus {
+  state: 'unactivated' | 'active' | 'offline' | 'locked'
+  licensed: boolean
+  dev_bypass: boolean
+  /** Why the app is locked or no longer activated, e.g. LICENSE_EXPIRED, AGENT_REVOKED, OFFLINE_GRACE_EXPIRED. */
+  reason: string | null
+  message: string | null
+  activated: boolean
+  server_url: string
+  agent_id: string | null
+  device_name: string
+  email: string | null
+  expires_at: string | null
+  max_agents: number | null
+  activated_at: string | null
+  checked_at: string | null
+  last_attempt_at: string | null
+  /** While offline: the app stays open until this time (72 h after the last good check). */
+  grace_until: string | null
+  last_error: { code: string; message: string } | null
+  checking: boolean
+  /** A LIVE session is playing: it is never cut, even with an invalid license. */
+  live_running: boolean
 }
 
 export interface TikTokStatus {
@@ -270,6 +297,8 @@ const slowMethods: Record<string, number> = {
   // Starting or switching may render an OBS copy of a rotated video first.
   'studio.replies.send_comment': 130_000,
   'studio.live.start': 120_000, 'studio.live.next': 120_000, 'studio.live.previous': 120_000,
+  // Activation, then the first license check, each with a 20 s network timeout in the Core.
+  'studio.account.activate': 60_000, 'studio.account.check': 45_000,
 }
 
 async function request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -407,6 +436,10 @@ export const studioClient = {
   repliesSimulate: (comment: string, username?: string) => request<{ entry: ReplyEntry }>('studio.replies.simulate', { comment, ...(username ? { username } : {}) }),
   replyAction: (action: 'speak' | 'send_comment' | 'cancel' | 'dismiss' | 'edit' | 'hold', id: number, text?: string) => request<{ entry: ReplyEntry }>(`studio.replies.${action}`, { id, ...(text !== undefined ? { text } : {}) }),
   liveControl: (action: 'pause' | 'resume' | 'next' | 'previous' | 'stop') => request<LiveStatus>(`studio.live.${action}`),
+  accountStatus: () => request<AccountStatus>('studio.account.status'),
+  accountActivate: (activationKey: string) => request<AccountStatus>('studio.account.activate', { activation_key: activationKey }),
+  accountCheck: () => request<AccountStatus>('studio.account.check'),
+  accountDeactivate: () => request<AccountStatus>('studio.account.deactivate'),
   tiktokStatus: () => request<TikTokStatus>('studio.tiktok.status'),
   tiktokLogin: () => request<TikTokStatus>('studio.tiktok.login'),
   tiktokConnect: () => request<TikTokStatus>('studio.tiktok.connect'),
