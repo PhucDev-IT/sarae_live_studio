@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "windows": {
+      "certificateThumbprint": "THAY_BANG_THUMBPRINT_CHUNG_THU_KY_MA",
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com"
+    }
+  }
+}

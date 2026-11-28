@@ -33,7 +33,7 @@
     "publisher": "Sarae",
     "category": "Utility",
     "shortDescription": "Sarae Live Studio",
-    "longDescription": "Studio local quản lý sản phẩm và thư viện video trên máy, không cần tài khoản Sarae.",
+    "longDescription": "Studio LIVE chạy trên máy: sản phẩm, thư viện video, OBS và trả lời bình luận. Dữ liệu khách nằm trong AppData, không nằm cạnh ứng dụng.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,10 +41,17 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/sarae-agent-core"],
+    "resources": {
+      "resources/ffmpeg/ffmpeg.exe": "ffmpeg/ffmpeg.exe",
+      "resources/ffmpeg/ffprobe.exe": "ffmpeg/ffprobe.exe",
+      "resources/ffmpeg/LICENSE.txt": "ffmpeg/LICENSE.txt",
+      "resources/ffmpeg/VERSION.txt": "ffmpeg/VERSION.txt"
+    },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
         "installMode": "currentUser",
+        "compression": "lzma",
         "languages": ["Vietnamese", "English"],
         "displayLanguageSelector": false
       }

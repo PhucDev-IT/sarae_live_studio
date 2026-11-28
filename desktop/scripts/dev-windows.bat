@@ -13,9 +13,16 @@ set "TRIPLE="
 for /f "tokens=2" %%t in ('rustc -vV ^| findstr /b "host:"') do set "TRIPLE=%%t"
 if "%TRIPLE%"=="" set "TRIPLE=x86_64-pc-windows-msvc"
 
+rem FFmpeg/FFprobe are Tauri resources (also copied next to the debug build); fetch them once.
+if not exist "src-tauri\resources\ffmpeg\VERSION.txt" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0fetch-ffmpeg.ps1" || goto :fail
+)
+
 if /i "%~1"=="--rebuild-core" goto :sidecar
 if exist "src-tauri\binaries\sarae-agent-core-%TRIPLE%.exe" goto :npm
 :sidecar
+rem Developer sidecar: no customer profile, so SARAE_STUDIO_* switches from this shell still apply.
+set "SARAE_BUILD_CHANNEL=dev"
 call "%~dp0build-sidecar.bat" --no-pause || goto :fail
 
 :npm

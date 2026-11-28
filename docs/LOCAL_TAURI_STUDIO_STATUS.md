@@ -92,7 +92,7 @@ npm --prefix desktop run tauri -- dev
 
 Tauri tự bật sidecar với `--studio --ipc`, dùng JSON Lines v1 qua stdin/stdout cho nghiệp vụ. HTTP trong bản native chỉ phục vụ video theo ID và token phiên trên `127.0.0.1` ở cổng ngẫu nhiên. Không mở API ghi HTTP trong bản native. Đóng cửa sổ sẽ dừng sidecar; core theo dõi tiến trình cha và khóa thư mục dữ liệu để tránh hai controller cùng chạy.
 
-Spec PyInstaller đóng gói FFprobe và SQLite. Máy build cần `ffprobe` trên PATH hoặc `SARAE_FFPROBE` trỏ tới executable; core frozen tìm FFprobe trong tài nguyên bundle. Bản cài sạch vẫn phải được kiểm thử riêng trước phát hành.
+Spec PyInstaller đóng gói SQLite. FFmpeg/FFprobe không còn nằm trong exe one-file: `desktop/scripts/fetch-ffmpeg.ps1` tải bản đã ghim SHA256 và Tauri cài chúng vào `<thư mục cài>/ffmpeg/`; core frozen tìm ở đó trước PATH (xem `docs/CUSTOMER_INSTALLER.md`). Bản cài sạch vẫn phải được kiểm thử riêng trước phát hành.
 
 ## Dữ liệu và nhập video
 
@@ -111,7 +111,7 @@ Kiểm tra bổ sung cho thông số video: production build đạt; toàn bộ 
 
 Thư viện tự tạo thumbnail JPEG từ khung hình video, ưu tiên khoảng 10% thời lượng và tối đa giây đầu tiên. Ảnh giữ chiều xoay và tỷ lệ, cạnh dài tối đa 640 px, cache ở `thumbnails/media/` theo ID video và SHA-256. Video cũ và video mới được tạo ảnh lần lượt khi mở thư viện; tải danh sách không chạy FFmpeg. Tạo ảnh chạy ngoài khóa dữ liệu, không yêu cầu GPU, không upload lên dịch vụ ngoài và không thay đổi video gốc. Cache còn hợp lệ được dùng lại sau khi mở app; xóa video chỉ xóa ảnh tương ứng. Nếu ảnh lỗi hoặc thiếu FFmpeg, video vẫn xem được và có nút **Tạo lại ảnh bìa**.
 
-`studio.media.thumbnail` tạo ảnh qua cùng service cho IPC và HTTP; endpoint `GET/HEAD /studio/media-thumbnails/<id>` chỉ đọc cache và yêu cầu token local. Bản native đóng gói cả FFmpeg lẫn FFprobe, máy build cần hai executable trên PATH hoặc `SARAE_FFMPEG` / `SARAE_FFPROBE`. Sau cập nhật cần mở lại core; native dùng `start-studio.cmd native rebuild`.
+`studio.media.thumbnail` tạo ảnh qua cùng service cho IPC và HTTP; endpoint `GET/HEAD /studio/media-thumbnails/<id>` chỉ đọc cache và yêu cầu token local. Bản native cài kèm FFmpeg lẫn FFprobe trong `<thư mục cài>/ffmpeg/` (tải bằng `desktop/scripts/fetch-ffmpeg.ps1`). Sau cập nhật cần mở lại core; native dùng `start-studio.cmd native rebuild`.
 
 Đã kiểm tra thumbnail thật trên UI với video ngang và dọc (JPEG 640×360 / 360×640), tự tạo cho thư viện cũ và giữ các nhãn thông số. Bộ test riêng thư viện (`test_studio_storage`, `test_studio_media_metadata`, `test_studio_media_thumbnails`, `test_studio_presenters`, `test_studio_transport`) đạt **139 test**; production build frontend đạt. Kiểm tra gồm cache qua lần mở lại, lỗi FFmpeg/thử lại, giữ file gốc, xóa ảnh theo video, thao tác đồng thời và endpoint có token cho web/native. Chưa build lại bộ cài native cho thay đổi thumbnail.
 

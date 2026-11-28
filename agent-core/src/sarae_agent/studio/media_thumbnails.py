@@ -17,6 +17,7 @@ from typing import BinaryIO
 import cv2
 import numpy as np
 
+from sarae_agent.bundled import bundled_tool
 from .models import StudioError, identifier
 
 MAX_JPEG_BYTES = 2 * 1024 * 1024
@@ -132,14 +133,9 @@ def _executable(candidate: str | Path | None) -> str | None:
 
 
 def resolve_ffmpeg() -> str:
-    name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    if getattr(sys, "frozen", False):
-        folders = [Path(sys.executable).parent]
-        if getattr(sys, "_MEIPASS", None):
-            folders.insert(0, Path(sys._MEIPASS))
-        for folder in folders:
-            if executable := _executable(folder / name):
-                return executable
+    # Packaged builds: the FFmpeg installed with the app wins over overrides and PATH.
+    if (bundled := bundled_tool("ffmpeg")) and (executable := _executable(bundled)):
+        return executable
     executable = (_executable(os.environ.get("SARAE_FFMPEG"))
                   or _executable(shutil.which("ffmpeg")))
     if not executable:

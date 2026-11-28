@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -49,6 +50,13 @@ def self_check() -> int:
         report["dpapi_roundtrip"] = f"ERROR {exc}"
     from sarae_agent.config import paths
     report["data_root"] = str(paths.root)
+    from sarae_agent import bundled
+    from sarae_agent.studio.storage import data_root as studio_data_root
+    profile = bundled.load_profile()
+    report["build_profile"] = {"channel": profile.get("channel", "source"), "server_url": profile.get("server_url")}
+    report["studio_data_root"] = str(studio_data_root())
+    # Informational: the PyInstaller output folder has no FFmpeg; the installed app must show both.
+    report["tools"] = {name: bundled.bundled_tool(name) or shutil.which(name) for name in ("ffmpeg", "ffprobe")}
     from sarae_agent.monitoring.captcha import builtin_templates, template_specs
     import cv2
     import numpy as np
@@ -165,6 +173,10 @@ def run_ipc(parent_pid: int | None) -> int:
 
 
 def main() -> int:
+    # Packaged builds: customer profile (server URL, no dev switches) and bundled FFmpeg on PATH.
+    from sarae_agent.bundled import startup
+
+    startup()
     # Studio owns its arguments and lifecycle; do not initialize the legacy Agent runtime.
     if "--studio" in sys.argv[1:]:
         del sys.argv[sys.argv.index("--studio", 1)]

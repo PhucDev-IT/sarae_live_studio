@@ -6,3 +6,9 @@ release/
 # Generated PyInstaller sidecar (scripts/build-sidecar.bat); never commit binaries
 src-tauri/binaries/*
 !src-tauri/binaries/README.md
+# FFmpeg fetched by scripts/fetch-ffmpeg.ps1 (zip cache + bundled binaries); never commit
+.cache/
+src-tauri/resources/*
+!src-tauri/resources/README.md
+# Local code-signing config copied from tauri.signing.example.json (machine specific)
+src-tauri/tauri.signing.json

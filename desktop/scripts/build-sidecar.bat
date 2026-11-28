@@ -1,6 +1,9 @@
 @echo off
 rem Build the Python Agent Core into a single exe and place it where Tauri expects the sidecar:
 rem   desktop\src-tauri\binaries\sarae-agent-core-<rust target triple>.exe
+rem SARAE_BUILD_CHANNEL=customer bakes the customer profile (SARAE_BUILD_SERVER_URL, dev switches
+rem removed); build-windows.bat sets it. Unset = "dev" sidecar. FFmpeg is not packed into this exe:
+rem the installer ships it separately (scripts\fetch-ffmpeg.ps1).
 setlocal EnableExtensions
 set "DESKTOP=%~dp0.."
 set "CORE=%~dp0..\..\agent-core"
