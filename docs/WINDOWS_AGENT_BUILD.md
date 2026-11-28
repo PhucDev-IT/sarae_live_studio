@@ -2,13 +2,16 @@
 
 ## 1. Pipeline
 
+Bộ cài gửi khách (FFmpeg kèm theo, profile `customer`, ký mã, kiểm tra trên máy sạch, đề xuất
+updater): xem [CUSTOMER_INSTALLER.md](CUSTOMER_INSTALLER.md).
+
 ```text
 agent-core/ (Python) ──PyInstaller one-file──▶ desktop/src-tauri/binaries/sarae-agent-core-<triple>.exe
                                                      │  (Tauri bundle.externalBin)
 desktop/src (React) ──vite build──▶ desktop/dist ────┤
 desktop/src-tauri (Rust) ──cargo release──▶ SaraeAgent.exe
                                                      ▼
-                                   NSIS ──▶ desktop/release/SaraeAgent-Setup-<version>.exe
+                                   NSIS ──▶ desktop/release/SaraeLiveStudio-Setup-<version>.exe
 ```
 
 ## 2. Yêu cầu máy build (KHÔNG cần trên máy khách hàng)
@@ -60,7 +63,8 @@ obsws-python) chỉ còn làm bản gốc cho `agent-core/src/sarae_agent/playba
 
 | Thứ | Vị trí |
 |---|---|
-| Ứng dụng (installMode `currentUser`, không cần quyền admin) | `%LOCALAPPDATA%\Sarae Agent\` (`SaraeAgent.exe`, `sarae-agent-core.exe`) |
+| Ứng dụng (installMode `currentUser`, không cần quyền admin) | `%LOCALAPPDATA%\Sarae Live Studio\` (`SaraeAgent.exe`, `sarae-agent-core.exe`, `ffmpeg\`) |
+| Dữ liệu Studio (SQLite, video, sản phẩm) | `%LOCALAPPDATA%\SaraeLiveStudio\`, không bị xóa khi gỡ cài đặt |
 | Dữ liệu, cấu hình, log, credential DPAPI | `%LOCALAPPDATA%\SaraeAgent\` — không phụ thuộc thư mục làm việc/thư mục EXE |
 | Thư viện native của sidecar | Giải nén tạm vào `%TEMP%\_MEI*` mỗi lần chạy (PyInstaller one-file), tự dọn khi Core thoát |
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sarae_agent import __version__
+from sarae_agent.bundled import bundled_tool
 
 from .models import (EMPTY_FACTS, StudioError, identifier, identifier_list, presenter_fields, product_facts,
                      product_fields, tiktok_snapshot, timestamp)
@@ -91,19 +92,9 @@ def _video_metadata(video: dict, container: dict) -> dict:
 
 def probe_video(path: Path) -> dict:
     """Validate the copied bytes and read display metadata with a 15s deadline."""
-    executable = None
-    # Native packaging may place FFprobe beside the sidecar or in its
-    # PyInstaller extraction root. Source/development runs use PATH.
-    if getattr(sys, "frozen", False):
-        folders = [Path(sys.executable).parent]
-        if getattr(sys, "_MEIPASS", None):
-            folders.insert(0, Path(sys._MEIPASS))
-        for folder in folders:
-            candidate = folder / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
-            if candidate.is_file():
-                executable = str(candidate)
-                break
-    executable = executable or shutil.which("ffprobe")
+    # The installer places FFprobe in <install dir>\ffmpeg (see sarae_agent.bundled).
+    # Source/development runs use PATH.
+    executable = bundled_tool("ffprobe") or shutil.which("ffprobe")
     if not executable:
         raise StudioError("PROBE_UNAVAILABLE", "FFprobe is required to verify imported videos. Install FFmpeg first.")
     try:
