@@ -255,6 +255,17 @@ def test_a_weight_only_chart_hides_height_from_the_ai():
     assert product_prompt_context({"name": "x", "facts": {"colors": ["Đen"]}})["thong_tin"] == {"colors": ["Đen"]}
 
 
+def test_reply_prompt_thanks_orders_and_never_promises_to_check_back():
+    from sarae_agent.studio.ai import reply_prompt
+    system, _ = reply_prompt("đã săn 109k", "Nguyễn Hà", None)
+    assert "nói lịch sự rằng shop sẽ kiểm tra" not in system  # the old rule that produced the filler
+    missing = system.split("2.")[1].split("2b.")[0]
+    assert "KHÔNG BAO GIỜ" in missing and "reply rỗng" in missing and "needs_review = true" in missing
+    order = system.split("2b.")[1].split("3.")[0]
+    assert "đã săn" in order and "đã đặt" in order and "cảm ơn" in order and "intent ORDER" in order
+    assert "needs_review = false" in order and "không nhắc lại hay xác nhận giá" in order
+
+
 def test_reply_prompt_reads_questions_without_question_marks():
     from sarae_agent.studio.ai import reply_prompt
     system, _ = reply_prompt("quần bo ống ạ", "Lan", None)

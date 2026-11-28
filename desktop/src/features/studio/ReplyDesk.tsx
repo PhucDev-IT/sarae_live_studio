@@ -105,13 +105,15 @@ function ReplyCard({ entry, productName, disabled, busy, onAction }: { entry: Re
   const changed = editing && text.trim() !== '' && text !== entry.reply
   const saveEdit = async () => { if (changed) await onAction('edit', text); setEditing(false) }
   const stage = stageInfo[entry.stage] ?? { label: entry.stage, tone: 'neutral' }
-  const answerable = ['ready', 'review', 'done', 'failed'].includes(entry.stage) && !!entry.reply
+  // A review card the AI left blank (facts missing) is still answerable: the operator writes the reply.
+  const answerable = ['ready', 'review', 'done', 'failed'].includes(entry.stage) && (!!entry.reply || entry.stage === 'review')
+  const noText = !entry.reply && !(editing && text.trim())
   const locked = disabled || busy.endsWith(`:${entry.id}`)
   // Sending while editing sends (and saves) the text in the box.
   const send = (action: 'speak' | 'send_comment') => { void onAction(action, editing && text.trim() ? text : undefined); setEditing(false) }
   return <article className={`studio-reply-card ${entry.stage}`}>
     <div className="studio-reply-comment"><strong>{entry.nickname || entry.username || 'Khách'}</strong>{entry.simulated && <span className="studio-tag neutral">Thử</span>}<span className={`studio-tag ${stage.tone}`}>{stage.label}</span>{entry.edited && <span className="studio-tag neutral">Đã sửa</span>}<time>{entry.age_seconds < 60 ? `${entry.age_seconds}s` : `${Math.floor(entry.age_seconds / 60)} phút`}</time><p>{entry.comment}</p></div>
-    {(entry.reply || entry.stage === 'thinking') && <div className="studio-reply-answer">
+    {(entry.reply || entry.stage === 'thinking' || editing) && <div className="studio-reply-answer">
       {entry.stage === 'thinking' ? <span className="studio-typing"><i /><i /><i /></span>
         : editing ? <textarea aria-label="Sửa câu trả lời" value={text} maxLength={300} rows={3} autoFocus onChange={event => setText(event.target.value)}
           onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void saveEdit() } if (event.key === 'Escape') setEditing(false) }} />
@@ -122,7 +124,7 @@ function ReplyCard({ entry, productName, disabled, busy, onAction }: { entry: Re
         {entry.comment_delivery && <span className={`studio-delivery ${entry.comment_delivery.status}`} title={entry.comment_delivery.error ?? undefined}><Send size={12} />Bình luận {deliveryLabels[entry.comment_delivery.status] ?? entry.comment_delivery.status}</span>}
       </footer>}
     </div>}
-    {(entry.stage === 'failed' || entry.stage === 'expired' || entry.stage === 'skipped' || entry.stage === 'ignored') && entry.reason && !entry.reply && <p className="studio-reason">{entry.reason}</p>}
+    {(entry.stage === 'failed' || entry.stage === 'expired' || entry.stage === 'skipped' || entry.stage === 'ignored' || entry.stage === 'review') && entry.reason && !entry.reply && !editing && <p className="studio-reason">{entry.stage === 'review' ? `AI không trả lời được: ${entry.reason}` : entry.reason}</p>}
     {entry.comment_delivery?.error && <p className="studio-reason">{entry.comment_delivery.error}</p>}
     {entry.voice?.status === 'FAILED' && <p className="studio-reason">{entry.voice.detail}</p>}
     {answerable && <div className="studio-reply-actions">
@@ -130,9 +132,9 @@ function ReplyCard({ entry, productName, disabled, busy, onAction }: { entry: Re
       {editing ? <>
         <button className="studio-button primary" disabled={locked || !text.trim()} title="Lưu (Ctrl+Enter)" onClick={() => void saveEdit()}>Lưu</button>
         <button className="studio-button ghost" disabled={locked} title="Bỏ thay đổi (Esc)" onClick={() => setEditing(false)}>Hủy</button>
-      </> : <button className="studio-button ghost" disabled={locked} title="Sửa câu trả lời (tạm dừng tự gửi)" onClick={startEditing}>Sửa</button>}
-      <button className="studio-button" disabled={locked} onClick={() => send('speak')}><Volume2 size={14} />Đọc</button>
-      <button className="studio-button" disabled={locked || entry.simulated} title={entry.simulated ? 'Bình luận thử không gửi lên TikTok' : undefined} onClick={() => send('send_comment')}><Send size={14} />Gửi bình luận</button>
+      </> : <button className="studio-button ghost" disabled={locked} title="Sửa câu trả lời (tạm dừng tự gửi)" onClick={startEditing}>{entry.reply ? 'Sửa' : 'Viết trả lời'}</button>}
+      <button className="studio-button" disabled={locked || noText} onClick={() => send('speak')}><Volume2 size={14} />Đọc</button>
+      <button className="studio-button" disabled={locked || noText || entry.simulated}title={entry.simulated ? 'Bình luận thử không gửi lên TikTok' : undefined} onClick={() => send('send_comment')}><Send size={14} />Gửi bình luận</button>
       {entry.stage !== 'done' && <button className="studio-button ghost icon-only" disabled={locked} aria-label="Bỏ qua" title="Bỏ qua" onClick={() => void onAction('dismiss')}><Ban size={15} /></button>}
     </div>}
   </article>
