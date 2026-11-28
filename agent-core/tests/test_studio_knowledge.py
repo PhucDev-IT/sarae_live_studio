@@ -213,3 +213,8 @@ def test_tidy_keeps_inspection_policies(reply):
 
 def test_tidy_keeps_a_decimal_price_from_the_data():
     assert tidy_reply("Áo giá 1,5tr ạ.", {1500000}) == ("Áo giá 1,5tr ạ.", [])
+
+
+@pytest.mark.parametrize("text,values", [("99 cá", {99000}), ("109ca", {109000}), ("Ca này 2 người", set())])
+def test_money_values_reads_the_sellers_word_for_thousand(text, values):
+    assert money_values(text) == values

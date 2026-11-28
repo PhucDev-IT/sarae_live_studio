@@ -9,6 +9,7 @@ import pytest
 from sarae_agent.errors import AgentError
 from sarae_agent.studio.replies import ChatReader, ReplyDesk, is_question, is_small_talk
 from sarae_agent.studio.service import StudioError, StudioService
+from sarae_agent.studio.speech import PriceReader
 from studio_helpers import ACCOUNT, create_product
 
 
@@ -89,9 +90,15 @@ def studio(tmp_path):
 def desk_for(studio, *, ai=None, live=None, tiktok=None, speaker=None, clock=None, **settings):
     desk = ReplyDesk(studio, ai or FakeAI(), live or make_live(), tiktok or FakeTikTok(), voice=speaker or FakeVoice(),
                      clock=clock or Clock(), start_threads=False)
+    desk._prices = PriceReader(FirstUnit())  # "ca" first, then rotates: predictable spoken text
     if settings:
         desk.configure(settings)
     return desk
+
+
+class FirstUnit:
+    def choice(self, options):
+        return options[0]
 
 
 def comment(text, username="lan.nguyen", msg_id="m1", nickname="Lan"):
@@ -169,7 +176,8 @@ def test_operator_edit_is_saved_and_the_ai_text_never_goes_out(studio):
     assert saved["reply"] == "Quần dài riêng 59.000đ nha chị" and saved["edited"] is True
     assert desk.status()["entries"][0]["reply"] == "Quần dài riêng 59.000đ nha chị"
     desk.speak({"id": entry_id})  # Đọc after saving: the saved text, not the AI's
-    assert speaker.calls[-1]["text"] == "Quần dài riêng 59.000đ nha chị"
+    # The voice reads the price the seller's way; the saved reply keeps the digits.
+    assert speaker.calls[-1]["text"] == "Quần dài riêng năm mươi chín ca nha chị"
     assert error_code(lambda: desk.edit({"id": entry_id, "text": "  "})) == "VALIDATION_ERROR"
     assert error_code(lambda: desk.edit({"id": entry_id})) == "VALIDATION_ERROR"
 
@@ -262,7 +270,7 @@ def test_manual_voice_uses_settings_name_and_edited_text(studio):
     assert result["stage"] == "done" and result["voice"]["status"] == "QUEUED" and result["reply"] == "Dạ 389k ạ"
     call = voice.calls[0]
     assert (call["text"], call["voice"], call["rate"], call["duck"], call["intro"]) == \
-        ("Dạ 389k ạ", "vi-VN-NamMinhNeural", 10, False, "Lan ơi,")
+        ("Dạ ba trăm tám mươi chín ca ạ", "vi-VN-NamMinhNeural", 10, False, "Lan ơi,")
     assert error_code(lambda: desk.speak({"id": entry_id, "text": ""})) == "VALIDATION_ERROR"
 
 
@@ -315,13 +323,14 @@ def test_dismiss_removes_from_queue(studio):
 def test_worker_threads_answer_and_auto_speak(studio):
     voice = FakeVoice()
     desk = ReplyDesk(studio, FakeAI(), make_live(), FakeTikTok(), voice=voice)
+    desk._prices = PriceReader(FirstUnit())
     try:
         desk.configure({"auto_voice": True, "confirm_seconds": 0})
         desk.ingest(comment("giá bao nhiêu?"), simulated=False)
         deadline = time.monotonic() + 5
         while not voice.calls and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert voice.calls and voice.calls[0]["text"] == "Dạ áo giá 389.000đ ạ"
+        assert voice.calls and voice.calls[0]["text"] == "Dạ áo giá ba trăm tám mươi chín ca ạ"
     finally:
         desk.close()
 
@@ -558,3 +567,16 @@ def test_a_broken_lineup_never_blocks_the_reply(studio, monkeypatch):
     desk.ingest(comment("giá sao shop"), simulated=False)
     desk.answer(desk._entry(desk._queue.popleft()))
     assert ai.context[0]["others"] is None and desk.status()["entries"][0]["stage"] == "ready"
+
+
+def test_the_voice_says_prices_the_sellers_way_but_the_comment_keeps_digits(studio):
+    studio.import_tiktok_snapshot({**ACCOUNT, "user_name": "shopviet"}, [])
+    speaker, tiktok = FakeVoice(), FakeTikTok()
+    desk = desk_for(studio, speaker=speaker, tiktok=tiktok, auto_voice=True, auto_comment=True, confirm_seconds=0)
+    desk.ingest(comment("giá sao shop"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    entry = desk._entries[0]
+    desk._speak(entry, entry["reply"])
+    desk._comment(entry, entry["reply"])
+    assert speaker.calls[0]["text"] == "Dạ áo giá ba trăm tám mươi chín ca ạ" and "nghìn" not in speaker.calls[0]["text"]
+    assert tiktok.calls[0]["text"] == "Dạ áo giá 389.000đ ạ"

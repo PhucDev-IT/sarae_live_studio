@@ -95,7 +95,7 @@ def shop_prompt_context(shop: dict) -> dict | None:
 
 # --- light check ---------------------------------------------------------------------------
 # "109.000đ" (thousands), "1,5tr" (a decimal), "109k"; never the tail of a longer number.
-MONEY = re.compile(r"(?<![\d.,])(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d{1,2})?)\s*(k|nghin|ngan|dong|d|vnd|tr|trieu)(?![a-z0-9])")
+MONEY = re.compile(r"(?<![\d.,])(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d{1,2})?)\s*(k|ca|nghin|ngan|dong|d|vnd|tr|trieu)(?![a-z0-9])")
 # Promises to check back, said by the shop. Never a fact about checking: "Shop kiểm tra kỹ từng đơn trước khi gửi",
 # "bạn sẽ được kiểm tra hàng khi nhận", "nhận hàng mình kiểm tra thoải mái" are inspection policies.
 FILLER = re.compile(
@@ -122,7 +122,7 @@ def money_values(text: str) -> set[int]:
             amount = float(number.replace(",", "."))
         else:
             amount = float(re.sub(r"[.,]", "", number))
-        if unit in ("k", "nghin", "ngan"):
+        if unit in ("k", "ca", "nghin", "ngan"):  # "99 cá": sellers' word for thousand
             amount *= 1000
         elif unit in ("tr", "trieu"):
             amount *= 1_000_000

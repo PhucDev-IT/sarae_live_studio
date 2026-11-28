@@ -30,6 +30,7 @@ from sarae_agent.errors import AgentError
 from .models import StudioError
 from .ai import product_brief
 from .knowledge import load_shop, qa_match
+from .speech import PriceReader
 from .voice_server import LocalVoiceServer, VOICE_ID
 
 log = logging.getLogger(__name__)
@@ -295,6 +296,8 @@ class ReplyDesk:
         self._seen_msg: dict[str, float] = {}
         self._seen_text: dict[tuple[str, str], float] = {}
         self._history: dict[str, deque] = {}
+        # The voice says "109 ca", never "nghìn"; the TikTok comment keeps "109k".
+        self._prices = PriceReader()
         self._closed = False
         self._comment_busy = False
         self.stats = {"received": 0, "ignored": 0, "skipped": 0, "answered": 0, "spoken": 0, "commented": 0,
@@ -586,7 +589,7 @@ class ReplyDesk:
                     raise AgentError("TTS_UNAVAILABLE", "Giọng local chưa sẵn sàng. Bật voice server rồi bấm Làm mới giọng.")
                 voice = voice[6:]
                 options = {"provider": "local_voice", "model": "live_fast", "settings": {"revision": self.voice_server.revision(voice)}}
-            result = self.voice.speak(text, voice, rate=settings["rate"], duck=settings["duck_video"], **options,
+            result = self.voice.speak(self._prices(text), voice, rate=settings["rate"], duck=settings["duck_video"], **options,
                                       intro=intro, ttl_seconds=float(settings["max_age_seconds"]))
             status = {"status": "QUEUED", "detail": f"Vị trí {result.get('position')} trong hàng đọc"}
             with self._lock:
