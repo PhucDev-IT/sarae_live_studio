@@ -21,8 +21,19 @@ echo [setup] Tao Python env backend\.venv bang %BASEPY% ...
 
 :deps
 fc /b "%REQ%" "%BACK%\.venv\.gateway-requirements" >nul 2>&1 && goto :ready
+rem Env da co du goi (vd. tao bang uv, khong co pip): khong cai gi them.
+"%PY%" -c "import fastapi, uvicorn, httpx, pydantic_settings, sqlalchemy" >nul 2>&1 && goto :stamp
 echo [setup] Cai dependency gateway ...
+"%PY%" -m pip --version >nul 2>&1 && goto :pip
+where uv >nul 2>&1 && goto :uv
+echo [setup] Env chua co pip, thu ensurepip ...
+"%PY%" -m ensurepip --upgrade >nul 2>&1 || (echo [setup] Khong co pip va khong co uv. Cai uv: winget install astral-sh.uv & goto :fail)
+:pip
 "%PY%" -m pip install --disable-pip-version-check -q -r "%REQ%" || goto :fail
+goto :stamp
+:uv
+uv pip install --python "%PY%" -q -r "%REQ%" || goto :fail
+:stamp
 copy /y "%REQ%" "%BACK%\.venv\.gateway-requirements" >nul
 
 :ready
