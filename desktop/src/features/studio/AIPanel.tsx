@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, BrainCircuit, Cloud, Cpu, KeyRound, MessageCircleReply, PlugZap, Plus, Send, ShieldCheck, Sparkles, Store, Trash2, X, Zap } from 'lucide-react'
+import { AlertTriangle, BrainCircuit, Cloud, Cpu, KeyRound, MessageCircleReply, PlugZap, Plus, Send, ShieldCheck, Sparkles, Trash2, X, Zap } from 'lucide-react'
 import { studioClient, type AIConfig, type AIProvider, type AIReply, type AIState, type Product, type ShopKnowledge, type ShopPolicies } from '../../services/studio'
 import { ErrorNotice, errorMessage } from './ui'
 
@@ -134,7 +134,6 @@ export function AIPanel({ products, disabled, visible, onNotice }: Props) {
       </section>
       <Playground products={products} disabled={disabled} enabled={!!state?.config.enabled && !dirty} />
     </div>
-    <ShopKnowledgeCard disabled={disabled} visible={visible} onNotice={onNotice} />
   </>
 }
 
@@ -150,6 +149,14 @@ type QADraft = { id: number; keywords: string; answer: string }
 type ShopDraft = { policies: ShopPolicies; qa: QADraft[] }
 const splitKeywords = (text: string) => text.split(',').map(word => word.trim().replace(/\s+/g, ' ')).filter(Boolean)
 const draftKey = (draft: ShopDraft) => JSON.stringify({ policies: draft.policies, qa: draft.qa.map(item => [splitKeywords(item.keywords), item.answer.trim()]) })
+
+/** Its own page: the shop owner fills it once, apart from the AI connection settings. */
+export function ShopKnowledgePanel({ disabled, visible, onNotice }: { disabled: boolean; visible: boolean; onNotice: (message: string) => void }) {
+  return <>
+    <div className="studio-page-heading"><div><h1>Kiến thức shop</h1><p>Chính sách và câu trả lời sẵn của shop. AI dùng khi tư vấn khách trên LIVE; câu hỏi khớp Q&A được trả lời ngay.</p></div></div>
+    <ShopKnowledgeCard disabled={disabled} visible={visible} onNotice={onNotice} />
+  </>
+}
 
 function ShopKnowledgeCard({ disabled, visible, onNotice }: { disabled: boolean; visible: boolean; onNotice: (message: string) => void }) {
   const nextId = useRef(1)
@@ -191,7 +198,6 @@ function ShopKnowledgeCard({ disabled, visible, onNotice }: { disabled: boolean;
   const locked = disabled || busy
 
   return <section className="studio-card studio-shop-card">
-    <header className="studio-card-heading"><Store size={19} /><div><h2>Kiến thức shop</h2><p>Nhập chính sách và câu trả lời sẵn một lần. AI dùng đúng lời của shop khi trả lời bình luận trên LIVE.</p></div></header>
     {!draft ? <div className="studio-empty" role="status">{error ? <ErrorNotice message={error} /> : 'Đang tải kiến thức shop…'}</div> : <form className="studio-form" onSubmit={event => void save(event)}>
       <section>
         <div className="studio-facts-heading"><strong>Chính sách</strong><span>AI được nói những điều này như sự thật. Để trống mục nào thì AI không nhắc tới mục đó.</span></div>

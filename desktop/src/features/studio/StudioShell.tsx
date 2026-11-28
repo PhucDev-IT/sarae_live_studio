@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldAlert, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react'
+import { BookOpenText, BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldAlert, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react'
 import { AccountCard, ActivationScreen, LicenseBanner, ServerBadge, formatDateTime } from './AccountPanel'
-import { AIPanel } from './AIPanel'
+import { AIPanel, ShopKnowledgePanel } from './AIPanel'
 import { LivePanel } from './LivePanel'
 import { ProductsPanel } from './ProductsPanel'
 import { PresentersPanel } from './PresentersPanel'
@@ -11,8 +11,8 @@ import { useStudio } from './useStudio'
 import { formatBytes } from './ui'
 
 import { APP_VERSION } from '../../app/version'
-type Page = 'products' | 'presenters' | 'media' | 'live' | 'ai'
-const pageTitles: Record<Page, string> = { products: 'Sản phẩm', presenters: 'Người giới thiệu', media: 'Thư viện video', live: 'Phiên LIVE', ai: 'Trợ lý AI' }
+type Page = 'products' | 'presenters' | 'media' | 'live' | 'ai' | 'shop'
+const pageTitles: Record<Page, string> = { products: 'Sản phẩm', presenters: 'Người giới thiệu', media: 'Thư viện video', live: 'Phiên LIVE', ai: 'Trợ lý AI', shop: 'Kiến thức shop' }
 const libraryPages: Page[] = ['products', 'presenters', 'media']
 
 export function StudioShell() {
@@ -60,7 +60,7 @@ export function StudioShell() {
       <div className="studio-brand"><div className="studio-brand-mark"><Layers3 size={25} strokeWidth={1.7} /></div><div><strong>Sarae</strong><span>LIVE STUDIO</span></div></div>
       <div className="studio-workspace-label"><Monitor size={14} /><span>Không gian trên máy</span><span className="studio-local-dot" /></div>
       <nav aria-label="Điều hướng Studio"><p className="studio-nav-label">THƯ VIỆN CỦA BẠN</p>{navItem('products', <Package size={19} />, studio.products.length)}{navItem('presenters', <UsersRound size={19} />, studio.presenters.length)}{navItem('media', <Film size={19} />, studio.media.length)}
-      <p className="studio-nav-label future">KHÔNG GIAN LIVE</p>{navItem('live', <Radio size={19} />)}{navItem('ai', <BrainCircuit size={19} />)}</nav>
+      <p className="studio-nav-label future">KHÔNG GIAN LIVE</p>{navItem('live', <Radio size={19} />)}{navItem('ai', <BrainCircuit size={19} />)}{navItem('shop', <BookOpenText size={19} />)}</nav>
       <div className="studio-sidebar-bottom"><div className="studio-local-note"><ShieldCheck size={20} /><strong>Dữ liệu ở trên máy bạn</strong><p>Sản phẩm và video được quản lý trong thư viện local.</p></div><div className="studio-version"><span>Sarae Live Studio</span><span>v{APP_VERSION}</span></div></div>
     </aside>
     <div className="studio-workspace">
@@ -77,6 +77,7 @@ export function StudioShell() {
         <div hidden={page !== 'media'}><MediaPanel {...shared} visible={page === 'media'} presenters={studio.presenters} onBusyChange={setMediaBusy} nativeDialog={studio.status?.capabilities.native_dialog ?? false} productFilter={productFilter} onProductFilter={setProductFilter} presenterFilter={presenterFilter} onPresenterFilter={setPresenterFilter} /></div>
         <div hidden={page !== 'live'}><LivePanel products={studio.products} media={studio.media} disabled={!studio.connected} visible={page === 'live'} onNotice={setNotice} /></div>
         <div hidden={page !== 'ai'}><AIPanel products={studio.products} disabled={!studio.connected} visible={page === 'ai'} onNotice={setNotice} /></div>
+        <div hidden={page !== 'shop'}><ShopKnowledgePanel disabled={!studio.connected} visible={page === 'shop'} onNotice={setNotice} /></div>
         <footer className="studio-footer"><span><Database size={14} />SQLite · Thư viện trên máy</span><span><CircleHelp size={14} />Studio chỉ điều khiển OBS và chat; bạn tự bật/tắt LIVE trên TikTok.</span></footer>
       </main>
     </div>
