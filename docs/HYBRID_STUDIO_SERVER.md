@@ -168,3 +168,11 @@ Phiên LIVE đang chạy của khách không bị cắt khi khóa hoặc gỡ m�
 - Mỗi máy: 120 request mỗi phút cho `/api/studio/v1/*`, vượt quá thì nhận `429 RATE_LIMITED` kèm `Retry-After`.
 - Body request tối đa 64 KB.
 - Lỗi từ voice server được đổi như sau: `VOICE_NOT_FOUND` → `404 VOICE_NOT_FOUND`; 400/422 → `422 INVALID_PARAMS`; voice server bận (429 `TTS_BUSY`/`TTS_QUEUE_TIMEOUT`) → `503 TTS_QUEUE_TIMEOUT`; mất kết nối, 503, các lỗi khác, hoặc audio không phải RIFF/WAVE hay quá 10 MB → `503 TTS_UNAVAILABLE`.
+
+## Quản lý giọng (chỉ admin)
+
+- Chạy `start-admin.cmd` trên PC server, rồi mở http://127.0.0.1:8001. Cần voice server đang chạy.
+- Trang này làm được: thêm giọng (WAV mẫu 1 đến 20 giây, tối đa 5 MB, transcript không bắt buộc), sửa transcript hoặc quay về Whisper, nghe thử bằng preset `live_fast` giống hệt khi LIVE, xóa giọng.
+- Trang **không** được đưa qua cloudflared. `config.yml` chỉ trỏ `api.puns.id.vn` tới cổng 8000. Ngoài ra trang còn tự chặn: chỉ nhận kết nối từ 127.0.0.1, Host phải là `127.0.0.1:8001` hoặc `localhost:8001`, và mọi API phải có header `X-Sarae-Admin: 1`.
+- Giọng mới hiện ở app khách sau lần "Làm mới giọng" kế tiếp. Xóa một giọng thì khách đang chọn giọng đó sẽ đọc bằng Edge.
+- Khách không clone được giọng. Gateway không có endpoint tải giọng lên.

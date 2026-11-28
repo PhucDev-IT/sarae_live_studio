@@ -153,6 +153,12 @@ def get_voice(voice_id: str) -> dict | None:
         raise
 
 
+def put_transcript(voice_id: str, transcript: str | None) -> dict:
+    """Manual transcript; None or "" goes back to the stored Whisper text (no new Whisper run)."""
+    return _call("PUT", f"/v1/voices/{_check_id(voice_id, 'voice_id')}/transcript", retries=1, timeout=120,
+                 json={"transcript": transcript or None}).json()
+
+
 def delete_voice(voice_id: str) -> None:
     try:
         _call("DELETE", f"/v1/voices/{_check_id(voice_id, 'voice_id')}", retries=1, ok=(204,))
