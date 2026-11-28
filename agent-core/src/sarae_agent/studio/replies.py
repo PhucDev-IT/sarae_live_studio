@@ -28,6 +28,8 @@ from typing import Callable
 from sarae_agent.errors import AgentError
 
 from .models import StudioError
+from .ai import product_brief
+from .knowledge import load_shop, qa_match
 from .voice_server import LocalVoiceServer, VOICE_ID
 
 log = logging.getLogger(__name__)
@@ -273,6 +275,9 @@ class ReplyDesk:
     MAX_ENTRIES = 200
     MAX_QUEUE = 30
     SPAM_SECONDS = 20
+    # What one viewer asked and was told, so "vậy lấy size nào" follows "em 52kg" (memory only, per Core run).
+    HISTORY_TURNS = 4
+    HISTORY_SECONDS = 900
 
     def __init__(self, service, ai, live, tiktok, *, emit: Callable[[str, dict], None] = lambda *_: None,
                  voice=None, reader_client_type=None, clock: Callable[[], float] = time.monotonic,
@@ -289,6 +294,7 @@ class ReplyDesk:
         self._seq = 0
         self._seen_msg: dict[str, float] = {}
         self._seen_text: dict[tuple[str, str], float] = {}
+        self._history: dict[str, deque] = {}
         self._closed = False
         self._comment_busy = False
         self.stats = {"received": 0, "ignored": 0, "skipped": 0, "answered": 0, "spoken": 0, "commented": 0,
@@ -364,6 +370,43 @@ class ReplyDesk:
         except Exception:  # noqa: BLE001 - no context is better than a failed reply
             return None
 
+    def _viewer_key(self, entry: dict) -> str:
+        return (entry["username"] or entry["nickname"] or "").casefold()
+
+    def _remember(self, entry: dict) -> None:
+        """Called under the lock once the AI (or the shop's Q&A) has answered."""
+        key = self._viewer_key(entry)
+        if not key:
+            return
+        turns = self._history.setdefault(key, deque(maxlen=self.HISTORY_TURNS))
+        turns.append({"at": self._clock(), "id": entry["id"], "comment": entry["comment"], "reply": entry["reply"],
+                      "product_id": entry["product_id"]})
+
+    def _history_for(self, entry: dict) -> list[dict] | None:
+        """This viewer's recent turns for the AI, oldest first; stale ones are forgotten."""
+        now = self._clock()
+        with self._lock:
+            for key in [k for k, turns in self._history.items() if not turns or now - turns[-1]["at"] > self.HISTORY_SECONDS]:
+                del self._history[key]
+            turns = [turn for turn in self._history.get(self._viewer_key(entry), ())
+                     if turn["id"] != entry["id"] and now - turn["at"] <= self.HISTORY_SECONDS]
+        return [{"khach": turn["comment"], "shop": turn["reply"] or None,
+                 "cung_mau_dang_live": turn["product_id"] == entry["product_id"]} for turn in turns] or None
+
+    def _others(self, product_id: str | None) -> list[dict] | None:
+        """The rest of today's lineup (and catalog) for quick answers; nothing here ever pins a product."""
+        session = None
+        try:
+            find = getattr(self.live, "_live_session", None)
+            session = find() if callable(find) else None
+            lineup = self.service.lineup((session or {}).get("video_ids") or [], exclude_id=product_id)
+        except Exception:  # noqa: BLE001 - a reply without the lineup is better than no reply
+            log.warning("Could not read the LIVE lineup for the AI.", exc_info=True)
+            return None
+        others = [product_brief(p, on_air_today=True) for p in lineup["session"]]
+        others += [product_brief(p, on_air_today=False) for p in lineup["others"]]
+        return others or None
+
     # --- intake ----------------------------------------------------------------------------
     def _on_chat(self, message: dict) -> None:
         self.ingest(message, simulated=False)
@@ -404,7 +447,7 @@ class ReplyDesk:
                 self._finish(entry, "skipped", "Chỉ là biểu tượng hoặc ký tự lặp.")
             elif not settings["answer_all"] and is_small_talk(text):
                 self._finish(entry, "skipped", "Chỉ là lời khen, chào hoặc cảm ơn.")
-            elif not self.ai.config()["config"]["enabled"]:
+            elif not self.ai.config()["config"]["enabled"] and not qa_match(text, load_shop(self.service)["qa"]):
                 self._finish(entry, "skipped", "AI đang tắt.")
             else:
                 self._seen_text[text_key] = now
@@ -452,7 +495,13 @@ class ReplyDesk:
             params = {"comment": entry["comment"], "username": entry["nickname"] or entry["username"]}
             if entry["product_id"]:
                 params["product_id"] = entry["product_id"]
-            result = self.ai.reply(params)
+            qa = qa_match(entry["comment"], load_shop(self.service)["qa"])
+            if qa:
+                # The shop's own ready answer: sent at once, no AI call, no review.
+                result = {"intent": "GENERAL", "reply": qa["answer"], "needs_review": False,
+                          "reason": "Q&A của shop: " + ", ".join(qa["keywords"]), "usage": None}
+            else:
+                result = self.ai.reply(params, history=self._history_for(entry), others=self._others(entry["product_id"]))
         except StudioError as exc:
             with self._lock:
                 self._finish(entry, "failed", exc.message)
@@ -466,6 +515,7 @@ class ReplyDesk:
                           "reason": result["reason"], "usage": result["usage"]})
             if not entry["edited"]:
                 entry["reply"] = result["reply"]
+            self._remember(entry)
             if not result["reply"] and not result["needs_review"]:
                 # The AI read the comment and found nothing to answer: hidden like small talk, never a blank card.
                 entry["stage"] = "skipped"

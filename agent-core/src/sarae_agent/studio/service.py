@@ -242,6 +242,30 @@ class StudioService:
         return {key: product[key] for key in ("id", "name", "description", "price", "origin_price", "stock_num",
                                               "category", "facts")}
 
+    def lineup(self, media_ids: list[str], *, exclude_id: str | None = None, limit: int = 20) -> dict:
+        """Products a viewer may ask about besides the one on air (AI context, read-only).
+
+        ``session``: pinned somewhere in this LIVE's videos, in timeline order. ``others``: the rest of the synced
+        catalog, so "mẫu áo trắng" still gets a quick answer and "shop sẽ LIVE sau". Never used to pin anything.
+        """
+        with self._lock:
+            self._ensure_open()
+            session_ids = []
+            for marker in self._marker_rows(list(media_ids or [])):
+                product_id = marker.get("product_id")
+                if product_id and product_id != exclude_id and product_id not in session_ids:
+                    session_ids.append(product_id)
+            session_ids = session_ids[:limit]
+            # Only what the latest TikTok sync still listed: a product removed from the shop stays in Studio
+            # (never deleted) but must not be offered to viewers.
+            rows = self._storage.connection.execute(
+                "SELECT id FROM products WHERE tiktok_product_id IS NOT NULL AND last_synced_at = "
+                "(SELECT MAX(last_synced_at) FROM products) ORDER BY name COLLATE NOCASE, id").fetchall()
+            other_ids = [row["id"] for row in rows if row["id"] != exclude_id and row["id"] not in session_ids]
+            other_ids = other_ids[:max(0, limit - len(session_ids))]
+            return {"session": [self.product_context(product_id) for product_id in session_ids],
+                    "others": [self.product_context(product_id) for product_id in other_ids]}
+
     # --- settings (never secrets) ---------------------------------------------------------
     def get_setting(self, key: str, default: dict) -> dict:
         with self._lock:

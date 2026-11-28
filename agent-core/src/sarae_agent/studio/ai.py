@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+from .knowledge import SETTING_KEY as SHOP_SETTING_KEY
+from .knowledge import allowed_money, load_shop, shop_prompt_context, tidy_reply, validate_shop
 from .models import StudioError
 from .service import StudioService
 
@@ -145,12 +147,23 @@ def _size_facts(facts):
     return result
 
 
-def reply_prompt(comment: str, username: str, product: dict | None) -> tuple[str, str]:
+def product_brief(product: dict, *, on_air_today: bool) -> dict:
+    """Another product, for a quick answer: what it is, price, stock, colours and size labels only."""
+    context = product_prompt_context(product)
+    facts = context["thong_tin"] if isinstance(context.get("thong_tin"), dict) else {}
+    sizes = [row.get("size") for row in facts.get("sizes") or [] if isinstance(row, dict) and row.get("size")]
+    return {"ten": context["ten"], "gia_ban": context["gia_ban"], "ton_kho": context["ton_kho"],
+            "mau": facts.get("colors") or None, "size": sizes or None, "co_trong_buoi_live_hom_nay": on_air_today}
+
+
+def reply_prompt(comment: str, username: str, product: dict | None, *, shop: dict | None = None,
+                 history: list[dict] | None = None, others: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "Bạn là trợ lý chốt đơn của một shop bán hàng trên TikTok LIVE, trả lời bằng tiếng Việt có dấu.\n"
         "Quy tắc:\n"
-        "1. Chỉ dùng dữ kiện trong PRODUCT. Không tự bịa giá, size, màu, tồn kho, khuyến mãi, thời gian giao hay chính sách.\n"
-        "2. Thiếu dữ kiện thì chỉ trả lời phần chắc chắn có trong PRODUCT. KHÔNG BAO GIỜ viết 'shop sẽ kiểm tra', "
+        "1. Chỉ dùng dữ kiện trong PRODUCT (mẫu đang LIVE), SHOP (chính sách và hỏi đáp của shop) và MAU_KHAC. Không tự bịa "
+        "giá, size, màu, tồn kho, khuyến mãi, thời gian giao hay chính sách.\n"
+        "2. Thiếu dữ kiện thì chỉ trả lời phần chắc chắn có trong dữ liệu. KHÔNG BAO GIỜ viết 'shop sẽ kiểm tra', "
         "'phản hồi ngay', 'báo lại sau', 'kiểm tra đơn' hay hứa hẹn tương tự. Không có gì chắc chắn để trả lời thì reply rỗng, "
         "needs_review = true, reason nêu dữ kiện còn thiếu để người bán tự trả lời.\n"
         "2b. Khách báo đã đặt, đã săn, đã chốt, đã mua, lên đơn rồi (có thể kèm giá, ví dụ 'đã săn 109k', 'đặt rồi nha'): "
@@ -171,13 +184,29 @@ def reply_prompt(comment: str, username: str, product: dict | None) -> tuple[str
         "thì reply rỗng, intent OTHER, needs_review = false.\n"
         "7. Câu hỏi hiểu được nhiều nghĩa thì không tự chọn một nghĩa rồi trả lời chắc chắn. Ví dụ 'quần dài bn' có thể là "
         "giá quần lẻ hoặc quần dài bao nhiêu cm; 'bn' không nói rõ hỏi tiền, cm hay kg. Khi đó hỏi lại ngắn gọn khách muốn biết "
-        "gì (có thể kèm dữ kiện chắc chắn đang có) và đặt needs_review = true.\n"
+        "gì (có thể kèm dữ kiện chắc chắn đang có); câu hỏi lại được gửi ngay nên needs_review = false.\n"
         "8. Trả lời đúng phần khách hỏi. Nếu khách hỏi một món trong set (quần, áo…) mà PRODUCT chỉ có giá cả set, nói rõ đó là "
         "giá cả set, không gán giá đó cho món lẻ; không có số đo của món đó thì không đoán.\n"
+        "9. LICH_SU là các câu chính khách này vừa hỏi và shop đã đáp (cũ trước, mới sau). Dùng nó để hiểu câu đang hỏi: khách "
+        "đã nói cân nặng, size, màu ở câu trước thì dùng luôn, không hỏi lại; 'vậy lấy size nào', 'còn màu kia' là hỏi tiếp câu "
+        "trước. Không lặp lại nguyên văn câu shop đã đáp. Câu cũ hỏi về mẫu khác thì không áp dữ kiện của mẫu đó cho PRODUCT.\n"
+        "10. SHOP.chinh_sach là lời của chính shop (giao hàng, đổi trả, kiểm hàng, thanh toán): dùng như dữ kiện chắc chắn, "
+        "needs_review = false. SHOP.hoi_dap là câu trả lời mẫu của shop: khi khách hỏi đúng ý đó thì trả lời theo nội dung ấy.\n"
+        "11. Khách hỏi một mẫu khác PRODUCT: tìm trong MAU_KHAC theo tên, màu hay đặc điểm khách nói. Tìm thấy thì tư vấn nhanh "
+        "1 câu bằng dữ kiện ở đó, rồi nói hôm nay shop đang LIVE mẫu PRODUCT; nếu co_trong_buoi_live_hom_nay = false thì nói mẫu "
+        "đó shop sẽ LIVE sau. Không tìm thấy mẫu khách nói (ví dụ 'mã 2', 'mẫu lúc nãy') thì nói nhẹ nhàng hôm nay shop đang LIVE "
+        "mẫu PRODUCT, mẫu khác shop sẽ lên sau. Không bao giờ hứa ghim sản phẩm, đổi mẫu, chiếu lại hay bảo khách chờ; "
+        "needs_review = false.\n"
         "Trả về một JSON object duy nhất: intent (một trong " + ", ".join(INTENTS) + "), reply, "
         "needs_review (boolean), reason (ngắn, nêu dữ kiện đã dùng hoặc còn thiếu)."
     )
     data = {"COMMENT": comment, "USERNAME": username or None, "PRODUCT": product_prompt_context(product)}
+    if shop:
+        data["SHOP"] = shop
+    if history:
+        data["LICH_SU"] = history
+    if others:
+        data["MAU_KHAC"] = others
     return system, "DATA:\n" + json.dumps(data, ensure_ascii=False)
 
 
@@ -396,7 +425,19 @@ class StudioAI:
                                        schema=REPLY_SCHEMA, require_enabled=False)
         return {"ok": True, "usage": usage, "sample": str(parsed.get("reply") or "")[:100]}
 
-    def reply(self, params: dict) -> dict:
+    def shop(self, params: dict | None = None) -> dict:
+        if params:
+            raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, params))})
+        return load_shop(self.service)
+
+    def shop_save(self, params: dict) -> dict:
+        shop = validate_shop(params)
+        self.service.set_setting(SHOP_SETTING_KEY, shop)
+        return shop
+
+    def reply(self, params: dict, *, history: list[dict] | None = None, others: list[dict] | None = None) -> dict:
+        """One viewer comment. ``history`` (this viewer's recent turns) and ``others`` (the rest of the lineup) come
+        from the reply desk, never from the RPC caller."""
         unknown = set(params) - {"comment", "product_id", "username"}
         if unknown:
             raise StudioError("VALIDATION_ERROR", "Unexpected parameters.", {"fields": sorted(map(str, unknown))})
@@ -406,12 +447,25 @@ class StudioAI:
         if not isinstance(username, str) or len(username) > 100:
             raise StudioError("VALIDATION_ERROR", "username is invalid.", {"field": "username"})
         product = self.service.product_context(params["product_id"]) if params.get("product_id") else None
-        parsed, usage = self._complete(*reply_prompt(comment.strip(), username.strip(), product), schema=REPLY_SCHEMA)
+        shop = shop_prompt_context(load_shop(self.service))
+        system, user = reply_prompt(comment.strip(), username.strip(), product, shop=shop, history=history, others=others)
+        parsed, usage = self._complete(system, user, schema=REPLY_SCHEMA)
         intent = parsed.get("intent") if parsed.get("intent") in INTENTS else "OTHER"
-        reply = " ".join(str(parsed.get("reply") or "").split())[:300]
-        return {"intent": intent, "reply": reply, "needs_review": bool(parsed.get("needs_review")) or not reply,
-                "reason": str(parsed.get("reason") or "")[:300], "product_id": product["id"] if product else None,
-                "usage": usage, "action_executed": False}
+        reason = str(parsed.get("reason") or "")[:300]
+        needs_review = bool(parsed.get("needs_review"))
+        raw = " ".join(str(parsed.get("reply") or "").split())[:300]
+        # Light check: drop a sentence with a price the data lacks or a "shop sẽ kiểm tra" promise; send the rest.
+        reply, dropped = tidy_reply(raw, allowed_money(product_prompt_context(product), shop, others))
+        if dropped:
+            note = "Đã bỏ câu không có trong dữ liệu: " + " / ".join(dropped)
+            reason = (f"{reason} · {note}" if reason else note)[:300]
+            if not reply:
+                needs_review = True
+        if not reply and intent not in ("OTHER", "GREETING"):
+            # A product question left unanswered goes to the operator; empty small talk is simply not answered.
+            needs_review = True
+        return {"intent": intent, "reply": reply, "needs_review": needs_review, "reason": reason,
+                "product_id": product["id"] if product else None, "usage": usage, "action_executed": False}
 
 
     def product_analyze(self, params: dict) -> dict:

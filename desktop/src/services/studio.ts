@@ -43,6 +43,9 @@ export interface AIState {
 }
 export interface AIUsage { provider: AIProvider; model: string; input_tokens: number; output_tokens: number; latency_ms: number }
 export interface AIReply { intent: string; reply: string; needs_review: boolean; reason: string; product_id: string | null; usage: AIUsage }
+export interface ShopPolicies { shipping: string; returns: string; inspection: string; payment: string; other: string }
+export interface ShopQA { keywords: string[]; answer: string }
+export interface ShopKnowledge { policies: ShopPolicies; qa: ShopQA[] }
 
 export interface TikTokAccount {
   user_id: string
@@ -406,6 +409,8 @@ export const studioClient = {
   updateProduct: async (id: string, input: { description?: string; facts?: ProductFacts }) => (await request<{ product: Product }>('studio.products.update', { id, ...input })).product,
   aiState: () => request<AIState>('studio.ai.config'),
   aiConfigure: (input: Partial<AIConfig>) => request<AIState>('studio.ai.configure', { ...input }),
+  aiShop: () => request<ShopKnowledge>('studio.ai.shop'),
+  aiShopSave: (input: ShopKnowledge) => request<ShopKnowledge>('studio.ai.shop_save', { policies: { ...input.policies }, qa: input.qa.map(item => ({ keywords: [...item.keywords], answer: item.answer })) }),
   aiSetKey: (provider: AIProvider, apiKey: string) => request<AIState>('studio.ai.set_key', { provider, api_key: apiKey }),
   aiDeleteKey: (provider: AIProvider) => request<AIState>('studio.ai.delete_key', { provider }),
   aiTest: () => request<{ ok: boolean; usage: AIUsage; sample: string }>('studio.ai.test'),

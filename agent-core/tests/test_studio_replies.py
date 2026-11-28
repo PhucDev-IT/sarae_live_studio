@@ -32,12 +32,14 @@ class FakeAI:
         self.answer = answer or {"intent": "ASK_PRICE", "reply": "Dạ áo giá 389.000đ ạ", "needs_review": False,
                                  "reason": "giá", "usage": {"latency_ms": 5}}
         self.calls = []
+        self.context = []
 
     def config(self):
         return {"config": {"enabled": self.enabled}}
 
-    def reply(self, params):
+    def reply(self, params, *, history=None, others=None):
         self.calls.append(params)
+        self.context.append({"history": history, "others": others})
         if isinstance(self.answer, Exception):
             raise self.answer
         return {**self.answer, "product_id": params.get("product_id"), "action_executed": False}
@@ -436,3 +438,123 @@ def test_chat_started_by_hand_or_disabled_follow_is_left_alone(studio):
     desk.chat_start({})
     desk._on_session({"id": "s"}, False)
     assert desk.reader.state == "connected"  # the operator started it, so it keeps reading
+
+
+# --- shop knowledge, viewer memory and lineup ------------------------------------------------
+def save_qa(studio, *entries):
+    from sarae_agent.studio.knowledge import SETTING_KEY, validate_shop
+    studio.set_setting(SETTING_KEY, validate_shop({"qa": [{"keywords": k, "answer": a} for k, a in entries]}))
+
+
+def test_shop_qa_answers_at_once_without_the_ai(studio):
+    save_qa(studio, (["kiểm hàng"], "Dạ bạn được kiểm hàng trước khi nhận ạ."), (["ship"], "Freeship đơn từ 99k ạ."))
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai, auto_voice=True)
+    desk.ingest(comment("kiem hang duoc ko shop"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    entry = desk.status()["entries"][0]
+    assert entry["stage"] == "ready" and entry["reply"] == "Dạ bạn được kiểm hàng trước khi nhận ạ."
+    assert entry["reason"] == "Q&A của shop: kiểm hàng" and entry["auto"] == ["voice"] and ai.calls == []
+    # Two entries match: the AI answers, with both as knowledge.
+    desk.ingest(comment("ship có kiểm hàng không", msg_id="m2", username="b"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert len(ai.calls) == 1
+
+
+def test_shop_qa_still_answers_while_the_ai_is_off(studio):
+    save_qa(studio, (["kiểm hàng"], "Dạ được kiểm hàng ạ."))
+    desk = desk_for(studio, ai=FakeAI(enabled=False))
+    desk.ingest(comment("kiểm hàng được không"), simulated=False)
+    desk.ingest(comment("áo có túi không", msg_id="m2", username="b"), simulated=False)
+    stages = {e["comment"]: e["stage"] for e in desk.status()["entries"]}
+    assert stages == {"kiểm hàng được không": "queued", "áo có túi không": "skipped"}
+
+
+def test_the_ai_remembers_what_this_viewer_said(studio):
+    ai = FakeAI(answer={"intent": "ASK_SIZE", "reply": "Dạ 52kg bạn mặc size L ạ", "needs_review": False,
+                        "reason": "bảng size", "usage": {"latency_ms": 5}})
+    clock = Clock()
+    desk = desk_for(studio, ai=ai, clock=clock, live=make_live("p1"))
+    desk.ingest(comment("em 52kg"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    desk.ingest(comment("đẹp", msg_id="x", username="other"), simulated=False)
+    desk.ingest(comment("vậy lấy size nào", msg_id="m2"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert ai.context[0]["history"] is None
+    assert ai.context[1]["history"] == [{"khach": "em 52kg", "shop": "Dạ 52kg bạn mặc size L ạ", "cung_mau_dang_live": True}]
+    # Another viewer has no history; an old conversation is forgotten.
+    desk.ingest(comment("size nào vừa", msg_id="m3", username="b"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert ai.context[2]["history"] is None
+    clock.now += ReplyDesk.HISTORY_SECONDS + 1
+    desk.configure({"max_age_seconds": 300})
+    desk.ingest(comment("còn màu đen ko", msg_id="m4"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert ai.context[3]["history"] is None
+
+
+def test_history_keeps_only_the_last_turns(studio):
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai)
+    for n in range(ReplyDesk.HISTORY_TURNS + 2):
+        desk.ingest(comment(f"câu hỏi số {n} giá sao", msg_id=f"m{n}"), simulated=False)
+        desk.answer(desk._entry(desk._queue.popleft()))
+    history = ai.context[-1]["history"]
+    assert len(history) == ReplyDesk.HISTORY_TURNS  # the previous turns; the comment being answered is not one
+    assert history[-1]["khach"] == f"câu hỏi số {ReplyDesk.HISTORY_TURNS} giá sao"
+
+
+def test_the_ai_sees_the_lineup_but_never_pins(studio):
+    from studio_helpers import tiktok_row
+    studio.import_tiktok_snapshot(ACCOUNT, [tiktok_row("Set bộ HELO", product_id=901, price_text="109.000₫"),
+                                            tiktok_row("Áo trắng", product_id=902, price_text="89.000₫"),
+                                            tiktok_row("Quần ống loe", product_id=903)])
+    products = {p["name"]: p for p in studio.dispatch("studio.products.list", {})["products"]}
+    on_air = products["Set bộ HELO"]["id"]
+    # A product TikTok no longer lists stays in Studio but is never offered.
+    studio.import_tiktok_snapshot(ACCOUNT, [tiktok_row("Set bộ HELO", product_id=901, price_text="109.000₫"),
+                                            tiktok_row("Áo trắng", product_id=902, price_text="89.000₫")])
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai, live=make_live(on_air))
+    desk.ingest(comment("mẫu áo trắng giá sao"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    others = ai.context[0]["others"]
+    assert [o["ten"] for o in others] == ["Áo trắng"]
+    assert others[0]["gia_ban"] == "89.000đ" and others[0]["co_trong_buoi_live_hom_nay"] is False
+    assert ai.calls[0]["product_id"] == on_air
+
+
+def test_lineup_puts_todays_pinned_products_first(studio):
+    import sqlite3
+    from studio_helpers import tiktok_row
+    studio.import_tiktok_snapshot(ACCOUNT, [tiktok_row("Set bộ HELO", product_id=911), tiktok_row("Áo A", product_id=912),
+                                            tiktok_row("Áo Z", product_id=913)])
+    ids = {p["name"]: p["id"] for p in studio.dispatch("studio.products.list", {})["products"]}
+    media_id = "00000000-0000-4000-8000-000000000009"
+    connection = sqlite3.connect(studio.database_path)
+    try:
+        with connection:
+            connection.execute("""INSERT INTO media(id, product_id, original_name, relative_path, size_bytes, sha256,
+                mime_type, created_at) VALUES (?, NULL, 'a.mp4', 'a.mp4', 1, ?, 'video/mp4', 'now')""", (media_id, "0" * 64))
+            connection.executemany("INSERT INTO media_markers(media_id, at_ms, action, product_id, seq) VALUES (?, ?, ?, ?, ?)",
+                                   [(media_id, 0, "PIN_PRODUCT", ids["Set bộ HELO"], 0),
+                                    (media_id, 5000, "PIN_PRODUCT", ids["Áo Z"], 1)])
+    finally:
+        connection.close()
+    lineup = studio.lineup([media_id], exclude_id=ids["Set bộ HELO"])
+    assert [p["name"] for p in lineup["session"]] == ["Áo Z"] and [p["name"] for p in lineup["others"]] == ["Áo A"]
+    live = SimpleNamespace(current_product_id=lambda: ids["Set bộ HELO"], _live_session=lambda: {"video_ids": [media_id]})
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai, live=live)
+    desk.ingest(comment("áo z còn không"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert [(o["ten"], o["co_trong_buoi_live_hom_nay"]) for o in ai.context[0]["others"]] == [("Áo Z", True), ("Áo A", False)]
+
+
+def test_a_broken_lineup_never_blocks_the_reply(studio, monkeypatch):
+    ai = FakeAI()
+    desk = desk_for(studio, ai=ai)
+    monkeypatch.setattr(studio, "lineup", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db")))
+    desk.ingest(comment("giá sao shop"), simulated=False)
+    desk.answer(desk._entry(desk._queue.popleft()))
+    assert ai.context[0]["others"] is None and desk.status()["entries"][0]["stage"] == "ready"

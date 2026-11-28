@@ -29,7 +29,7 @@ METHODS = (
     "studio.overlays.templates", "studio.overlays.assets.list", "studio.overlays.assets.import",
     "studio.overlays.assets.delete",
     "studio.ai.config", "studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.test",
-    "studio.ai.reply", "studio.ai.product_analyze", "studio.tiktok.detail", "studio.products.detail",
+    "studio.ai.reply", "studio.ai.product_analyze", "studio.ai.shop", "studio.ai.shop_save", "studio.tiktok.detail", "studio.products.detail",
     "studio.obs.status", "studio.obs.configure", "studio.obs.connect", "studio.obs.disconnect",
     "studio.live.sessions.list", "studio.live.sessions.create", "studio.live.sessions.update",
     "studio.live.sessions.delete", "studio.live.sessions.overlay_issues", "studio.live.status", "studio.live.start",
@@ -57,7 +57,8 @@ READ_ONLY_LIVE = {"studio.obs.status", "studio.live.sessions.list", "studio.live
 # Provider calls run outside the service lock, on the transport's worker thread.
 AI_METHODS = {"studio.ai.config": "config", "studio.ai.configure": "configure", "studio.ai.set_key": "set_key",
               "studio.ai.delete_key": "delete_key", "studio.ai.test": "test", "studio.ai.reply": "reply",
-              "studio.ai.product_analyze": "product_analyze"}
+              "studio.ai.product_analyze": "product_analyze", "studio.ai.shop": "shop",
+              "studio.ai.shop_save": "shop_save"}
 MAX_UPLOAD = 20 * 1024**3
 DEFAULT_ORIGINS = frozenset({"http://127.0.0.1:1420", "http://localhost:1420"})
 
@@ -159,7 +160,8 @@ class StudioTransport:
             if self.ai is None:
                 raise StudioError("AI_UNAVAILABLE", "AI chưa sẵn sàng trong Studio Core.")
             result = getattr(self.ai, AI_METHODS[method])(params)
-            if method in {"studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.scripts.generate"}:
+            if method in {"studio.ai.configure", "studio.ai.set_key", "studio.ai.delete_key", "studio.ai.shop_save",
+                          "studio.scripts.generate"}:
                 self.emit("studio.changed", {"method": method})
             return result
         if method in REPLY_METHODS:

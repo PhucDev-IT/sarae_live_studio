@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { AlertTriangle, BrainCircuit, Cloud, Cpu, KeyRound, MessageCircleReply, PlugZap, Send, ShieldCheck, Sparkles, Trash2 } from 'lucide-react'
-import { studioClient, type AIConfig, type AIProvider, type AIReply, type AIState, type Product } from '../../services/studio'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { AlertTriangle, BrainCircuit, Cloud, Cpu, KeyRound, MessageCircleReply, PlugZap, Plus, Send, ShieldCheck, Sparkles, Store, Trash2, X, Zap } from 'lucide-react'
+import { studioClient, type AIConfig, type AIProvider, type AIReply, type AIState, type Product, type ShopKnowledge, type ShopPolicies } from '../../services/studio'
 import { ErrorNotice, errorMessage } from './ui'
 
 type Props = { products: Product[]; disabled: boolean; visible: boolean; onNotice: (message: string) => void }
@@ -134,7 +134,92 @@ export function AIPanel({ products, disabled, visible, onNotice }: Props) {
       </section>
       <Playground products={products} disabled={disabled} enabled={!!state?.config.enabled && !dirty} />
     </div>
+    <ShopKnowledgeCard disabled={disabled} visible={visible} onNotice={onNotice} />
   </>
+}
+
+const MAX_POLICY = 600, MAX_QA = 60, MAX_ANSWER = 300, MAX_KEYWORDS = 6, MAX_KEYWORD = 40
+const policyFields: { key: keyof ShopPolicies; label: string; placeholder: string }[] = [
+  { key: 'shipping', label: 'Giao hàng, phí ship', placeholder: 'Freeship đơn từ 99k, giao 2–4 ngày. Nội thành Hà Nội, TP.HCM nhận trong 1–2 ngày.' },
+  { key: 'returns', label: 'Đổi trả', placeholder: 'Đổi size, đổi mẫu trong 7 ngày nếu còn tem mác. Hàng lỗi shop đổi mới và chịu phí ship.' },
+  { key: 'inspection', label: 'Kiểm hàng khi nhận', placeholder: 'Bạn được mở hộp kiểm hàng trước khi thanh toán, không vừa ý thì trả lại shipper.' },
+  { key: 'payment', label: 'Thanh toán', placeholder: 'Thanh toán khi nhận hàng (COD) hoặc qua ví, thẻ ngân hàng trên TikTok Shop.' },
+  { key: 'other', label: 'Khác', placeholder: 'Shop có tư vấn size qua tin nhắn. Mua 2 sản phẩm giảm thêm 10%.' },
+]
+type QADraft = { id: number; keywords: string; answer: string }
+type ShopDraft = { policies: ShopPolicies; qa: QADraft[] }
+const splitKeywords = (text: string) => text.split(',').map(word => word.trim().replace(/\s+/g, ' ')).filter(Boolean)
+const draftKey = (draft: ShopDraft) => JSON.stringify({ policies: draft.policies, qa: draft.qa.map(item => [splitKeywords(item.keywords), item.answer.trim()]) })
+
+function ShopKnowledgeCard({ disabled, visible, onNotice }: { disabled: boolean; visible: boolean; onNotice: (message: string) => void }) {
+  const nextId = useRef(1)
+  const [saved, setSaved] = useState<ShopDraft | null>(null)
+  const [draft, setDraft] = useState<ShopDraft | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const toDraft = (shop: ShopKnowledge): ShopDraft => ({ policies: { ...shop.policies }, qa: shop.qa.map(item => ({ id: nextId.current++, keywords: item.keywords.join(', '), answer: item.answer })) })
+  const load = async () => {
+    try {
+      const next = toDraft(await studioClient.aiShop())
+      setSaved(next)
+      setDraft(current => current ?? next)
+      setError('')
+    } catch (cause) { setError(errorMessage(cause)) }
+  }
+  useEffect(() => { if (visible && !disabled) void load() }, [visible, disabled])
+  const dirty = !!(saved && draft && draftKey(saved) !== draftKey(draft))
+
+  const setPolicy = (key: keyof ShopPolicies, value: string) => draft && setDraft({ ...draft, policies: { ...draft.policies, [key]: value } })
+  const setQA = (id: number, patch: Partial<QADraft>) => draft && setDraft({ ...draft, qa: draft.qa.map(item => item.id === id ? { ...item, ...patch } : item) })
+  const addQA = () => draft && draft.qa.length < MAX_QA && setDraft({ ...draft, qa: [...draft.qa, { id: nextId.current++, keywords: '', answer: '' }] })
+  const removeQA = (id: number) => draft && setDraft({ ...draft, qa: draft.qa.filter(item => item.id !== id) })
+  const save = async (event?: FormEvent) => {
+    event?.preventDefault()
+    if (!draft || busy || disabled || !dirty) return
+    setBusy(true)
+    setError('')
+    try {
+      // A row left completely empty is dropped, not reported as an error.
+      const qa = draft.qa.filter(item => item.keywords.trim() || item.answer.trim()).map(item => ({ keywords: splitKeywords(item.keywords), answer: item.answer.trim() }))
+      const next = toDraft(await studioClient.aiShopSave({ policies: draft.policies, qa }))
+      setSaved(next)
+      setDraft(next)
+      onNotice('Đã lưu kiến thức shop.')
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  const locked = disabled || busy
+
+  return <section className="studio-card studio-shop-card">
+    <header className="studio-card-heading"><Store size={19} /><div><h2>Kiến thức shop</h2><p>Nhập chính sách và câu trả lời sẵn một lần. AI dùng đúng lời của shop khi trả lời bình luận trên LIVE.</p></div></header>
+    {!draft ? <div className="studio-empty" role="status">{error ? <ErrorNotice message={error} /> : 'Đang tải kiến thức shop…'}</div> : <form className="studio-form" onSubmit={event => void save(event)}>
+      <section>
+        <div className="studio-facts-heading"><strong>Chính sách</strong><span>AI được nói những điều này như sự thật. Để trống mục nào thì AI không nhắc tới mục đó.</span></div>
+        <div className="studio-shop-policies">{policyFields.map(field => <label key={field.key} className="studio-field">{field.label}
+          <textarea rows={3} value={draft.policies[field.key]} maxLength={MAX_POLICY} disabled={locked} placeholder={field.placeholder} onChange={event => setPolicy(field.key, event.target.value)} />
+          {draft.policies[field.key].length > MAX_POLICY - 100 && <span className="studio-field-hint">{draft.policies[field.key].length}/{MAX_POLICY}</span>}
+        </label>)}</div>
+      </section>
+      <section>
+        <div className="studio-facts-heading"><strong>Hỏi đáp có sẵn</strong><span>{draft.qa.length}/{MAX_QA} câu · tối đa {MAX_KEYWORDS} từ khóa mỗi câu, cách nhau bằng dấu phẩy.</span></div>
+        <div className="studio-callout"><Zap size={16} /><span>Bình luận ngắn (tối đa 12 chữ) có đủ <strong>tất cả</strong> từ khóa của đúng <strong>một</strong> câu sẽ được trả lời ngay bằng câu đó, không cần chờ AI. Gõ có dấu hay không dấu đều được: “kiem hang” cũng khớp “kiểm hàng”. Nếu khớp nhiều câu hoặc bình luận dài hơn, AI sẽ tự trả lời dựa trên toàn bộ kiến thức ở đây.</span></div>
+        {!!draft.qa.length && <div className="studio-qa-list">{draft.qa.map((item, index) => {
+          const words = splitKeywords(item.keywords)
+          const badKeywords = words.length > MAX_KEYWORDS || words.some(word => word.length > MAX_KEYWORD)
+          return <div className="studio-qa-row" key={item.id}>
+            <label className="studio-field">Từ khóa câu {index + 1}<input value={item.keywords} disabled={locked} placeholder="kiểm hàng, được không" className={badKeywords ? 'invalid' : ''} onChange={event => setQA(item.id, { keywords: event.target.value })} /></label>
+            <label className="studio-field">Câu trả lời<textarea rows={2} value={item.answer} maxLength={MAX_ANSWER} disabled={locked} placeholder="Dạ bạn được mở hộp kiểm hàng trước khi thanh toán nha." onChange={event => setQA(item.id, { answer: event.target.value })} /></label>
+            <button type="button" className="studio-button ghost icon-only danger" disabled={locked} aria-label={`Xóa câu hỏi ${index + 1}`} onClick={() => removeQA(item.id)}><X size={15} /></button>
+          </div>
+        })}</div>}
+        <button type="button" className="studio-button ghost studio-add-row" disabled={locked || draft.qa.length >= MAX_QA} onClick={addQA}><Plus size={15} />Thêm câu hỏi</button>
+      </section>
+      {error && <ErrorNotice message={error} />}
+      <div className="studio-form-actions">
+        <button className="studio-button primary" disabled={locked || !dirty}>{busy ? 'Đang lưu…' : 'Lưu kiến thức shop'}</button>
+      </div>
+    </form>}
+  </section>
 }
 
 function Playground({ products, disabled, enabled }: { products: Product[]; disabled: boolean; enabled: boolean }) {
