@@ -140,9 +140,16 @@ def run(args) -> None:
         rows = customers()
         if not rows:
             print("Chưa có khách nào.")
+        priority = studio_gateway.priority_owners()
         for r in rows:
             print(f"{r['email']:<36} {status_text(r):<10} máy {r['devices']}/{r['max_agents']:<4} "
-                  f"hạn {show_expiry(r['expires_at'])}")
+                  f"hạn {show_expiry(r['expires_at'])}{'  [ưu tiên]' if r['id'] in priority else ''}")
+    elif cmd == "priority":
+        with db_open() as db:
+            owner_id = owner_by_email(db, args.email)["id"]
+        studio_gateway.set_owner_priority(owner_id, 1 if args.on else 0)
+        print(f"Đã {'bật' if args.on else 'tắt'} ưu tiên TTS cho {args.email.strip().lower()}"
+              + (": câu của tài khoản này được tạo trước các câu đang chờ của khách khác." if args.on else "."))
     elif cmd == "extend":
         set_expiry(args.email, _expiry_arg(args))
         print(f"Đã đặt hạn license của {args.email.strip().lower()}: {show_expiry(_expiry_arg(args))}.")
@@ -197,6 +204,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("enable", help="mở lại license").add_argument("--email", required=True)
     sub.add_parser("devices", help="các máy đã kích hoạt của khách").add_argument("--email", required=True)
     sub.add_parser("revoke-device", help="gỡ một máy").add_argument("--agent-id", required=True)
+    cmd = sub.add_parser("priority", help="bật/tắt ưu tiên hàng đợi TTS cho một tài khoản")
+    cmd.add_argument("--email", required=True)
+    toggle = cmd.add_mutually_exclusive_group(required=True)
+    toggle.add_argument("--on", action="store_true", help="câu của tài khoản này đi trước các câu đang chờ")
+    toggle.add_argument("--off", action="store_true", help="xếp hàng như mọi khách")
     cmd = sub.add_parser("usage", help="usage TTS theo ngày (UTC+7)")
     cmd.add_argument("--email")
     cmd.add_argument("--days", type=int, default=7)

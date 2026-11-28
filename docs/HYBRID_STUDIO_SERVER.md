@@ -81,7 +81,8 @@ Cần xác thực máy.
 
 Quy tắc hàng đợi:
 - Mỗi khách (owner) chỉ có **1 câu đang tạo**. Câu thứ hai gửi tới khi câu đầu chưa xong nhận `429 TTS_BUSY`.
-- GPU xử lý toàn cục `SARAE_GATEWAY_TTS_CONCURRENCY` câu cùng lúc (mặc định 1). Các câu khác xếp hàng FIFO, quá 60 giây thì nhận `503 TTS_QUEUE_TIMEOUT`.
+- GPU xử lý toàn cục `SARAE_GATEWAY_TTS_CONCURRENCY` câu cùng lúc (mặc định 1). Các câu khác xếp hàng theo thứ tự đến, quá 60 giây thì nhận `503 TTS_QUEUE_TIMEOUT`.
+- Tài khoản được bật **ưu tiên** (CLI `priority --on`) có câu chen lên trước mọi câu thường đang chờ. Câu đang tạo dở không bao giờ bị ngắt. Dùng cho tài khoản của chính admin khi LIVE trên PC server.
 - Mỗi request đều được ghi vào usage, kể cả request lỗi: owner, agent, ngày theo UTC+7, số request, số ký tự, số lỗi, số byte audio. **Không** chặn theo hạn mức.
 
 Token của voice server (`SARAE_TTS_SERVER_TOKEN`) chỉ nằm trên gateway.
@@ -158,6 +159,7 @@ Chạy trong thư mục `backend` bằng Python của `backend\.venv`, ví dụ 
 | `disable --email …` / `enable --email …` | Khóa hoặc mở license. Máy của khách nhận `LICENSE_EXPIRED`. |
 | `devices --email …` | Các máy đã kích hoạt (`agent_id`, tên máy, trạng thái). |
 | `revoke-device --agent-id agt_…` | Gỡ một máy. Máy đó nhận `AGENT_REVOKED` và được trả lại một suất máy. |
+| `priority --email … --on` / `--off` | Bật/tắt ưu tiên hàng đợi TTS cho tài khoản. `list` hiện `[ưu tiên]`. |
 | `usage [--email …] [--days 7]` | Usage TTS theo ngày (UTC+7): số câu, số lỗi, số ký tự, MB audio. |
 
 Phiên LIVE đang chạy của khách không bị cắt khi khóa hoặc gỡ máy (xem "Quy tắc license ở Studio").

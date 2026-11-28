@@ -82,31 +82,36 @@ def rate_limited(retry_after: int) -> HTTPException:
 
 # --- TTS queue --------------------------------------------------------------------------------------------------
 class FifoGate:
-    """Counting semaphore that admits waiters strictly in arrival order, with a timeout."""
+    """Counting semaphore with a timeout. Higher `priority` waiters go first; equal priority keeps arrival order.
+
+    A priority sentence never interrupts one already running; it only moves ahead of the ones still waiting.
+    """
 
     def __init__(self, slots: int):
         self.slots = max(1, int(slots))
         self.active = 0
-        self._queue: deque = deque()
+        self._queue: list[tuple[int, int, object]] = []    # (-priority, arrival, ticket)
+        self._arrival = 0
         self._cond = threading.Condition()
 
-    def acquire(self, timeout: float) -> bool:
-        ticket = object()
+    def acquire(self, timeout: float, priority: int = 0) -> bool:
         deadline = time.monotonic() + timeout
         with self._cond:
-            self._queue.append(ticket)
+            self._arrival += 1
+            entry = (-int(priority), self._arrival, object())
+            self._queue.append(entry)
             try:
-                while not (self._queue[0] is ticket and self.active < self.slots):
+                while not (min(self._queue) is entry and self.active < self.slots):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return False
                     self._cond.wait(remaining)
-                self._queue.popleft()
+                self._queue.remove(entry)
                 self.active += 1
                 return True
             finally:
-                if ticket in self._queue:          # timed out: let the next waiter move up
-                    self._queue.remove(ticket)
+                if entry in self._queue:           # timed out: let the next waiter move up
+                    self._queue.remove(entry)
                 self._cond.notify_all()
 
     def release(self) -> None:
@@ -168,6 +173,8 @@ def usage_db():
                 requests INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0,
                 failures INTEGER NOT NULL DEFAULT 0, audio_bytes INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (owner_id, agent_id, day))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS owner_priority (
+                owner_id TEXT PRIMARY KEY, priority INTEGER NOT NULL DEFAULT 0)""")
             yield db
     finally:
         db.close()
@@ -183,6 +190,31 @@ def record_usage(owner_id: str, agent_id: str, *, chars: int, ok: bool, audio_by
                        (owner_id, agent_id, vn_day(), chars, 0 if ok else 1, audio_bytes))
     except sqlite3.Error:
         log.exception("could not record studio usage")      # usage never blocks a sentence
+
+
+def owner_priority(owner_id: str) -> int:
+    """1 = this account's sentences go ahead of normal ones waiting for the GPU (admin CLI `priority`)."""
+    try:
+        with usage_db() as db:
+            row = db.execute("SELECT priority FROM owner_priority WHERE owner_id=?", (owner_id,)).fetchone()
+    except sqlite3.Error:
+        log.exception("could not read owner priority")
+        return 0
+    return int(row["priority"]) if row else 0
+
+
+def set_owner_priority(owner_id: str, priority: int) -> None:
+    with usage_db() as db:
+        if priority:
+            db.execute("""INSERT INTO owner_priority(owner_id, priority) VALUES(?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET priority=excluded.priority""", (owner_id, int(priority)))
+        else:
+            db.execute("DELETE FROM owner_priority WHERE owner_id=?", (owner_id,))
+
+
+def priority_owners() -> set[str]:
+    with usage_db() as db:
+        return {r["owner_id"] for r in db.execute("SELECT owner_id FROM owner_priority WHERE priority>0")}
 
 
 def usage_rows(owner_id: str | None = None, days: int = 7) -> list[dict]:
@@ -296,7 +328,7 @@ def synthesize(body: Any = Body(None), agent: dict = Depends(device)):
         chars = len(text)
         with owner_slot(agent["owner_id"]):
             gate = _gate
-            if not gate.acquire(QUEUE_TIMEOUT):
+            if not gate.acquire(QUEUE_TIMEOUT, owner_priority(agent["owner_id"])):
                 raise agent_error(503, "Hàng đợi GPU quá lâu. Câu này sẽ đọc bằng giọng Edge.", "TTS_QUEUE_TIMEOUT")
             try:
                 remaining = REQUEST_BUDGET - (time.monotonic() - started)

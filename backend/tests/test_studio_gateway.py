@@ -398,6 +398,26 @@ class FifoGateTests(unittest.TestCase):
         self.assertEqual(order, [0, 1, 2])
         self.assertEqual((gate.active, gate.waiting()), (0, 0))
 
+    def test_priority_waiters_go_first_without_interrupting(self):
+        gate = studio_gateway.FifoGate(1)
+        self.assertTrue(gate.acquire(1))                # a normal sentence is running
+        order, threads = [], []
+        for name, priority in (("normal-1", 0), ("normal-2", 0), ("vip-1", 1), ("vip-2", 1)):
+            def wait(name=name, priority=priority):
+                if gate.acquire(5, priority):
+                    order.append(name)
+                    time.sleep(0.02)
+                    gate.release()
+            threads.append(threading.Thread(target=wait))
+            threads[-1].start()
+            while gate.waiting() < len(threads):
+                time.sleep(0.005)
+        self.assertEqual(order, [])                     # the running sentence is never cut
+        gate.release()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(order, ["vip-1", "vip-2", "normal-1", "normal-2"])
+
 
 class AdminCliTests(GatewayTestCase):
     def cli(self, *argv):
@@ -421,6 +441,13 @@ class AdminCliTests(GatewayTestCase):
         self.assertIn("1/1", out)
         _, out = self.cli("devices", "--email", "c@example.test")
         self.assertIn(device["agent_id"], out)
+        self.assertEqual(studio_gateway.owner_priority(device["owner_id"]), 0)
+        self.assertEqual(self.cli("priority", "--email", "c@example.test", "--on")[0], 0)
+        self.assertEqual(studio_gateway.owner_priority(device["owner_id"]), 1)
+        self.assertIn("[ưu tiên]", self.cli("list")[1])
+        self.cli("priority", "--email", "c@example.test", "--off")
+        self.assertEqual(studio_gateway.owner_priority(device["owner_id"]), 0)
+        self.assertNotIn("[ưu tiên]", self.cli("list")[1])
         self.assertEqual(self.cli("extend", "--email", "c@example.test", "--never")[0], 0)
         self.assertIsNone(self.client.get("/api/studio/v1/license", headers=self.auth(device)).json()["expires_at"])
         self.cli("disable", "--email", "c@example.test")
