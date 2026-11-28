@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { AlertTriangle, KeyRound, Layers3, LogOut, RefreshCw, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import { studioClient, type AccountStatus } from '../../services/studio'
 import { ErrorNotice, Modal, errorMessage } from './ui'
+import { APP_VERSION } from '../../app/version'
 
 const activationErrors: Record<string, string> = {
   ACTIVATION_KEY_INVALID: 'Mã kích hoạt không đúng. Kiểm tra lại mã Sarae đã gửi cho bạn (dạng SARAE-ACT-…).',
@@ -87,12 +88,40 @@ export function ActivationScreen({ account, onChange }: { account: AccountStatus
         <button className={`studio-button${locked ? '' : ' primary'}`} type="submit" disabled={!!busy || !key.trim()}><KeyRound size={16} />{busy === 'activate' ? 'Đang kích hoạt…' : 'Kích hoạt'}</button>
       </form>
       {error && <ErrorNotice message={error} />}
-      <p className="studio-activation-server">Tên máy: {account.device_name} · Server: <code>{account.server_url}</code></p>
+      <p className="studio-activation-server">Tên máy: {account.device_name} · {serverKind(account.server_url).local ? 'Server local' : 'Server mạng'}: <code>{account.server_url}</code> · v{APP_VERSION}</p>
     </section>
   </div>
 }
 
 /** Non-blocking notice while a LIVE keeps playing with an invalid license. */
+/** Which Sarae server this Studio talks to: the gateway on this PC (127.0.0.1) or the network one (Cloudflare). */
+export function serverKind(url: string): { local: boolean; host: string } {
+  try {
+    const parts = new URL(url)
+    const host = parts.hostname.replace(/^\[|\]$/g, '')
+    return { local: ['localhost', '127.0.0.1', '::1'].includes(host), host: parts.host }
+  } catch {
+    return { local: false, host: url }
+  }
+}
+
+const serverStates: Record<AccountStatus['state'], string> = {
+  active: 'trực tuyến', offline: 'mất kết nối', locked: 'license bị khóa', unactivated: 'chưa kích hoạt',
+}
+
+/** Top bar chip: server kind and reachability; dev bypass is called out so it is never mistaken for a license. */
+export function ServerBadge({ account }: { account: AccountStatus | null }) {
+  if (!account) return null
+  if (account.dev_bypass) {
+    return <span className="studio-server-badge dev" title="SARAE_STUDIO_DEV_UNLICENSED=1: không kiểm tra license (chỉ dùng khi phát triển)."><span aria-hidden="true" />Chế độ dev · không license</span>
+  }
+  const { local, host } = serverKind(account.server_url)
+  const tone = account.state === 'active' ? 'ok' : account.state === 'offline' ? 'warn' : 'error'
+  const until = account.state === 'offline' && account.grace_until ? ` Vẫn dùng được tới ${formatDateTime(account.grace_until)}.` : ''
+  const title = `${local ? 'Server trên máy này' : 'Server qua mạng (Cloudflare)'}: ${account.server_url} · ${serverStates[account.state]}.${until}`
+  return <span className={`studio-server-badge ${tone}`} role="status" title={title}><span aria-hidden="true" />{local ? 'Server local' : 'Server mạng'} · {host}{account.state === 'active' ? '' : ` · ${serverStates[account.state]}`}</span>
+}
+
 export function LicenseBanner({ account }: { account: AccountStatus }) {
   return <div className="studio-license-banner" role="alert"><AlertTriangle size={18} /><div><strong>License chưa hợp lệ — phiên LIVE đang phát vẫn chạy tiếp</strong><p>{account.message ?? 'License của máy này chưa hợp lệ.'} Khi phiên kết thúc, Studio sẽ khóa cho đến khi license hợp lệ trở lại; chưa bắt đầu được phiên LIVE mới.</p></div></div>
 }

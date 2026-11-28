@@ -654,3 +654,13 @@ button { touch-action: manipulation; }
 .studio-voice-server.offline { color: #ac5742; }
 .studio-voice-server.offline > span { background: #d0715a; }
 @media (max-width: 650px) { .studio-activation-card { padding: 22px 18px; } .studio-activation-form { flex-direction: column; align-items: stretch; } .studio-account-actions small { margin-left: 0; } }
+/* Top bar: app version and which Sarae server this Studio uses */
+.studio-version-chip { font-size: 11px; color: var(--muted); padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; margin-right: 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.studio-server-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); margin-right: 12px; white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.studio-server-badge > span { width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.studio-server-badge.ok { color: var(--jade); border-color: #cfe3d6; background: #f4faf6; }
+.studio-server-badge.warn { color: #966a36; border-color: #eedcc5; background: #fbf1e5; }
+.studio-server-badge.error { color: #ac4a39; border-color: #efcfc7; background: #fbefec; }
+.studio-server-badge.dev { color: #6b5fa8; border-color: #ddd8f0; background: #f5f3fb; }
+@media (max-width: 850px) { .studio-server-badge { max-width: 170px; margin-right: 6px; } .studio-version-chip { display: none; } }
+@media (max-width: 650px) { .studio-server-badge { display: none; } }

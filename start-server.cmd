@@ -46,7 +46,8 @@ goto :done
 
 :fail
 echo.
-echo [loi] Gateway dung voi loi.
+echo [loi] Gateway dung voi loi. Doc thong bao phia tren.
+pause
 endlocal & exit /b 1
 
 :done

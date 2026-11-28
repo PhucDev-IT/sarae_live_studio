@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { BrainCircuit, Check, CircleHelp, Database, Film, FolderOpen, HardDrive, Layers3, Monitor, Package, Radio, RefreshCw, ShieldAlert, ShieldCheck, UserRound, UsersRound, X } from 'lucide-react'
-import { AccountCard, ActivationScreen, LicenseBanner, formatDateTime } from './AccountPanel'
+import { AccountCard, ActivationScreen, LicenseBanner, ServerBadge, formatDateTime } from './AccountPanel'
 import { AIPanel } from './AIPanel'
 import { LivePanel } from './LivePanel'
 import { ProductsPanel } from './ProductsPanel'
@@ -10,7 +10,7 @@ import { useAccount } from './useAccount'
 import { useStudio } from './useStudio'
 import { formatBytes } from './ui'
 
-const APP_VERSION = '0.3.0'
+import { APP_VERSION } from '../../app/version'
 type Page = 'products' | 'presenters' | 'media' | 'live' | 'ai'
 const pageTitles: Record<Page, string> = { products: 'Sản phẩm', presenters: 'Người giới thiệu', media: 'Thư viện video', live: 'Phiên LIVE', ai: 'Trợ lý AI' }
 const libraryPages: Page[] = ['products', 'presenters', 'media']
@@ -64,7 +64,7 @@ export function StudioShell() {
       <div className="studio-sidebar-bottom"><div className="studio-local-note"><ShieldCheck size={20} /><strong>Dữ liệu ở trên máy bạn</strong><p>Sản phẩm và video được quản lý trong thư viện local.</p></div><div className="studio-version"><span>Sarae Live Studio</span><span>v{APP_VERSION}</span></div></div>
     </aside>
     <div className="studio-workspace">
-      <header className="studio-topbar"><div className="studio-breadcrumb">Studio<span>/</span><strong>{pageTitles[page]}</strong></div><div className="studio-topbar-actions"><span className={`studio-connection ${studio.connected ? 'connected' : studio.loading ? 'connecting' : 'disconnected'}`} role="status"><span />{studio.connected ? 'Core đã kết nối' : studio.loading ? 'Đang kết nối Core…' : 'Core mất kết nối'}</span><button className="studio-button ghost icon-only" title="Tài khoản và license" aria-label="Xem tài khoản và license" aria-expanded={showAccount} disabled={!account} onClick={() => setShowAccount(value => !value)}>{account && !account.licensed ? <ShieldAlert size={19} /> : <UserRound size={19} />}</button><button className="studio-button ghost icon-only" title="Thư mục dữ liệu" aria-label="Xem thư mục dữ liệu" aria-expanded={showStorage} onClick={() => setShowStorage(value => !value)}><FolderOpen size={19} /></button><button className="studio-button ghost icon-only" disabled={refreshing || studio.loading || studio.retrying} title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu" onClick={() => void reload()}><RefreshCw size={18} className={refreshing ? 'studio-spin' : ''} /></button></div></header>
+      <header className="studio-topbar"><div className="studio-breadcrumb">Studio<span>/</span><strong>{pageTitles[page]}</strong></div><div className="studio-topbar-actions"><span className="studio-version-chip" title={studio.status && studio.status.version !== APP_VERSION ? `Giao diện v${APP_VERSION} · Core v${studio.status.version}: khác phiên bản, hãy mở lại ứng dụng.` : `Sarae Live Studio v${APP_VERSION}`}>v{APP_VERSION}{studio.status && studio.status.version !== APP_VERSION ? ` · Core v${studio.status.version}` : ''}</span><ServerBadge account={account} /><span className={`studio-connection ${studio.connected ? 'connected' : studio.loading ? 'connecting' : 'disconnected'}`} role="status"><span />{studio.connected ? 'Core đã kết nối' : studio.loading ? 'Đang kết nối Core…' : 'Core mất kết nối'}</span><button className="studio-button ghost icon-only" title="Tài khoản và license" aria-label="Xem tài khoản và license" aria-expanded={showAccount} disabled={!account} onClick={() => setShowAccount(value => !value)}>{account && !account.licensed ? <ShieldAlert size={19} /> : <UserRound size={19} />}</button><button className="studio-button ghost icon-only" title="Thư mục dữ liệu" aria-label="Xem thư mục dữ liệu" aria-expanded={showStorage} onClick={() => setShowStorage(value => !value)}><FolderOpen size={19} /></button><button className="studio-button ghost icon-only" disabled={refreshing || studio.loading || studio.retrying} title="Làm mới dữ liệu" aria-label="Làm mới dữ liệu" onClick={() => void reload()}><RefreshCw size={18} className={refreshing ? 'studio-spin' : ''} /></button></div></header>
       <main id="studio-content" tabIndex={-1} className="studio-content">
         {!studio.connected && !studio.loading && <div className="studio-connection-banner" role="alert"><div><strong>Chưa kết nối được Studio Core</strong><p>{studio.error || 'Kiểm tra bộ máy local rồi thử kết nối lại.'}</p>{studio.status && <small>Danh sách đang hiển thị là dữ liệu từ lần kết nối trước.</small>}</div><button className="studio-button" disabled={studio.retrying} onClick={() => void studio.retry()}><RefreshCw size={16} className={studio.retrying ? 'studio-spin' : ''} />{studio.retrying ? 'Đang kết nối…' : 'Kết nối lại'}</button></div>}
         {account && !account.licensed && account.live_running && <LicenseBanner account={account} />}
