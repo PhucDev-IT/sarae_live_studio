@@ -84,7 +84,7 @@ def activate(body: ActivateIn):
     if not 20 <= len(key) <= 200:
         raise agent_error(403, "Mã kích hoạt không hợp lệ hoặc đã sử dụng", "ACTIVATION_KEY_INVALID")
     platform = body.platform.strip().upper() or "WINDOWS"
-    if platform not in ("WINDOWS", "ANDROID"):
+    if platform != "WINDOWS":
         raise agent_error(422, "Nền tảng máy không được hỗ trợ.", "INVALID_PARAMS")
     hostname = body.hostname.strip()[:160] or "Máy Windows"
     result = identity.activate(identity.Activate(activation_key=key, hostname=hostname, platform=platform))

@@ -1,15 +1,14 @@
-"""HTTP client for the G-OmniVoice TTS Backend (voice-server/, docs/TTS_SERVER.md sections 15-16).
+"""HTTP client for sarae-voice-server (the GPU TTS on the server PC).
 
-The only module that talks to the voice server. Every URL is built from settings.sarae_tts_server_url plus a fixed
-path and ids checked against a strict pattern: nothing from a request ever becomes a host or a path, redirects are
-never followed. The orchestrator token is sent as a Bearer header and never logged or returned.
+The only module that talks to the voice server; used by the gateway (voice list, LIVE sentences) and the admin page
+(clone, transcript, preview, delete). Every URL is settings.sarae_tts_server_url plus a fixed path and ids checked
+against a strict pattern: nothing from a request becomes a host or a path, and redirects are never followed. The
+orchestrator token is sent as a Bearer header and never logged or returned.
 
 Errors:
-  TtsUnavailable  network failure, timeout, server not configured, or the model not ready (503): the voice server
-                  cannot be reached or cannot work right now.
-  TtsError        the voice server answered with an error code (e.g. VOICE_NOT_FOUND, TTS_BUSY, JOB_EXPIRED).
-Retries: only idempotent calls are retried on network errors, and job creation always carries the caller's
-Idempotency-Key, so a retry returns the same job instead of a second inference.
+  TtsUnavailable  network failure, timeout, server not configured, or the model not ready (503).
+  TtsError        the voice server answered with an error code (e.g. VOICE_NOT_FOUND, TTS_BUSY).
+Only idempotent calls are retried on network errors.
 """
 from __future__ import annotations
 
@@ -17,8 +16,6 @@ import logging
 import re
 import threading
 import time
-from contextlib import contextmanager
-from typing import Iterator
 
 import httpx
 
@@ -128,10 +125,6 @@ def ready(max_age: float = 5.0) -> dict:
     return value
 
 
-def status() -> dict:
-    return _call("GET", "/v1/status", retries=1).json()
-
-
 # --- voices ------------------------------------------------------------------------------------------
 def put_voice(voice_id: str, wav: bytes, transcript: str | None, name: str | None, owner_ref: str) -> dict:
     data = {"owner_ref": owner_ref}
@@ -167,19 +160,7 @@ def delete_voice(voice_id: str) -> None:
             raise
 
 
-def warmup(voice_id: str) -> dict:
-    return _call("POST", f"/v1/voices/{_check_id(voice_id, 'voice_id')}/warmup", retries=1, timeout=120).json()
-
-
 # --- synthesis -----------------------------------------------------------------------------------------
-def synthesize(voice_id: str, text: str, preset: str = "demo_default") -> tuple[bytes, dict]:
-    """Preview: WAV bytes and the server's trace headers. Not retried (a retry would be a second inference)."""
-    response = _call("POST", "/v1/tts/synthesize", timeout=90,
-                     json={"voice_id": _check_id(voice_id, "voice_id"), "text": text, "preset": preset})
-    headers = {k: v for k, v in response.headers.items() if k.lower().startswith("x-") and k.lower() != "x-trace"}
-    return response.content, headers
-
-
 def list_voices(timeout: float = 5) -> list[dict]:
     """GET /v1/voices: the raw profiles (callers must whitelist fields before passing them on)."""
     voices = _call("GET", "/v1/voices", timeout=timeout).json().get("voices")
@@ -211,62 +192,3 @@ def synthesize_live(voice_id: str, text: str, *, timeout: float, max_bytes: int)
         log.warning("voice server live synthesize failed: %s", type(exc).__name__)
         code = "TTS_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "TTS_BACKEND_UNREACHABLE"
         raise TtsUnavailable(code, "Không kết nối được máy chủ giọng nói G-OmniVoice") from exc
-
-
-def create_job(*, idempotency_key: str, voice_id: str, text: str, priority: str, deadline_at: str,
-               reader_agent_id: str | None, owner_ref: str, tags: list[str], preset: str = "demo_default") -> dict:
-    """POST /v1/tts/jobs with the caller's key: retried on network errors, the server returns the same job."""
-    body = {"voice_id": _check_id(voice_id, "voice_id"), "text": text, "priority": priority, "deadline_at": deadline_at,
-            "reader_agent_id": reader_agent_id, "owner_ref": owner_ref, "tags": tags, "preset": preset}
-    return _call("POST", "/v1/tts/jobs", retries=2, ok=(200, 202), json=body,
-                 headers={"Idempotency-Key": idempotency_key}).json()
-
-
-def get_job(job_id: str, wait: float = 0) -> dict:
-    return _call("GET", f"/v1/tts/jobs/{_check_id(job_id, 'job_id')}", retries=1, timeout=max(10.0, wait + 5),
-                 params={"wait": wait}).json()
-
-
-def cancel_job(job_id: str) -> dict | None:
-    try:
-        return _call("DELETE", f"/v1/tts/jobs/{_check_id(job_id, 'job_id')}", retries=1).json()
-    except TtsError as exc:
-        if exc.status in (404, 410):
-            return None
-        raise
-
-
-def cancel_tag(tag: str) -> int:
-    if not re.match(r"^[A-Za-z0-9:_.-]{1,80}$", tag):
-        raise TtsError(422, "INVALID_PARAMS", "tag không hợp lệ")
-    return _call("DELETE", "/v1/tts/jobs", retries=1, params={"tag": tag}).json().get("cancelled", 0)
-
-
-@contextmanager
-def open_audio(job_id: str, wait: float) -> Iterator[httpx.Response]:
-    """Stream a job's WAV with the orchestrator token (Backend relay). The caller reads status, headers and
-    iter_bytes(); the connection is closed when the block ends."""
-    job_id = _check_id(job_id, "job_id")
-    try:
-        with _client(wait + 30) as client:
-            with client.stream("GET", f"/v1/tts/jobs/{job_id}/audio", params={"wait": wait}) as response:
-                if response.is_redirect:
-                    raise TtsError(502, "TTS_REDIRECT_REFUSED", "Máy chủ giọng nói trả về chuyển hướng")
-                yield response
-    except (httpx.TimeoutException, httpx.TransportError) as exc:
-        code = "TTS_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "TTS_BACKEND_UNREACHABLE"
-        raise TtsUnavailable(code, "Không kết nối được máy chủ giọng nói G-OmniVoice") from exc
-
-
-# --- LIVE admission ----------------------------------------------------------------------------------
-def put_lease(owner_ref: str, session_id: str, ttl_s: float) -> dict:
-    return _call("PUT", "/v1/admission/live", retries=1,
-                 json={"owner_ref": owner_ref, "session_id": session_id, "ttl_s": ttl_s}).json()
-
-
-def delete_lease(owner_ref: str, session_id: str) -> None:
-    _call("DELETE", "/v1/admission/live", retries=1, params={"owner_ref": owner_ref, "session_id": session_id})
-
-
-def admission() -> dict:
-    return _call("GET", "/v1/admission/live", retries=1).json()

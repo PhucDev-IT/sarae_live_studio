@@ -22,7 +22,7 @@ echo [setup] Tao Python env backend\.venv bang %BASEPY% ...
 :deps
 fc /b "%REQ%" "%BACK%\.venv\.gateway-requirements" >nul 2>&1 && goto :ready
 rem Env da co du goi (vd. tao bang uv, khong co pip): khong cai gi them.
-"%PY%" -c "import fastapi, uvicorn, httpx, pydantic_settings, sqlalchemy" >nul 2>&1 && goto :stamp
+"%PY%" -c "import fastapi, uvicorn, httpx, pydantic_settings" >nul 2>&1 && goto :stamp
 echo [setup] Cai dependency gateway ...
 "%PY%" -m pip --version >nul 2>&1 && goto :pip
 where uv >nul 2>&1 && goto :uv
