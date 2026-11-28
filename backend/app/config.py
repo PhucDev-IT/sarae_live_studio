@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     sarae_tts_timeout_seconds: float = 10.0
     sarae_tts_lease_ttl_seconds: int = 60
     sarae_tts_relay_max_bytes: int = 32 * 1024 * 1024
+    # Studio gateway (app/gateway_main.py, docs/HYBRID_STUDIO_SERVER.md): sentences the GPU synthesizes at once
+    # for all customers, and whether /docs + /openapi.json are served (off in production).
+    sarae_gateway_tts_concurrency: int = 1
+    sarae_gateway_docs: bool = False
     obs_host: str = "127.0.0.1"
     obs_port: int = 4455
     obs_password: str = ""

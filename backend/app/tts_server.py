@@ -174,6 +174,39 @@ def synthesize(voice_id: str, text: str, preset: str = "demo_default") -> tuple[
     return response.content, headers
 
 
+def list_voices(timeout: float = 5) -> list[dict]:
+    """GET /v1/voices: the raw profiles (callers must whitelist fields before passing them on)."""
+    voices = _call("GET", "/v1/voices", timeout=timeout).json().get("voices")
+    return [v for v in voices if isinstance(v, dict)] if isinstance(voices, list) else []
+
+
+def synthesize_live(voice_id: str, text: str, *, timeout: float, max_bytes: int) -> tuple[bytes, str]:
+    """Studio gateway: one sentence with preset live_fast (same body as the Studio's local mode, seed 42).
+    Streams the WAV and stops past `max_bytes`. Returns (audio, X-Voice-Rev). Not retried."""
+    body = {"voice_id": _check_id(voice_id, "voice_id"), "text": text, "preset": "live_fast", "seed": 42}
+    try:
+        with _client(timeout) as client:
+            with client.stream("POST", "/v1/tts/synthesize", json=body) as response:
+                if response.is_redirect:
+                    raise TtsError(502, "TTS_REDIRECT_REFUSED", "Máy chủ giọng nói trả về chuyển hướng")
+                if response.status_code != 200:
+                    response.read()
+                    err = _error(response)
+                    if response.status_code == 503:
+                        raise TtsUnavailable(err.code, err.message or "Máy chủ giọng nói chưa sẵn sàng")
+                    raise err
+                audio = bytearray()
+                for chunk in response.iter_bytes():
+                    audio.extend(chunk)
+                    if len(audio) > max_bytes:
+                        raise TtsError(502, "TTS_INVALID_AUDIO", "Âm thanh máy chủ giọng nói quá lớn")
+                return bytes(audio), response.headers.get("X-Voice-Rev", "")
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        log.warning("voice server live synthesize failed: %s", type(exc).__name__)
+        code = "TTS_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "TTS_BACKEND_UNREACHABLE"
+        raise TtsUnavailable(code, "Không kết nối được máy chủ giọng nói G-OmniVoice") from exc
+
+
 def create_job(*, idempotency_key: str, voice_id: str, text: str, priority: str, deadline_at: str,
                reader_agent_id: str | None, owner_ref: str, tags: list[str], preset: str = "demo_default") -> dict:
     """POST /v1/tts/jobs with the caller's key: retried on network errors, the server returns the same job."""
