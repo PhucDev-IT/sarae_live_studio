@@ -147,7 +147,7 @@ export function AccountCard({ account, onChange, onClose, onNotice }: { account:
   return <section className="studio-storage studio-account studio-card" aria-label="Tài khoản và license">
     <div className="studio-storage-heading">{account.licensed ? <ShieldCheck size={19} /> : <ShieldAlert size={19} />}<h2>Tài khoản Sarae</h2><span className={`studio-account-state ${account.dev_bypass ? 'dev' : account.state}`}>{account.dev_bypass ? 'Dev · bỏ qua license' : stateLabels[account.state]}</span><button className="studio-button ghost icon-only" aria-label="Ẩn thông tin tài khoản" onClick={onClose}><X size={17} /></button></div>
     {account.activated ? <dl className="studio-account-grid">
-      <div><dt>Email</dt><dd>{account.email ?? '—'}</dd></div>
+      <div><dt>Tài khoản</dt><dd>{account.email ?? '—'}</dd></div>
       <div><dt>Hết hạn</dt><dd>{formatDate(account.expires_at)}</dd></div>
       <div><dt>Tên máy</dt><dd>{account.device_name}</dd></div>
       <div><dt>Kiểm tra gần nhất</dt><dd>{formatDateTime(account.checked_at)}</dd></div>

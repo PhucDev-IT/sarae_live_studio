@@ -207,14 +207,14 @@ def customers(days: int = 7):
 @app.post("/admin/api/customers")
 def create_customer(body: dict = Body(...)):
     """Create the customer and hand back a first activation key (shown once)."""
-    email = str(body.get("email") or "")
+    email = str(body.get("username") or body.get("email") or "")  # a username; an email is fine too
     try:
         max_devices = int(body.get("max_devices") or 1)
     except (TypeError, ValueError):
         raise HTTPException(422, "Số máy phải là số.") from None
     key = _run(lambda a: (a.create_customer(email, max_devices, _expiry(a, body)), a.issue_key(email))[1])
     log.info("customer created")
-    return {"email": email.strip().lower(), "activation_key": key}
+    return {"email": email.strip().lower(), "username": email.strip().lower(), "activation_key": key}
 
 
 @app.post("/admin/api/customers/{email}/keys")
@@ -442,7 +442,7 @@ dialog[open]{animation:pop .18s ease}
  <section class="card">
   <div class="card-h"><div><h2>Thêm khách</h2><p>Tạo tài khoản và cấp ngay mã kích hoạt cho máy đầu tiên.</p></div></div>
   <div class="card-b"><div class="grid-c">
-   <div><label for="cemail">Email</label><input id="cemail" type="text" maxlength="254" placeholder="khach@shop.vn" autocomplete="off"></div>
+   <div><label for="cemail">Tên tài khoản</label><input id="cemail" type="text" maxlength="64" placeholder="vd. shop_linh" autocomplete="off" title="3 đến 64 ký tự: chữ không dấu, số, . _ - hoặc @ (email cũng được)"></div>
    <div><label for="cmax">Số máy tối đa</label><input id="cmax" type="number" min="1" max="100" value="1"></div>
    <div><label for="cexp">Hết hạn <span class="hint">(trống = vô thời hạn)</span></label><input id="cexp" type="date"></div>
    <div><button class="primary lg" id="ccreate" data-i="plus">Tạo khách + cấp mã</button></div>
@@ -453,7 +453,7 @@ dialog[open]{animation:pop .18s ease}
   <div class="card-h">
    <div><h2>Danh sách khách</h2><p><b>Ưu tiên</b>: câu TTS của tài khoản được tạo trước câu đang chờ của khách khác. Usage tính 7 ngày gần nhất.</p></div>
    <span class="spacer"></span>
-   <div class="search" data-i="search"><input id="csearch" type="search" placeholder="Tìm theo email…" aria-label="Tìm khách"></div>
+   <div class="search" data-i="search"><input id="csearch" type="search" placeholder="Tìm theo tên tài khoản…" aria-label="Tìm khách"></div>
    <button id="creload" class="icon" title="Làm mới" aria-label="Làm mới" data-i="refresh"></button>
   </div>
   <div class="table"><table>
@@ -624,7 +624,7 @@ async function loadCustomers(){const body=$("#clist");
   applyFilter();
  }catch(e){body.innerHTML=`<tr><td colspan="7" style="padding:16px">${alertBox(e.message)}</td></tr>`}}
 $("#ccreate").addEventListener("click",async()=>{const btn=$("#ccreate");btn.disabled=true;
- try{const r=await (await api("POST","/admin/api/customers",{email:$("#cemail").value.trim(),max_devices:Number($("#cmax").value||1),expires:$("#cexp").value||null})).json();
+ try{const r=await (await api("POST","/admin/api/customers",{username:$("#cemail").value.trim(),max_devices:Number($("#cmax").value||1),expires:$("#cexp").value||null})).json();
   showKey(r.email,r.activation_key);cnotice(`Đã tạo khách ${r.email}.`,"ok");$("#cemail").value="";await loadCustomers()
  }catch(e){cnotice(e.message,"err")}finally{btn.disabled=false}});
 function markDirty(ev){if(!ev.target.matches(".cmax,.cexp"))return;const r=ev.target.closest("tr");r.classList.add("dirty");const s=r.querySelector(".csave");s.disabled=false;s.classList.add("primary")}

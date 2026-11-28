@@ -189,6 +189,17 @@ class AdminCustomerTests(unittest.TestCase):
         dup = self.client.post("/admin/api/customers", headers=HEADERS, json={"email": "shop@example.vn"})
         self.assertEqual(dup.status_code, 422)
 
+    def test_username_instead_of_email(self):
+        r = self.client.post("/admin/api/customers", headers=HEADERS, json={"username": "Shop_Linh"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["username"], "shop_linh")
+        self.assertEqual(self.customer("shop_linh")["status"], "hợp lệ")
+        key = self.client.post("/admin/api/customers/shop_linh/keys", headers=HEADERS)
+        self.assertEqual(key.status_code, 200)
+        for bad in ("ab", "có dấu", "a b c", "-start", "x" * 65):
+            self.assertEqual(self.client.post("/admin/api/customers", headers=HEADERS,
+                                              json={"username": bad}).status_code, 422, bad)
+
     def test_update_priority_devices_expiry_and_lock(self):
         self.client.post("/admin/api/customers", headers=HEADERS, json={"email": "a@shop.vn"})
         url = "/admin/api/customers/a%40shop.vn"

@@ -8,6 +8,7 @@ không in ra; khách chỉ dùng mã kích hoạt.
 from __future__ import annotations
 
 import argparse
+import re
 import secrets
 import sqlite3
 import sys
@@ -16,6 +17,10 @@ from datetime import date, datetime, time, timezone
 
 from app import identity, studio_gateway
 from app.identity import db_open, license_not_expired, pass_hash, secret_hash
+
+
+# A customer account name: a plain username or an email (stored in users.email, lower-case).
+USERNAME = re.compile(r"[a-z0-9][a-z0-9._@-]{2,63}")
 
 
 class AdminError(Exception):
@@ -47,15 +52,15 @@ def owner_by_email(db, email: str):
     row = db.execute("""SELECT u.id, u.email, u.active, l.expires_at, l.max_agents, l.enabled FROM users u
         JOIN licenses l ON l.owner_id=u.id WHERE u.email=? AND u.role='OWNER'""", (email.strip().lower(),)).fetchone()
     if row is None:
-        raise AdminError(f"Không tìm thấy khách {email.strip().lower()}")
+        raise AdminError(f"Không tìm thấy tài khoản {email.strip().lower()}")
     return row
 
 
 # --- operations (also used by tests) -----------------------------------------------------------------------------
 def create_customer(email: str, max_devices: int, expires_at: str | None) -> str:
     email = email.strip().lower()
-    if "@" not in email or not 5 <= len(email) <= 254:
-        raise AdminError("Email không hợp lệ")
+    if not USERNAME.fullmatch(email):
+        raise AdminError("Tên tài khoản cần 3 đến 64 ký tự: chữ không dấu, số, dấu . _ - hoặc @ (email cũng được)")
     if not 1 <= max_devices <= 100:
         raise AdminError("Số máy phải từ 1 đến 100")
     owner_id, salt = str(uuid.uuid4()), secrets.token_hex(16)
@@ -65,7 +70,7 @@ def create_customer(email: str, max_devices: int, expires_at: str | None) -> str
                        (owner_id, email, pass_hash(secrets.token_urlsafe(32), salt), salt, "OWNER"))
             db.execute("INSERT INTO licenses VALUES(?,?,?,1)", (owner_id, expires_at, max_devices))
         except sqlite3.IntegrityError:
-            raise AdminError(f"Email {email} đã tồn tại") from None
+            raise AdminError(f"Tài khoản {email} đã tồn tại") from None
     return owner_id
 
 
@@ -140,7 +145,7 @@ def run(args) -> None:
         create_customer(args.email, args.max_devices, _expiry_arg(args))
         print(f"Đã tạo khách {args.email.strip().lower()}: tối đa {args.max_devices} máy, "
               f"hạn {show_expiry(_expiry_arg(args))}.")
-        print(f"Cấp mã kích hoạt: python -m tools.studio_admin issue-key --email {args.email.strip().lower()}")
+        print(f"Cấp mã kích hoạt: python -m tools.studio_admin issue-key --username {args.email.strip().lower()}")
     elif cmd == "issue-key":
         key = issue_key(args.email)
         print("Mã kích hoạt (chỉ hiện MỘT lần, dùng cho MỘT máy):")
@@ -205,27 +210,27 @@ def parser() -> argparse.ArgumentParser:
         group.add_argument("--never", action="store_true", help="không hết hạn")
 
     cmd = sub.add_parser("create-customer", help="tạo khách và license")
-    cmd.add_argument("--email", required=True)
+    cmd.add_argument("--username", "--email", dest="email", required=True)
     cmd.add_argument("--max-devices", type=int, default=1, help="số máy tối đa (mặc định 1)")
     with_expiry(cmd)
-    sub.add_parser("issue-key", help="cấp một mã kích hoạt dùng một lần").add_argument("--email", required=True)
+    sub.add_parser("issue-key", help="cấp một mã kích hoạt dùng một lần").add_argument("--username", "--email", dest="email", required=True)
     sub.add_parser("list", help="danh sách khách")
     with_expiry(cmd := sub.add_parser("extend", help="đổi hạn license"))
-    cmd.add_argument("--email", required=True)
+    cmd.add_argument("--username", "--email", dest="email", required=True)
     cmd = sub.add_parser("set-devices", help="đổi số máy tối đa")
-    cmd.add_argument("--email", required=True)
+    cmd.add_argument("--username", "--email", dest="email", required=True)
     cmd.add_argument("--max-devices", type=int, required=True)
-    sub.add_parser("disable", help="khóa license").add_argument("--email", required=True)
-    sub.add_parser("enable", help="mở lại license").add_argument("--email", required=True)
-    sub.add_parser("devices", help="các máy đã kích hoạt của khách").add_argument("--email", required=True)
+    sub.add_parser("disable", help="khóa license").add_argument("--username", "--email", dest="email", required=True)
+    sub.add_parser("enable", help="mở lại license").add_argument("--username", "--email", dest="email", required=True)
+    sub.add_parser("devices", help="các máy đã kích hoạt của khách").add_argument("--username", "--email", dest="email", required=True)
     sub.add_parser("revoke-device", help="gỡ một máy").add_argument("--agent-id", required=True)
     cmd = sub.add_parser("priority", help="bật/tắt ưu tiên hàng đợi TTS cho một tài khoản")
-    cmd.add_argument("--email", required=True)
+    cmd.add_argument("--username", "--email", dest="email", required=True)
     toggle = cmd.add_mutually_exclusive_group(required=True)
     toggle.add_argument("--on", action="store_true", help="câu của tài khoản này đi trước các câu đang chờ")
     toggle.add_argument("--off", action="store_true", help="xếp hàng như mọi khách")
     cmd = sub.add_parser("usage", help="usage TTS theo ngày (UTC+7)")
-    cmd.add_argument("--email")
+    cmd.add_argument("--username", "--email", dest="email")
     cmd.add_argument("--days", type=int, default=7)
     return p
 

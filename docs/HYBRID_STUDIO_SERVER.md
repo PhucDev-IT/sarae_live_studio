@@ -61,7 +61,7 @@ Không cần xác thực, giới hạn 10 lần mỗi IP trong 10 phút.
 ### `GET /api/studio/v1/license`
 Cần xác thực máy. Trả về:
 ```json
-{"valid": true, "email": "khach@…", "expires_at": "2027-01-01T00:00:00+00:00" | null,
+{"valid": true, "email": "shop_linh" (tên tài khoản; trường vẫn tên là email), "expires_at": "2027-01-01T00:00:00+00:00" | null,
  "max_agents": 2, "agent_id": "agt_…", "hostname": "…",
  "server_time": "<ISO UTC>", "grace_hours": 72}
 ```
@@ -152,15 +152,15 @@ Chạy trong thư mục `backend` bằng Python của `backend\.venv`, ví dụ 
 
 | Lệnh | Việc làm |
 |---|---|
-| `create-customer --email khach@x.vn --max-devices 2 --expires 2027-01-31` | Tạo khách và license. Hạn tính đến hết ngày đó theo giờ Việt Nam. Dùng `--never` nếu không có hạn. Mật khẩu được tạo ngẫu nhiên và không in ra, vì khách không đăng nhập. |
-| `issue-key --email khach@x.vn` | Cấp **một** mã kích hoạt dùng một lần cho một máy. Mã chỉ hiện một lần. |
+| `create-customer --username shop_linh --max-devices 2 --expires 2027-01-31` | Tạo khách và license. Hạn tính đến hết ngày đó theo giờ Việt Nam. Dùng `--never` nếu không có hạn. Mật khẩu được tạo ngẫu nhiên và không in ra, vì khách không đăng nhập. |
+| `issue-key --username shop_linh` | Cấp **một** mã kích hoạt dùng một lần cho một máy. Mã chỉ hiện một lần. |
 | `list` | Danh sách khách: trạng thái, số máy đang dùng / tối đa, hạn. |
-| `extend --email khach@x.vn --expires 2027-06-30` (hoặc `--never`) | Đổi hạn license. |
-| `disable --email …` / `enable --email …` | Khóa hoặc mở license. Máy của khách nhận `LICENSE_EXPIRED`. |
-| `devices --email …` | Các máy đã kích hoạt (`agent_id`, tên máy, trạng thái). |
+| `extend --username shop_linh --expires 2027-06-30` (hoặc `--never`) | Đổi hạn license. |
+| `disable --username …` / `enable --username …` | Khóa hoặc mở license. Máy của khách nhận `LICENSE_EXPIRED`. |
+| `devices --username …` | Các máy đã kích hoạt (`agent_id`, tên máy, trạng thái). |
 | `revoke-device --agent-id agt_…` | Gỡ một máy. Máy đó nhận `AGENT_REVOKED` và được trả lại một suất máy. |
-| `priority --email … --on` / `--off` | Bật/tắt ưu tiên hàng đợi TTS cho tài khoản. `list` hiện `[ưu tiên]`. |
-| `usage [--email …] [--days 7]` | Usage TTS theo ngày (UTC+7): số câu, số lỗi, số ký tự, MB audio. |
+| `priority --username … --on` / `--off` | Bật/tắt ưu tiên hàng đợi TTS cho tài khoản. `list` hiện `[ưu tiên]`. |
+| `usage [--username …] [--days 7]` | Usage TTS theo ngày (UTC+7): số câu, số lỗi, số ký tự, MB audio. |
 
 Phiên LIVE đang chạy của khách không bị cắt khi khóa hoặc gỡ máy (xem "Quy tắc license ở Studio").
 
